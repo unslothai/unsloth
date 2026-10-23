@@ -161,7 +161,63 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
     return done.returncode == 0
 
 
+def _bundled_tcc() -> str | None:
+    import sysconfig  # noqa: PLC0415
+    path = os.path.join(sysconfig.get_path("platlib"), "triton", "runtime", "tcc", "tcc.exe")
+    return path if os.path.isfile(path) else None
+
+
+def _clear_compiler_cache() -> None:
+    """`_find_compiler` is lru_cached in triton-windows 3.8, so a CC set after its first call is otherwise ignored."""
+    try:
+        from triton.runtime import build  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    for name in ("_find_compiler", "get_cc"):
+        clear = getattr(getattr(build, name, None), "cache_clear", None)
+        if callable(clear):
+            clear()
+
+
+def _triton_driver_builds() -> bool:
+    """Creating the active driver compiles its C helper (`hip_utils.c` on AMD) with the selected compiler."""
+    try:
+        _clear_compiler_cache()
+        from triton.runtime import driver  # noqa: PLC0415
+
+        driver.active.get_current_target()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("Triton's driver did not build with the bundled TinyCC", exc_info = True)
+        return False
+
+
+def _switch_to_bundled_tcc() -> bool:
+    """clang-cl without the CRT headers (#9897): build with the TinyCC triton-windows bundles, which carries its own
+    and is what it already picks when no ROCm wheel is installed. Kept only if Triton's driver then builds; an
+    explicit CC is the user's choice."""
+    if os.environ.get("CC"):
+        return False
+    tcc = _bundled_tcc()
+    if tcc is None:
+        return False
+    os.environ["CC"] = tcc
+    if _triton_driver_builds():
+        logger.info(
+            "Triton's C toolchain has no CRT headers; building with its bundled TinyCC (%s)", tcc
+        )
+        return True
+    os.environ.pop("CC", None)
+    _clear_compiler_cache()
+    return False
+
+
 def crt_headers_reachable() -> bool:
+    """Whether Triton's JIT can build its C helpers here, switching to the bundled TinyCC when clang-cl cannot."""
+    return _crt_headers_reachable() or _switch_to_bundled_tcc()
+
+
+def _crt_headers_reachable() -> bool:
     if sys.platform != "win32":
         return True
     if not _needs_msvc_headers():
@@ -197,16 +253,55 @@ def crt_headers_reachable() -> bool:
     return _headers_complete(triton_dirs + env_dirs)
 
 
+def _triton_windows_spec() -> str:
+    """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
+
+    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.13
+    pins triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
+    """
+    import platform  # noqa: PLC0415
+
+    if platform.machine().lower() == "arm64":
+        return "triton-windows>=3.8.0.post28"
+    try:
+        from importlib.metadata import version  # noqa: PLC0415
+        major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
+    except Exception:  # noqa: BLE001 -- a hint must never raise
+        return "triton-windows<3.7"
+    if (major, minor) == (2, 13):
+        return "triton-windows>=3.7,<3.8"
+    if (major, minor) == (2, 14):
+        return "triton-windows>=3.8,<3.9"
+    return "triton-windows<3.7"
+
+
+def _torch_is_rocm_build() -> bool:
+    # Off disk, no torch import: AMD's untagged Windows wheel (2.8.0a0+git...) is only told by version.py's hip field.
+    try:
+        from core._torchao_stub import _installed_torch_is_rocm  # noqa: PLC0415
+        return _installed_torch_is_rocm() is True
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read the installed torch's ROCm signals", exc_info = True)
+        return False
+
+
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
+    if _torch_is_rocm_build():
+        try:
+            # triton-windows >= 3.8 imported first loads System32 amdhip64_7.dll, then torch_hip.dll fails with WinError 126.
+            import torch  # noqa: F401, PLC0415
+        except Exception:  # noqa: BLE001
+            logger.debug("The torch preload failed; probing triton anyway", exc_info = True)
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:
         os.environ["TORCHDYNAMO_DISABLE"] = "1"
         log.warning(
             "Triton not found on Windows — torch.compile disabled. "
-            'Install for better performance: pip install "triton-windows<3.7"'
+            f'Install for better performance: pip install "{_triton_windows_spec()}"'
         )
         return
 

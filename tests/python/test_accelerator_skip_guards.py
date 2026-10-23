@@ -1,28 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""No test may gate hardware on a call this repo's own harnesses spoof.
-
-`tests/_zoo_aggressive_cuda_spoof.py` sets `torch.cuda.is_available` to return
-True and leaves it there. It is applied at module import by everything under
-`tests/version_compat` and `tests/vllm_compat`. pytest imports every selected
-module before running anything and evaluates `@pytest.mark.skipif` at import, so
-one spoofing module in a session decides the guard for every module collected
-after it, whatever directory it lives in.
-
-A guard written as `skipif(not torch.cuda.is_available())` therefore un-skips on
-a CPU-only box as soon as it shares a session with one of those files, and the
-test dies inside torch with `RuntimeError: Cannot access accelerator device when
-none is available` -- a message about torch, from a cause that is neither torch
-nor the test.
-
-CI is only clear of this because the three jobs covering those directories each
-`--ignore` the others. Nothing enforced that, and dropping one `--ignore` would
-have reopened it silently, so enforce the guard side instead:
-`tests/_shared/real_accelerator.py` records the answer before any spoof runs.
-
-Scanned with ast rather than grep so a reformatted decorator, a multi-line
-`skipif(...)` or a `# noqa` cannot walk past it.
-"""
+"""Guards read the recorded real accelerator, since a spoofed torch.cuda.is_available returns True."""
 
 from __future__ import annotations
 
@@ -38,8 +16,7 @@ import pytest
 
 _TESTS_ROOT = Path(__file__).resolve().parents[1]
 
-# The spoof itself, the recorded-answer helper and conftest are what implement the
-# real probe. They are the only places allowed to call the raw torch API for it.
+# Only these files may call the raw torch probe API.
 _SPOOF = _TESTS_ROOT / "_zoo_aggressive_cuda_spoof.py"
 
 _ALLOWED = {
@@ -48,9 +25,8 @@ _ALLOWED = {
     _TESTS_ROOT / "conftest.py",
 }
 
-# Every probe the spoof answers that a skip guard could plausibly ask. Listing only the
-# is_available three left `skipif(torch.cuda.device_count() == 0)` reading as safe and
-# evading this test; test_the_spoofed_probe_list_keeps_up_with_the_spoof keeps it in step.
+# Every spoofed probe a skip guard could ask; kept in step by
+# test_the_spoofed_probe_list_keeps_up_with_the_spoof.
 _SPOOFED_CALLS = {
     ("torch", "cuda", "is_available"),
     ("torch", "xpu", "is_available"),
@@ -63,13 +39,10 @@ _SPOOFED_CALLS = {
     ("torch", "cuda", "get_device_properties"),
 }
 
-# The rest of what the spoof patches: things a test DOES, not things it asks. Listed so the
-# meta-test below can insist every newly spoofed name lands in one bucket or the other.
+# Spoofed names that are actions, not questions; every spoofed name must be in one bucket.
 _SPOOFED_NON_PREDICATES = {
     ("torch", "Tensor", "is_pinned"),
-    # A stream handle, not a question: unsloth/kernels/utils.py reads it at import under
-    # `if DEVICE_COUNT > 0` and wraps it in ctypes.c_void_p. Nothing branches on it, so no
-    # skip guard could read it.
+    # A stream handle read at import by unsloth/kernels/utils.py; nothing branches on it.
     ("torch", "_C", "_cuda_getCurrentRawStream"),
     ("torch", "Tensor", "pin_memory"),
     ("torch", "cuda", "Event"),
@@ -97,9 +70,7 @@ _SPOOFED_NON_PREDICATES = {
     ("torch", "cuda", "synchronize"),
 }
 
-# The other half of the hazard above: a skip guard decides whether a test RUNS, these
-# decide where its tensors LAND, because the library reads the same spoofed probe itself.
-# An allow-list, not a general lint: catch another instance of this, not every loader call.
+# Calls whose tensor placement depends on the spoofed probe. An allow-list, not a general lint.
 _DEVICE_INFERRING_CALLS = {
     ("PeftModel", "from_pretrained"): "torch_device",
     ("PeftMixedModel", "from_pretrained"): "torch_device",
@@ -130,8 +101,8 @@ def _skipif_calls(tree: ast.AST):
                 yield decorator
 
 
-# has_real_accelerator() for a test that just needs somewhere to put a tensor, has_real_cuda()
-# for one that names cuda. Which of the two suffices is per-namespace; see _satisfying_gates.
+# has_real_accelerator() for any device, has_real_cuda() when cuda is named; see
+# _satisfying_gates.
 _REAL_PROBES = ("has_real_accelerator", "has_real_cuda")
 
 
@@ -160,30 +131,14 @@ def _gate_named(node: ast.AST, negated: bool) -> str:
 
 
 def _satisfying_gates(call: ast.Call) -> frozenset[str]:
-    """Which recorded-answer probes are strong enough to dominate this probe.
-
-    A torch.cuda.* call needs has_real_cuda(). has_real_accelerator() is true on an XPU-only
-    or Ascend NPU-only host, so it lets a CUDA-only API through to be evaluated on a machine
-    with no CUDA at all, where it raises or hands back the spoof's answer. That is the same
-    defect as gating a CUDA-only test on the broad probe, one level up in the decorator.
-    """
+    """torch.cuda needs has_real_cuda(); has_real_accelerator() is also true on XPU or NPU-only hosts."""
     if _dotted(call.func)[:2] == ("torch", "cuda"):
         return frozenset({"has_real_cuda"})
     return frozenset(_REAL_PROBES)
 
 
 def _unguarded_spoofed_calls(node: ast.AST, gates: frozenset[str] = frozenset()):
-    """Spoofable probes in `node` whose value the spoof is still free to decide.
-
-    Python's `and` / `or` short-circuit, so a probe is safe once an earlier conjunct in the
-    same chain has settled the case it would otherwise be asked about:
-
-        skipif(not has_real_cuda() or torch.cuda.device_count() < 2)
-        skipif(has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12)
-
-    `gates` carries the probes already established at this point in the chain. Which of them
-    suffices depends on the namespace being called into; see `_satisfying_gates`.
-    """
+    """A spoofable probe is safe once an earlier and/or conjunct has already settled its case."""
     if isinstance(node, ast.BoolOp):
         negated = not isinstance(node.op, ast.And)
         seen = gates
@@ -218,8 +173,7 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"))
         except SyntaxError:
-            # tests/python/ holds fixtures that are deliberately unparseable on this
-            # interpreter (the 3.9 floor checks). Not our business.
+            # Fixtures here are deliberately unparseable on this interpreter (3.9 floor checks).
             continue
         for decorator in _skipif_calls(tree):
             for call in _unguarded_spoofed_calls(decorator):
@@ -237,13 +191,7 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
 
 
 def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
-    """Every name the spoof patches has to be classified, or this guard rots quietly.
-
-    _SPOOFED_CALLS started as the three is_available probes while the spoof was already
-    answering device_count, is_initialized, is_bf16_supported and get_device_capability. A
-    skip guard reading any of those was un-skipped by the spoof and invisible to the test
-    above. Adding a patch to the spoof now fails here until it is called a predicate a skip
-    guard could read, or plumbing no guard would."""
+    """Every spoofed name must be classed as a guard predicate or plumbing, or skip guards go unchecked."""
     spoof = ast.parse(_SPOOF.read_text(encoding = "utf-8"))
     patched = set()
     for node in ast.walk(spoof):
@@ -262,8 +210,7 @@ def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
         "guard would:\n  " + "\n  ".join(unclassified)
     )
 
-    # Nothing listed may have quietly stopped being spoofed, or the guard above now rejects
-    # an idiom that has become safe.
+    # A listed name that stopped being spoofed would make the guard reject a safe idiom.
     stale = sorted(".".join(n) for n in (classified - patched) if n[1] == "cuda")
     assert not stale, (
         "these are listed as spoofed but the spoof no longer patches them:\n  " + "\n  ".join(stale)
@@ -349,28 +296,8 @@ _SURVIVES_THE_SPOOF_PROBE = textwrap.dedent(
 
 
 def test_the_recorded_answer_survives_the_spoof():
-    """The property the helper exists for, asserted rather than assumed.
-
-    In a SUBPROCESS, and that is not incidental. `spoof.apply()` sets
-    `torch.cuda.is_available` to return True and never restores it, so calling it
-    in-process poisons the rest of the xdist worker: every later test on that
-    worker sees a machine with a CUDA card that is not there. peft's
-    `infer_device()` is one of the things that reads it, so
-    tests/test_save_lora_without_vllm.py then asks safetensors to load onto CUDA
-    and dies with
-
-        NotImplementedError: Could not run 'aten::empty_strided' with arguments
-        from the 'CUDA' backend
-
-    which is the exact class of cross-test damage this file exists to prevent. An
-    earlier version of this test did apply the spoof in-process and caused that
-    failure; it reproduces deterministically with just this file and that one, in
-    that order.
-
-    Same subprocess pattern as tests/vllm_compat/test_unsloth_zoo_imports.py
-    (#10855), for the same reason: a question about global state has to be asked
-    somewhere the answer cannot leak back.
-    """
+    """Subprocess, since spoof.apply() never restores torch.cuda.is_available and would poison the
+    worker."""
     proc = subprocess.run(
         [
             sys.executable,
@@ -412,12 +339,7 @@ def test_the_recorded_answer_survives_the_spoof():
 
 
 def test_this_file_never_applies_the_spoof_in_process():
-    """The regression guard for the bug the test above used to be.
-
-    Applying the spoof in-process is invisible here and fails somewhere else
-    entirely, on whichever test the xdist scheduler happens to put next on the
-    same worker. So pin it structurally rather than trusting it to stay fixed.
-    """
+    """Fails if this file applies the spoof in-process, which poisons later tests on the xdist worker."""
     tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
     offenders = [
         f"line {node.lineno}"
@@ -467,12 +389,10 @@ def _offenders_in(condition: str) -> list[str]:
 @pytest.mark.parametrize(
     "condition",
     [
-        # Both polarities, and nested one level down.
         "not has_real_cuda() or torch.cuda.device_count() < 2",
         "has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12",
         "not has_real_cuda() or (torch.cuda.device_count() < 2 or x)",
         "has_real_cuda() and not torch.cuda.is_bf16_supported()",
-        # Outside the torch.cuda namespace the broad probe is the matching one.
         "not has_real_accelerator() or not torch.xpu.is_available()",
         "has_real_accelerator() and torch.accelerator.is_available()",
     ],
@@ -484,14 +404,12 @@ def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
 @pytest.mark.parametrize(
     "condition",
     [
-        # The gate is present but does not dominate the call, so the spoof still decides.
         ("torch.cuda.device_count() < 2 or not has_real_accelerator()", "gate comes after"),
         ("has_real_accelerator() or torch.cuda.device_count() < 2", "and-gate under or"),
         ("not has_real_accelerator() and torch.cuda.device_count() < 2", "or-gate under and"),
         ("torch.cuda.device_count() < 2", "no gate at all"),
         ("x if has_real_cuda() else torch.cuda.device_count() < 2", "not a bool chain"),
-        # The broad probe is true on an XPU-only host, so it does not settle whether
-        # torch.cuda is there to answer.
+        # The broad probe is true on XPU-only hosts, so it does not settle torch.cuda.
         ("not has_real_accelerator() or torch.cuda.device_count() < 2", "broad gate on cuda"),
         (
             "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",
@@ -508,16 +426,7 @@ _OTHER_ACCELERATOR_DEVICES = ("xpu", "npu", "mps", "hpu")
 
 
 def _names_a_cuda_device(node: ast.AST) -> list[int]:
-    """Lines where the body asks for a cuda device by name.
-
-    Only the device string itself, so a test that merely mentions cuda in a message is not
-    swept up: `device = "cuda"`, `.to("cuda:1")`, `torch.device("cuda")`.
-
-    A body that also names xpu or npu as a device picks its device at run time and is not
-    CUDA-only, whatever it calls the CUDA branch. tests/utils/test_packing.py is the case:
-    it falls through to torch.device("xpu"), and _build_packed_training_setup has an xpu
-    dtype arm, so narrowing its gate would have dropped real XPU coverage.
-    """
+    """Lines naming a cuda device string; a body that also names xpu or npu is not CUDA-only."""
     strings = [
         child.value
         for child in ast.walk(node)
@@ -550,13 +459,7 @@ def _gated_only_on_the_broad_probe(func: ast.AST) -> bool:
 
 
 def test_no_cuda_only_test_is_gated_on_the_broad_accelerator_probe():
-    """has_real_accelerator() is true on an XPU-only or Ascend NPU-only host.
-
-    A test that allocates on "cuda" and gates on it therefore un-skips on those machines and
-    dies in torch, or, when the decorator itself calls into torch.cuda, raises during
-    collection. Unsloth supports both backends, so this is a host somebody runs. Caught on
-    tests/test_stopping_criteria_device.py, which named cuda three times behind the broad gate.
-    """
+    """CUDA-only tests must not gate on has_real_accelerator(), which is also true on XPU or NPU hosts."""
     offenders = []
     for path in _python_test_files():
         try:
@@ -600,12 +503,10 @@ def test_the_cuda_gate_scanner_would_catch_a_regression():
     fixed = bad.replace("has_real_accelerator", "has_real_cuda")
     assert offenders(head + fixed) == []
 
-    # A cuda mention that is not a device string must not be swept up.
     prose = "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\ndef test_x():\n    assert True, 'cuda is not required here'\n"
     assert offenders(head + prose) == []
 
-    # Nor may a test that picks its own device: naming cuda in one branch and xpu in another
-    # makes it device-generic, and narrowing its gate would drop the XPU coverage it has.
+    # A test picking cuda or xpu per branch is device-generic; narrowing its gate drops XPU.
     generic = (
         "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\n"
         "def test_x():\n"

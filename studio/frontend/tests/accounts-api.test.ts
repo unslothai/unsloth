@@ -146,3 +146,18 @@ test("a rejected username reports the field error FastAPI sends as an array", as
     /username: Value error, Username must contain 3 to 32 letters/,
   );
 });
+
+test("model access is set with PUT on the account and null clears it", async () => {
+  const c = client(() => Response.json({}));
+  await c.api.setAccountModelAllowlist("alice/id", ["unsloth/*"]);
+  await c.api.setAccountModelAllowlist("alice/id", null);
+  const put = (allowlist: string[] | null) => ({
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_allowlist: allowlist }),
+  });
+  assert.deepEqual(c.requests, [
+    { path: "/api/accounts/alice%2Fid/model-access", init: put(["unsloth/*"]) },
+    { path: "/api/accounts/alice%2Fid/model-access", init: put(null) },
+  ]);
+});

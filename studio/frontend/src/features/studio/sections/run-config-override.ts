@@ -7,6 +7,7 @@ import { parseBackendTrainingMethod } from "@/features/training";
  * run snapshot instead of the editable form store. */
 export interface RunConfigOverride {
   trainingMethod?: string;
+  isDecision?: boolean;
   epochs?: number;
   batchSize?: number;
   learningRate?: string;
@@ -35,6 +36,7 @@ export function mapRunConfigToOverride(
       config.training_type,
       config.load_in_4bit,
     ),
+    isDecision: config.is_decision === true,
     epochs: config.num_epochs as number | undefined,
     batchSize: config.batch_size as number | undefined,
     learningRate: config.learning_rate as string | undefined,

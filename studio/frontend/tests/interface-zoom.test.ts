@@ -98,19 +98,15 @@ test("a user shortcut on the exact keys pressed wins over a zoom alias", () => {
   const ctrlShiftPlus = press("+", "Equal", { ctrl: true, shift: true });
   const ownedBy = (values: string[]) => (value: string) =>
     values.includes(value);
-  // Nothing bound: the alias zooms.
   assert.equal(zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy([])), false);
-  // Bound to Ctrl+Shift+= itself: that shortcut runs instead.
   assert.equal(
     zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy(["Mod+Shift+Equal"])),
     true,
   );
-  // Bound to the canonical chord: every alias steps aside too, as before.
   assert.equal(
     zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy(["Mod+Equal"])),
     true,
   );
-  // Keypad and macOS Cmd presses are checked the same way.
   const keypad = press("+", "NumpadAdd", { ctrl: true });
   assert.equal(
     zoomChordTaken(keypad, 1, false, ownedBy(["Mod+NumpadAdd"])),
@@ -134,11 +130,12 @@ test("the chords match the ones the View menu shows", () => {
   assert.ok(chords.includes(`"actual-size": { chord: "${ZOOM_CHORDS[0]}" }`));
 });
 
-test("the popup is mounted on every route and only takes chords in the desktop app", () => {
+test("the popup is mounted on every route and only takes chords in the desktop app, or in a zoom scope", () => {
   const root = readSrc("app/routes/__root.tsx");
   const zoom = readSrc("features/interface-zoom/components/interface-zoom.tsx");
   assert.match(root, /<InterfaceZoom \/>/);
-  assert.match(zoom, /if \(!isTauri\) return;/);
+  assert.match(zoom, /const scope = zoomScopeFor\(event\.target\);\s*if \(!\(scope \|\| isTauri\)\) return;/);
+  assert.match(zoom, /if \(scope\) zoomScopeFromChord\(scope, direction\);\s*else zoomInterfaceFromChord\(direction\);/);
   assert.match(
     zoom,
     /if \(zoomChordTaken\(event, direction, mac, owned\)\) return;/,
@@ -162,13 +159,10 @@ test("one Ctrl+wheel notch is one step, up zooms in, and a pause starts over", (
   // A Windows notch is 100px: one step, not two.
   assert.equal(step(wheel(-100, 0), 1), 1);
   assert.equal(step(wheel(100, 400), 1), -1);
-  // Without Ctrl, a wheel scrolls.
   assert.equal(step(wheel(-100, 800, {}), 1), null);
-  // A touchpad pinch arrives in small pieces and steps once it has travelled far enough.
   assert.equal(step(wheel(-20, 1200), 1), null);
   assert.equal(step(wheel(-20, 1210), 1), null);
   assert.equal(step(wheel(-20, 1220), 1), 1);
-  // Leftover travel does not carry over a pause.
   assert.equal(step(wheel(-40, 1300), 1), null);
   assert.equal(step(wheel(-40, 1300 + WHEEL_ZOOM_IDLE_MS + 1), 1), null);
   // Deltas come in CSS pixels, which shrink as the zoom grows: at 200% a notch reads 50.
@@ -183,34 +177,39 @@ test("only a vertical Ctrl+wheel without Alt or Meta zooms", () => {
   assert.equal(isZoomWheel({ ...wheel, ctrlKey: false }), false);
   assert.equal(isZoomWheel({ ...wheel, altKey: true }), false);
   assert.equal(isZoomWheel({ ...wheel, metaKey: true }), false);
-  // Ctrl+horizontal wheel keeps its default.
   assert.equal(isZoomWheel({ ...wheel, deltaY: 0 }), false);
 });
 
 test("the popup keeps one on-screen size and does not dismiss a modal", () => {
   const zoom = readSrc("features/interface-zoom/components/interface-zoom.tsx");
-  // The page zoom is divided back out.
   assert.match(zoom, /\{ zoom: 1 \/ pageZoom \}/);
   assert.match(
     zoom,
     /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/,
   );
   assert.match(zoom, /pointer-events-auto/);
-  // The live region outlives the popup, so the first zoom is announced too.
   assert.match(
     zoom,
     /\{isTauri && <ZoomAnnouncer open=\{open\} \/>\}\s*\{open && <ZoomPopup \/>\}/,
   );
-  // Canvases that zoom on Ctrl+wheel themselves get the event first; macOS keeps its own.
-  // Only a wheel the accumulator would take is prevented.
+  // Self-zooming canvases get the event first; a zoom scope always takes its own pinch.
   assert.match(
     zoom,
-    /if \(event\.defaultPrevented \|\| !isZoomWheel\(event\)\) return;\s*event\.preventDefault\(\);/,
+    /if \(event\.defaultPrevented \|\| !isZoomWheel\(event\)\) return;\s*const scope = zoomScopeFor\(event\.target\);\s*if \(scope\) \{\s*event\.preventDefault\(\);/,
   );
-  assert.match(
-    zoom,
-    /if \(!mac\) window\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/,
-  );
+  assert.match(zoom, /if \(!isTauri \|\| mac\) return;\s*event\.preventDefault\(\);/);
+  assert.match(zoom, /window\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/);
+  assert.match(zoom, /if \(mac\) \{\s*armWheel\(\);\s*\} else \{/, "only macOS keeps the blocking listener armed, since a pinch reaches its zoom scopes without a keydown; anywhere else a blocking window wheel listener puts every scroll on the main thread, which dropped 40% of desktop frames in a long maths chat");
+  assert.match(zoom, /const onPassiveWheel = \(event: WheelEvent\) => \{\s*if \(wheelArmed \|\| !isZoomWheel\(event\)\) return;\s*modifierHeld = true;\s*syncWheel\(\);\s*\};/, "a Ctrl+wheel whose keydown went to another window arms the blocking listener, so only that first notch scrolls instead of zooming");
+  assert.match(zoom, /window\.addEventListener\("wheel", onPassiveWheel, \{ passive: true \}\);/);
+  assert.match(zoom, /window\.removeEventListener\("wheel", onPassiveWheel\);/);
+  assert.match(zoom, /if \(modifierHeld && !event\.ctrlKey && !event\.metaKey\) \{\s*modifierHeld = false;\s*syncWheel\(\);\s*\}/, "a plain wheel disarms a listener that a missed keyup left armed, so scrolling does not stay on the main thread");
+  assert.match(zoom, /if \(wheelArmed\) return;\s*wheelArmed = true;\s*window\.addEventListener\("wheel", onWheel, \{ passive: false \}\);/, "arming is idempotent, so a Ctrl+wheel zooms once");
+  assert.match(zoom, /modifierHeld = event\.ctrlKey \|\| event\.metaKey;\s*pointerInScope = zoomScopeFor/, "a modifier pressed while another window had focus arms the listener as soon as the pointer moves");
+  assert.match(zoom, /const syncWheel = \(\) => \{\s*if \(modifierHeld \|\| pointerInScope\) armWheel\(\);\s*else disarmWheel\(\);\s*\};/, "in the browser the blocking listener is armed while Ctrl/Meta is held or the pointer is over a zoom scope, so a pinch, which arrives as Ctrl+wheel with no keydown, still reaches the scope");
+  assert.match(zoom, /pointerInScope = zoomScopeFor\(event\.target\) !== null;/);
+  assert.match(zoom, /window\.addEventListener\("pointerover", onPointerOver, true\);/);
+  assert.match(zoom, /window\.removeEventListener\("pointerover", onPointerOver, true\);/);
   // Below the shortcut recorder's window capture listener, so recording Mod+= does not zoom.
   assert.match(zoom, /document\.addEventListener\("keydown", onKeyDown, true\)/);
   assert.match(
@@ -226,7 +225,6 @@ test("the zoom popup takes the find bar's corner", () => {
   const findInPage = readSrc(
     "features/find-in-page/components/find-in-page.tsx",
   );
-  // The wrapper's inset, mirrored onto <html> where both body-portaled bars read it.
   assert.match(provider, /"--studio-content-top-inset": "34px"/);
   assert.match(
     provider,
@@ -240,19 +238,21 @@ test("the zoom popup takes the find bar's corner", () => {
     css,
     /\.interface-zoom-position \{\s*top: calc\(var\(--studio-content-top-inset, 0px\) \+ 3\.5rem\);/,
   );
-  // One place only: it does not move out from under an open find bar.
   assert.equal(css.match(/^\.interface-zoom-position \{/gm)?.length, 1);
-  // Under the startup and closing screens, like the find bar.
   assert.match(
     css,
-    /html:has\(\[aria-modal="true"\], \[data-blocking-screen\]\) \[data-find-bar-layer\],\s*html:has\(\[data-blocking-screen\]\) \.interface-zoom-position \{\s*display: none;/,
+    /html\[data-blocking-screen-open\] \[data-find-bar-layer\],\s*html\[data-blocking-screen-open\] \.interface-zoom-position \{\s*display: none;/,
+  );
+  assert.match(
+    readSrc("lib/document-flag.ts"),
+    /useLayoutEffect\(\(\) => \{\s*if \(!active\) return;\s*return acquireDocumentFlag\(name\);/,
+    "a screen that mounts from a background update painted under the find bar for a frame before a passive effect set the flag",
   );
   assert.match(provider, /data-blocking-screen=""\s*className="fixed inset-0 z-40 bg-background"/);
   assert.match(
     readSrc("components/tauri/startup-screen.tsx"),
     /data-blocking-screen=""\s*className="pointer-events-auto fixed inset-0 z-\[9999\]"/,
   );
-  // A little smaller than the bar.
   assert.match(
     readSrc("features/interface-zoom/components/interface-zoom.tsx"),
     /find-bar-surface flex h-11 /,
@@ -271,8 +271,7 @@ test("both bars paint over everything, the zoom popup in front of the find bar",
     if (name !== "WINDOW_BARS" && name !== "ZOOM_POPUP")
       assert.ok(bars > Number(value), `${name} is not under the bars`);
   }
-  // Every literal number in the app (classes, the stylesheet, inline styles) and the toaster's,
-  // bar the reload snapshot.
+  // Every literal z-index in the app and the toaster, bar the 2147483647 reload snapshot.
   const sonner = readSrc("../node_modules/sonner/dist/styles.css");
   const sources = readdirSync(new URL("../src/", import.meta.url), {
     recursive: true,
@@ -294,7 +293,6 @@ test("both bars paint over everything, the zoom popup in front of the find bar",
   for (const value of numbers)
     assert.ok(bars > value, `z-index ${value} is over the bars`);
   assert.ok(layer("ZOOM_POPUP") < 2147483647);
-  // Both are portaled to <body> onto that layer, out of every stacking context in the shell.
   const findInPage = readSrc(
     "features/find-in-page/components/find-in-page.tsx",
   );

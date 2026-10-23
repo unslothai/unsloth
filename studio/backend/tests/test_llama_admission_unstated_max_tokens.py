@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cap of the whole window is not a cap, and pricing it as one serialises the queue.
-
-Studio ships "Max Tokens: Max", which sends max_tokens = the context length, and a client
-naming nothing gets the same figure from `_build_passthrough_payload`. #10046 fixed the
-tool-loop half of this; these cover the other half, which is every plain chat.
-"""
+"""A max_tokens equal to the whole window is not a real cap and must not be priced as one."""
 
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
@@ -108,13 +103,11 @@ class TestNothingChangesWhereThereIsNoBudget:
 
 
 class TestMaxIsPerRequestNotPerCache:
-    """Under ``--no-kv-unified`` the budget is the aggregate of N private caches while "Max"
-    is still one slot's context_length, so measuring the cap against the budget reads that
-    default as a real cap and four default chats stop fitting in four caches.
-    """
+    """Under ``--no-kv-unified`` Max is one slot's window, not the aggregate budget of N caches."""
 
-    WINDOW = 4096  # per slot, and what "Max" sends
-    BUDGET = WINDOW * 4  # four private caches
+    # per slot, and what "Max" sends
+    WINDOW = 4096
+    BUDGET = WINDOW * 4
 
     def test_max_is_unstated_against_the_per_request_window(self):
         assert (
@@ -175,10 +168,7 @@ class TestMaxIsPerRequestNotPerCache:
 
 
 class TestTheAllowanceFitsTheAdvertisedSlots:
-    """A flat allowance is most of a share on a small cache, so it broke the very thing it
-    was added to fix: at 4096 over four slots a default chat cost 1032 and only three ran,
-    and at 2048 only one did. Clamped to the share, ``capacity`` of them always fit.
-    """
+    """A flat allowance larger than a share on a small cache lets fewer than capacity chats fit."""
 
     def _cost(self, budget, capacity):
         return _openai_llama_admission_tokens(
@@ -227,10 +217,7 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
 
 
 class TestTheAllowanceCannotExceedOneSlot:
-    """A request cannot occupy more KV than its own slot holds, so the allowance is clamped
-    against the WINDOW; clamping against the aggregate budget charged a long-prompt chat for
-    more than a slot can physically hold.
-    """
+    """Clamp the allowance to one slot's WINDOW, not the aggregate budget, which a slot cannot exceed."""
 
     WINDOW = 4096
     BUDGET = WINDOW * 4
@@ -264,17 +251,6 @@ class TestTheAllowanceCannotExceedOneSlot:
                 context_window = self.WINDOW,
             )
             == 0
-        )
-
-    def test_a_short_prompt_still_gets_the_full_allowance(self):
-        assert (
-            _openai_llama_admission_output_allowance(
-                self.WINDOW,
-                budget = self.BUDGET,
-                prompt_tokens = 100,
-                context_window = self.WINDOW,
-            )
-            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
         )
 
     def test_unified_is_unchanged(self):

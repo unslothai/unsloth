@@ -28,7 +28,6 @@ import {
   type SidebarCustomSection,
   type SidebarItem,
   archiveChatItems,
-  clearNewChatDraft,
   compareModelDisplayName,
   deleteChatItems,
   deleteChatProject,
@@ -38,9 +37,11 @@ import {
   normalizeSectionName,
   notifyChatHistoryUpdated,
   rangeBetween,
+  regenerateChatTitleWithToast,
   removeCustomSectionWithUndo,
   renameChatItem,
   showForkCreatedToast,
+  showForkFailedToast,
   unarchiveChatItem,
   useChatPreferencesStore,
   useChatProjects,
@@ -156,7 +157,7 @@ const BAR_PILL =
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 const BAR_OUTLINE =
-  "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent";
+  "btn-fill transition-colors ";
 
 const CHAT_SORTS: SortChoice<ChatSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
@@ -204,6 +205,7 @@ const SECTION_SORTS: SortChoice<SectionSortKey>[] = [
 ];
 
 const NO_CHATS: SidebarItem[] = [];
+
 
 function isDateField(key: string): key is DateField {
   return (DATE_FIELDS as readonly string[]).includes(key);
@@ -611,7 +613,6 @@ export function ChatsLibrary({
   /** Files the new chat on its first send; the sidebar watches for the mark set here. */
   const newChatInSection = (sectionId: string) => {
     const nonce = crypto.randomUUID();
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(null);
@@ -623,7 +624,6 @@ export function ChatsLibrary({
   };
 
   const newChatIn = (id: string | null) => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(id);
@@ -776,13 +776,9 @@ export function ChatsLibrary({
     try {
       const result = await forkChatRow(chat);
       notifyChatHistoryUpdated();
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (err) {
-      if ((err as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(err instanceof Error ? err.message : t("library.chats.toast.forkFailed"));
-      } else {
-        toast.error(t("library.chats.toast.forkFailed"), { description: errorDescription(err) });
-      }
+      showForkFailedToast(err, t("library.chats.toast.forkFailed"));
     } finally {
       inFlight.setForking(false);
     }
@@ -890,6 +886,7 @@ export function ChatsLibrary({
     },
     open: openChat,
     rename: setRenaming,
+    regenerateTitle: (chat) => void regenerateChatTitleWithToast(chat),
     togglePin: (chat) => togglePinned(chat.id),
     setFavorite: (chats, favorite) => {
       setFavoriteChats(
@@ -1201,7 +1198,7 @@ export function ChatsLibrary({
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
-          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
           {t("shell.sections.newSection")}
@@ -1297,7 +1294,7 @@ export function ChatsLibrary({
           <button
             type="button"
             onClick={() => setCreatingProject(true)}
-            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
@@ -1321,7 +1318,7 @@ export function ChatsLibrary({
             aria-current={active ? "page" : undefined}
             onClick={() => go(entry === "all" ? {} : { chatView: entry })}
             className={cn(
-              "flex h-8 items-center gap-2 rounded-sm font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+              "flex h-8 items-center gap-2 rounded-full font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
               active && "font-medium text-foreground",
             )}
           >
@@ -1593,7 +1590,7 @@ export function ChatsLibrary({
                 onClick={() => actions.remove(selectedChats)}
                 className={cn(
                   BAR_PILL,
-                  "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                  "bg-red-500/10 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
                 )}
               >
                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

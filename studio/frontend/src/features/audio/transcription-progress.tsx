@@ -6,6 +6,13 @@ import { Button } from "@/components/ui/button";
 import type { TranscriptProgress } from "./transcript-stream";
 import "./transcription-progress.css";
 
+// audio.cpp reports no progress numbers, so the server says which step it is on instead.
+const PHASE_LABELS: Record<NonNullable<TranscriptProgress["phase"]>, string> = {
+  loading: "Loading the model…",
+  downloading_aligner: "Downloading the timing aligner…",
+  transcribing: "Transcribing…",
+};
+
 export function TranscriptionProgress({
   startedAt,
   finishedAt,
@@ -50,9 +57,15 @@ export function TranscriptionProgress({
           </span>
         )}
         <span role="status">
-          {running ? (stopping ? "Stopping…" : "Transcribing…") : "Elapsed"}
+          {running
+            ? stopping
+              ? "Stopping…"
+              : progress?.phase
+                ? PHASE_LABELS[progress.phase]
+                : "Transcribing…"
+            : "Elapsed"}
         </span>
-        <span className="tabular-nums" aria-label={`Elapsed time ${elapsed}`}>
+        <span className="font-mono tabular-nums" aria-label={`Elapsed time ${elapsed}`}>
           {elapsed}
         </span>
         {running && (

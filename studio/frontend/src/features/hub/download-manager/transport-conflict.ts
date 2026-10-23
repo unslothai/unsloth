@@ -6,6 +6,7 @@ import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import { getActiveModelDownloads } from "./api";
 import {
+  DOWNLOAD_KIND,
   mismatchStartAction,
   TRANSPORT,
   type ResolvedTransport,
@@ -27,6 +28,8 @@ import {
   repoKeyOf,
   setConflict,
 } from "./download-manager-state";
+import { downloadDirForRequest } from "./download-location";
+import { publishPendingStart, retirePendingStart } from "./pending-starts";
 import { startJob } from "./poll-loop";
 import {
   currentRoute,
@@ -146,6 +149,7 @@ async function runWithPendingStartGuard(
     return "started";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
+  const start = publishPendingStart(startKey, req);
   try {
     return await action();
   } catch (error) {
@@ -153,12 +157,30 @@ async function runWithPendingStartGuard(
     return "error";
   } finally {
     runtimeRegistry.pendingStartRepoKeys.delete(startKey);
+    retirePendingStart(start);
   }
 }
 
+/** Pin the destination before the preflight awaits, and resume a stopped job where it started. */
+export function withDownloadDir(req: DownloadRequest): DownloadRequest {
+  if (req.kind !== DOWNLOAD_KIND.MODEL || req.downloadDir !== undefined) {
+    return req;
+  }
+  const previous = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
+  // Only a cancel leaves a partial worth resuming; a failed start may have been the folder itself.
+  return {
+    ...req,
+    downloadDir:
+      previous?.state === "cancelled" && previous.downloadDir !== undefined
+        ? previous.downloadDir
+        : (downloadDirForRequest() ?? null),
+  };
+}
+
 export async function requestStart(
-  req: DownloadRequest,
+  request: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
+  const req = withDownloadDir(request);
   // Before the preflight below, which is two round trips the user can navigate
   // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();

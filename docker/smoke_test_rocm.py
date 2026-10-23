@@ -12,7 +12,7 @@ What this checks (in order, fail-fast):
   5. A 5-step LoRA train on a tiny model actually runs forward + backward.
 
 Run inside the container:
-    bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+    UNSLOTH_WORKSPACE_VOLUME= bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
 
 Skip step 5 (faster, no model download):
     ... python /workspace/smoke_test_rocm.py --skip-train

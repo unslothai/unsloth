@@ -44,6 +44,8 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { engineLaunchFieldsFrom } from "./engine-launch-fields";
+import { mlxOffloadStateFrom } from "./mlx-runtime-state";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -148,6 +150,23 @@ export type ApplyInferenceStatusOptions = {
   adoptingExistingServerModel?: boolean;
 };
 
+/** The resident engine launch settings, in the store's params shape. */
+function residentEngineParams(status: InferenceStatusResponse) {
+  return {
+    engine: status.engine ?? "auto",
+    enginePrecision: status.engine_precision ?? "auto",
+    engineParallelism: status.engine_parallelism ?? "tensor",
+    engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
+    engineSeed: status.engine_seed ?? null,
+    engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
+    // As requested, so a model started with --no-load-in-4bit reloads in 16-bit too. vLLM / SGLang
+    // record false because they take engine_precision instead, so they leave the choice alone.
+    ...((status.engine ?? "auto") === "auto"
+      ? { loadIn4bit: status.load_in_4bit !== false }
+      : {}),
+  };
+}
+
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
 export function applyActiveModelStatusToStore(
   status: InferenceStatusResponse,
@@ -163,13 +182,19 @@ export function applyActiveModelStatusToStore(
     loadedEngine: status.engine ?? "auto",
     loadedEnginePrecision: status.engine_precision ?? "auto",
     loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+    loadedEngineLaunch: engineLaunchFieldsFrom(status),
   });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
-  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
-    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  const residentEngine = residentEngineParams(status);
+  if (
+    (Object.keys(residentEngine) as (keyof typeof residentEngine)[]).some(
+      (key) => (store.params[key] ?? null) !== residentEngine[key],
+    )
+  ) {
+    store.setParams({ ...store.params, ...residentEngine });
   }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
@@ -177,7 +202,7 @@ export function applyActiveModelStatusToStore(
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
+        current: { ...store.params, ...residentEngine },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -219,6 +244,9 @@ export function applyActiveModelStatusToStore(
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
+  const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
+  const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // The chat's own level when the model this replaces was running a per-model pin's: the clamp
   // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
@@ -477,9 +505,7 @@ export function applyActiveModelStatusToStore(
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
-    // Never from a custom load: its echo is the INI's tuning.
     ...(seedLoadParams &&
-      status.requested_llama_cpp_config?.mode !== "custom" &&
       (status.speculative_type !== undefined ||
         prevState.loadedSpeculativeType === null ||
         hydratingExistingModel) && {
@@ -491,7 +517,6 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
-      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
         ...((hydratingExistingModel ||
@@ -500,7 +525,14 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
-      status.requested_llama_cpp_config?.mode !== "custom" &&
+      status.spec_draft_model !== undefined && {
+        loadedSpecDraftModel: status.spec_draft_model ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftModel === prevState.loadedSpecDraftModel) && {
+          specDraftModel: status.spec_draft_model ?? null,
+        }),
+      }),
+    ...(seedLoadParams &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
@@ -543,19 +575,38 @@ export function applyActiveModelStatusToStore(
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Hydration only, so a steady poll never rewrites settings the store owns. Width, verdict
-    // and request move together; a late reply can overwrite a newer one.
+    // Like kvCacheDtype: baselines and verdict follow a same-model reload, each control only while clean.
     ...(seedLoadParams &&
-      hydratingExistingModel &&
       status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: incomingMlxKvQuant,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+            loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...incomingMlxOffload,
+            ...((hydratingExistingModel ||
+              (prevState.mlxPleOffload ?? null) ===
+                (prevState.loadedMlxPleOffloadRequested ?? null)) && {
+              mlxPleOffload: incomingMlxOffload.loadedMlxPleOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxExpertOffload ?? null) ===
+                (prevState.loadedMlxExpertOffloadRequested ?? null)) && {
+              mlxExpertOffload: incomingMlxOffload.loadedMlxExpertOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxKvQuant ?? null) ===
+                (prevState.loadedMlxKvQuantRequested ?? null)) && {
+              mlxKvQuant: incomingMlxKvQuant,
+            }),
+            ...((hydratingExistingModel ||
+              prevState.mlxInt8Prefill ===
+                prevState.loadedMlxInt8PrefillRequested) && {
+              mlxInt8Prefill: incomingMlxInt8Prefill,
+            }),
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -563,23 +614,9 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
+            loadedMlxInt8PrefillRequested: false,
+            ...incomingMlxOffload,
           })),
-    // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
-    // over an earlier edit would discard it.
-    ...(seedLoadParams &&
-      !hydratingExistingModel &&
-      status.is_mlx === true &&
-      status.mlx_kv_quant_requested !== undefined &&
-      prevState.mlxKvQuant === null &&
-      prevState.loadedMlxKvQuantRequested === null &&
-      prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null && {
-        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
-        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-      }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
@@ -634,11 +671,6 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
-    ...(status.requested_llama_cpp_config !== undefined && seedLoadParams ? {
-      llamaCppConfig: status.requested_llama_cpp_config ?? undefined,
-      loadedLlamaCppConfig: status.requested_llama_cpp_config ?? null,
-      llamaCppConfigSummary: status.llama_cpp_config_summary ?? null,
-    } : {}),
     ...resolveLlamaExtraArgsSeed({
       incoming: status.requested_llama_extra_args,
       isGguf: status.is_gguf ?? true,
@@ -690,9 +722,8 @@ export function applyActiveModelStatusToStore(
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines. Never from a custom load (see above).
+    // case while advancing their loaded baselines.
     ...(seedLoadParams &&
-      status.requested_llama_cpp_config?.mode !== "custom" &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         placementOrContextChanged) &&

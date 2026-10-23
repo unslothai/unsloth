@@ -6,6 +6,7 @@ import type { MediaStudioPage } from "../hooks/use-media-companion-bytes";
 import type { ModelInventoryFormat } from "../inventory";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
+import { MlxPrecisionCard } from "./mlx-precision-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
 export function DownloadSection({
@@ -34,6 +35,8 @@ export function DownloadSection({
   showMemoryBar = true,
   mediaPage,
   assetRuntime,
+  isMlx = false,
+  onRunPrecision,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -62,6 +65,8 @@ export function DownloadSection({
   showMemoryBar?: boolean;
   mediaPage?: MediaStudioPage;
   assetRuntime?: AssetRuntime;
+  isMlx?: boolean;
+  onRunPrecision?: (selection: HubModelRunSelection) => void;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -85,7 +90,7 @@ export function DownloadSection({
       />
     );
   }
-  return (
+  const repoCard = (
     <SafetensorsDownloadCard
       assetRuntime={assetRuntime}
       repoId={repoId}
@@ -103,5 +108,16 @@ export function DownloadSection({
       runPending={runPending}
       onChange={onChange}
     />
+  );
+  if (!isMlx) return repoCard;
+  return (
+    <div className="flex w-full flex-col gap-2">
+      <MlxPrecisionCard
+        repoId={repoId}
+        onRun={onRunPrecision}
+        runPending={runPending}
+      />
+      {repoCard}
+    </div>
   );
 }

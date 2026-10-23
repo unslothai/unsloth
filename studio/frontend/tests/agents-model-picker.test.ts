@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -10,6 +10,11 @@ import {
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../src/features/settings/lib/agent-hub-model.ts";
+import {
+  SUPPORTED_AGENTS,
+  UNSLOTH_START_DOCS_URL,
+  detailsFor,
+} from "../src/features/settings/components/coding-agent-list.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 const TAB = readFileSync(
@@ -178,5 +183,102 @@ test("an adopted resident model does not use a cached load ID", () => {
   assert.ok(TAB.includes("const selectedModelIsActive"));
   assert.ok(
     TAB.includes("const cachedLoadId = selectedModelIsActive\n    ? null"),
+  );
+});
+
+test("the shared agent list keeps the nine agents in order", () => {
+  assert.deepEqual(
+    SUPPORTED_AGENTS.map((agent) => agent.id),
+    [
+      "claude",
+      "codex",
+      "vscode",
+      "dsh",
+      "opencode",
+      "hermes",
+      "openclaw",
+      "pi",
+      "vibe",
+    ],
+  );
+  assert.equal(detailsFor("codex").name, "OpenAI Codex");
+  assert.deepEqual(detailsFor("unknown"), {
+    id: "unknown",
+    name: "unknown",
+    docsUrl: UNSLOTH_START_DOCS_URL,
+    color: "#64748B",
+    mark: "un",
+  });
+});
+
+test("every listed agent icon ships in public/agent-logos", () => {
+  for (const agent of SUPPORTED_AGENTS) {
+    for (const file of [agent.icon, agent.darkIcon]) {
+      if (file) {
+        assert.ok(
+          existsSync(new URL(`../public/agent-logos/${file}`, import.meta.url)),
+          file,
+        );
+      }
+    }
+  }
+});
+
+test("the Agents tab uses the shared agent list and copy blocks", () => {
+  assert.match(TAB, /from "\.\.\/components\/coding-agent-list";/);
+  assert.match(TAB, /from "\.\.\/components\/agent-command-block";/);
+  assert.doesNotMatch(TAB, /const SUPPORTED_AGENTS/);
+  assert.doesNotMatch(TAB, /function (CommandBlock|useCopyButton)\(/);
+});
+
+test("every agent whose unsloth start supports --as-subagent shows the subagent setup", () => {
+  assert.match(
+    TAB,
+    /const SUBAGENT_AGENT_IDS = new Set\(\["claude", "codex", "opencode", "pi"\]\);/,
+  );
+});
+
+test("every listed agent is findable from settings search", async () => {
+  const { SETTINGS_SEARCH_KEYWORDS } = await import(
+    "../src/features/settings/settings-search.ts"
+  );
+  assert.equal(
+    SETTINGS_SEARCH_KEYWORDS["settings.agents.agent"],
+    "settings.agents.agentKeywords",
+  );
+  for (const name of ["vs code", "pi", "mistral vibe"]) {
+    assert.ok(en.settings.agents.agentKeywords.includes(name), name);
+  }
+});
+
+test("selecting VS Code says its command edits VS Code's model list", () => {
+  assert.match(
+    TAB,
+    /\{selectedAgent === "vscode" && \([\s\S]*?t\("settings\.agents\.vscodeNote"\)/,
+  );
+  assert.match(en.settings.agents.vscodeNote, /chatLanguageModels\.json/);
+});
+
+test("every locale lists Pi among the --as-subagent agents", async () => {
+  const { readdirSync } = await import("node:fs");
+  const dir = fileURLToPath(new URL("../src/i18n/locales/", import.meta.url));
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
+    const source = readFileSync(`${dir}${file}`, "utf8");
+    const at = source.indexOf("asSubagent:");
+    assert.ok(at !== -1, file);
+    assert.match(source.slice(at, at + 400), /OpenCode[^"]*Pi/, file);
+  }
+});
+
+test("the API tab shows the VS Code note too", () => {
+  const usage = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/components/usage-examples.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    usage,
+    /\{agent === "vscode" && \([\s\S]*?t\("settings\.agents\.vscodeNote"\)/,
   );
 });

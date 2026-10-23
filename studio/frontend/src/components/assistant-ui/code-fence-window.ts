@@ -17,10 +17,12 @@
 /** An inclusive line range. `null` means "no window": every line renders its token spans. */
 export type LineWindow = { first: number; last: number };
 
+export const EMPTY_LINE_WINDOW: LineWindow = { first: -1, last: -1 };
+
 // Below the cap a fence is highlighted end to end and produces main's DOM byte for byte; the
 // mechanism exists for the 140K-character fence in #10769. Lines, not characters: the bounded cost
 // is mounted elements, which track lines.
-export const WINDOW_CAP_LINES = 2_000;
+export const WINDOW_CAP_LINES = 240;
 
 // Viewports of lookahead each way, matching `REACH_MARGIN`: the reader crosses into already
 // coloured code rather than watching it arrive.
@@ -81,6 +83,7 @@ export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null =>
   const previous = geometry.previous;
   if (
     previous !== null
+    && previous !== EMPTY_LINE_WINDOW
     && previous.first <= Math.max(0, visible.first - slack)
     && previous.last >= Math.min(lineCount - 1, visible.last + slack)
   ) {
@@ -107,6 +110,38 @@ export const selectLineWindow = (geometry: WindowGeometry): LineWindow | null =>
 /** Is line `index` inside `window`? A `null` window highlights everything. */
 export const lineIsWindowed = (window: LineWindow | null, index: number): boolean =>
   window === null || (index >= window.first && index <= window.last);
+
+export type LinePin = { readonly index: number; readonly windowed: boolean };
+export type LinePins = readonly LinePin[];
+
+const pinOf = (pins: LinePins | null, index: number): boolean | undefined => {
+  if (pins === null) return undefined;
+  for (const pin of pins) if (pin.index === index) return pin.windowed;
+  return undefined;
+};
+
+export const lineRendered = (
+  window: LineWindow | null,
+  pins: LinePins | null,
+  index: number,
+): boolean => pinOf(pins, index) ?? lineIsWindowed(window, index);
+
+export const samePins = (a: LinePins | null, b: LinePins | null): boolean => {
+  if (a === b) return true;
+  if (a === null || b === null || a.length !== b.length) return false;
+  return a.every((pin, at) => pin.index === b[at].index && pin.windowed === b[at].windowed);
+};
+
+export const pinBoundaryLines = (
+  boundaries: readonly number[],
+  window: LineWindow | null,
+  previous: LinePins | null,
+): LinePins | null => {
+  const pins: LinePin[] = [];
+  for (const index of [...new Set(boundaries)].sort((x, y) => x - y))
+    pins.push({ index, windowed: pinOf(previous, index) ?? lineIsWindowed(window, index) });
+  return pins.length === 0 ? null : pins;
+};
 
 // Structurally typed rather than importing Shiki's `ThemedToken`, so a bundler-less test runner
 // can load this module.

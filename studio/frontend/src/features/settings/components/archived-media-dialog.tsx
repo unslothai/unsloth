@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   Delete02Icon,
   Image03Icon,
   FlimSlateIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -49,7 +49,7 @@ import {
 } from "@/features/video/api";
 import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
-import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { notifyArchiveChanged, notifyGalleryChanged } from "@/lib/gallery-flags";
 import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
@@ -522,6 +522,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     running.current = true;
     setBusy(true);
     let restored = false;
+    let changed = false;
     try {
       for (const row of targets) {
         const succeeded =
@@ -529,11 +530,14 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             ? await handleDelete(row)
             : await handleRestore(row);
         if (!succeeded) break;
+        changed = true;
         if (action === "restore") restored = true;
       }
     } finally {
       // refresh the persistent gallery once, including after a partially successful batch.
       if (restored) notifyGalleryChanged(kind);
+      // A delete leaves the strip as it was, but the Images page tracks whether the archive is empty.
+      if (changed) notifyArchiveChanged(kind);
       running.current = false;
       setBusy(false);
       setConfirming(null);
@@ -607,7 +611,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       </div>
       <div
         ref={listRef}
-        className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4"
+        className="divide-y divide-border/50 rounded-xl border border-border/60 px-3 sm:px-4"
       >
         {displayed.map((row) => (
           <div key={row.id} data-archived-id={row.id}>
@@ -626,7 +630,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     <HugeiconsIcon
                       icon={
                         isAudio
-                          ? AudioWave01Icon
+                          ? AiSpeechIcon
                           : isImages
                             ? Image03Icon
                             : FlimSlateIcon
@@ -660,7 +664,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     aria-label={t("settings.data.library.unarchiveItem", {
                       title: row.title,
                     })}
-                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    className="rounded-full bg-muted/60 hover:bg-muted"
                     onClick={() => void run([row], "restore")}
                   >
                     {t("settings.data.library.unarchive")}

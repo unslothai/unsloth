@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import { type DeviceType, usePlatformStore } from "@/config/env";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -37,6 +38,7 @@ export function WebUpdateBanner({
   positioned = true,
 }: WebUpdateBannerProps): ReactElement | null {
   const { status, dismiss, snooze } = useWebUpdateCheck({ enabled });
+  const open = useNotificationGate("unsloth", status != null && !isTauri);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
@@ -74,7 +76,7 @@ export function WebUpdateBanner({
 
   return (
     <AnimatePresence>
-      {status ? (
+      {status && open ? (
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -106,7 +108,7 @@ export function WebUpdateBanner({
               yields. That is the floor the constant was approximating, except
               it is measured rather than guessed and it holds at every type
               size. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
 
             <button
               type="button"

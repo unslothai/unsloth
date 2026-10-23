@@ -21,8 +21,11 @@ import {
   AssistantRuntimeProvider,
   type ChatModelAdapter,
   ExportedMessageRepository,
+  SimpleImageAttachmentAdapter,
   type ThreadMessageLike,
   useAui,
+  unstable_useRemoteThreadListRuntime,
+  type unstable_RemoteThreadListAdapter,
   useLocalRuntime,
 } from "@assistant-ui/react";
 import {
@@ -112,7 +115,42 @@ function userMarkdown(index: number): string {
  * `"all"` makes every reply plain; omitting it keeps the default fenced body everywhere, so
  * the existing weight measurements are untouched.
  */
-type SeedOptions = { plainAssistants?: readonly number[] | "all" };
+type SeedOptions = {
+  plainAssistants?: readonly number[] | "all";
+  /** `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th. */
+  agent?: { rounds: number; compactionEvery?: number };
+};
+
+const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
+
+function agentContent(index: number, rounds: number) {
+  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  for (let round = 0; round < rounds; round++) {
+    const tag = `${index}_${round}`;
+    const toolName = AGENT_TOOLS[(index + round) % AGENT_TOOLS.length];
+    const args: Record<string, string> =
+      toolName === "web_search"
+        ? { query: `step ${tag} reference for the scheduler buffer` }
+        : { code: `print("step ${tag}")` };
+    parts.push({
+      type: "reasoning" as const,
+      text: `Round ${tag}. ${PROSE} ${CLOSING}`,
+    });
+    parts.push({
+      type: "tool-call" as const,
+      toolCallId: `call_${tag}`,
+      toolName,
+      args,
+      argsText: JSON.stringify(args),
+      result: `Result ${tag}. ${PROSE}\n${PROSE}\n${CLOSING}`,
+    });
+    parts.push({
+      type: "text" as const,
+      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+    });
+  }
+  return parts;
+}
 
 function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): boolean {
   const plain = options?.plainAssistants;
@@ -126,32 +164,71 @@ function buildMessages(
   count: number,
   options?: SeedOptions,
 ): ThreadMessageLike[] {
-  return Array.from({ length: count }, (_, index) =>
-    index % 2 === 0
-      ? {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: userMarkdown(index) }],
-        }
-      : {
-          role: "assistant" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: isPlain((index - 1) / 2, options)
-                ? plainAssistantMarkdown(index)
-                : assistantMarkdown(index),
-            },
-          ],
+  const agent = options?.agent;
+  return Array.from({ length: count }, (_, index): ThreadMessageLike => {
+    if (index % 2 === 0) {
+      return {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: userMarkdown(index) }],
+      };
+    }
+    if (agent) {
+      const ordinal = (index - 1) / 2;
+      const every = agent.compactionEvery ?? 0;
+      const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
+      return {
+        role: "assistant" as const,
+        content: agentContent(index, agent.rounds),
+        ...(compacted
+          ? {
+              metadata: {
+                custom: {
+                  contextTruncation: {
+                    dropped_messages: Math.max(1, index - 4),
+                    boundary_messages: Math.max(1, index - 4),
+                    fits: true,
+                  },
+                },
+              },
+            }
+          : {}),
+      };
+    }
+    return {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: isPlain((index - 1) / 2, options)
+            ? plainAssistantMarkdown(index)
+            : assistantMarkdown(index),
         },
-  );
+      ],
+    };
+  });
 }
 
 // A run would need a backend. Seeding goes through `thread.import`, which does not use this.
-const NEVER_RUNS: ChatModelAdapter = {
-  run: () => {
-    throw new Error("smoke-thread-weight does not run the model");
-  },
-};
+const STREAM_CHUNKS = Number(
+  new URLSearchParams(window.location.search).get("stream") ?? "0",
+);
+const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
+  ? {
+      async *run({ abortSignal }) {
+        let text = "";
+        for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (abortSignal.aborted) return;
+          text += `word${chunk} `;
+          yield { content: [{ type: "text" as const, text }] };
+        }
+      },
+    }
+  : {
+      run: () => {
+        throw new Error("smoke-thread-weight does not run the model");
+      },
+    };
 
 function ThreadWeightApi({
   setThreadMounted,
@@ -162,6 +239,15 @@ function ThreadWeightApi({
 
   useEffect(() => {
     const api = {
+      send(text: string): void {
+        aui.thread().append({
+          role: "user",
+          content: [{ type: "text", text }],
+        });
+      },
+      isRunning(): boolean {
+        return aui.thread().getState().isRunning;
+      },
       /** Replace the thread with `count` messages, oldest first. */
       seed(count: number, options?: SeedOptions): void {
         aui
@@ -300,8 +386,54 @@ function ThreadWeightApi({
   return null;
 }
 
-function Harness(): ReactElement {
+// `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
+const REMOTE = new URLSearchParams(window.location.search).get("remote") === "1";
+
+const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
+  list: async () => ({ threads: [] }),
+  rename: async () => {},
+  archive: async () => {},
+  unarchive: async () => {},
+  delete: async () => {},
+  initialize: async (threadId) => ({ remoteId: threadId, externalId: undefined }),
+  generateTitle: async () =>
+    new ReadableStream({ start: (controller) => controller.close() }) as never,
+  fetch: async (threadId) => ({
+    status: "regular",
+    remoteId: threadId,
+    externalId: undefined,
+    title: undefined,
+  }),
+};
+
+const ATTACHMENTS = new SimpleImageAttachmentAdapter();
+
+function useSmokeLocalRuntime() {
+  return useLocalRuntime(NEVER_RUNS, { adapters: { attachments: ATTACHMENTS } });
+}
+
+function RemoteHarness(): ReactElement {
+  const runtime = unstable_useRemoteThreadListRuntime({
+    runtimeHook: useSmokeLocalRuntime,
+    adapter: MEMORY_THREAD_LIST,
+  });
+  return <HarnessBody runtime={runtime} />;
+}
+
+function LocalHarness(): ReactElement {
   const runtime = useLocalRuntime(NEVER_RUNS);
+  return <HarnessBody runtime={runtime} />;
+}
+
+function Harness(): ReactElement {
+  return REMOTE ? <RemoteHarness /> : <LocalHarness />;
+}
+
+function HarnessBody({
+  runtime,
+}: {
+  runtime: ReturnType<typeof useLocalRuntime>;
+}): ReactElement {
   const [threadMounted, setThreadMounted] = useState(true);
   return (
     <TooltipProvider>

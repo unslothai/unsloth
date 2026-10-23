@@ -83,7 +83,7 @@ def isolated(monkeypatch, tmp_path):
             )
     connection.close()
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
     yield
     policy.invalidate_account_cache()
@@ -115,12 +115,7 @@ def _client(account):
 
 
 def _assert_reveals_no_clip(body):
-    """A foreign poller gets the declared idle progress shape and nothing of the job.
-
-    Spelled out rather than compared to a literal dict: the route answers the
-    generate-progress shape here, so a poller can still read ``active`` off it, and
-    what this test is actually about is that none of the clip comes back.
-    """
+    """A foreign poller must see no clip: assert the idle fields one by one, not a literal dict."""
     assert body["yours"] is False, body
     assert body["active"] is False and body["phase"] is None, body
     assert body.get("video") is None, body

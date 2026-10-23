@@ -89,7 +89,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
-    frozenset({"--rpc"}),
     # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows Unsloth's key and breaks the proxy hop
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
@@ -151,6 +150,77 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
+
+# Pass-through flags whose value is a path the child opens (or, for --log-prompts-dir, writes under). llama-server runs
+# as the installation's OS user, and account model access is checked for the model being loaded, not for these, so in
+# multi-account mode only the owner may name one.
+OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
+    {
+        "-mm",
+        "--mmproj",
+        "--spec-draft-model",
+        "-md",
+        "--model-draft",
+        "-mv",
+        "--model-vocoder",
+        "--lora",
+        "--lora-scaled",
+        "--control-vector",
+        "--control-vector-scaled",
+        "--chat-template-file",
+        "--grammar-file",
+        "-jf",
+        "--json-schema-file",
+        "-lcs",
+        "--lookup-cache-static",
+        "-lcd",
+        "--lookup-cache-dynamic",
+        "--log-prompts-dir",
+        # llama-server runs <dir>/ffmpeg to decode a video.
+        "--video-ffmpeg-dir",
+        # Not a path: llama-server sends the model's tensors to these hosts.
+        "--rpc",
+        # Not a path either: llama-server downloads these Hub drafters with the installation's HF token.
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
+        "--spec-draft-hf",
+        "-hffd",
+        "--hf-file-draft",
+    }
+)
+
+# Built-in presets (--*-default, older --fim-qwen-7b-spec) fetch a Hub repo with the HF token; --spec-default stays open.
+_PRESET_FLAG_RE = re.compile(r"^--[a-z0-9.-]+-default$|^--fim-[a-z0-9.-]+-spec$")
+_NON_PRESET_DEFAULT_FLAGS: frozenset[str] = frozenset({"--spec-default"})
+
+
+def _is_preset_flag(flag: Optional[str]) -> bool:
+    return (
+        flag is not None
+        and flag not in _NON_PRESET_DEFAULT_FLAGS
+        and _PRESET_FLAG_RE.match(flag.lower()) is not None
+    )
+
+
+def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
+    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
+    tokens = [str(a) for a in args or ()]
+    found: list[tuple[str, str]] = []
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag in OWNER_ONLY_PATH_FLAGS:
+            _, eq, inline = raw.partition("=")
+            found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+        elif _is_preset_flag(flag):
+            found.append((flag, ""))
+    return found
+
+
+def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
+    """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
+    return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
+
 
 # Flags that take TWO values rather than one. Scanned out of `llama-server --help`: every other option is `--flag
 # VALUE` or a switch, and this list exists so the positional check below does not refuse a legitimate second value.
@@ -1825,7 +1895,6 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_HOST",
     "LLAMA_ARG_PORT",
     "LLAMA_ARG_REUSE_PORT",
-    "LLAMA_ARG_RPC",
     "LLAMA_ARG_N_PARALLEL",
     "LLAMA_ARG_POOLING",
     "LLAMA_ARG_EMBEDDINGS",

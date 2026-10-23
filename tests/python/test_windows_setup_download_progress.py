@@ -13,6 +13,7 @@ import sys
 import threading
 
 import pytest
+from unsloth_pwsh_runner import pwsh_env
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -83,7 +84,8 @@ def start_installer(tmp_path, shell, component, mode, child_source):
         stderr = subprocess.STDOUT,
         text = True,
         encoding = "utf-8",
-        env = env,
+        # A Popen holder, so not run_pwsh: pwsh_env gives this worker its own startup cache.
+        env = pwsh_env(env),
         creationflags = subprocess.CREATE_NO_WINDOW
         if sys.platform == "win32" and mode != "verbose"
         else 0,

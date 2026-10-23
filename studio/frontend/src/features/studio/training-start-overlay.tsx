@@ -277,7 +277,7 @@ function ResourceRow({
       ) : null}
       {state.cachePath ? (
         <div
-          className="truncate rounded bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
+          className="truncate rounded-full bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
           title={state.cachePath}
         >
           {formatCachePath(state.cachePath)}
@@ -394,7 +394,7 @@ export function TrainingStartOverlay({
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
             </Button>
-            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+            <AlertDialogContent overlayClassName="bg-background/40">
               <AlertDialogHeader>
                 <AlertDialogTitle>{t("studio.training.cancelTitle")}</AlertDialogTitle>
                 <AlertDialogDescription>

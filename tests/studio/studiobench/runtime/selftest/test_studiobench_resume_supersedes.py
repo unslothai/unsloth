@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cell that was re-run belongs to the run that FINISHED it, not to the one that died.
-
-`--resume` appends to the payload it continues and re-runs the cells that did not complete, and
-`make_cell_id` is deterministic, so the retry lands under the cell id of the attempt that died.
-Two readings came out of that, both silent and both wrong:
-
-  THE DEAD ATTEMPT'S FRAMES BECAME THE RETRY'S. Cell rows were scoped by session; the `action`
-  and `window` rows underneath them were collected by `cell_id` alone, so a 100 ms frame recorded
-  by the run that crashed stayed the RETRY's `max_frame_ms` and its gaps stayed in the retry's
-  jank distribution -- inside an A/B ratio, which is where cross-session drift does the most
-  damage.
-
-  THE SUCCESSFUL RETRY DID NOT COUNT. The rung kept the failure forever, so `--report` on a
-  payload whose only failure had already been re-run successfully still printed INCOMPLETE and
-  scored the rung zero, dragging the headline down with it.
-
-What must NOT change: two REPETITIONS are two observations, and a rung with a failed rep is still
-not a clean rung. Only a later attempt at the SAME cell supersedes an earlier one.
-"""
+"""Only a later attempt at the same cell supersedes an earlier one; repetitions are not retries."""
 
 from __future__ import annotations
 
@@ -95,9 +77,6 @@ def _window(
     }
 
 
-# ── the ratio ───────────────────────────────────────────────────────
-
-
 def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     cell_id = "r10K.base.rep0"
     records = [
@@ -108,7 +87,6 @@ def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     ]
     reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 17.0
-    # The 100 ms gap is out of the pooled distribution too, not just out of the maximum.
     assert (
         reading["jank_index"].value
         == readings_by_arm([records[2], records[3]], session_id = NOW)["base"][(10_000, 0)][
@@ -128,9 +106,6 @@ def test_two_windows_of_the_same_attempt_are_still_pooled():
     ]
     reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 100.0
-
-
-# ── the score ───────────────────────────────────────────────────────
 
 
 def _payload(directory, rows):
@@ -176,7 +151,6 @@ def test_a_resumed_cell_scores_as_if_the_crash_had_not_happened(tmp_path):
     assert rung.complete is True
     assert rung.incomplete_reason is None
     assert rung.score > 0
-    # Not merely "not zero": the superseded attempt must not move the number at all.
     assert rung.to_json() == clean.rungs[0].to_json()
     assert resumed.aggregate == clean.aggregate
 

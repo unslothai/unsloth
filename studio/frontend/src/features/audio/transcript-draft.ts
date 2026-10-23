@@ -2,11 +2,34 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { accountDatabaseName } from "../../lib/account-transition.ts";
+import {
+  type TranscriptDetails,
+  detailsFrom,
+  sanitizeSpeakerName,
+} from "./transcript-model.ts";
 
 export interface TranscriptDraft {
   text: string;
   title: string;
   model: string;
+  /** Absent on drafts written before timestamps existed. */
+  details?: TranscriptDetails;
+  speakerNames?: Record<string, string>;
+}
+
+function speakerNamesFrom(
+  value: unknown,
+  details: TranscriptDetails,
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return names;
+  for (const [id, name] of Object.entries(value)) {
+    if (typeof name !== "string") continue;
+    if (!details.speakers.some((speaker) => speaker.id === id)) continue;
+    const clean = sanitizeSpeakerName(name);
+    if (clean) names[id] = clean;
+  }
+  return names;
 }
 
 export function transcriptDraftKey(): string {
@@ -25,7 +48,17 @@ export function readTranscriptDraft(key: string): TranscriptDraft | null {
     ) {
       return null;
     }
-    return { text: draft.text, title: draft.title, model: draft.model };
+    const restored: TranscriptDraft = {
+      text: draft.text,
+      title: draft.title,
+      model: draft.model,
+    };
+    if (draft.details && typeof draft.details === "object") {
+      const details = detailsFrom(draft.details);
+      restored.details = details;
+      restored.speakerNames = speakerNamesFrom(draft.speakerNames, details);
+    }
+    return restored;
   } catch {
     return null;
   }

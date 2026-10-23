@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an already-installed Unsloth Studio does on its first load after this update.
-
-The auto tensor-split fallback changes what a load DOES with a ``tensor_split``
-it is handed. The question an existing install asks is narrower and more
-important: can anything already on my disk start feeding it one?
-
-Saved per-model settings live in one row of ``app_settings``
-(``openai_api_auto_switch_overrides``), and the only things that ever reach a
-load from there are what ``normalize_model_override`` allow-lists on the way in
-and what ``model_override_load_kwargs`` emits on the way out. So the upgrade
-question is answerable exactly, without a database: put a saved override
-through both and see whether a ratio can come out the other side.
-
-Forwards compatibility is the same argument run backwards. The change persists
-nothing new, so a settings row written by this version is byte-identical to one
-written before it, and an older install reading it finds nothing it does not
-already understand.
-"""
+"""Saved per-model overrides must not yield a tensor_split ratio on load, so the upgrade is safe."""
 
 from __future__ import annotations
 
@@ -36,9 +19,6 @@ from utils.openai_auto_switch_settings import (  # noqa: E402
     normalize_model_override,
 )
 
-# A saved override from an existing install, using every placement key the
-# allow-list does carry. This is the shape that replays on the first load after
-# an update.
 LEGACY_OVERRIDE = {
     "gpu_memory_mode": "manual",
     "gpu_layers": 99,
@@ -63,7 +43,6 @@ def test_a_saved_setting_can_never_carry_a_tensor_split():
 @pytest.mark.parametrize(
     "smuggled",
     [
-        {"tensor_split": [3, 1]},
         {"tensor_split": None},
         {"tensorSplit": [3, 1]},
         {"tensor_split": "3,1"},
@@ -76,6 +55,15 @@ def test_a_ratio_written_into_the_settings_row_by_hand_is_dropped(smuggled):
     stored = normalize_model_override({**LEGACY_OVERRIDE, **smuggled})
     assert "tensor_split" not in stored
     assert "tensorSplit" not in stored
+
+
+@pytest.mark.parametrize("ids", [None, [0], [1, 0, 2], [0, 0]])
+def test_a_saved_ratio_needs_the_exact_gpu_ids_it_was_written_for(ids):
+    """Since #12774 a ratio is stored, but only beside the ordered pin it indexes."""
+    row = {**LEGACY_OVERRIDE, "tensor_split": [3, 1]}
+    assert normalize_model_override(row)["tensor_split"] == [3, 1]
+    row["gpu_ids"] = ids
+    assert "tensor_split" not in normalize_model_override(row)
 
 
 @pytest.mark.parametrize("is_gguf", [True, False])

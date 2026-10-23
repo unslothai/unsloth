@@ -45,6 +45,7 @@
       "_GEMMA_BARE_SENTINEL",
       "_GEMMA_BARE_TC_PREFIX_RE",
       "_GEMMA_BARE_TC_RE",
+      "_GEMMA_JSON_NUMBER_RE",
       "_GEMMA_KEY_RE",
       "_GEMMA_STR_BEGIN",
       "_GEMMA_STR_END",

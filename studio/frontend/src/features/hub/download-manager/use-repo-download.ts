@@ -24,6 +24,8 @@ export interface DownloadJobProgress {
   expectedBytes: number;
   downloadedBytes: number;
   fraction: number;
+  /** False when the last poll held `downloadedBytes` over from the previous reading (`resolveProgressUpdate`). */
+  measuredTransfer?: boolean;
 }
 
 export interface DownloadJob {
@@ -227,6 +229,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
             expectedBytes: active.expectedBytes,
             downloadedBytes: active.downloadedBytes,
             fraction: active.fraction,
+            measuredTransfer: active.measuredTransfer !== false,
           }
         : null,
     [active],

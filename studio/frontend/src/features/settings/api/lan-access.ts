@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   type LanAccessStatus,
+  lanApiUrls,
   normalizeLanAccessStatus,
 } from "./lan-access-state";
 
@@ -24,6 +26,19 @@ async function requestLanAccess(
 }
 
 export const loadLanAccess = () => requestLanAccess();
+
+/** Publishes only on change: each poll's fresh array re-rendered every reader every 5 s. */
+export function publishLanUrls(status: LanAccessStatus): void {
+  const next = lanApiUrls(status);
+  const current = usePlatformStore.getState().lanUrls;
+  if (
+    next.length === current.length &&
+    next.every((url, i) => url === current[i])
+  ) {
+    return;
+  }
+  usePlatformStore.setState({ lanUrls: next });
+}
 export const startLanAccess = () =>
   requestLanAccess("/start", { method: "POST" });
 export const stopLanAccess = () =>
@@ -40,4 +55,11 @@ export const updateLanAccessPort = (port: number | null) =>
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ port }),
+  });
+
+export const updateLanAccessAddresses = (addresses: string[] | null) =>
+  requestLanAccess("/addresses", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addresses }),
   });

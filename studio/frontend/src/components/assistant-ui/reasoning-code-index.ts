@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ownString } from "./own-string.ts";
 import type {
   ReasoningCodeLine,
   ReasoningFragment,
@@ -119,7 +120,7 @@ export class ReasoningCodeIndex {
         flush(true);
         continue;
       }
-      const part = carry + text.slice(from, stop);
+      const part = ownString(carry + text.slice(from, stop));
       group.push({ line, column, text: part });
       characters += part.length;
       pendingSource += part;

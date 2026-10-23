@@ -5,6 +5,34 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The deps pass can replace this file while bash reads the old one (_setup_rerun_if_replaced).
+_SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+_SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
+_SETUP_ARGV=("$@")
+_SETUP_START_PWD=$PWD
+# Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
+_setup_anchor_path() {
+    local remaining=${PATH-} entry anchored="" last=false
+    while :; do
+        case "$remaining" in
+            *:*) entry=${remaining%%:*}; remaining=${remaining#*:} ;;
+            *) entry=$remaining; last=true ;;
+        esac
+        # Bash expands a leading ~ in PATH itself, so a literal ~/bin is not relative.
+        case "$entry" in
+            /*|\~*) ;;
+            ""|.) entry=$_SETUP_START_PWD ;;
+            *) entry="${_SETUP_START_PWD%/}/${entry#./}" ;;
+        esac
+        anchored="${anchored:+$anchored:}$entry"
+        [ "$last" = true ] && break
+    done
+    PATH=$anchored
+    export PATH
+    hash -r 2>/dev/null || true
+}
+_setup_anchor_path
+unset -f _setup_anchor_path
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
@@ -80,6 +108,8 @@ setup_fail() {
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
     if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
+    # A rerun right after this must not find the old build still writing (#8818).
+    [ -z "${_FRONTEND_BG_PID:-}" ] || _frontend_bg_cancel
     exit "$exit_code"
 }
 
@@ -126,6 +156,148 @@ _remove_agent_instruction_files() {
         find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
             -exec rm -f {} + 2>/dev/null || true
     done
+}
+
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
+_FRONTEND_BG_PID=""
+_FRONTEND_BG_LOG=""
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+_FRONTEND_BUILD_MARK="$SCRIPT_DIR/frontend/.unsloth-build.local"
+
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
+_frontend_can_build_in_background() {
+    case "${UNSLOTH_STUDIO_SERIAL_SETUP:-0}" in 1|true) return 1 ;; esac
+    _is_verbose && return 1
+    [ -z "${STAGE_ROOT:-}" ] || return 1
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) return 1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) return 1 ;; esac
+    local _cpus _mb
+    _cpus=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || return 1
+    [ "$_cpus" -ge 4 ] 2>/dev/null || return 1
+    # Without MemAvailable the helper falls back to installed RAM, not headroom.
+    [ ! -r /proc/meminfo ] || grep -q '^MemAvailable:' /proc/meminfo || return 1
+    _mb=$(_usable_ram_mb)
+    [ "${_mb:-0}" -ge 12288 ] 2>/dev/null || return 1
+    # A rerun waits for a build still being stopped by the identity in its marker.
+    [ -n "$(_frontend_proc_id "$$")" ]
+}
+
+# Put back an ancestor .gitignore a killed build hid.
+_frontend_build_cleanup() {
+    local _dir="$SCRIPT_DIR/frontend"
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore._twbuild" ] && [ ! -e "$_dir/.gitignore" ]; then
+            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || :
+        fi
+    done
+}
+
+# "<pid> <start time>" of a process, the identity a build marker records.
+_frontend_proc_id() {
+    ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+# Mark set before a build touches the tree, cleared only on success. Wait (up to 10 min, zombies
+# excluded) for a live marked build, then 30 s for its group, and undo what it hid.
+_frontend_build_begin() {
+    local _owner="" _pid _n=0 _self
+    _self=$(exec sh -c 'echo "$PPID"')
+    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)
+    _pid=${_owner%% *}
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
+        [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt "${_FRONTEND_OWNER_POLLS:-600}" ] &&
+        [ "$(ps -o stat= -p "$_pid" 2>/dev/null | cut -c1)" != Z ]; do
+        [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
+        sleep 1
+        _n=$((_n + 1))
+    done
+    # Still alive after that: a hung background build (its own group), so stop it, never share the tree.
+    if [ "$_n" -ge "${_FRONTEND_OWNER_POLLS:-600}" ] && [ "$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d ' ')" = "$_pid" ]; then
+        kill -KILL -- "-$_pid" 2>/dev/null || :
+    fi
+    _n=0
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] && [ "$_n" -lt 30 ] &&
+        [ "$_pid" -gt 1 ] 2>/dev/null && kill -0 -- "-$_pid" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
+}
+
+# TERM, then KILL after 5 s (npm ci ignores TERM; KILL skips its EXIT trap, hence the cleanup).
+# The group's watcher keeps its id from being reused until this KILL.
+_frontend_bg_stop() {
+    local _n=0
+    kill -TERM -- "-$1" 2>/dev/null || return 0
+    while [ "$_n" -lt 5 ] && kill -0 "$1" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    kill -KILL -- "-$1" 2>/dev/null || :
+}
+
+# Own process group; a watcher ignoring HUP/INT/TERM stops it if setup dies (errexit, Ctrl-C).
+_frontend_bg_start() {
+    local _monitor=off
+    case "$-" in *m*) _monitor=on ;; esac
+    _FRONTEND_BG_LOG=$(mktemp)
+    [ "$_monitor" = on ] || set -m
+    (
+        set +m
+        _fbs_leader=$(exec sh -c 'echo "$PPID"')
+        (
+            trap '' HUP INT TERM
+            while kill -0 "$$" 2>/dev/null; do sleep 1; done
+            rm -f "$_FRONTEND_BG_LOG"
+            _frontend_bg_stop "$_fbs_leader"
+        ) </dev/null >/dev/null 2>&1 &
+        trap 'exit 143' TERM
+        _FRONTEND_IN_JOB=1
+        _build_frontend
+        _install_oxc_runtime
+        rm -f "$_FRONTEND_BUILD_MARK"
+        _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+        _remove_agent_instruction_files "$_OXC_DIR/node_modules"
+    ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
+    _FRONTEND_BG_PID=$!
+    [ "$_monitor" = on ] || set +m
+}
+
+_frontend_bg_cancel() {
+    [ -n "${_FRONTEND_BG_PID:-}" ] || return 0
+    local _pid=$_FRONTEND_BG_PID
+    _FRONTEND_BG_PID=""
+    _frontend_bg_stop "$_pid"
+    wait "$_pid" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+}
+
+_frontend_bg_join() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    local _pid=$_FRONTEND_BG_PID _rc=0
+    if kill -0 "$_pid" 2>/dev/null; then
+        substep "waiting for the frontend build..."
+    fi
+    wait "$_pid" || _rc=$?
+    _FRONTEND_BG_PID=""
+    # The watcher still holds the group: this takes it and anything the build left running.
+    kill -KILL -- "-$_pid" 2>/dev/null || :
+    [ "$_rc" -eq 0 ] || _frontend_build_cleanup
+    cat "$_FRONTEND_BG_LOG" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+    [ "$_rc" -eq 0 ] || setup_fail "$_rc" "Frontend build failed (exit code $_rc)"
+}
+
+# Surface a finished build (above all a failed one) at a step boundary, not at the end.
+_frontend_bg_reap() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    kill -0 "$_FRONTEND_BG_PID" 2>/dev/null && return 0
+    _frontend_bg_join
 }
 
 # ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
@@ -258,15 +430,15 @@ _mirror_probe() {
 
 _mirror_url() {
     case "$1" in
-        pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
-        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        pypi) echo "https://files.pythonhosted.org/packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
         torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
         npmmirror-node) echo "$_MIRROR_NPM/-/binary/node/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
         npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
         npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
-        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
+        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
         pypi-index) echo "https://pypi.org/simple/uv/" ;;
         torch-index) echo "https://download.pytorch.org/whl/cpu/torch/" ;;
         cernet-pypi-index) echo "$_MIRROR_PYPI/uv/" ;;
@@ -573,13 +745,44 @@ _npm_mirror_retry() {
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 }
 
+# Local errno is matched on npm's code line only (cleanup warnings carry EPERM after
+# network failures too) and before the network check, since FetchError names
+# registry.npmjs.org even on a local error (#8725). Keep in sync with setup.ps1.
+_NPM_LOCAL_FAILURE_RE='npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
+
+# $1 = "socket": FetchError with no "npm error path" line, i.e. the OS refused node's
+# socket (per-program firewall / antivirus rule). A cache write failure has a path.
+_suggest_npm_local_failure() {
+    printf '\n' >&2
+    if [ "${1:-}" = socket ]; then
+        step "frontend" "the OS refused node's connection to the npm registry" "$C_WARN" >&2
+        substep "Allow $(command -v node 2>/dev/null || echo node) in your firewall/antivirus, or use another Node install." >&2
+        return 0
+    fi
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "$C_WARN" >&2
+    substep "Try: npm cache clean --force, or check the npm cache is writable." >&2
+    return 0
+}
+
 # Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
 # lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
 # via UNSLOTH_NPM_REGISTRY. This only guides; the mirror fallback does any switching.
 # $1 = path to a captured install log (may be empty/missing).
 _suggest_npm_registry() {
-    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
     local _log="${1:-}"
+    # Before the UNSLOTH_NPM_REGISTRY opt-out: a mirror does not unlock a cache.
+    local _plain=""
+    # Strip ANSI colour (npm color=always) so the code-line match still sees "npm error code".
+    if [ -n "$_log" ] && [ -s "$_log" ]; then _plain="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$_log")"; fi
+    if [ -n "$_plain" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" <<<"$_plain"; then
+        if grep -q 'FetchError' <<<"$_plain" && ! grep -Eq 'npm (error|ERR!) path ' <<<"$_plain"; then
+            _suggest_npm_local_failure socket
+        else
+            _suggest_npm_local_failure
+        fi
+        return 0
+    fi
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
     # If we captured output and it does NOT look like a registry/network problem, stay
     # quiet -- the raw error already shown is more useful than a misleading hint.
     if [ -n "$_log" ] && [ -s "$_log" ] \
@@ -743,6 +946,15 @@ _resolve_cuda_archs() {
 # above that: it must also cover MSVC and hipcc, older and far heavier CUDA
 # toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
 # Erring high costs build time; erring low costs the machine.
+# The build dir is renamed into place, so CMake's build-tree RUNPATH dies at the mv (#12392):
+# $ORIGIN finds the sibling libllama*.so; USE_LINK_PATH keeps toolchain dirs (ROCm, CUDA, Nix).
+_llama_relocatable_rpath_args() {
+    case "$(uname -s 2>/dev/null)" in
+        Linux) printf '%s' '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON' ;;
+        *) printf '' ;;
+    esac
+}
+
 _LLAMA_BUILD_RESERVE_MB=2048
 _LLAMA_BUILD_MB_PER_JOB=2048
 
@@ -1297,6 +1509,11 @@ _cuda_toolkit_major_gt_driver() {
     [ "$_toolkit_major" -gt "$_driver_major" ]
 }
 
+# ggml's -compress-mode=size (toolkit >= 12.8) does not load on a driver below 12.4 (#12842).
+_cuda_driver_needs_uncompressed_fatbin() {
+    _cuda_version_gt "12.4" "${1:-}"
+}
+
 _cuda_nvcc_candidate_paths() {
     if command -v nvcc >/dev/null 2>&1; then
         command -v nvcc
@@ -1505,17 +1722,22 @@ fi
 # llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
 # UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+# (mirrors install.sh), followed by the studio/ child of UNSLOTH_HOME.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+_studio_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$_studio_override" ]; then
+    _studio_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_studio_override" ]; then
+        _studio_override_var="UNSLOTH_HOME (studio child)"
+        _studio_override="${_studio_override%/}/studio"
+    fi
+fi
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -1581,7 +1803,7 @@ _uv_is_bucket_name() {
         ''|*[!0-9]*) return 1 ;;
     esac
     case "${1%-v*}" in
-        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        archive|binaries|builds|built-wheels|environments|files|flat-index) ;;
         git|interpreter|osv|python|sdists|simple|wheels) ;;
         *) return 1 ;;
     esac
@@ -2100,6 +2322,38 @@ _packaged_frontend_available() {
         [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
 }
 
+# ── oxc-validator runtime ──
+_install_oxc_runtime() {
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
+    _CAPTURE_LOG=""
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+    fi
+    rm -f "$_OXC_INSTALL_LOG"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+fi
+}
+
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
 # Tauri owns its frontend bundle. Standard PyPI installs use the release-built
@@ -2122,6 +2376,8 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+# An earlier build that never finished (killed, failed) left its mark: redo it.
+[ ! -e "$_FRONTEND_BUILD_MARK" ] || _NEED_FRONTEND_BUILD=true
 fi  # end packaged/Tauri guard
 
 # OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
@@ -2253,6 +2509,12 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
         setup_fail 1 "Could not install an isolated Node runtime"
+    elif grep -Fq "keeping existing isolated Node" "$_NODE_LOG"; then
+        # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
+        if grep -Fq 'takeown /F' "$_NODE_LOG"; then
+            sed 's/^/   | /' "$_NODE_LOG" >&2
+        fi
+        step "node" "update not applied, existing isolated Node kept" "$C_WARN"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -2305,6 +2567,8 @@ fi
 
 # ── Build frontend ──
 substep "building frontend..."
+_build_frontend() {
+_frontend_build_begin
 cd "$SCRIPT_DIR/frontend"
 _HIDDEN_GITIGNORES=()
 _dir="$(pwd)"
@@ -2321,7 +2585,7 @@ _restore_gitignores() {
         mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
     done
 }
-trap _restore_gitignores EXIT
+trap _frontend_build_cleanup EXIT
 
 # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
@@ -2401,6 +2665,8 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+# The background job keeps the mark until the OXC install it runs next is done too.
+[ -n "${_FRONTEND_IN_JOB:-}" ] || rm -f "$_FRONTEND_BUILD_MARK"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then
@@ -2412,44 +2678,25 @@ else
 fi
 
 cd "$SCRIPT_DIR"
+}
+
+if _frontend_can_build_in_background; then
+    _frontend_bg_start
+    cd "$SCRIPT_DIR"
+else
+    _build_frontend
+fi
 
 fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
 
-# ── oxc-validator runtime ──
-# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
-# Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-    cd "$_OXC_DIR"
-    _OXC_INSTALL_LOG=$(mktemp)
-    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
-    # below is reachable; it also captures the exact exit code.
-    _oxc_install_rc=0
-    _NPM_INSTALL=install
-    [ -f package-lock.json ] && _NPM_INSTALL=ci
-    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
-        _oxc_install_rc=0
-    fi
-    _CAPTURE_LOG=""
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_OXC_INSTALL_LOG"
-        rm -f "$_OXC_INSTALL_LOG"
-        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-    fi
-    rm -f "$_OXC_INSTALL_LOG"
-    cd "$SCRIPT_DIR"
-elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
-    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
-    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+# A background build runs this itself: it shares the npm mirror the build may have switched to.
+if [ -z "$_FRONTEND_BG_PID" ]; then
+    _install_oxc_runtime
+    _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+    _remove_agent_instruction_files "$_OXC_DIR/node_modules"
 fi
-
-_remove_agent_instruction_files \
-    "$SCRIPT_DIR/frontend/node_modules" \
-    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
@@ -2497,10 +2744,39 @@ elif [ -n "$STAGE_ROOT" ]; then
 else
     source "$VENV_DIR/bin/activate"
 fi
+# A PYTHONPATH torch would answer the probes below instead of the venv's (#11980); Colab has no venv.
+[ "$_COLAB_NO_VENV" = true ] || unset PYTHONPATH
 
 install_python_stack() {
     [ "${STUDIO_LOCAL_INSTALL:-0}" = 1 ] && [ -x "$VENV_DIR/bin/python" ] || _mirror_fallback
     python "$SCRIPT_DIR/install_python_stack.py"
+}
+
+# Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
+_setup_rerun_if_replaced() {
+    if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    local _now
+    _now=$(cksum < "$_SETUP_SELF" 2>/dev/null) || return 0
+    if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    # exec keeps this PID, so the watcher would not stop a build the new script then repeats.
+    _frontend_bg_join
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    export UNSLOTH_SETUP_RERUN=1
+    unset UNSLOTH_STUDIO_FULL_DEPS
+    cd "$_SETUP_START_PWD" 2>/dev/null || :
+    # execfail alone is not enough: under set -e a failed exec still ends the shell.
+    shopt -s execfail
+    set +e
+    exec "${BASH:-bash}" "$_SETUP_SELF" ${_SETUP_ARGV[@]+"${_SETUP_ARGV[@]}"}
+    set -e
+    shopt -u execfail
+    unset UNSLOTH_SETUP_RERUN
+    cd "$SCRIPT_DIR"
+    substep "could not start the updated setup script; continuing with this one" "$C_WARN"
 }
 
 # ── HTTP GET to stdout (supports curl and wget) ──
@@ -2545,7 +2821,9 @@ _setup_http_get_timed() {
 #
 # Only the four mainstream targets are pinned; the rest fall through to the existing path
 # rather than risk a binary for the wrong triple.
-_SETUP_UV_PINNED_VERSION="0.12.1"
+_SETUP_UV_PINNED_VERSION="0.13.5"
+# sha256 of astral's versioned install.sh for that release; the fallback below runs only those exact bytes.
+_SETUP_UV_INSTALLER_SH_SHA256="1c6e7f025499664633ac2dce43a210800510e9ef0625c52e034a8afdf8bf177a"
 
 # Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
 # run the GNU build", and astral drops to its musl-static archive below its floor.
@@ -2576,10 +2854,10 @@ _setup_uv_pinned_asset() {
             case "$_supa_arch" in
                 x86_64|amd64)
                     [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
-                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;;
                 aarch64|arm64)
                     [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
-                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2590,9 +2868,9 @@ _setup_uv_pinned_asset() {
             fi
             case "$_supa_arch" in
                 x86_64)
-                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                    echo "uv-x86_64-apple-darwin.tar.gz b0f52b0e3945b4107d89024ea38e625683011fbfc05a0d98f9fa2d6dcee28c66" ;;
                 arm64|aarch64)
-                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                    echo "uv-aarch64-apple-darwin.tar.gz 743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2604,13 +2882,13 @@ _setup_uv_pinned_asset() {
 _setup_uv_pinned_wheel() {
     case "$1" in
         uv-x86_64-unknown-linux-gnu.tar.gz)
-            echo "packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 27211df9b277f440dea438a4e525ba40250fb721ad39b8927eefc2d91f9aea15" ;;
+            echo "packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946" ;;
         uv-aarch64-unknown-linux-gnu.tar.gz)
-            echo "packages/9a/c7/29e426865c2eb8df61253dae93b953523f48c9fca1e471c7e49ff068f19a/uv-0.12.1-py3-none-manylinux_2_28_aarch64.whl b255ac23958e45f39f9c7a4cd65890df5ef46f539a3b14de03bd296bbba9cb60" ;;
+            echo "packages/4c/92/d83d019c63c1ccc6ff17df2bfe76270412f9766e7e71aa4d4ccbf018683f/uv-0.13.5-py3-none-manylinux_2_28_aarch64.whl 91e58e304b63b6c91bac5561459ab0c3ea24f17bc01ea9359d69fed72142978f" ;;
         uv-x86_64-apple-darwin.tar.gz)
-            echo "packages/fd/07/a417475380e901f4325d13b09938baab227b0c143547124b944c5bc71783/uv-0.12.1-py3-none-macosx_10_12_x86_64.whl 41b8fc2335f682312a1ca39a7b4abfd6af800992065c663582ca3e4d51cf9258" ;;
+            echo "packages/e3/2a/dcae794203261e49564bb9ff7c4b64a093f69ac73476cc8ce54c1deed3a1/uv-0.13.5-py3-none-macosx_10_12_x86_64.whl 337a14829bb499e114989df4f908f134ff37f1fb6c33497541cfb05b28080e39" ;;
         uv-aarch64-apple-darwin.tar.gz)
-            echo "packages/c9/68/391ff0cc3d8020e64adc43bb4e50607f744c69e792fb7623dc7c1526704b/uv-0.12.1-py3-none-macosx_11_0_arm64.whl 2e9b0b86e180abc5968b979c6e25203b32e85969abb5083ee1e8b88a5aa98a76" ;;
+            echo "packages/d2/26/9ac45211123244ea68be852775093af487a64debc13621a2de239f8ebe73/uv-0.13.5-py3-none-macosx_11_0_arm64.whl a42c85fa8156e1e5e2cecdbc77bb818ea1dcf5f78b8e2a8f84c7fe4f16f0702e" ;;
         *) return 1 ;;
     esac
 }
@@ -2758,6 +3036,30 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         _setup_persist_uv_path "$_siup_dest"
     fi
     return "$_siup_rc"
+}
+
+# Unpinned hosts: astral's versioned installer, run only if it is the exact pinned script (a host with no sha256 tool
+# runs it as before). Non-zero when it is not run or fails.
+_setup_uv_fallback_run() {
+    _suf_tmp=$(mktemp) || return 1
+    if ! _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" > "$_suf_tmp"; then
+        rm -f "$_suf_tmp"
+        return 1
+    fi
+    _suf_sum=$(_setup_uv_sha256 "$_suf_tmp" 2>/dev/null) || _suf_sum=""
+    if [ -n "$_suf_sum" ] && [ "$_suf_sum" != "$_SETUP_UV_INSTALLER_SH_SHA256" ]; then
+        echo "uv installer script failed its sha256 check; not running it" >&2
+        rm -f "$_suf_tmp"
+        return 1
+    fi
+    if _is_verbose; then
+        sh "$_suf_tmp" </dev/null
+    else
+        sh "$_suf_tmp" </dev/null > /dev/null 2>&1
+    fi
+    _suf_rc=$?
+    rm -f "$_suf_tmp"
+    return "$_suf_rc"
 }
 
 # astral's installer wrote a profile line for whichever destination it chose. This replaces that
@@ -2973,9 +3275,9 @@ _SETUP_UV_PROBE_MISS=""
 _SETUP_UV_LOOKED=""
 _SETUP_UV_DIR=""
 _SETUP_UV_TOO_OLD=""
-# install.sh's UV_MIN_VERSION, for its reason: below it uv's managed-Python manifest tops out at
-# a CPython that cannot import torch, which the installer refuses to build on.
-_SETUP_UV_MIN_VERSION="0.9.3"
+# install.sh's UV_MIN_VERSION, for its reason: below it uv's bundled roots still trust the
+# compromised emSign CAs (GHSA-hq85-5cpj-mr62).
+_SETUP_UV_MIN_VERSION="0.13.4"
 
 # True when uv's --version line names a release at least as new as $2. Unreadable is false: the
 # candidate is left alone and the download runs, as it did before this search existed.
@@ -3067,19 +3369,46 @@ _setup_find_installed_uv() {
 }
 
 USE_UV=false
-if command -v uv &>/dev/null; then
+# A uv on PATH below the floor is passed over like an installed one, and kept only when the
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the OS trust store.
+_SETUP_UV_PATH_OLD=""
+if command -v uv &>/dev/null && command -v mktemp >/dev/null 2>&1; then
+    _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
+    _spu_ver=""
+    if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
+        read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+        case "$_spu_ver" in
+            "uv "*) _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+                        || _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+            *) _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+        esac
+    elif [ -n "$_spu_file" ]; then
+        _SETUP_UV_PATH_OLD=$(command -v uv)
+    fi
+    if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
+    unset _spu_file _spu_ver
+fi
+if command -v uv &>/dev/null && [ -z "$_SETUP_UV_PATH_OLD" ]; then
     USE_UV=true
 elif _setup_find_installed_uv; then
     _setup_uv_dir="$_SETUP_UV_DIR"
     # Read-only reuse, fine under a stage root. Appended: a python beside uv (~/.local/bin
     # often has one) must not step in front of the staged $VENV_DIR/bin/python.
     export PATH="$PATH:$_setup_uv_dir"
+    if [ -n "$_SETUP_UV_PATH_OLD" ]; then
+        # In front of the old uv on PATH, with the venv's bin still first.
+        PATH="$_setup_uv_dir:$PATH"
+        [ -z "${VIRTUAL_ENV:-}" ] || PATH="$VIRTUAL_ENV/bin:$PATH"
+        export PATH
+    fi
     step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
     USE_UV=true
     unset _setup_uv_dir
 elif [ -n "$STAGE_ROOT" ]; then
-    step "uv" "using pip inside the staged environment"
+    [ -n "$_SETUP_UV_PATH_OLD" ] || step "uv" "using pip inside the staged environment"
 elif {
+    [ -n "${_SETUP_UV_TOO_OLD:-}" ] || _SETUP_UV_TOO_OLD="$_SETUP_UV_PATH_OLD"
     if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
         step "uv" "the uv at $_SETUP_UV_TOO_OLD is older than $_SETUP_UV_MIN_VERSION; installing the pinned release"
     elif [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
@@ -3090,17 +3419,37 @@ elif {
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
-    elif _is_verbose; then
-        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_uv_fallback_run
     fi
 }; then
     # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
     # own destination first, and prepending here would let a stale ~/.local/bin/uv shadow the
-    # 0.12.1 we just verified, so the rest of setup would run the wrong one.
+    # pinned uv we just verified, so the rest of setup would run the wrong one.
     [ "$_SETUP_UV_PINNED_OK" = true ] || export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
+fi
+# No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
+[ -z "$_SETUP_UV_PATH_OLD" ] || [ "$USE_UV" = true ] || ! command -v uv &>/dev/null || USE_UV=true
+# Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the OS store
+# decides instead, where there is one (UV_NATIVE_TLS too: uv before 0.11 reads only that).
+# A download that failed while online lands here too; UV_SYSTEM_CERTS=0 opts out.
+if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] && [ "${UV_SYSTEM_CERTS:-1}" != 0 ] \
+   && command -v mktemp >/dev/null 2>&1; then
+    _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
+    _spu_ver=""
+    if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
+        read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+    fi
+    if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
+    case "$_spu_ver" in
+        "uv "*)
+            if ! _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+               && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
+                export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-1}" UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+            fi ;;
+    esac
+    unset _spu_file _spu_ver
 fi
 
 fast_install() {
@@ -3499,12 +3848,36 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
+# Same for an install that chose XPU torch for its Intel GPU (install.sh's auto route, recorded
+# in the manifest) but now holds another wheel: _ensure_xpu_torch runs only inside the pass.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _setup_xpu_torch_stale=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --xpu-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _setup_xpu_torch_stale=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --xpu-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _setup_xpu_torch_stale=true
+    fi
+    if [ "$_setup_xpu_torch_stale" = true ]; then
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "installed PyTorch is not the XPU build this install chose but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "installed PyTorch is not the XPU build this install chose -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    _setup_rerun_if_replaced
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
+_frontend_bg_reap
 
 # ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
@@ -4131,6 +4504,28 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
+        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
+        # amd-smi names only the first device, so a covered lspci peer (the same rule as
+        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
+            _setup_k2_peer=""
+            if command -v lspci >/dev/null 2>&1; then
+                while IFS= read -r _setup_k2_ln; do
+                    [ -n "$_setup_k2_ln" ] || continue
+                    printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
+                    if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
+                        # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
+                        [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
+                        _setup_k2_peer=1
+                        break
+                    fi
+                done <<EOF
+$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+EOF
+            fi
+            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+        fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -4179,6 +4574,7 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
+        _setup_k2_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'  # install.sh's _krackan2_ere
         # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
         # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
         # Only when lspci can answer: with no adapter list there is no peer to find, and
@@ -4186,14 +4582,31 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_unsup_pci=""
         if command -v lspci >/dev/null 2>&1; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Beside a Krackan Point 2 CPU the APU's own line may carry the Krackan die name it
+            # shares with gfx1152 (1002:1114), so a gfx1152 answer there is not a peer (install.sh).
+            _setup_unsup_k2cpu=""
+            if printf '%s\n' "$1" | grep -Eqi "$_setup_k2_ere" \
+               || grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; then
+                _setup_unsup_k2cpu=1
+            fi
             while IFS= read -r _setup_unsup_ln; do
                 [ -n "$_setup_unsup_ln" ] || continue
-                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                # A Krackan Point 2 APU's own line is not a covered peer (its names overlap gfx1152's).
+                printf '%s\n' "$_setup_unsup_ln" | grep -Eqi "$_setup_k2_ere" && continue
+                if _setup_unsup_peer=$(_setup_supported_gfx_from_name "$_setup_unsup_ln" 2>/dev/null); then
+                    [ -n "$_setup_unsup_k2cpu" ] && [ "$_setup_unsup_peer" = gfx1152 ] && continue
                     return 1
                 fi
             done <<EOF
 $_setup_unsup_pci
 EOF
+        fi
+        # Krackan Point 2 (gfx1153) before the name tables, which map its names to gfx1152; the
+        # CPU name counts only beside an AMD display adapter, as in install.sh.
+        if printf '%s\n%s\n' "$1" "$_setup_unsup_pci" | grep -Eqi "$_setup_k2_ere" \
+           || { [ -n "$_setup_unsup_pci" ] && grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; }; then
+            echo gfx1153
+            return 0
         fi
         # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
         # from rocminfo) used to end the lookup here, so the lspci scan below never ran
@@ -4216,11 +4629,48 @@ EOF
     }
     # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
     # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
-    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+    # An arch READ as uncovered on every probed GPU gets the warning too, not only a missing
+    # one: a host with ROCm installed reads gfx1010 fine and still has no wheels (#8529).
+    # install.sh's get_torch_index_url holds the same list. A declared arch is all the
+    # installers route on, so the physical inventory is not consulted beside it. The
+    # installers probe with ROCR_VISIBLE_DEVICES stripped, rocminfo here does not, so a mask
+    # could hide the covered peer. A readable HSA_OVERRIDE_GFX_VERSION is the arch the runtime
+    # runs, so it alone is judged (same triple parse as install.sh's _hsa_override_gfx_arch).
+    _setup_unsup_cur="$_setup_gfx"
+    _setup_unsup_inv="$_setup_gfx_all"
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
+    _setup_unsup_hsa=$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+          if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+          split($0, p, "."); maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+          if (maj <= 0 || min > 9 || step > 15) exit
+          printf "gfx%d%d%x", maj, min, step }')
+    if [ -n "$_setup_unsup_hsa" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_unsup_cur="$_setup_unsup_hsa"
+        _setup_unsup_inv=""
+    fi
+    # A ROCm torch already in the venv is kept by the update (a TheRock or hand-installed build
+    # may run here), so only a non-ROCm one is reported as CPU-only. Read off disk, no import.
+    _setup_unsup_torch_rocm=false
+    for _setup_unsup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_unsup_tv" ] || continue
+        grep -qE "^hip(: [^=]*)? = '|^__version__ = '[^']*\+rocm" "$_setup_unsup_tv" 2>/dev/null \
+            && _setup_unsup_torch_rocm=true
+        break
+    done
+    _setup_unsup_gfx=""
+    if [ "$_setup_unsup_torch_rocm" = false ] && \
+       { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
+        _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+    fi
+    if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         step "gpu" "$_setup_mkt ($_setup_gfx)"
-    elif [ -n "$_setup_gfx" ]; then
+    elif [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
-    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
+    elif [ -n "$_setup_unsup_gfx" ] || _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py).
@@ -4237,9 +4687,18 @@ EOF
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         fi
-        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
-        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
-        substep "it afterwards has no effect until you install or update again."
+        if [ "$_setup_unsup_gfx" = gfx1153 ]; then
+            substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+        else
+            substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+            substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+            substep "it afterwards has no effect until you install or update again."
+        fi
+        # gfx1153 keeps its llama.cpp HIP bundle: forward the arch, which a runtime-less probe
+        # cannot read. RDNA 1 / Polaris have none, so they stay unforwarded.
+        if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
+            _setup_gfx=gfx1153
+        fi
     elif [ -n "$_setup_mkt" ]; then
         # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
         # arm above: a card with no ROCm wheels also reaches here with a name, and
@@ -4279,6 +4738,8 @@ else
     step "gpu" "none (chat-only / GGUF)" "$C_WARN"
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
 fi
+
+_frontend_bg_reap
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
@@ -4321,23 +4782,18 @@ _master_root_note_is_honoured() {
     _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
         || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
     if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
-        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself is the" >&2
         echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
         echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
         echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
-    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
-    # rather than leave a file that reads as a recorded root and behaves as none.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
-    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself lives at" >&2
     echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
     echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
     echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2
@@ -5040,6 +5496,11 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
     fi
 fi
 
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    _frontend_bg_join
+fi
+
 # ── 9. Build llama.cpp binaries for GGUF inference + export when prebuilt install fails ──
 # Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
 # home directory. This is used by both the inference server and the GGUF
@@ -5149,7 +5610,12 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
-            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON $(_llama_relocatable_rpath_args)"
+            # --depth 1 makes llama.cpp stamp build 1; Studio needs the tag's number (#12798).
+            if [ -z "$_LLAMA_PR" ] && [ "$_RESOLVED_SOURCE_REF_KIND" != "commit" ] \
+                && [[ "$_RESOLVED_SOURCE_REF" =~ ^b([0-9]+)$ ]]; then
+                CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_BUILD_NUMBER=${BASH_REMATCH[1]}"
+            fi
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
@@ -5297,6 +5763,10 @@ else
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
                             CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+                            if _cuda_driver_needs_uncompressed_fatbin "$_DRIVER_MAX_CUDA"; then
+                                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA_COMPRESSION_MODE=none"
+                                substep "driver CUDA $_DRIVER_MAX_CUDA predates 12.4; building uncompressed CUDA kernels it can load." "$C_WARN"
+                            fi
                             _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
 
                             # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
@@ -5667,6 +6137,7 @@ else
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            _frontend_bg_join
             substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
             # The source build overwrites whisper-server in the managed dir but
             # knows nothing about the prebuilt marker; a stale marker would make
@@ -5763,6 +6234,8 @@ _print_llama_gpu_notes() {
         printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
     fi
 }
+
+_frontend_bg_join
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

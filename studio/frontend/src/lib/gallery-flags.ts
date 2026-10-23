@@ -36,6 +36,26 @@ export function subscribeGalleryChanged(kind: GalleryKind, onChanged: () => void
   return () => window.removeEventListener(GALLERY_CHANGED_EVENT, handler);
 }
 
+export const ARCHIVE_CHANGED_EVENT = "unsloth:archive-changed";
+
+/** Announce that the archived shelf of `kind` changed from Settings (a restore or a delete). Kept apart
+ * from the gallery event so a delete, which leaves the active strip as it was, does not refetch it. */
+export function notifyArchiveChanged(kind: GalleryKind): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(ARCHIVE_CHANGED_EVENT, { detail: { kind } }));
+}
+
+/** Calls back when the archive of `kind` changed elsewhere. Returns an unsubscriber. */
+export function subscribeArchiveChanged(kind: GalleryKind, onChanged: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ kind?: string }>).detail;
+    if (detail?.kind === kind) onChanged();
+  };
+  window.addEventListener(ARCHIVE_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(ARCHIVE_CHANGED_EVENT, handler);
+}
+
 /** The two fields these helpers care about; both gallery record types structurally satisfy it. */
 export interface FlaggableItem {
   id: string;
@@ -112,6 +132,32 @@ export function moveGalleryItem<T extends FlaggableItem>(
       : Boolean((above ?? below ?? moved).pinned);
   if (at === from && pinned === Boolean(moved.pinned)) return items;
   return [...rest.slice(0, at), { ...moved, pinned }, ...rest.slice(at)];
+}
+
+/** The shelf `afterId` for a move in a filtered view, keeping the pin state the view showed: hidden
+ *  neighbours decide the pin, so a drop beside another page's pin used to pin the clip. */
+export function scopedMoveAfterId<T extends FlaggableItem>(
+  items: T[],
+  inView: (item: T) => boolean,
+  id: string,
+  afterId: string | null,
+): string | null {
+  const view = items.filter(inView);
+  const intended = moveGalleryItem(view, id, afterId);
+  if (intended === view) return afterId;
+  const at = intended.findIndex((i) => i.id === id);
+  const wantPinned = Boolean(intended[at]?.pinned);
+  const above = intended[at - 1];
+  const below = intended[at + 1];
+  const rest = items.filter((i) => i.id !== id);
+  const first = above ? rest.findIndex((i) => i.id === above.id) : -1;
+  const last = below ? rest.findIndex((i) => i.id === below.id) : rest.length;
+  for (let gap = first; gap < last; gap++) {
+    const candidate = gap < 0 ? null : rest[gap].id;
+    const moved = moveGalleryItem(items, id, candidate).find((i) => i.id === id);
+    if (Boolean(moved?.pinned) === wantPinned) return candidate;
+  }
+  return afterId;
 }
 
 /** The pinned ids in their current order, to hand back to `restorePinOrder` on a failed unpin. */

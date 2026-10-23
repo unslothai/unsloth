@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`reasoning_toggle` must settle on a quiet DOM and say plainly when it could not.
-
-These drive the real `reasoning_toggle` with a stubbed page, so they fail on the tree before the
-fix for the RIGHT reason -- a wrong value or a wrong message -- rather than by failing to import.
-
-Two published wrong numbers came out of this one action:
-
-  * `highlight_spans_while_open` read on the frame `data-state` flipped gave 74,917 on the
-    measured-height arm and 44,075 on the grid-rows arm, an apparent 41% reduction. Settled, both
-    arms read 74,250. Its null control was 0.0% and could not have caught it, because a null runs
-    one bundle against itself and the skew cancels.
-  * `open_ms` terminated on that same flip, and above the 100K rung it never terminated at all, so
-    the metric silently became 100K-only.
-"""
+"""reasoning_toggle must wait for a quiet DOM before reading, and say so when it cannot settle."""
 
 from __future__ import annotations
 
@@ -26,13 +13,8 @@ from tests.studio.studiobench.scene.actions import reasoning_toggle
 
 @dataclass
 class _Page:
-    """A page that returns a canned reply and remembers how it was called.
-
-    DELIBERATELY TOLERANT of both the old `timeoutMs` argument and the new
-    `[timeoutMs, quietFrames]` pair. If the stub rejected the old shape, every test below would
-    fail on the pre-fix tree for that reason alone, and none of them would demonstrate the
-    substantive defect they exist to pin. The argument shape has its own test.
-    """
+    """Stub page returning a canned reply; accepts both the old timeoutMs and the new pair argument
+    shape."""
 
     reply: dict
     last_arg: Any = None
@@ -104,11 +86,7 @@ def test_a_settled_toggle_reports_its_census_and_passes():
 
 
 def test_an_unsettled_census_is_withheld_rather_than_guessed():
-    """Silence beats a confident wrong answer.
-
-    This is the 44,075 case: the panes are open, the state attribute has flipped, and the spans
-    are still arriving. The old code returned the half-mounted count as though it were the answer.
-    """
+    """An unsettled span census is withheld with a reason, not returned as if it were the answer."""
     res = _run(
         _settled_reply(
             spansOpen = None,
@@ -142,12 +120,7 @@ def test_a_censored_timing_is_absent_not_none():
 
 
 def test_the_failure_reason_names_the_clause_that_actually_failed():
-    """The exact message this replaces described a PASSING condition.
-
-    Observed repeatedly at 500K and 1M:
-        `ran EXPECT FAILED -- 16 of 16 panes opened and 0 were still open after collapsing`
-    Every clause of that describes success. The real cause was always a censored `open_ms`.
-    """
+    """The failure message must name the clause that failed, not one that describes success."""
     res = _run(
         _settled_reply(
             panes = 16,

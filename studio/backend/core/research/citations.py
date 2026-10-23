@@ -18,10 +18,9 @@ from markdown_it.rules_inline.backticks import backtick
 from core.research.redaction import _escape_link_destination
 
 
-# Unrolled rather than (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks catastrophically on
-# an unterminated "[Document:", and this runs on the event loop.
-_DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
-_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
+# unrolling avoids catastrophic backtracking on unclosed [Document: that would block the event loop.
+_DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
+_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)", re.IGNORECASE)
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
     r"(?:Sources?|References?|Bibliography|Works\s+Cited|Source\s+List)"
@@ -29,9 +28,10 @@ _SOURCES_HEADING = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
-_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
+_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>", re.IGNORECASE)
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
-_RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
+# Any case: a browser reads `HTTPS://` as https too.
+_RAW_URL = re.compile(r"https?://[^\s<>\x00]+", re.IGNORECASE)
 # Beside the pattern that restores them: a kind missing there leaves a raw sentinel in the
 # report. [0-9] not \d, which also matches other scripts' digits.
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")
@@ -241,11 +241,17 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
     if heading:
         report = report[: heading.start()]
 
+    def catalog_url(url: str) -> str | None:
+        # The scheme is case-insensitive; the catalog spells it in lower case.
+        lowered = re.sub(r"^https?://", lambda m: m.group(0).lower(), url, flags = re.IGNORECASE)
+        return url if url in source_by_url else lowered if lowered in source_by_url else None
+
     def citation(url: str) -> str | None:
-        source = source_by_url.get(url)
-        if source is None:
+        url = catalog_url(url)
+        if url is None:
             return None
-        title = _citation_title(source, url)
+        source = source_by_url[url]
+        title = re.sub(r"(\\*)\|", r"\1\1\\|", _citation_title(source, url))
         token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token
@@ -327,7 +333,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
         core = _trim_url_tail(raw)
-        if core in source_by_url:
+        if catalog_url(core):
             return (citation(core) or core) + raw[len(core) :]
         # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
         return raw[len(core) :]
@@ -340,7 +346,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
 
 
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
-    """Canonicalize citations and remove model-authored source lists."""
+    """canonicalize citations and remove model-authored source lists."""
     placeholders: dict[str, str] = {}
     validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
     return _restore_placeholders(validated, placeholders)
@@ -348,16 +354,24 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
 
 def _document_source_citation(source: dict) -> str:
     filename = str(source.get("filename") or "Document")
+    if source.get("kind") == "mcp":
+        return f"[MCP: {_mcp_source_label(source)}]"
     if source.get("page") is not None:
         return f"[Document: {filename}, p. {source['page']}]"
     return f"[Document: {filename}]"
 
 
+def _mcp_source_label(source: dict) -> str:
+    filename = str(source.get("filename") or "MCP source")
+    label = " ".join(filename.replace("[", "").replace("]", "").split())
+    return label or "MCP source"
+
+
 def _allowed_document_citations(sources: list[dict]) -> set[str]:
     allowed = set()
     for source in sources:
-        filename = str(source.get("filename") or "Document")
-        allowed.add(f"[Document: {filename}]")
+        if source.get("kind") != "mcp":
+            allowed.add(f"[Document: {source.get('filename') or 'Document'}]")
         allowed.add(_document_source_citation(source))
     return allowed
 

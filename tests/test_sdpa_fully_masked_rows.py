@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A left-padded row that attends to nothing must not reach SDPA.
-
-`transformers.masking_utils.sdpa_mask` builds a boolean mask and returns it with
-no correction for query rows that attend to no key at all, and the parameter that
-used to make that correction is now documented `"Deprecated and has no effect.
-Will be removed in version 5.18.0."`. In 4.57.6 the same function still carried
-it, guarded on `not _is_torch_greater_or_equal_than_2_5` -- upstream retired it
-believing torch 2.5 had made it unnecessary.
-
-Measured on a B200, torch 2.13.0+cu130, transformers 5.15.1, unquantized fp16
-`google/gemma-4-E2B-it`, no unsloth in the process: a SINGLE forward pass returns
-NaN logits on exactly the rows that received a left pad token and finite logits
-on every row that did not, 16 rows of 16 across batch sizes 2, 4 and 8, and under
-`generate` those rows decode to the empty string. That is unsloth #9708.
-
-Every test here DRIVES the real functions. The rules in this repo have been
-caught before passing against a hand-written dict while the code that produces
-it was broken, so nothing below asserts on a literal that the code did not
-compute.
-"""
+"""Left-padded rows that attend to nothing give NaN under SDPA; transformers' sdpa_mask needs a fix."""
 
 import inspect
 
@@ -39,11 +20,7 @@ from unsloth.import_fixes import (  # noqa: E402
 
 
 def _call_sdpa_mask(fn, attention_mask):
-    """Call whichever signature this transformers ships.
-
-    5.x takes `q_length`; 4.57.6 binds `sdpa_mask` to `sdpa_mask_recent_torch`,
-    which takes `cache_position`. The fix supports both, so the tests must too.
-    """
+    """Calls sdpa_mask with whichever signature ships: q_length on 5.x, cache_position on 4.57."""
     length = attention_mask.shape[-1]
     kwargs = {
         "batch_size": attention_mask.shape[0],
@@ -63,11 +40,7 @@ def _call_sdpa_mask(fn, attention_mask):
 
 @pytest.fixture
 def unpatched():
-    """The original function, and the module put back afterwards.
-
-    Other tests in a session may already have installed the patch, so reach for
-    `__wrapped__` rather than assuming the module global is pristine.
-    """
+    """Yields the unpatched sdpa_mask via __wrapped__, since earlier tests may already have patched it."""
     original_global = masking_utils.sdpa_mask
     original = getattr(original_global, "__wrapped__", original_global)
     interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
@@ -87,12 +60,7 @@ def unpatched():
 
 
 def test_the_bug_this_fix_exists_for_is_really_here(unpatched):
-    """The negative control, and it is the load-bearing test in this file.
-
-    If a future transformers restores the guard, this FAILS and says so, rather
-    than leaving a wrapper nobody can justify. Do not delete it to make the
-    suite green: re-measure first, then remove the fix and this file together.
-    """
+    """Fails if upstream restores the guard. Do not delete it to go green; re-measure first."""
     mask = _call_sdpa_mask(unpatched, _left_padded_probe_mask(torch))
     assert mask is not None and not mask.is_floating_point()
     fully_masked = int((~mask.bool().any(dim = -1)).sum())
@@ -117,12 +85,7 @@ def test_the_patch_leaves_no_row_attending_to_nothing(unpatched):
 
 
 def test_the_patch_changes_nothing_a_real_row_could_read(unpatched):
-    """The correction must be confined to rows that attend to nothing.
-
-    Those are pad positions whose outputs are discarded, which is why upstream's
-    own docstring said this "does not change the final result". A patch that
-    also loosened a real row would silently let a token attend across padding.
-    """
+    """Only rows attending to nothing may change, or a real token could attend across padding."""
     attention_mask = _left_padded_probe_mask(torch)
     before = _call_sdpa_mask(unpatched, attention_mask).bool()
     fix_transformers_fully_masked_rows()
@@ -135,12 +98,7 @@ def test_the_patch_changes_nothing_a_real_row_could_read(unpatched):
 
 
 def test_both_bindings_are_patched(unpatched):
-    """`eager_mask` reads the module global; the interface captured the original.
-
-    They are different references to the same function and both have to move, or
-    half the models in transformers keep the old one. Confirmed by file search:
-    `sdpa_mask` is defined once in transformers and no other module imports it.
-    """
+    """Patch the module global and the interface entry, or half the models keep the old sdpa_mask."""
     fix_transformers_fully_masked_rows()
     interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
     if interface is None:
@@ -166,11 +124,7 @@ def test_the_original_stays_reachable(unpatched):
 
 
 def test_the_probe_says_no_when_the_build_already_corrects_itself(unpatched):
-    """The gate, exercised in the direction that matters for an unaffected user.
-
-    A stub standing in for a future fixed transformers: the probe must answer
-    False, and `fix_...` must then leave the module alone byte for byte.
-    """
+    """A build that already corrects itself: the probe must answer False and the fix changes nothing."""
 
     def already_correct(*args, **kwargs):
         mask = unpatched(*args, **kwargs)
@@ -189,12 +143,7 @@ def test_the_probe_says_no_when_the_build_already_corrects_itself(unpatched):
 
 
 def test_the_probe_is_dtype_honest(unpatched):
-    """The probe feeds a BOOL mask because the real callers do.
-
-    Written after an int64 probe mask came back int64 and an earlier
-    `dtype == torch.bool` check answered "not affected" for a reason that had
-    nothing to do with the bug.
-    """
+    """Probe with a bool mask like real callers; an int64 probe once gave a false not-affected answer."""
     assert _left_padded_probe_mask(torch).dtype == torch.bool
     mask = _call_sdpa_mask(unpatched, _left_padded_probe_mask(torch))
     assert mask.dtype == torch.bool
@@ -210,13 +159,7 @@ def test_a_batch_with_no_padding_is_untouched(unpatched):
 
 
 def test_the_probe_is_pinned_to_cpu_whatever_the_default_device_is(unpatched):
-    """A meta default device must answer the question, not abort the import.
-
-    `torch.set_default_device("meta")` around `import unsloth` used to put the
-    probe mask on meta, where `sdpa_mask` builds its own index tensors on CPU
-    and raises, or hands back a meta mask whose truth value cannot be read --
-    and that read sat outside the guard, so it propagated out of the import.
-    """
+    """The probe mask is pinned to CPU, so a meta default device cannot abort the import."""
     torch.set_default_device("meta")
     try:
         assert _left_padded_probe_mask(torch).device.type == "cpu"
@@ -226,17 +169,10 @@ def test_the_probe_is_pinned_to_cpu_whatever_the_default_device_is(unpatched):
 
 
 def test_a_reloaded_masking_utils_is_patched_again(unpatched):
-    """The guard reads the live bindings, not a mark on the module.
-
-    `importlib.reload` re-executes the module body in the SAME namespace, so
-    `sdpa_mask` and the registry entry revert to upstream while any attribute
-    we set on the module survives. Gating on that attribute refuses to re-patch
-    a build that is vulnerable again -- protection lost, silently.
-    """
+    """Gate on live bindings, not a module marker: reload reverts sdpa_mask but keeps the marker."""
     fix_transformers_fully_masked_rows()
     assert _sdpa_mask_is_patched(masking_utils)
 
-    # Exactly what a reload leaves behind: upstream functions, our marker.
     interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
     masking_utils.sdpa_mask = unpatched
     if interface is not None:
@@ -264,11 +200,7 @@ def test_a_half_installed_patch_is_completed_rather_than_skipped(unpatched):
 
 
 def test_the_correction_itself_on_every_dtype_it_can_meet():
-    """The helper, driven directly. No transformers needed, no fixture state.
-
-    Replaces an earlier version of this test that asserted a tautology and would
-    have passed against any implementation at all.
-    """
+    """Checks the unmasking helper directly on every dtype it can meet; no transformers needed."""
     bool_mask = torch.tensor([[[[False, False], [False, True]]]])
     fixed = _unmask_rows_attending_to_nothing(bool_mask)
     assert fixed.tolist() == [[[[True, True], [False, True]]]], (
@@ -280,11 +212,9 @@ def test_the_correction_itself_on_every_dtype_it_can_meet():
     int_mask = bool_mask.to(torch.int64)
     assert _unmask_rows_attending_to_nothing(int_mask).tolist() == [[[[1, 1], [0, 1]]]]
 
-    # The eager path: returned untouched, and by identity, not by value.
     float_mask = torch.zeros((1, 1, 2, 2), dtype = torch.float32)
     assert _unmask_rows_attending_to_nothing(float_mask) is float_mask
 
-    # `is_causal` was used instead of a mask.
     assert _unmask_rows_attending_to_nothing(None) is None
 
 

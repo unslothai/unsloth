@@ -118,7 +118,7 @@ runs:
     # simply skips this step, which is the behaviour wanted.
     - name: Save the built frontend
       if: >-
-        github.ref == 'refs/heads/main' && inputs.cache-hit != 'true'
+        (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth')) && inputs.cache-hit != 'true'
         && inputs.save != 'false'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       continue-on-error: true

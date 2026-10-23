@@ -68,7 +68,8 @@ export function useLibraryStorage(): LibraryStorage {
     status: LibraryStorage["status"];
     items: LibraryItem[];
     disk: LibraryDisk | null;
-  }>({ status: "loading", items: [], disk: null });
+    unlisted: Record<string, number>;
+  }>({ status: "loading", items: [], disk: null, unlisted: {} });
   const [version, setVersion] = useState(0);
   useEffect(() => {
     const stale = () => setVersion((current) => current + 1);
@@ -78,7 +79,9 @@ export function useLibraryStorage(): LibraryStorage {
   useEffect(() => {
     let cancelled = false;
     getLibrary().then(
-      ({ items, disk }) => !cancelled && setSnapshot({ status: "ready", items, disk: disk ?? null }),
+      ({ items, disk, unlistedBytes }) =>
+        !cancelled &&
+        setSnapshot({ status: "ready", items, disk: disk ?? null, unlisted: unlistedBytes ?? {} }),
       () => !cancelled && setSnapshot((current) => ({ ...current, status: "error" })),
     );
     return () => {
@@ -103,6 +106,17 @@ export function useLibraryStorage(): LibraryStorage {
       const total = totals.get(category) ?? { bytes: 0, count: 0 };
       total.bytes += bytes;
       total.count += 1;
+      totals.set(category, total);
+    }
+    for (const [source, bytes] of Object.entries(snapshot.unlisted)) {
+      if (!onDisk || onDisk.has(source)) diskBytes += bytes;
+      if (!includedBySettings(`${source}:`, settings)) {
+        hiddenBytes += bytes;
+        continue;
+      }
+      const category = KIND_CATEGORIES[source] ?? "files";
+      const total = totals.get(category) ?? { bytes: 0, count: 0 };
+      total.bytes += bytes;
       totals.set(category, total);
     }
     const categories = CATEGORY_LINKS.flatMap(([category, link]) => {

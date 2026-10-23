@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth export` / `list-checkpoints` must pin the cache env before importing the export
-backend.
-
-Neither calls ensure_studio_backend_path(), so before the seeding moved into
-studio_backend_imports() they reached studio.backend.core.export with UNSLOTH_COMPILE_LOCATION
-unset and unsloth_zoo resolved its relative default against the shell's cwd (#8865).
-"""
+"""unsloth export and list-checkpoints must seed the cache env before importing the backend."""
 
 import json
 import os
@@ -20,8 +14,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Runs in its own interpreter: the seeding is process-global (os.environ plus a one-shot flag),
-# so an in-process assertion would depend on test ordering.
+# Own interpreter: the seeding is process-global, so in-process results depend on test order.
 PROBE = textwrap.dedent(
     """
     import json, os, sys, types
@@ -91,8 +84,7 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
 
     env = dict(os.environ)
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
-    # Both outrank UNSLOTH_HOME in the resolver, and conftest.py sets a session-scoped
-    # UNSLOTH_STUDIO_HOME, so an inherited one would send the probe somewhere unnamed.
+    # Both outrank UNSLOTH_HOME, and conftest.py sets a session-scoped UNSLOTH_STUDIO_HOME.
     for key in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_PORTABLE"):
         env.pop(key, None)
     env.update(
@@ -115,20 +107,13 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
     assert recorded["exit_code"] == 0, recorded
     location = recorded["compile_location"]
     assert location, "UNSLOTH_COMPILE_LOCATION was unset when the export backend was imported"
-    # Absolute and inside the install root, not resolved against the CWD.
     assert Path(location).is_absolute()
     assert Path(location) == unsloth_home / "studio" / "compiled_cache"
     assert not (workdir / "unsloth_compiled_cache").exists()
 
 
 def test_node_discovery_does_not_build_the_cache_tree(tmp_path):
-    """`unsloth start` asks whether a managed Node exists; that is a read, not an install.
-
-    ensure_studio_backend_path() seeds the cache environment, and setup_cache_env() CREATES
-    every directory it pins, so routing Node discovery through it turned the lookup into 18
-    mkdirs under a home that may have nothing to do with the command -- including a launch
-    aimed at a remote server. The merge base created nothing here.
-    """
+    """Node discovery is a read, so it must not go through setup_cache_env(), which creates dirs."""
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
     probe = (

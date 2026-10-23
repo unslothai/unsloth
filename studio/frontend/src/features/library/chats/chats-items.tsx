@@ -53,12 +53,14 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  Refresh01Icon,
   Settings02Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -80,7 +82,8 @@ import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  // min-w-0: a grid item's automatic minimum is its content, so a long project line widened the card past its column.
+  "group/chat relative flex aspect-[8/7] min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -138,6 +141,7 @@ export interface ChatsActions {
   toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
+  regenerateTitle: (chat: SidebarItem) => void;
   togglePin: (chat: SidebarItem) => void;
   setFavorite: (chats: SidebarItem[], favorite: boolean) => void;
   toggleFavoriteProject: (projectId: string) => void;
@@ -344,6 +348,23 @@ export function MoveSubmenu({
   );
 }
 
+/** Off while any of its threads generates; a comparison's id is its pair's. */
+function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
+  const t = useT();
+  const actions = useChatsActions();
+  const generating = useChatRuntimeStore((s) =>
+    (chat.threadIds?.length ? chat.threadIds : [chat.id]).some((id) => Boolean(s.runningByThreadId[id])),
+  );
+  return (
+    <MenuItem
+      icon={Refresh01Icon}
+      label={t("library.menu.regenerateTitle")}
+      disabled={generating}
+      onSelect={() => actions.regenerateTitle(chat)}
+    />
+  );
+}
+
 /** Off while generating or forking, as in the sidebar. Mounts only when the menu opens. */
 function ForkItem({ chat }: { chat: SidebarItem }) {
   const t = useT();
@@ -355,7 +376,7 @@ function ForkItem({ chat }: { chat: SidebarItem }) {
       disabled={!canForkChatRow(chat) || generating || forking}
       onSelect={() => actions.fork(chat)}
     >
-      <GitBranchIcon strokeWidth={1.75} className={ICON} />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
       {t("library.chats.menu.fork")}
     </DropdownMenuItem>
   );
@@ -471,6 +492,7 @@ function ChatMenu({
             label={t("common.rename")}
             onSelect={() => actions.rename(chat)}
           />
+          <RegenerateTitleItem chat={chat} />
           {!archived && (
             <>
               <MenuItem
@@ -547,7 +569,7 @@ function ChatMenu({
 }
 
 const TILE =
-  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+  "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
 
 function ChatTile({
@@ -623,7 +645,7 @@ function modelLabel(
 
 // Plain text, not a pill: a pill inside a hovered row looked like a second row.
 const CHIP =
-  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function ChatLocation({
   chat,
@@ -1078,7 +1100,7 @@ export function ChatRow({
           : actions.open(chat)
       }
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -1099,7 +1121,7 @@ export function ChatRow({
                 if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {chatTitle(chat, t)}
             </button>
@@ -1180,7 +1202,7 @@ export function ChatCard({
         <ChatBadges chat={chat} marksOnly />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
-      <SelectBox chat={chat} visible={selecting} className="absolute bottom-3.5 end-4 flex" />
+      <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 end-4 flex" />
       <button
         type="button"
         onClick={(event) => {
@@ -1217,7 +1239,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 }
 
 const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-md text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
@@ -1275,7 +1297,7 @@ export function CollectionHeader({
         <button
           type="button"
           onClick={onParent}
-          className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {parent}
         </button>
@@ -1289,7 +1311,7 @@ export function CollectionHeader({
         </span>
       </nav>
       <div className="flex items-center gap-4">
-        <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+        <span className="flex size-13 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/80">
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-6.5" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -1452,7 +1474,7 @@ export function ProjectRow({
     <div
       onClick={() => actions.viewProject(project.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
@@ -1466,7 +1488,7 @@ export function ProjectRow({
                 event.stopPropagation();
                 actions.viewProject(project.id);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {project.name}
             </button>
@@ -1692,7 +1714,7 @@ export function SectionRow({
     <div
       onClick={() => actions.viewSection(section.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
@@ -1705,7 +1727,7 @@ export function SectionRow({
               event.stopPropagation();
               actions.viewSection(section.id);
             }}
-            className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {section.name}
           </button>
@@ -1783,7 +1805,7 @@ function FavoriteTile({
         aria-label={title}
         onClick={onOpen}
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           FILE_CARD_SURFACE,
         )}
       >

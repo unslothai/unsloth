@@ -88,9 +88,25 @@ async function fetchOpenAIAutoSwitchSettings(): Promise<OpenAIAutoSwitchSettings
 // must not refill it, or the pre-toggle value would be served indefinitely.
 let cacheGeneration = 0;
 
+const settingsListeners = new Set<
+  (settings: OpenAIAutoSwitchSettings) => void
+>();
+
+export function subscribeOpenAIAutoSwitchSettings(
+  listener: (settings: OpenAIAutoSwitchSettings) => void,
+): () => void {
+  settingsListeners.add(listener);
+  return () => {
+    settingsListeners.delete(listener);
+  };
+}
+
 function cacheSettings(settings: OpenAIAutoSwitchSettings, generation: number) {
   if (generation === cacheGeneration) {
     cachedSettings = settings;
+    for (const listener of settingsListeners) {
+      listener(settings);
+    }
   }
   return settings;
 }
@@ -142,9 +158,9 @@ export async function loadOpenAIAutoSwitchSettings() {
   return settings as OpenAIAutoSwitchSettings;
 }
 
-/** A partial write: `enabled` is always sent, and an omitted field keeps its stored value. */
+/** A partial write: omitted fields, `enabled` included, keep their stored value. */
 export type OpenAIAutoSwitchUpdate = {
-  enabled: boolean;
+  enabled?: boolean;
   autoUnloadIdleSeconds?: number;
   autoUnloadKeepKv?: boolean;
   autoDownloadModel?: boolean;
@@ -166,7 +182,8 @@ const UPDATE_KEYS = {
 export async function updateOpenAIAutoSwitchSettings(
   update: OpenAIAutoSwitchUpdate,
 ): Promise<OpenAIAutoSwitchSettings> {
-  const body: Record<string, unknown> = { enabled: update.enabled };
+  const body: Record<string, unknown> = {};
+  if (update.enabled !== undefined) body.enabled = update.enabled;
   for (const [field, key] of Object.entries(UPDATE_KEYS)) {
     const value = update[field as keyof typeof UPDATE_KEYS];
     if (value !== undefined) {

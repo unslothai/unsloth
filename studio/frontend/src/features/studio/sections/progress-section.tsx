@@ -21,10 +21,16 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
+import { useIsAccountOwner } from "@/features/auth";
 import { setTrainingCompareHandoff } from "@/features/chat";
+import {
+  updateSystemOneSettings,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import {
   getTrainingMethodLabel,
   type TrainingViewData,
+  useDuplicateTrainingRun,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
@@ -32,6 +38,7 @@ import {
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { type TranslationKey, useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -41,6 +48,7 @@ import {
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
+  TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -72,6 +80,7 @@ const phaseLabelKeys = {
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
   finalizing: "studio.progress.phase.finalizing",
+  training_drafter: "studio.progress.phase.trainingDrafter",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -88,16 +97,19 @@ interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
   configOverride?: RunConfigOverride;
+  runId?: string | null;
 }
 
 export function ProgressSection({
   data,
   isHistorical = false,
   configOverride,
+  runId,
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const isOwner = useIsAccountOwner();
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
@@ -118,6 +130,7 @@ export function ProgressSection({
 
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
+  const [enablingDecisionApi, setEnablingDecisionApi] = useState(false);
 
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
@@ -154,7 +167,7 @@ export function ProgressSection({
   );
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
-  const showCompletedHint = data.phase === "completed";
+  const showCompletedHint = data.phase === "completed" && !data.isDecision;
   const handleCompareInChat = async () => {
     setTrainingCompareHandoff(data.modelName, data.outputDir);
     await navigate({ to: "/chat" });
@@ -164,14 +177,36 @@ export function ProgressSection({
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
-  const canExportGguf =
+  const hasFinishedOutput =
     !data.isTrainingRunning &&
     !!exportRunName &&
     !data.resumedLater &&
     (data.phase === "completed" || data.phase === "stopped");
+  const canExportGguf = hasFinishedOutput && !data.isDecision;
+  const canUseInDecisionApi = hasFinishedOutput && !!data.isDecision && isOwner;
   const handleExportGguf = () => {
     if (!exportRunName) return;
     void navigate({ to: "/export", search: { run: exportRunName } });
+  };
+  const handleUseInDecisionApi = async () => {
+    if (!exportRunName) {
+      return;
+    }
+    setEnablingDecisionApi(true);
+    try {
+      const model = `laya-ft:${exportRunName}`;
+      await updateSystemOneSettings({ enabled: true, model });
+      useSettingsDialogStore.getState().openDecisionTry(model);
+      toast.success(
+        t("studio.progress.decisionApiEnabled", { name: exportRunName }),
+      );
+    } catch (error) {
+      toast.error(t("studio.progress.decisionApiFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setEnablingDecisionApi(false);
+    }
   };
 
   const stoppedLoss = getDisplayMetric(
@@ -220,9 +255,13 @@ export function ProgressSection({
         configRow(t("studio.progress.epochs"), cfgEpochs),
         configRow(t("studio.progress.batchSize"), cfgBatchSize),
         configRow(t("studio.progress.learningRate"), cfgLearningRate),
-        configRow(t("studio.progress.optimizer"), optimizerLabel),
+        ...(data.isDecision
+          ? []
+          : [configRow(t("studio.progress.optimizer"), optimizerLabel)]),
         configRow(t("studio.progress.maxSteps"), cfgMaxSteps),
-        configRow(t("studio.progress.contextLength"), cfgContextLength),
+        ...(data.isDecision
+          ? []
+          : [configRow(t("studio.progress.contextLength"), cfgContextLength)]),
         configRow(t("studio.progress.warmupSteps"), cfgWarmupSteps),
       ],
     },
@@ -234,7 +273,9 @@ export function ProgressSection({
             configRow(t("studio.progress.rank"), cfgLoraRank),
             configRow(t("studio.progress.alpha"), cfgLoraAlpha),
             configRow(t("studio.progress.dropout"), cfgLoraDropout),
-            configRow(t("studio.progress.variant"), cfgLoraVariant),
+            ...(data.isDecision
+              ? []
+              : [configRow(t("studio.progress.variant"), cfgLoraVariant)]),
           ],
         },
       ]
@@ -261,10 +302,23 @@ export function ProgressSection({
               {t("studio.progress.exportGguf")}
             </Button>
           )}
+          {canUseInDecisionApi && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              disabled={enablingDecisionApi}
+              onClick={handleUseInDecisionApi}
+            >
+              <HugeiconsIcon icon={TaskDone01Icon} className="size-3.5" />
+              {t("studio.progress.useInDecisionApi")}
+            </Button>
+          )}
           {isHistorical ? (
-            <ConfigPopoverButton configItems={configItems} />
+            <ConfigPopoverButton configItems={configItems} runId={runId} />
           ) : (
             <LiveTrainingHeaderActions
+              runId={runId}
               configItems={configItems}
               isTrainingRunning={data.isTrainingRunning}
               onOpenStopDialog={setStopDialogOpen}
@@ -321,7 +375,7 @@ export function ProgressSection({
           )}
 
           {data.error && (
-            <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
+            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
               {data.error}
             </p>
           )}
@@ -329,7 +383,7 @@ export function ProgressSection({
           {data.warnings.length > 0 && (
             <div
               aria-live="polite"
-              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+              className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
             >
               <HugeiconsIcon
                 icon={Alert02Icon}
@@ -432,7 +486,7 @@ function LiveGpuPanel({
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
               // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
               // device name widens the row past the viewport.
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
+              className="h-6 cursor-pointer rounded-full border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -499,6 +553,7 @@ function LiveGpuPanel({
 }
 
 function LiveTrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -506,6 +561,7 @@ function LiveTrainingHeaderActions({
   stopRequested,
   onSetStopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -531,6 +587,7 @@ function LiveTrainingHeaderActions({
 
   return (
     <TrainingHeaderActions
+      runId={runId}
       configItems={configItems}
       isTrainingRunning={isTrainingRunning}
       onOpenStopDialog={onOpenStopDialog}
@@ -542,11 +599,14 @@ function LiveTrainingHeaderActions({
 }
 
 function ConfigPopoverButton({
+  runId,
   configItems,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
 }): ReactElement {
   const t = useT();
+  const { duplicate, disabled } = useDuplicateTrainingRun();
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
@@ -578,6 +638,16 @@ function ConfigPopoverButton({
               ))}
             </div>
           ))}
+          {runId && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => void duplicate(runId)}
+            >
+              {t("common.duplicate")}
+            </Button>
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -585,6 +655,7 @@ function ConfigPopoverButton({
 }
 
 function TrainingHeaderActions({
+  runId,
   configItems,
   isTrainingRunning,
   onOpenStopDialog,
@@ -592,6 +663,7 @@ function TrainingHeaderActions({
   stopDialogOpen,
   stopRequested,
 }: {
+  runId?: string | null;
   configItems: ConfigGroup[];
   isTrainingRunning: boolean;
   onOpenStopDialog: (open: boolean) => void;
@@ -602,7 +674,7 @@ function TrainingHeaderActions({
   const t = useT();
   return (
     <div className="flex items-center gap-2">
-      <ConfigPopoverButton configItems={configItems} />
+      <ConfigPopoverButton configItems={configItems} runId={runId} />
       <ChartSettingsSheet />
       <AlertDialog open={stopDialogOpen} onOpenChange={onOpenStopDialog}>
         <Button
@@ -621,7 +693,7 @@ function TrainingHeaderActions({
         </Button>
         <AlertDialogContent
           className="w-max max-w-[95vw]"
-          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+          overlayClassName="bg-background/40"
         >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>
@@ -662,7 +734,7 @@ function MilestoneCallout({
   }
 
   return (
-    <div className="corner-squircle rounded-2xl border border-border/60 bg-muted/30 px-3 py-2.5">
+    <div className="corner-squircle rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
@@ -761,7 +833,7 @@ function GpuStat({
   }
 
   return (
-    <div className="corner-squircle flex flex-col gap-2 rounded-2xl border border-border/50 bg-background/60 p-3">
+    <div className="corner-squircle flex flex-col gap-2 rounded-lg border border-border/50 bg-background/60 p-3">
       <div className="flex items-center justify-between text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           {icon}

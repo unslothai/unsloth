@@ -2,19 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth-run: execute an unslothai/notebooks notebook unchanged, headless.
+"""execute notebooks headlessly with one transformers version active per kernel."""
 
-Resolves the transformers version the notebook wants (install-cell pin, else the
-model-name tier), launches the kernel with that sidecar on PYTHONPATH so the whole
-kernel process is coherent, and executes every cell with nbconvert.
-
-Usage:
-  unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
-              [--fetch-timeout SECONDS] # URL download stall limit (default 60)
-              [--transformers X.Y.Z]    # force a version, skip auto-detect
-"""
-
-import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.request
+import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -25,10 +15,7 @@ except Exception:
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# The install-cell scanner lives in unsloth_nb_compat, which is the copy the image puts
-# in site-packages and therefore the only one an IPython kernel can import. Sharing it
-# is what stops this path and the kernel hook from disagreeing about what counts as an
-# install line, which would put the kernel on one sidecar and the hook on another.
+# share the site-packages scanner so this path and the IPython hook select the same sidecar.
 if compat is not None:
     _PIN_RE = compat._PIN_RE
     _INSTALL_RE = compat._INSTALL_RE
@@ -87,7 +74,7 @@ def _scan(nb):
     return pin, model
 
 
-def _makedirs_as_host(path):
+def _makedirs_as_host(path, owner_ids = None):
     """Create `path` owned by the nearest existing ancestor. mkdir(2) uses the CALLER's
     uid/gid and only setgid carries down, so a new `--out sub/dir/` would be root-owned
     and _stage_metadata would then give the OUTPUT that owner too."""
@@ -103,18 +90,24 @@ def _makedirs_as_host(path):
     os.makedirs(path, exist_ok = True)
     if not missing:
         return
-    try:
-        anchor = os.stat(probe)
-    except OSError:
-        return
+    if owner_ids is None:
+        try:
+            anchor = os.stat(probe)
+        except OSError:
+            return
+        owner_ids = anchor.st_uid, anchor.st_gid
     for created in reversed(missing):
         try:
-            os.chown(created, anchor.st_uid, anchor.st_gid)
+            os.chown(created, *owner_ids)
         except (OSError, AttributeError):
             pass
 
 
-def _stage_metadata(staged, dest):
+def _stage_metadata(
+    staged,
+    dest,
+    owner_ids = None,
+):
     """Give the staged output the metadata the destination must end up with: mkstemp()
     creates 0600, nbconvert truncates that same inode, and os.replace carries it onto
     the destination. Best effort."""
@@ -128,11 +121,17 @@ def _stage_metadata(staged, dest):
             os.chmod(staged, 0o666 & ~umask)
         except OSError:
             pass
-        try:
-            _dir = os.stat(os.path.dirname(os.path.abspath(dest)) or ".")
-            os.chown(staged, _dir.st_uid, _dir.st_gid)
-        except (OSError, AttributeError):
-            pass
+        if owner_ids is None:
+            try:
+                _dir = os.stat(os.path.dirname(os.path.abspath(dest)) or ".")
+                owner_ids = _dir.st_uid, _dir.st_gid
+            except OSError:
+                pass
+        if owner_ids is not None:
+            try:
+                os.chown(staged, *owner_ids)
+            except (OSError, AttributeError):
+                pass
         return
     try:
         os.chmod(staged, stat.S_IMODE(st.st_mode))
@@ -142,6 +141,81 @@ def _stage_metadata(staged, dest):
         os.chown(staged, st.st_uid, st.st_gid)
     except (OSError, AttributeError):
         pass
+
+
+def _open_url_download(url, owner_ids = None):
+    name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) or "notebook"
+    stem = name[: -len(".ipynb")] if name.endswith(".ipynb") else name
+    n = 0
+    while True:
+        path = os.path.abspath(f"{stem}-{n}.ipynb" if n else f"{stem}.ipynb")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            n += 1
+            continue
+        if owner_ids is None:
+            try:
+                parent = os.stat(os.path.dirname(path))
+                owner_ids = parent.st_uid, parent.st_gid
+            except OSError:
+                pass
+        if owner_ids is not None:
+            try:
+                os.fchown(fd, *owner_ids)
+            except (OSError, AttributeError):
+                pass
+        return path, fd
+
+
+def _host_run_ids():
+    uid = os.environ.pop("UNSLOTH_RUN_UID", None)
+    gid = os.environ.pop("UNSLOTH_RUN_GID", None)
+    if uid is None and gid is None:
+        return None
+    if uid is None or gid is None or not uid.isdigit() or not gid.isdigit():
+        raise SystemExit("UNSLOTH_RUN_UID and UNSLOTH_RUN_GID must be non-negative integers")
+    return int(uid), int(gid)
+
+
+def _mapped_container_id(host_id, map_path):
+    try:
+        with open(map_path) as mapping:
+            ranges = [tuple(map(int, line.split())) for line in mapping if line.strip()]
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"unsloth-run could not read the container ID map: {exc}") from exc
+    for container_start, host_start, length in ranges:
+        if host_start <= host_id < host_start + length:
+            return container_start + host_id - host_start
+    raise SystemExit(f"host ID {host_id} is not mapped into this container")
+
+
+def _container_run_ids(
+    host_ids,
+    uid_map = "/proc/self/uid_map",
+    gid_map = "/proc/self/gid_map",
+):
+    if host_ids is None:
+        return None
+    uid, gid = host_ids
+    return _mapped_container_id(uid, uid_map), _mapped_container_id(gid, gid_map)
+
+
+def _host_owned_command(cmd, run_ids):
+    """run notebook code as the bind mount owner while retaining install permissions."""
+    if run_ids is None or run_ids == (0, 0):
+        return cmd
+    uid, gid = run_ids
+    capabilities = "-all,+chown,+dac_override,+fowner,+setgid,+setuid"
+    return [
+        "/usr/bin/setpriv",
+        f"--reuid={uid}",
+        f"--regid={gid}",
+        "--keep-groups",
+        f"--inh-caps={capabilities}",
+        f"--ambient-caps={capabilities}",
+        *cmd,
+    ]
 
 
 def main():
@@ -163,27 +237,22 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
+    run_ids = _container_run_ids(_host_run_ids())
 
-    tmp_dir = None
     tmp_files = []
     publish_from = None
     if args.out:
         out_path = os.path.abspath(args.out)
         out_dir = os.path.dirname(out_path) or "."
-        _makedirs_as_host(out_dir)
+        _makedirs_as_host(out_dir, run_ids)
         if args.notebook.startswith(("http://", "https://")):
-            # A URL has no source tree to run in, so the download stays beside --out:
-            # that is the directory the run's own artifacts should land in.
+            # keep URL inputs beside --out so relative artifacts land in the output directory
             fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
             with os.fdopen(fd, "w") as f:
                 json.dump(nb, f)
             tmp_files.append(src_path)
         else:
-            # nbconvert makes the INPUT notebook's directory the kernel cwd
-            # (Exporter.from_filename sets resources["metadata"]["path"] to it), so a
-            # staged copy under --out would resolve the notebook's relative opens,
-            # local imports and saves against the OUTPUT tree. Execute the original
-            # where it lives; only the result is staged beside --out.
+            # nbconvert uses the input directory as the kernel cwd, so keep local inputs in place
             src_path = args.notebook
         fd, publish_from = tempfile.mkstemp(
             prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
@@ -191,9 +260,8 @@ def main():
         os.close(fd)
         tmp_files.append(publish_from)
     elif args.notebook.startswith(("http://", "https://")):
-        tmp_dir = tempfile.mkdtemp()
-        src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
-        with open(src_path, "w") as f:
+        src_path, fd = _open_url_download(args.notebook, run_ids)
+        with os.fdopen(fd, "w") as f:
             json.dump(nb, f)
         out_path = src_path
     else:
@@ -202,12 +270,9 @@ def main():
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
-    # Per-run marker, and ALWAYS a fresh one: an inherited value is never this run's.
-    # The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
-    # `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's. Reusing it
-    # broke both ways: a target with a pin overwrote the caller kernel's pin, and a
-    # target with no pin ran against the caller's stale one. Either way a kernel that
-    # has not imported transformers yet can be handed the wrong sidecar.
+    if run_ids is not None and run_ids != (0, 0):
+        env["UNSLOTH_NB_ROOT_INSTALL"] = "1"
+    # nested runs need a fresh marker to avoid overwriting or reusing the caller's transformers pin
     fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
     os.close(fd)
     env["UNSLOTH_NB_TF_MARKER"] = marker
@@ -242,19 +307,18 @@ def main():
         os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path),
     )
     try:
-        rc = subprocess.call(cmd, env = env)
+        rc = subprocess.call(_host_owned_command(cmd, run_ids), env = env)
         if rc == 0 and publish_from is not None:
-            _stage_metadata(publish_from, out_path)
+            _stage_metadata(publish_from, out_path, run_ids)
             try:
                 os.replace(publish_from, out_path)
             except OSError:
-                # rename(2) onto a bind-mounted OUTPUT FILE returns EBUSY even though
-                # the file is writable, and such a mount needs the inode write anyway
+                # bind-mounted output files return EBUSY from rename(2) and require writing the mounted inode
                 try:
                     with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
                         shutil.copyfileobj(staged, live)
                 except OSError:
-                    # keep the result rather than delete it: a run can be hours long
+                    # preserve the result because the run may have taken hours
                     if publish_from in tmp_files:
                         tmp_files.remove(publish_from)
                     print(
@@ -264,8 +328,6 @@ def main():
                     )
                     raise
     finally:
-        if tmp_dir is not None:
-            shutil.rmtree(tmp_dir, ignore_errors = True)
         for p in tmp_files:
             try:
                 os.remove(p)

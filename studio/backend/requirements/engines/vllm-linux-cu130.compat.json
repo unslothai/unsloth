@@ -1,5 +1,5 @@
 {
- "lock_sha256": "3c7a62dd8f2fa48315b465e5ef5f81257d803835524112e9b0e01e729ecb4f9b",
+ "lock_sha256": "648332a77c94c8cd8ae0ee77c1afa705fa8f95fa6baa236b146d34d3ec29742e",
  "requires": {
   "agent-detector": [
    ">=1.1.0"
@@ -739,7 +739,7 @@
   "outlines-core": 2341051,
   "packaging": 129956,
   "partial-json-parser": 10877,
-  "pillow": 7082423,
+  "pillow": 6937129,
   "prometheus-client": 64494,
   "prometheus-fastapi-instrumentator": 19649,
   "propcache": 61534,
@@ -755,7 +755,7 @@
   "pydantic-settings": 69413,
   "pyelftools": 201178,
   "pygments": 1231151,
-  "pyjwt": 31274,
+  "pyjwt": 33860,
   "pynvvideocodec": 43176124,
   "python-dotenv": 22101,
   "python-json-logger": 15163,
@@ -801,7 +801,7 @@
   "typer": 122874,
   "typing-extensions": 44614,
   "typing-inspection": 14693,
-  "urllib3": 131087,
+  "urllib3": 135717,
   "uvicorn": 79859,
   "uvloop": 4366890,
   "vllm": 303698761,

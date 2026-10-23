@@ -76,18 +76,15 @@ for (const blocked of [
 for (const key of ["metaKey", "ctrlKey"] as const) {
   test(`${key}: mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break`, () => {
     const mod = { ...enter, [key]: true };
-    // One line: Enter sends, Shift+Enter breaks the line.
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "hi"), "default");
     assert.equal(composerSubmitIntent({ ...enter, shiftKey: true }, "mod-enter-multiline", "hi"), null);
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline"), "default");
-    // Several lines: Enter adds another, the modifier sends.
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "a\nb"), null);
     assert.equal(composerSubmitIntent(mod, "mod-enter-multiline", "a\nb"), "default");
     assert.equal(
       composerSubmitIntent({ ...mod, shiftKey: true }, "mod-enter-multiline", "a\nb"),
       "opposite",
     );
-    // The other two ignore the draft.
     assert.equal(composerSubmitIntent(enter, "enter", "a\nb"), "default");
     assert.equal(composerSubmitIntent(enter, "mod-enter", "hi"), null);
     assert.equal(effectiveSendShortcut("mod-enter-multiline", "a\nb"), "mod-enter");
@@ -128,9 +125,6 @@ test("one-message override flips both preferences without changing the default",
     opposite: "Ctrl+Shift+Enter",
   });
 });
-// The queue and steer chords name a behavior, where ⌘⏎ only flips the one in
-// settings. Both preferences have to reach both behaviors, or a user set to
-// steer would find the queue chord steering.
 test("the queue and steer chords land on their behavior from either preference", () => {
   for (const preference of ["queue", "steer"] as const) {
     for (const behavior of ["queue", "steer"] as const) {
@@ -145,8 +139,6 @@ test("the queue and steer chords land on their behavior from either preference",
     }
   }
 });
-// The chords submit the form, and handleSubmit is what reads the intent, so
-// the ref has to be set before requestSubmit and cleared after it returns.
 test("the queue and steer chords set the intent around the submit", async () => {
   const source = await readFile(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),

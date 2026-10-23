@@ -7,12 +7,17 @@ import { type LibraryTypeFilter, TYPE_FILTER_KINDS, fileKind } from "./file-kind
 export interface LibraryFilters {
   sources: Set<LibrarySource>;
   types: Set<LibraryTypeFilter>;
+  workflows: Set<string>;
 }
 
-export const EMPTY_FILTERS: LibraryFilters = { sources: new Set(), types: new Set() };
+export const EMPTY_FILTERS: LibraryFilters = {
+  sources: new Set(),
+  types: new Set(),
+  workflows: new Set(),
+};
 
 export function filtersActive(filters: LibraryFilters): boolean {
-  return filters.sources.size > 0 || filters.types.size > 0;
+  return filters.sources.size > 0 || filters.types.size > 0 || filters.workflows.size > 0;
 }
 
 export function matchesFilters(
@@ -21,6 +26,9 @@ export function matchesFilters(
   typesApply: boolean,
 ): boolean {
   if (filters.sources.size > 0 && !filters.sources.has(item.source)) return false;
+  if (filters.workflows.size > 0 && !filters.workflows.has(item.audio?.workflow ?? "")) {
+    return false;
+  }
   if (!typesApply || filters.types.size === 0) return true;
   const kind = fileKind(item);
   return [...filters.types].some((type) => TYPE_FILTER_KINDS[type].includes(kind));

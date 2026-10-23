@@ -43,6 +43,7 @@ prebuilts that sit beside the install dir:
 %USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,audio.cpp,.cache}. The Hugging
 Face cache is left in place (only audio.cpp's unsloth-audiocpp-links beside it
 goes), as is anything else you keep under %USERPROFILE%\.unsloth.
+A shared uv package cache (`uv cache dir`) is also left when install reused one.
 
 Options:
   -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
@@ -540,6 +541,51 @@ Environment:
         return $false
     }
 
+    # install.ps1 records its uv cache in <root>\cache\uv-cache-dir.
+    function _RecordedUvCache {
+        param([string]$Root)
+        $marker = Join-Path $Root "cache\uv-cache-dir"
+        if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $null }
+        try {
+            $raw = [System.IO.File]::ReadAllText($marker)
+        } catch {
+            return $null
+        }
+        $raw = $raw.TrimEnd("`r", "`n")
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        return $raw
+    }
+
+    function _UvCacheUnderRoot {
+        param([string]$Cache, [string]$Root)
+        if ([string]::IsNullOrWhiteSpace($Cache) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
+        $normCache = $Cache.Replace('/', '\').TrimEnd('\')
+        $normRoot = $Root.Replace('/', '\').TrimEnd('\')
+        if ($normCache -eq $normRoot) { return $true }
+        return $normCache.StartsWith($normRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+    }
+
+    # Saw: any root recorded a cache. Leftovers: recorded caches outside every root this run deletes.
+    function _UvLeftoverCaches {
+        param([string[]]$Roots)
+        $saw = $false
+        $leftovers = @()
+        foreach ($r in $Roots) {
+            $rec = _RecordedUvCache $r
+            if ($null -eq $rec) { continue }
+            $saw = $true
+            $under = $false
+            foreach ($root in $Roots) {
+                # A junctioned/symlinked root is only unlinked, so its target (and any cache in it) stays.
+                $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+                if ($item -and $item.LinkType) { continue }
+                if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
+            }
+            if (-not $under -and $leftovers -notcontains $rec) { $leftovers += $rec }
+        }
+        return @{ Saw = $saw; Leftovers = $leftovers }
+    }
+
     # Hard deny list: never recursively delete a drive root, USERPROFILE, its parent or a system dir.
     function _IsUnsafeRoot {
         param([string]$Path)
@@ -769,6 +815,13 @@ Environment:
             $confRoot = _RootFromConf (Join-Path $env:LOCALAPPDATA "Unsloth Studio\studio.conf")
             if ($confRoot) { & $emit $confRoot }
         }
+        # The folder Unsloth Desktop installed into (studio_home.rs).
+        if ($env:USERPROFILE) {
+            $desktopChoice = Join-Path $env:USERPROFILE ".unsloth\desktop_studio_home"
+            if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+                try { & $emit ([System.IO.File]::ReadAllText($desktopChoice).Trim()) } catch {}
+            }
+        }
     }
 
     # Return $true iff the PID's image path lives under one of $KnownRoots, so an unrelated
@@ -995,6 +1048,8 @@ Environment:
         if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
     }
 
+    $uvCaches = _UvLeftoverCaches $ownedRoots
+
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
     if ($defaultDataDir) {
@@ -1128,7 +1183,7 @@ Environment:
         # Kept rather than pruned, since data left behind is recoverable. Mirrors uninstall.sh.
         $flatMaster = $masterRootToStop
         if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
-            _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
+            _Substep "keeping $r`: UNSLOTH_HOME and the Unsloth Studio root name the same directory," "Yellow"
             _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
             _Substep "once you have checked what is in it." "Yellow"
             $script:RemoveFailed = $true
@@ -1260,6 +1315,17 @@ Environment:
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
                                  Where-Object { $_.Name -match $script:StaleLockPattern })) {
                 _RemoveLockFile $stale.FullName
+            }
+        }
+    }
+    # Desktop's install-location choice goes with the folder it names.
+    if ($defaultUnslothHome) {
+        $desktopChoice = Join-Path $defaultUnslothHome "desktop_studio_home"
+        if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+            $chosenRoot = $null
+            try { $chosenRoot = [System.IO.File]::ReadAllText($desktopChoice).Trim() } catch {}
+            if (-not $chosenRoot -or -not (Test-Path -LiteralPath $chosenRoot)) {
+                _RemovePath $desktopChoice
             }
         }
     }
@@ -1423,6 +1489,17 @@ Environment:
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
+    if ($uvCaches.Leftovers.Count -gt 0) {
+        foreach ($p in $uvCaches.Leftovers) {
+            Write-Host "Note: the uv package cache at $p was left in place (it may be shared with other tools)."
+            # --cache-dir: a bare `uv cache clean` cleans whichever cache uv resolves now.
+            $q = "'" + $p.Replace("'", "''") + "'"
+            Write-Host "      Free it with: uv cache clean --cache-dir $q"
+        }
+    } elseif (-not $uvCaches.Saw) {
+        Write-Host 'Note: if install reused a shared uv cache (`uv cache dir`), it was left in place.'
+        Write-Host "      Free it with 'uv cache clean'."
+    }
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
         Write-Host ""
         Write-Host "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"

@@ -20,8 +20,11 @@ interface scope.
 from __future__ import annotations
 
 import asyncio
+import functools
+import errno
 import ipaddress
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -155,8 +158,13 @@ def _wsl_networking_mode() -> Optional[str]:
 
 
 def _is_host_only_interface(name: str) -> bool:
-    """True for Windows Hyper-V switches that do not face the physical LAN."""
+    """True for virtual switches (Hyper-V, Docker, libvirt, VirtualBox, VMware) that do not face the physical LAN."""
     normalized = name.strip().casefold()
+    # br-<12 hex> is a Docker network; a plain br0 is often the host's real LAN bridge, so it stays.
+    if normalized.startswith(("docker0", "virbr", "vboxnet", "vmnet")) or re.fullmatch(
+        r"br-[0-9a-f]{12}", normalized
+    ):
+        return True
     if not normalized.startswith("vethernet ("):
         return False
     return any(
@@ -211,8 +219,19 @@ def is_public_address(address: str) -> bool:
         return False
 
 
+def _already_served(address: str, port: int) -> bool:
+    try:
+        with socket.create_connection((address, port), timeout = 0.2):
+            return True
+    except OSError:
+        return False
+
+
 def _bind_listener(address: str, port: int) -> socket.socket:
     """A listening socket on exactly ``address:port``."""
+    if sys.platform == "darwin" and _already_served(address, port):
+        # BSD SO_REUSEADDR binds under another app's 0.0.0.0 listener and steals its LAN traffic.
+        raise OSError(errno.EADDRINUSE, f"{address}:{port} is already served")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # skipped on Windows, where SO_REUSEADDR lets a socket take over a live listener
@@ -229,7 +248,15 @@ def _bind_listener(address: str, port: int) -> socket.socket:
 
 def _listener_config(app, host: str, port: int):
     from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
-    return uvicorn.Config(
+
+    # a TLS launch must not reopen plain HTTP on the network
+    tls = getattr(getattr(app, "state", None), "studio_tls", None)
+    if tls is not None:
+        from utils.studio_tls import StudioTLSConfig
+        config_class = functools.partial(StudioTLSConfig, tls = tls)
+    else:
+        config_class = uvicorn.Config
+    return config_class(
         app,
         host = host,
         port = port,
@@ -266,8 +293,9 @@ def start_lan_listener(
     loop,
     port: int,
     fallback_ports: tuple[int, ...] = (),
+    selected_addresses: Optional[tuple[str, ...]] = None,
 ) -> tuple[str, ...]:
-    """Serve ``app`` on LAN addresses at the first bindable candidate port."""
+    """Serve ``app`` on LAN addresses at the first bindable candidate port; ``selected_addresses=None`` binds all."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
     with _lock:
@@ -278,6 +306,22 @@ def start_lan_listener(
         if not candidates:
             _error = "no_lan_address"
             raise RuntimeError(_error)
+        if selected_addresses is not None:
+            # never widened back to the detected set: that would bind the addresses the user excluded
+            missing = [address for address in selected_addresses if address not in candidates]
+            candidates = [address for address in candidates if address in selected_addresses]
+            if not candidates:
+                _error = "selected_address_unavailable"
+                logger.warning(
+                    "LAN access found none of the chosen addresses on this machine: %s",
+                    ", ".join(selected_addresses),
+                )
+                raise RuntimeError(_error)
+            if missing:
+                logger.info(
+                    "LAN access skipped chosen addresses not on this machine: %s",
+                    ", ".join(missing),
+                )
 
         sockets: list[socket.socket] = []
         bound: list[str] = []

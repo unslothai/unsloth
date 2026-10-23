@@ -356,6 +356,7 @@ export function RunPreviewCard({
     gradientAccumulation,
     learningRate,
     contextLength,
+    isDecision,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
@@ -374,6 +375,7 @@ export function RunPreviewCard({
       gradientAccumulation: s.gradientAccumulation,
       learningRate: s.learningRate,
       contextLength: s.contextLength,
+      isDecision: s.modelType === "decision",
     })),
   );
 
@@ -490,11 +492,13 @@ export function RunPreviewCard({
             />
           }
         />
-        <MetaRow
-          label={t("studio.preview.context")}
-          value={numberFormatter.format(contextLength)}
-          mono={true}
-        />
+        {!isDecision && (
+          <MetaRow
+            label={t("studio.preview.context")}
+            value={numberFormatter.format(contextLength)}
+            mono={true}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.lr")}
           value={formatLearningRate(learningRate)}

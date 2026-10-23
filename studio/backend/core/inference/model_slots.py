@@ -76,6 +76,11 @@ def _worker_alive(orchestrator) -> bool:
     return bool(callable(worker_alive) and worker_alive())
 
 
+def cpu_only(llama) -> bool:
+    """A running llama-server started with no GPU layers: unloading it frees no VRAM."""
+    return bool(llama.is_active) and getattr(llama, "_gpu_offload_active", None) is False
+
+
 def holds_vram() -> bool:
     """A kept model on the GPU or one loading; a llama-server started with no GPU layers is not."""
     return any_loading() or any(
@@ -143,6 +148,7 @@ def eviction_victims(
     exclude,
     short_mib: int,
     gpu_indices = None,
+    discrete: bool = False,
 ) -> list[ExtraSlot]:
     """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
     one at a time when a footprint is unknown, since the retry prices the rest. A slot still
@@ -153,6 +159,8 @@ def eviction_victims(
         planned = getattr(slot.llama, "_planned_vram_mib", {})
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
         if slot.generations or slot.refs or (planned and not held):
+            continue
+        if discrete and not planned and cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held
@@ -287,6 +295,30 @@ def unload_idle() -> int:
     filling = loading[0] if loading else None
     idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
     return len(evict_these(idle))
+
+
+def audio_cpp_model_names(orchestrator) -> list[str]:
+    """The audio.cpp models an orchestrator holds or is loading: their servers run from the managed tree."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp
+
+    # Snapshot the loads first: one that publishes between the two reads moves from loading to held.
+    loading = list(getattr(orchestrator, "loading_models", None) or ())
+    held = [
+        name
+        for name, entry in list((getattr(orchestrator, "models", None) or {}).items())
+        if isinstance(entry, dict) and entry.get("audio_type") in AUDIO_CPP_AUDIO_TYPES
+    ]
+    return held + [name for name in loading if name not in held and looks_like_audio_cpp(name)]
+
+
+def unload_audio_cpp_slots(strict: bool = False) -> int:
+    """Drop every slot holding or loading an audio.cpp model, for the audio.cpp runtime swap."""
+    doomed = [slot for slot in list(slots) if audio_cpp_model_names(slot.orchestrator)]
+    for slot in doomed:
+        # drop() keeps the loading marker, so a load still ahead of its spawn would start a worker after it.
+        for name in list(slot.orchestrator.loading_models):
+            slot.orchestrator.cancel_load(name)
+    return _drop_where(lambda slot, filling: any(slot is held for held in doomed), strict)
 
 
 def unload_llama_slots(strict: bool = False) -> int:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Check thumbnail/original separation in source because the page has no DOM test harness.
+// Source-checked because the page has no DOM test harness.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,7 +38,6 @@ test("strip tiles fetch and show thumbnails, falling back to a cached original",
   assert.ok(observer.includes("void ensureThumb(image);"));
   assert.ok(!observer.includes("ensureSrc("));
   assert.ok(page.includes("fetchGalleryObjectUrl(galleryThumbnailUrl(image.url))"));
-  // The canvas shows the selected thumbnail while its original loads, even with the tile off-screen.
   const thumbPrune = between(page, "galleryCache.thumbById.prune(", ");");
   assert.ok(thumbPrune.includes("galleryCache.selectedId"));
 });
@@ -46,28 +45,44 @@ test("strip tiles fetch and show thumbnails, falling back to a cached original",
 test("the canvas, viewer and downloads read only the original", () => {
   assert.ok(page.includes("const selectedSrc = selected ? srcById[selected.id] : undefined;"));
   assert.ok(page.includes("const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;"));
-  // The selected record is fetched in full whether or not its tile is on screen.
   const preview = between(page, "// The preview is what the user looks at", "// Drop an image from the strip.");
   assert.ok(preview.includes("await ensureSrc(selected);"));
 
-  const canvas = between(page, "{selected && selectedSrc ? (", ") : selected && selectedThumb ? (");
+  // The live denoise preview branch comes first while a run is in flight.
+  const canvas = between(page, ") : selected && selectedSrc ? (", ") : selected ? (");
   assert.ok(canvas.includes("src={selectedSrc}"));
   for (const format of ["png", "jpeg", "webp"]) {
-    assert.ok(canvas.includes(`downloadImage(selectedSrc, selected, "${format}")`));
+    assert.ok(canvas.includes(`downloadImage(selected, "${format}", selectedSrc)`));
   }
   assert.ok(!canvas.includes("thumbById"));
   assert.ok(!canvas.includes("selectedThumb"));
 
   const quickDownload = between(page, "const handleQuickDownload = useCallback(", "const stripReorder");
   assert.ok(quickDownload.includes("srcById[image.id]"));
-  assert.ok(quickDownload.includes("fetchGalleryBlob(image.url)"));
   assert.ok(!quickDownload.includes("thumbById"));
+  // Without a cached original, the download fetches the full PNG, never a thumbnail.
+  const download = between(page, "async function downloadImage(", "\n}\n");
+  assert.ok(download.includes("fetchGalleryBlob(image.url)"));
+  assert.ok(!download.includes("thumb"));
 });
 
 test("the thumbnail placeholder offers no action that needs the original", () => {
-  const placeholder = between(page, ") : selected && selectedThumb ? (", ") : selected ? (");
+  const placeholder = between(page, ") : selected ? (", ') : busy === "generating" ? null : (');
   assert.ok(placeholder.includes("src={selectedThumb}"));
-  for (const action of ["downloadImage", "openViewer", "GalleryItemMenu", "RecipePopover", "onClick"]) {
+  for (const action of ["downloadImage", "openViewer", "GalleryItemMenu", "RecipePopover"]) {
     assert.ok(!placeholder.includes(action), action);
+  }
+});
+
+test("the live denoise preview shows only the in-flight preview and offers no action on it", () => {
+  assert.ok(
+    page.includes(
+      'busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;',
+    ),
+  );
+  const live = between(page, "{livePreviewSrc ? (", ") : selected && selectedSrc ? (");
+  assert.ok(live.includes("src={livePreviewSrc}"));
+  for (const forbidden of ["selectedSrc", "thumbById", "selectedThumb", "downloadImage", "openViewer", "GalleryItemMenu"]) {
+    assert.ok(!live.includes(forbidden), forbidden);
   }
 });

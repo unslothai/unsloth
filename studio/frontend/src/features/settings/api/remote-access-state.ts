@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLoopbackHost, normalizeHost } from "../components/agent-command.ts";
+
 export type RemoteAccessState =
   | "off"
   | "starting"
@@ -75,11 +77,21 @@ export function remoteAccessPollDelay(
     : 5000;
 }
 
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    return isLoopbackHost(normalizeHost(new URL(origin).hostname));
+  } catch {
+    return false;
+  }
+}
+
 export function remoteApiOrigin(
   remoteUrl: string | null,
   localOrigin: string,
+  lanUrls: string[] = [],
 ): string {
-  return remoteUrl ?? localOrigin;
+  const lanUrl = isLoopbackOrigin(localOrigin) ? lanUrls[0] : undefined;
+  return remoteUrl ?? lanUrl ?? localOrigin;
 }
 
 export function remoteAccessAutoStartReadOnly(
@@ -116,6 +128,30 @@ export function remoteAccessSelfStopPoll(
   return { expectingDisconnect: true, apply: next.state !== "stopping" };
 }
 
+export function remoteAccessErrorMessage(
+  error: string | null | undefined,
+): string | null {
+  switch (error) {
+    case null:
+    case undefined:
+      return null;
+    case "cloudflared is unavailable":
+      return "Couldn't download cloudflared. Check your internet connection, or install cloudflared yourself (for example brew install cloudflared) and try again.";
+    case "cloudflared did not produce a URL":
+      return "Cloudflare didn't issue a URL. Check your connection and try again in a minute.";
+    case "cloudflared did not register a connection":
+      return "Cloudflare couldn't connect. A firewall or VPN may be blocking it.";
+    case "Cloudflare URL was not reachable":
+      return "The URL was created but didn't respond. Try again.";
+    case "cloudflared exited":
+      return "The Cloudflare tunnel stopped unexpectedly. Start it again.";
+    case "cloudflared could not be stopped":
+      return "The previous Cloudflare tunnel could not be stopped. Stop it before starting a new one.";
+    default:
+      return error;
+  }
+}
+
 export function remoteAccessBlockMessage(
   reason: string | null,
   isDesktop: boolean,
@@ -128,7 +164,7 @@ export function remoteAccessBlockMessage(
         ? "Set a remote password before exposing this server."
         : "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
     case "explicitly_disabled":
-      return "This launch used --no-cloudflare. Restart without it to enable remote access.";
+      return "This launch turned the Cloudflare tunnel off (--no-cloudflare, which unsloth start also sets). Relaunch with unsloth studio to use remote access.";
     case "launch_managed":
       return "This tunnel is managed by the launch command.";
     case "colab_managed":

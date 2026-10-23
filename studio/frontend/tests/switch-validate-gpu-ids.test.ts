@@ -18,7 +18,9 @@ const pick = new Function(
   "targetIsDiffusion",
   "reconcilePersistedGpuIds",
   "resetsPerModelSettings",
-  `${slice("const stagedGpuIds =", "let loadSpeculativeType")}
+  "reconcileTensorSplit",
+  `let loadSplitRatio = null;
+  ${slice("const stagedGpuIds =", "let loadSpeculativeType")}
   ${slice("const validateGpuIds =", "// The reset below")}
   if (resetsPerModelSettings) {
     ${slice("loadSelectedGpuIds = stagedGpuIds;", "loadGpuLayers =")}
@@ -42,6 +44,7 @@ test("a switch validates the GPUs the load will use", () => {
       false,
       reconcile,
       resets,
+      () => null,
     );
     assert.deepEqual(validateGpuIds, loadSelectedGpuIds, JSON.stringify([pending, resets]));
   }

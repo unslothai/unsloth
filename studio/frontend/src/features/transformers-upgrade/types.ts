@@ -9,8 +9,10 @@ export interface TransformersUpgradeInfo {
   pypi_version?: string | null;
   /** Latest PyPI release ships this model_type (installable after consent). */
   supported_in_pypi?: boolean;
-  /** Only transformers main ships it (dev-only; not installable). */
+  /** transformers main ships it; installable from main after consent when main_version is set. */
   supported_in_main?: boolean;
+  /** transformers main version (a .devN string) at check time. */
+  main_version?: string | null;
 }
 
 export type TransformersUpgradePhase = "consent" | "installing" | "error";

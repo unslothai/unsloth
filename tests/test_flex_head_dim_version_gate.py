@@ -102,7 +102,7 @@ def test_gate_is_off_below_blackwell(monkeypatch):
 
 
 def _plain_sdpa(monkeypatch):
-    # The SM100 cuDNN head_dim 256 detour wraps SDPA at import on a B200; these gate tests are about plain SDPA.
+    # The SM100 cuDNN head_dim 256 detour wraps SDPA at import on a B200; these test plain SDPA.
     sdpa = u.torch.nn.functional.scaled_dot_product_attention
     monkeypatch.setattr(
         u.torch.nn.functional, "scaled_dot_product_attention", getattr(sdpa, "__wrapped__", sdpa)
@@ -124,7 +124,7 @@ def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
 
 
 def test_gate_is_off_while_the_cudnn_d256_detour_is_installed(monkeypatch):
-    # Masked head_dim 256 training then runs the efficient kernel, not cuDNN: flex is faster, as on torch <= 2.13.
+    # Masked head_dim 256 training then runs the efficient kernel, not cuDNN, so flex is faster.
     _blackwell_torch_2_14(monkeypatch)
     sdpa = u.torch.nn.functional.scaled_dot_product_attention
     original = getattr(sdpa, "__wrapped__", sdpa)

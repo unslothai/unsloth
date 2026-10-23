@@ -21,6 +21,7 @@ import tempfile
 from loggers import get_logger
 from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+from utils.paths.private_tmp import private_tmp_dir, private_tmp_path
 
 logger = get_logger(__name__)
 
@@ -416,11 +417,12 @@ def project_workspaces_root() -> Path:
 
 
 def shared_tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    return private_tmp_path("unsloth-studio")
 
 
 def tmp_root() -> Path:
-    root = shared_tmp_root()
+    # Created and checked here: on a shared /tmp another account could own or plant the root.
+    root = private_tmp_dir("unsloth-studio")
     if is_owner_context():
         return root
     return root / "accounts" / current_account().account_id
@@ -665,6 +667,67 @@ def hermes_model_dirs() -> list[Path]:
         [_hermes_root() / "models", _hermes_native_home() / "models"],
         resolve = False,
     )
+
+
+def _omlx_base_path() -> Path:
+    """oMLX's data root, resolved as its own ``resolve_default_base_path`` does:
+    ``OMLX_BASE_PATH`` > the macOS app's bootstrap file > ``~/.omlx``."""
+    env_value = os.environ.get("OMLX_BASE_PATH", "").strip()
+    if env_value:
+        return Path(env_value).expanduser()
+    bootstrap = Path.home() / "Library" / "Application Support" / "oMLX" / "base-path"
+    try:
+        raw = bootstrap.read_text(encoding = "utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    return Path(raw).expanduser() if raw else Path.home() / ".omlx"
+
+
+def _omlx_configured_dirs(base: Path) -> list[str]:
+    """``model.model_dirs``, else the legacy ``model.model_dir``, from oMLX's settings.json."""
+    settings_path = base / "settings.json"
+    if not settings_path.is_file():
+        return []
+    try:
+        settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
+        model_settings = settings.get("model") or {}
+        configured = model_settings.get("model_dirs") or []
+        if isinstance(configured, str):
+            configured = [configured]
+        if not configured and model_settings.get("model_dir"):
+            configured = [model_settings["model_dir"]]
+        return [d for d in configured if isinstance(d, str) and d]
+    except Exception as exc:
+        logger.debug("Ignoring unreadable oMLX settings at %s: %s", settings_path, exc)
+        return []
+
+
+def omlx_model_dirs() -> list[Path]:
+    """Return oMLX model directories that exist on disk.
+
+    oMLX keeps the same ``publisher/model`` layout as LM Studio and can list LM Studio's
+    folder among its own roots; that one is dropped so it is not scanned twice. An HF cache
+    root stays: its ``models--*`` walk cannot see oMLX's flat folders beside those repos.
+    """
+    base = _omlx_base_path()
+    # oMLX applies OMLX_MODEL_DIR (comma-separated) over settings.json.
+    env_dirs = [d.strip() for d in os.environ.get("OMLX_MODEL_DIR", "").split(",") if d.strip()]
+    candidates: list[str | Path] = env_dirs or _omlx_configured_dirs(base) or [base / "models"]
+    lmstudio = set()
+    for path in lmstudio_model_dirs():
+        try:
+            lmstudio.add(str(path.resolve()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+    out = []
+    for path in _existing_dirs(candidates, resolve = False):
+        try:
+            if str(path.resolve()) in lmstudio:
+                continue
+        except (OSError, RuntimeError, ValueError):
+            continue
+        out.append(path)
+    return out
 
 
 def well_known_model_dirs() -> list[Path]:
@@ -1224,6 +1287,29 @@ def parseable_cache_fallback(key: str, intended: str) -> str | None:
     return candidate
 
 
+def _use_studio_uv_tools() -> None:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its own uv in <studio>/uv, off the user
+    PATH, and its uv-managed Python in <studio>/python. Keyed on those directories, which only
+    that installer creates, so nothing else opts in. Its uv goes first: the installer only places
+    one there when PATH had none or one below its minimum."""
+    root = studio_root()
+    try:
+        if root.resolve() == (Path.home() / ".unsloth" / "studio").resolve():
+            return
+    except (OSError, RuntimeError, ValueError):
+        return
+    if (root / "python").is_dir() and not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        os.environ["UV_PYTHON_INSTALL_DIR"] = str(root / "python")
+    uv_dir = root / "uv"
+    if (uv_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():
+        os.environ["PATH"] = _path_with_first(os.environ.get("PATH", ""), str(uv_dir))
+
+
+def _path_with_first(path: str, first: str) -> str:
+    rest = [entry for entry in path.split(os.pathsep) if entry and entry != first]
+    return os.pathsep.join([first, *rest])
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -1231,6 +1317,7 @@ def _setup_cache_env() -> None:
     stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
+    _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
 

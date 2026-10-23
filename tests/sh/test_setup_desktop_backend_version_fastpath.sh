@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Tests that setup.sh's fastpath escapes when UNSLOTH_DESKTOP_BACKEND_VERSION
-# requires a backend upgrade even if INSTALLED_VER == LATEST_VER -- and that the
-# UV_OFFLINE branch, which keeps a verified install when PyPI is unreachable, is
-# held to that same bar. Both branches reach the escapes through one helper,
-# _fast_path_escapes, precisely so they cannot answer differently.
+# setup.sh's fast path must escape when UNSLOTH_DESKTOP_BACKEND_VERSION requires an upgrade,
+# and the UV_OFFLINE branch is held to the same bar via the shared _fast_path_escapes.
 
 set -euo pipefail
 
@@ -17,13 +14,8 @@ trap 'rm -rf "$WORK"' EXIT
 BLK="$WORK/fastpath_blk.sh"
 OFFLINE_BLK="$WORK/offline_blk.sh"
 
-# This test runs the fast path by slicing it out of setup.sh, so every slice
-# assumption below is checked and reported as drift. An unchecked slice fails
-# as a bare "syntax error near unexpected token" from a temp file the reader
-# has never heard of, which is how the elif of #8515 sat red on main: the
-# condition text was unchanged, only the keyword in front of it moved, and
-# three of the six cases still "passed" because a block that never sourced
-# leaves _SKIP_PYTHON_DEPS at its false default.
+# Every slice assumption is checked and reported as drift: a block that never sourced leaves
+# _SKIP_PYTHON_DEPS at its false default, so half the cases would pass wrongly.
 drift() {
     echo "FATAL: the fast-path extraction no longer matches $SETUP_SH -- $1" >&2
     echo "       Fix the extraction in $0 (or the block in setup.sh), do not silence it:" >&2
@@ -33,17 +25,11 @@ drift() {
     exit 1
 }
 
-# Matched as a literal, and deliberately without the leading keyword: the block
-# is reached by an elif today and was reached by an if before #8515, and which
-# one it is has no bearing on what this test exercises. The keyword is checked
-# separately below and normalised to a plain `if` on the way out, so the slice
-# is always a standalone, parseable construct.
+# Matched without the leading if/elif keyword; it is normalised to `if` so the slice parses alone.
 FASTPATH_COND='[ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then'
-# The sibling branch, taken when PyPI could not be reached at all.
 OFFLINE_COND='[ -z "$LATEST_VER" ]; then'
 
-# $1 condition literal, $2 end-anchor regex, $3 destination. KEEP consumes the anchor line: the
-# up-to-date branch ends ON its handoff line, the offline branch on the chain's closing `fi`.
+# $1 condition literal, $2 end-anchor regex, $3 destination. KEEP consumes the anchor line.
 extract_branch() {
     _extract_status=0
     awk -v COND="$1" -v ENDRE="$2" -v KEEP="$3" '
@@ -79,8 +65,7 @@ extract_branch() {
 extract_branch "$FASTPATH_COND" '^[ \t]*_fast_path_escapes$'  keep "$BLK"
 extract_branch "$OFFLINE_COND"  '^    fi$'                    drop "$OFFLINE_BLK"
 
-# The slices have to still contain what this test claims to test. Without these
-# the extraction could shrink to nothing meaningful and every case would pass.
+# Without these the extraction could shrink to nothing and every case would pass.
 grep -q '_SKIP_PYTHON_DEPS=true' "$BLK" \
     || drift "the extracted up-to-date block never sets _SKIP_PYTHON_DEPS=true"
 grep -q '^[[:space:]]*_fast_path_escapes$' "$BLK" \
@@ -93,7 +78,6 @@ grep -q '^[[:space:]]*_fast_path_escapes$' "$OFFLINE_BLK" \
 grep -q 'could not reach PyPI' "$OFFLINE_BLK" \
     || drift "the extracted offline block lost its updating-to-be-safe default"
 
-# The part that matters: a slice that does not parse is drift, not a test failure.
 for _blk in "$BLK" "$OFFLINE_BLK"; do
     if ! _syntax_err=$(bash -n "$_blk" 2>&1); then
         echo "--- extracted block ($_blk) ---" >&2
@@ -104,9 +88,8 @@ for _blk in "$BLK" "$OFFLINE_BLK"; do
     fi
 done
 
-# The shared helpers come with the slices, extracted by name and checked: a helper silently missing
-# is a "command not found" that reads as an incomplete install, the very answer three cases below
-# expect for a DIFFERENT reason.
+# A missing helper is a "command not found" that reads as an incomplete install, which three
+# cases expect for a different reason.
 HELPERS="$WORK/helpers.sh"
 : > "$HELPERS"
 for _fn in _setup_install_is_verified _uv_offline_requested _fast_path_escapes; do
@@ -141,7 +124,7 @@ check() {
     fi
 }
 
-# Create a mock venv that runs Python without site-packages, exercising setup's fallback parser.
+# A venv without site-packages, exercising setup's fallback parser.
 VENV_DIR="$WORK/mock_venv"
 mkdir -p "$VENV_DIR/bin"
 cat << 'EOF' > "$VENV_DIR/bin/python"
@@ -150,11 +133,9 @@ exec python3 -S "$@"
 EOF
 chmod +x "$VENV_DIR/bin/python"
 
-# Mock install_manifest to return ok: True so manifest check passes
 printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/install_manifest.py"
 
-# Shared by both drivers: an ambient torch pin would fire the XPU arm and every case would read
-# "false" for the wrong reason.
+# An ambient torch pin would fire the XPU arm and every case would read false wrongly.
 _common_env() {
     _PKG_NAME="unsloth"
     SCRIPT_DIR="$WORK"
@@ -172,14 +153,11 @@ eval_fastpath() {
         LATEST_VER="$latest_ver"
         UNSLOTH_DESKTOP_BACKEND_VERSION="$desktop_ver"
         _common_env
-        # false is also what a block that never ran leaves behind, so three of
-        # the six cases below would pass on a block that did nothing at all.
-        # Both ways that can happen report themselves instead.
+        # false is also what a block that never ran leaves behind, so both ways report themselves.
         _STEP_CALLS=0
         step() { _STEP_CALLS=$((_STEP_CALLS + 1)); }
         substep() { :; }
 
-        # Execute extracted block
         # shellcheck disable=SC1090
         . "$HELPERS"
         # shellcheck disable=SC1090
@@ -219,31 +197,27 @@ $1"; }
 
 echo "Testing UNSLOTH_DESKTOP_BACKEND_VERSION fastpath escape in setup.sh:"
 
-# 1. When versions match and no desktop version required -> skips python deps
 check "matching versions, no desktop requirement" \
     "$(eval_fastpath '2026.8.15' '2026.8.15' '')" "true"
 
-# 2. When installed version satisfies desktop requirement -> skips python deps
 check "installed satisfies desktop requirement" \
     "$(eval_fastpath '2026.8.15' '2026.8.15' '2026.8.15')" "true"
 
 check "installed exceeds desktop requirement" \
     "$(eval_fastpath '2026.8.16' '2026.8.16' '2026.8.15')" "true"
 
-# 3. When installed version is older than desktop requirement -> escapes fastpath (_SKIP_PYTHON_DEPS=false)
 check "installed older than desktop requirement (2026.8.4 < 2026.8.15)" \
     "$(eval_fastpath '2026.8.4' '2026.8.4' '2026.8.15')" "false"
 
 check "installed older than desktop requirement (2026.8.14 < 2026.8.15)" \
     "$(eval_fastpath '2026.8.14' '2026.8.14' '2026.8.15')" "false"
 
-# 4. Without packaging, a suffix cannot be ordered safely, so force the dependency pass.
+# Without packaging, a suffix cannot be ordered safely, so force the dependency pass.
 check "post-release requirement forces dependency pass without packaging" \
     "$(eval_fastpath '2026.8.15' '2026.8.15' '2026.8.15.post1')" "false"
 
 echo "The offline branch is held to the same bar:"
-# UV_OFFLINE turns "updating to be safe" into a skip bought by a verified tree, which can still be
-# below the desktop floor; before the escapes were shared this reported success.
+# UV_OFFLINE keeps a verified tree, which can still be below the desktop floor.
 check "offline, verified, no desktop requirement" \
     "$(eval_offline '2026.8.15' '1' '')" "true"
 
@@ -256,14 +230,12 @@ check "offline, verified, BELOW desktop requirement" \
 check "offline, verified, unorderable desktop requirement" \
     "$(eval_offline '2026.8.15' '1' '2026.8.15.post1')" "false"
 
-# The default is unchanged: without UV_OFFLINE an unreachable PyPI still updates to be safe.
 check "unreachable PyPI without UV_OFFLINE still updates" \
     "$(eval_offline '2026.8.15' '' '')" "false"
 
 check "unreachable PyPI, UV_OFFLINE off, below requirement" \
     "$(eval_offline '2026.8.4' 'false' '2026.8.15')" "false"
 
-# No installed version at all is not something to keep, offline or not.
 check "offline with nothing installed still updates" \
     "$(eval_offline '' '1' '')" "false"
 

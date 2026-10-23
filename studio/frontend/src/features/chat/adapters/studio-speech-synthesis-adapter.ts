@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TTS_MAX_TOKENS } from "@/features/audio/audio-workspace-constants";
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import {
+  audioModelsFromCatalog,
+  loadedSpeechModelId,
+} from "../../settings/api/openai-model-catalog";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { markdownToSpeechText } from "../utils/speech-text";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform marks as its
  *  default, so the "System default" choice means what it says instead of falling back to a
@@ -217,35 +224,97 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
+/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed. */
+async function resolveReadAloudModel(
+  wantsClone: boolean,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const res = await authFetch("/v1/models", { signal });
+    if (!res.ok) return null;
+    return loadedSpeechModelId(
+      audioModelsFromCatalog(await res.json()),
+      wantsClone,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+function readAloudError(
+  detail: string,
+  model: string | null,
+  voiceId: string,
+): Error {
+  if (/no model loaded|not an audio model/i.test(detail)) {
+    return new Error(
+      "No Unsloth speech model is loaded. Open Audio › Text to Speech and load one, then try again.",
+    );
+  }
+  // The named model was unloaded after the listing (an image or video load, or idle unload).
+  if (model && /downloaded but not loaded|is not loaded/i.test(detail)) {
+    return new Error(
+      "The Unsloth speech model for read aloud is no longer loaded. Load it again in Audio › Text to Speech.",
+    );
+  }
+  // Only this 404 is about the voice; another one (a model hidden from the account) must not
+  // drop the user's choice.
+  if (voiceId && /saved voice no longer exists/i.test(detail)) {
+    useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
+    return new Error(
+      "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
+    );
+  }
+  if (voiceId && /can clone a voice/i.test(detail)) {
+    return new Error(
+      "The loaded model can't use saved voices. Load a voice-cloning model in Audio › Text to Speech, or choose Model's own voice in Settings → Voice.",
+    );
+  }
+  return new Error(detail);
+}
+
 /** Generate speech via the loaded TTS audio model; returns a WAV data URL. */
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
+  const model = await resolveReadAloudModel(Boolean(ttsStudioVoiceId), signal);
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ role: "user", content: text }],
       stream: false,
+      // Read aloud is not a Speak run, so it stays out of Speak's history.
+      persist: false,
+      max_tokens: TTS_MAX_TOKENS,
+      ...(model ? { model } : {}),
+      ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
-    if (/no model loaded|not an audio model/i.test(detail)) {
-      throw new Error(
-        "No TTS model is loaded. Load an audio model (e.g. Orpheus TTS) from the model selector, then try again.",
-      );
-    }
-    throw new Error(detail);
+    // Some refusals nest the message ({detail: {error: {message}}}), so read it like other routes.
+    const body: unknown = await response.json().catch(() => null);
+    throw readAloudError(
+      formatApiErrorBody(body) ?? `HTTP ${response.status}`,
+      model,
+      ttsStudioVoiceId,
+    );
   }
-  const data = (await response.json()) as { audio?: { data?: string } };
+  const data = (await response.json()) as {
+    audio?: { data?: string };
+    choices?: { finish_reason?: string }[];
+  };
   if (!data.audio?.data) {
     throw new Error("The TTS model returned no audio.");
+  }
+  if (data.choices?.[0]?.finish_reason === "length") {
+    toast.warning(
+      "Read aloud stopped at the speech model's length limit before the end of the reply.",
+    );
   }
   return `data:audio/wav;base64,${data.audio.data}`;
 }
@@ -448,8 +517,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer markup: without this the reader says the token id out loud.
-    const text = stripSearchImageTokens(spokenText);
+    const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
     const handleEnd = (

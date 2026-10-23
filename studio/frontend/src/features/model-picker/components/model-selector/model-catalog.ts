@@ -8,8 +8,10 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   AUDIO_CPP_MODELS,
+  type AudioCppModel,
   type AudioCppTask,
   audioCppDisplayName,
+  isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import {
   type GgufFitClass,
@@ -24,6 +26,7 @@ import {
   ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
+  videoDensePerfSuffix,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -38,6 +41,9 @@ export interface ModelArtifact {
   repoId: string;
   /** Vendor repo this unsloth mirror copies byte for byte; its id (a cached copy) resolves here too. */
   upstreamRepoId?: string;
+  /** The open repo the backend downloads this vendor id from (diffusion_families._GATED_MIRROR_PAIRS),
+   *  so a gate on repoId never reaches the user. The network check judges this repo instead. */
+  fetchedFrom?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
   /** single_file loads name their exact checkpoint inside the repo. */
@@ -50,6 +56,11 @@ export interface ModelArtifact {
   prequantRepo?: string;
   /** Size (GB) per scheme; int8 stores scales fp8 does not. TRANSFORMER ONLY. */
   prequantSizeGb?: Readonly<Partial<Record<DenseQuantScheme, number>>>;
+  /** The quantised text-encoder companion an AUTO load takes in place of the bf16 encoder: the family's
+   *  `te_quant_auto` resolved by `diffusion_te_prequant.te_prequant_sources` to a hosted file. `denseGb` is the bf16
+   *  encoder `approxSizeGb` counts, `quantisedGb` the hosted file the backend loads instead (GiB, Hub file sizes).
+   *  Absent = an auto load keeps the bf16 encoder (no `te_quant_auto`, ComfyUI's bf16 choice, or no hosted file). */
+  autoQuantTextEncoderGb?: Readonly<{ denseGb: number; quantisedGb: number }>;
   /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless
    *  downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
@@ -88,6 +99,9 @@ export interface CatalogGroup {
   capabilities?: Partial<ModelCapabilities>;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
+  /** With `pinToTop`: every row of this group (its GGUF too) leads before the next pinned group's
+   *  rows, instead of interleaving lead rows first. */
+  pinRowsTogether?: boolean;
 }
 
 
@@ -177,7 +191,21 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   tts: "Text-to-speech",
   music: "Text-to-music",
   asr: "Speech-to-text",
+  sep: "Source separation",
 };
+
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
+}
 
 // Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
 // quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
@@ -186,7 +214,7 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
   AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
     canonicalId: model.id,
     displayName: audioCppDisplayName(model.id),
-    description: AUDIO_GGUF_DESCRIPTIONS[model.task],
+    description: audioGgufDescription(model),
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
     artifacts: [gguf(model.id)],
@@ -194,6 +222,16 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
 
 // Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick
 // unless downloaded. GGUF entries carry none: pickDefaultQuant sizes the .gguf files.
+
+// The text encoders an auto load quantises (diffusion_families `te_quant_auto` with a hosted file the backend
+// confirms), in GiB from the Hub file sizes. FLUX.3 Klein and its base share one Qwen3-VL-4B: 8,875,719,344 bytes
+// bf16 against the 5,247,076,320-byte int8 ConvRot file. Qwen-Image 2.1 and its Turbo share one Qwen3-VL-8B:
+// 17,534,340,584 bf16 against 9,349,769,248 int8 ConvRot. FLUX.1 Kontext's auto pick is fp8 on T5-XXL only
+// (CLIP-L stays bf16): 9,524,648,584 against 6,163,991,880. Families whose auto int8 file is not hosted
+// (Qwen-Image, Qwen-Image-Edit, HunyuanImage 2.1, Krea 2) load the dense encoder, so they carry none.
+const FLUX3_KLEIN_AUTO_TE = { denseGb: 8.27, quantisedGb: 4.89 } as const;
+const QWEN_IMAGE_21_AUTO_TE = { denseGb: 16.33, quantisedGb: 8.71 } as const;
+const FLUX1_KONTEXT_AUTO_TE = { denseGb: 8.87, quantisedGb: 5.74 } as const;
 
 export const IMAGE_CATALOG: CatalogGroup[] = [
   {
@@ -220,6 +258,87 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
+    // FLUX.3 Image Klein (distilled): text to image and up to 10 reference images. Pinned first, so its
+    // "Fast FP8" and GGUF rows lead the list above Qwen-Image 2.1's. The bf16 row keeps the gated BFL id; the backend
+    // fetches it from unsloth/flux-3-image-klein-FP8, which carries the official diffusers folders
+    // byte-identical beside the FP8 / INT8 checkpoints. The GGUFs pair with the same repo for the Qwen3-VL
+    // text encoder and the FLUX.2 VAE.
+    canonicalId: "black-forest-labs/flux-3-image-klein",
+    displayName: "FLUX.3 Image Klein",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    // Same reason as Qwen-Image 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/flux-3-image-klein-FP8"],
+    pinToTop: true,
+    // Its GGUF row sits right under the Fast FP8 one, above Qwen-Image 2.1's rows.
+    pinRowsTogether: true,
+    artifacts: [
+      // Resident bf16 GiB, as the fit rule reads it: 10.34 DiT + 8.27 Qwen3-VL-4B + 0.31 VAE.
+      bf16Pipeline("black-forest-labs/flux-3-image-klein", 18.92, {
+        totalParams: 5548681984,
+        prequantRepo: "unsloth/flux-3-image-klein-FP8",
+        fetchedFrom: "unsloth/flux-3-image-klein-FP8",
+        prequantSizeGb: { fp8: 6.0, int8: 6.0 },
+        autoQuantTextEncoderGb: FLUX3_KLEIN_AUTO_TE,
+      }),
+      gguf("unsloth/flux-3-image-klein-GGUF"),
+    ],
+  },
+  {
+    // The undistilled checkpoint (CFG, more steps), laid out the same way from its own FP8 repo. Not pinned:
+    // it sorts with the other models.
+    canonicalId: "black-forest-labs/flux-3-image-klein-base",
+    displayName: "FLUX.3 Image Klein Base",
+    description: "Text-to-image and image editing",
+    scope: "image",
+    aliases: ["unsloth/flux-3-image-klein-base-FP8"],
+    artifacts: [
+      bf16Pipeline("black-forest-labs/flux-3-image-klein-base", 18.9, {
+        totalParams: 5538458368,
+        prequantRepo: "unsloth/flux-3-image-klein-base-FP8",
+        fetchedFrom: "unsloth/flux-3-image-klein-base-FP8",
+        // The INT8 file is BFL's own int8_convrot denoiser, smaller than the FP8.
+        prequantSizeGb: { fp8: 5.98, int8: 5.41 },
+        autoQuantTextEncoderGb: FLUX3_KLEIN_AUTO_TE,
+      }),
+      gguf("unsloth/flux-3-image-klein-base-GGUF"),
+    ],
+  },
+  {
+    // MOSS-Image SFT: the bf16 row keeps the OpenMOSS id but fetches from unsloth/MOSS-Image-SFT-FP8 (upstream
+    // folders mirrored byte-identical). GGUFs are sd.cpp only, VAE and tokenizer from the same repo.
+    canonicalId: "OpenMOSS-Team/MOSS-Image-SFT",
+    displayName: "MOSS-Image",
+    description: "Text-to-image",
+    scope: "image",
+    aliases: ["unsloth/MOSS-Image-SFT-FP8"],
+    artifacts: [
+      // Resident bf16 GiB, as the fit rule reads it: 9.47 DiT + 15.63 Qwen3.5-9B + 0.23 VAE.
+      bf16Pipeline("OpenMOSS-Team/MOSS-Image-SFT", 25.33, {
+        totalParams: 5082308624,
+        prequantRepo: "unsloth/MOSS-Image-SFT-FP8",
+        prequantSizeGb: { fp8: 5.04, int8: 5.04 },
+      }),
+      gguf("unsloth/MOSS-Image-SFT-GGUF"),
+    ],
+  },
+  {
+    // The pre-SFT checkpoint, laid out the same way from its own FP8 repo.
+    canonicalId: "OpenMOSS-Team/MOSS-Image-Base",
+    displayName: "MOSS-Image Base",
+    description: "Text-to-image",
+    scope: "image",
+    aliases: ["unsloth/MOSS-Image-Base-FP8"],
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-Image-Base", 25.33, {
+        totalParams: 5082308624,
+        prequantRepo: "unsloth/MOSS-Image-Base-FP8",
+        prequantSizeGb: { fp8: 5.04, int8: 5.04 },
+      }),
+      gguf("unsloth/MOSS-Image-Base-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2.1",
     displayName: "Qwen-Image 2.1",
     // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
@@ -234,8 +353,30 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+        autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
       }),
       gguf("unsloth/Qwen-Image-2.1-GGUF"),
+    ],
+  },
+  {
+    // A different denoiser with its own FP8/INT8 checkpoints. The bf16 row keeps the vendor id; the backend fetches
+    // it from unsloth/Qwen-Image-2.1-Turbo-FP8, which carries the official diffusers folders byte-identical.
+    canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
+    displayName: "Qwen-Image 2.1 Turbo",
+    description: "Text-to-image and image editing in 8 steps",
+    scope: "image",
+    // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    // Right after 2.1's group, so its "Fast FP8" row sits directly under 2.1's at the top.
+    pinToTop: true,
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+        autoQuantTextEncoderGb: QWEN_IMAGE_21_AUTO_TE,
+      }),
+      gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
     ],
   },
   {
@@ -338,7 +479,10 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, { totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, {
+        totalParams: 11901408320,
+        autoQuantTextEncoderGb: FLUX1_KONTEXT_AUTO_TE,
+      }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -445,6 +589,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
 ];
 
+// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames. Host RAM is the server's peak
+// RSS plus the Gemma 4 encoder worker's.
+// Diffusers pack: the plan quantises the DiT to int8, so both tiers need a host that runs a dense quant. Encoder on
+// the CPU in both. 24 GiB: DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host. 48 GiB: DiT
+// resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
+  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true, requiresDenseQuant: true },
+  { gpuGb: 48, systemRamGb: 48, requiresDenseQuant: true },
+];
+
+// The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
+// tiers. 24 GiB: encoder on the CPU, 21.3 GB card peak, 72.0 + 25.3 GiB host. 48 GiB: encoder on the card, 37.2 GB
+// card peak, 72.1 + 23.6 GiB host. Both need about 97 GiB of RAM, so one tier covers them.
+const LTX25_SINGLE_FILE_OFFLOAD_TIERS: readonly OffloadFitTier[] = [{ gpuGb: 24, systemRamGb: 100 }];
+
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "MiniMaxAI/MiniMax-H3",
@@ -509,6 +668,36 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo. The
+    // pack's fp8 / int8 loads seed the hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos); the alias
+    // keeps a pasted prequant repo id finding this group. Video rows carry no prequantRepo (image-only field).
+    canonicalId: "Lightricks/LTX-2.5-Diffusers",
+    displayName: "LTX 2.5 distilled",
+    description: "Text- and image-to-video with audio",
+    scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
+    capabilities: { audio: true },
+    artifacts: [
+      // Both repos are gated on the Hub (license + token).
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, {
+        label: "BF16 - Diffusers",
+        gated: true,
+        offloadFitTiers: LTX25_OFFLOAD_TIERS,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
+      }),
+      bf16Single(
+        "Lightricks/LTX-2.5",
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+        75,
+        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
+      ),
+      // 21.0B is every tensor of the single-file DiT the quants are cut from.
+      gguf("unsloth/LTX-2.5-GGUF", { totalParams: 21_004_025_600 }),
+    ],
+  },
+  {
     canonicalId: "Lightricks/LTX-2",
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
@@ -529,6 +718,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video, dual-expert",
     scope: "video",
     artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
+    displayName: "Wan 2.1 T2V 1.3B",
+    description: "Text-to-video 480p, small",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 15, { totalParams: 1418996800 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-14B",
+    displayName: "Wan 2.1 T2V 14B",
+    description: "Text-to-video 480p / 720p",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 41, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",
@@ -658,7 +861,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  ...audioGgufGroups(["tts", "music"]),
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.
@@ -990,7 +1193,10 @@ function curatedPerfSuffix(
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
-  return h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes);
+  return (
+    h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes) ??
+    videoDensePerfSuffix(hit.artifact.repoId, host, denseQuantSchemes)
+  );
 }
 
 /** A curated row as name plus chips. The name used to carry the artifact in brackets ("MiniMax H3
@@ -1016,7 +1222,21 @@ export function curatedRowLabelFor(
   // GGUF reads like a text model's row: the repo name already ends in -GGUF, so a chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
+    // A hub repo named like a bundled folder ("Qwen3-ASR-0.6B-GGUF") would read as its twin.
+    const twin =
+      !isAudioCppFolderId(hit.artifact.repoId) &&
+      catalog.some((group) =>
+        group.artifacts.some(
+          (artifact) =>
+            artifact.format === "gguf" &&
+            artifact.repoId.toLowerCase() !== hit.artifact.repoId.toLowerCase() &&
+            artifact.repoId.split("/").pop()?.toLowerCase() === leaf.toLowerCase(),
+        ),
+      );
+    return {
+      name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`),
+      tags: twin ? ["llama.cpp"] : [],
+    };
   }
   // A group with one artifact has nothing to distinguish, so it stays bare.
   if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
@@ -1049,13 +1269,16 @@ export function catalogToModelOptions(
       // A host that can only run the native engine is not offered pipeline rows it would be refused at
       // load. The `models` prop is built only here, so this covers the trigger name and seed ids both.
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      const name =
+        curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
+        group.displayName;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
-          group.displayName,
+        name,
         description: group.description,
-        descriptionSuffix: artifact.label,
+        // "Kokoro-82M-GGUF - GGUF" would only repeat the name.
+        descriptionSuffix:
+          artifact.format === "gguf" && GGUF_SUFFIX_RE.test(name) ? undefined : artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });
@@ -1121,10 +1344,13 @@ export interface OffloadFitTier {
   systemRamGb: number;
   /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
   requiresQuantisedStreaming?: boolean;
+  /** Measured with a runtime dense quant (int8 / fp8) DiT: only offered where the host runs one. */
+  requiresDenseQuant?: boolean;
 }
 
 function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
   if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  if (tier.requiresDenseQuant && !budget.denseQuantSchemes?.length) return false;
   return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
 }
 
@@ -1137,6 +1363,8 @@ export interface DeviceBudget {
   budgetFraction?: number;
   /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
   gpuCount?: number;
+  /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`); past it a GGUF reads `marginal`. */
+  unifiedLoadBudgetGb?: number | null;
   /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
@@ -1175,7 +1403,8 @@ export function classifyGgufFit(
 /** Fit rule for a GGUF the IMAGES / VIDEO / AUDIO pickers offer, the one case the shared llama.cpp
  *  formula must not judge: those loads go through the diffusion backend, which cannot offload and
  *  budgets free memory minus a reserve at a 0.85 margin (`diffusion_memory.py`). On a 64 GiB Mac
- *  that planner allows ~43.5 GiB, llama.cpp 62.1 and this rule 44.8: not the planner, just closer. */
+ *  that planner allows ~43.5 GiB and this rule 44.8: not the planner, just closer. The llama.cpp
+ *  rule's 62.1 is total RAM; its loader caps at `min(working set, free) * 0.85`, ~44 at best. */
 export function classifyMediaGgufFit(
   sizeBytes: number,
   gpuGb: number,
@@ -1309,8 +1538,15 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
 
 const BF16_BYTES_PER_PARAM = 2;
 
+/** GiB an auto load saves by taking the hosted quantised text encoder instead of the bf16 one. */
+function autoQuantTextEncoderSavingGb(artifact: ModelArtifact): number {
+  const te = artifact.autoQuantTextEncoderGb;
+  return te ? Math.max(0, te.denseGb - te.quantisedGb) : 0;
+}
+
 /** What a row is sized by here: the pre-quantised transformer plus the companions, which are
- *  `approxSizeGb` minus the bf16 transformer. Clamped to the dense figure.
+ *  `approxSizeGb` minus the bf16 transformer, with the text encoder at the quantised size an auto load really
+ *  takes (`autoQuantTextEncoderGb`). Clamped to the dense figure.
  *
  *  The reported schemes are a LADDER: `_pipeline_planned_denoiser_scheme` walks every rung below
  *  its winner and seeds the first whose hosted artifact stays resident, so the first rung fitting
@@ -1330,16 +1566,23 @@ function residentSizeGb(
   const denseTransformerGb = artifact.totalParams
     ? (artifact.totalParams * BF16_BYTES_PER_PARAM) / BYTES_PER_GB
     : 0;
-  const companionsGb = Math.max(0, dense - denseTransformerGb);
+  // The host runs a dense scheme, so it is a CUDA bf16 card, which is also where the backend's auto text-encoder
+  // pick loads its hosted file (te_prequant_sources needs fp8 to run). Anywhere else the encoder stays bf16.
+  const teSavingGb = autoQuantTextEncoderSavingGb(artifact);
+  const denseResidentGb = Math.max(0, dense - teSavingGb);
+  const companionsGb = Math.max(
+    0,
+    Math.max(0, dense - denseTransformerGb) - teSavingGb,
+  );
   let firstHosted: number | undefined;
   for (const scheme of schemes) {
     const quantised = artifact.prequantSizeGb?.[scheme as DenseQuantScheme];
     if (quantised === undefined) continue;
-    const sizeGb = Math.min(dense, quantised + companionsGb);
+    const sizeGb = Math.min(denseResidentGb, quantised + companionsGb);
     if (firstHosted === undefined) firstHosted = sizeGb;
     if (allowanceGb === undefined || sizeGb <= allowanceGb) return sizeGb;
   }
-  return firstHosted ?? dense;
+  return firstHosted ?? denseResidentGb;
 }
 
 function fitsArtifactBudget(

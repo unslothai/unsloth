@@ -7,9 +7,10 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -19,8 +20,11 @@ import {
   noteProjectWork,
   uploadProjectDocument,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT } from "../types/rag";
-import { partitionSupported } from "./source-drop-policy";
+import {
+  RAG_SOURCE_UPLOAD_ACCEPT,
+  SUPPORTED_SOURCES_HINT,
+  partitionSupported,
+} from "./source-drop-policy";
 import {
   addStagedSources,
   EXPIRY_GRACE_MS,
@@ -250,7 +254,7 @@ export function ProjectSourceDropzone({
           unsupported.length === 1
             ? `Can't add ${unsupported[0]}`
             : `Can't add ${unsupported.length} files`,
-          { description: `Supported types: ${RAG_UPLOAD_ACCEPT}` },
+          { description: SUPPORTED_SOURCES_HINT },
         );
       }
       // Name, size and mtime can in principle match for two different files, so
@@ -359,7 +363,7 @@ export function ProjectSourceDropzone({
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
-          "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
+          "rounded-2xl border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
           dragging && "border-primary/60 bg-primary/5",
           disabled && "opacity-60",
         )}
@@ -368,7 +372,7 @@ export function ProjectSourceDropzone({
           ref={inputRef}
           type="file"
           multiple={true}
-          accept={RAG_UPLOAD_ACCEPT}
+          accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
@@ -382,15 +386,15 @@ export function ProjectSourceDropzone({
             aria-label="Add sources"
             disabled={disabled}
             onClick={() => inputRef.current?.click()}
-            className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-[22px] px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6 text-muted-foreground"
             />
             <span className="text-sm text-muted-foreground">
-              Add files every chat in this project can read
+              Add documents for chats in this project to search
             </span>
           </button>
         ) : (
@@ -399,7 +403,7 @@ export function ProjectSourceDropzone({
               {staged.map((entry) => (
                 <li
                   key={entry.id}
-                  className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
+                  className="flex items-center gap-2.5 rounded-md px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
                     icon={FileEmpty02Icon}
@@ -435,10 +439,10 @@ export function ProjectSourceDropzone({
               type="button"
               disabled={disabled}
               onClick={() => inputRef.current?.click()}
-              className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex items-center justify-center gap-2 rounded-md py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
-                icon={FolderAddIcon}
+                icon={FolderPlusIcon}
                 strokeWidth={1.75}
                 className="size-4"
               />

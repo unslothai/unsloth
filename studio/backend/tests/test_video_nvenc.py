@@ -9,8 +9,14 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import video_nvenc as vn  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
 @pytest.fixture(autouse = True)
@@ -28,6 +34,8 @@ def _fake_cuda(
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda index = None: name)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    if hip is None:
+        monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     probes: list = []
 
     def _probe(gpu):
@@ -146,6 +154,7 @@ def test_encode_mp4_falls_back_to_libx264(monkeypatch, gpu, nvenc_ok, expect):
     monkeypatch.setattr(eu, "encode_video", _x264)
     monkeypatch.setattr(video_mod, "nvenc_gpu", lambda logger = None: gpu)
     monkeypatch.setattr(video_mod, "encode_nvenc", _nvenc)
+    monkeypatch.setattr(video_mod, "encode_x264", lambda *args: False)
     out = video_mod.VideoBackend._encode_mp4(
         np.zeros((2, 16, 16, 3), dtype = np.float32), 24, None, None
     )
