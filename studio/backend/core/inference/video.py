@@ -12804,6 +12804,9 @@ class VideoBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
+                output = video_frames = None
+                release_pinned_host_memory()
 
     @staticmethod
     def _resolve_keyframes(
