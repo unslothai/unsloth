@@ -66,6 +66,10 @@ def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) 
         # MCP tools can write or run commands and this request has no approval prompt, so flows never send them.
         "mcp_enabled": False,
     }
+    if history:
+        # A resumed chat can outgrow the loaded context: drop its oldest turns instead of failing the reply.
+        body["context_overflow"] = "truncate_oldest"
+        body["context_policy"] = "rolling"
     if tools:
         body["max_tool_calls_per_message"] = int(ctx.params.get("max_tool_calls") or 8)
     if kb:

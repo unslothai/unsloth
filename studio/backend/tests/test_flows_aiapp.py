@@ -94,6 +94,7 @@ def test_agent_without_tools_names_an_empty_tool_list(monkeypatch):
         and body["mcp_enabled"] is False
     )
     assert "rag_scope" not in body and "max_tool_calls_per_message" not in body
+    assert "context_overflow" not in body
 
 
 def test_agent_puts_history_before_the_new_message(monkeypatch):
@@ -116,6 +117,9 @@ def test_agent_puts_history_before_the_new_message(monkeypatch):
     asyncio.run(chat.agent(ctx))
     roles = [m["role"] for m in ctx.calls[-1][2]["messages"]]
     assert roles == ["system", "user", "assistant", "user"]
+    # A resumed chat drops its oldest turns when it outgrows the context instead of failing.
+    assert ctx.calls[-1][2]["context_overflow"] == "truncate_oldest"
+    assert ctx.calls[-1][2]["context_policy"] == "rolling"
 
 
 def test_classify_returns_one_of_the_categories():
