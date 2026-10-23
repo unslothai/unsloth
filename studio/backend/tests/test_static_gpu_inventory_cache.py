@@ -194,6 +194,32 @@ def test_forced_hardware_detection_reads_the_gfx_target_again(rocm_cli, monkeypa
     assert _count(rocm_cli, "rocminfo") >= 2
 
 
+def test_forced_hardware_detection_reads_the_hip_id_map_again(rocm_cli, monkeypatch):
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
+    amd.get_hip_id_by_gpu_index()
+    for name in list(vars(hw)):
+        if name.lstrip("_").isupper():
+            monkeypatch.setattr(hw, name, getattr(hw, name))
+    monkeypatch.setattr(hw, "_has_torch", lambda: False)
+    try:
+        hw.detect_hardware()
+    except Exception:
+        pass
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") >= 2
+
+
+def test_partial_output_from_a_failing_probe_is_used_not_kept(rocm_cli, monkeypatch):
+    def partial(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        return _Result("  Name:                    gfx1100\n", returncode = 1)
+
+    monkeypatch.setattr(subprocess, "run", partial)
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
 def test_the_cache_switch_turns_it_off(rocm_cli, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "0")
     for _ in range(3):

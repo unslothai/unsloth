@@ -556,8 +556,9 @@ def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
             continue
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
-            # An answer from the fallback after rocminfo failed is used, not kept: rocminfo is asked again.
-            return sorted(found), settled
+            # Used but not kept when this CLI exited non-zero (possibly partial output) or rocminfo failed
+            # before the fallback answered: the next pass asks again.
+            return sorted(found), settled and result.returncode == 0
         # A CLI that ran and failed (no /dev/kfd access yet, driver still loading) said nothing about the silicon.
         if result.returncode != 0:
             settled = False
@@ -1669,6 +1670,12 @@ def _detect_hardware_locked() -> DeviceType:
     global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _gfx_candidates_cache
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     _gfx_candidates_cache = None  # a forced detection asks the ROCm CLIs again
+    try:
+        from . import amd as _amd
+
+        _amd._hip_id_map_cache = None  # and re-reads the HIP id map
+    except Exception:
+        pass
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
