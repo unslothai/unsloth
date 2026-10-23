@@ -565,8 +565,10 @@ def ensure_distro(
     put(f"{GUEST_ROOT}/bin/run-engine", RUNNER, "755")
     # The pinned release, not merely a uv: an older guest uv (0.12.x) still trusts the emSign roots.
     try:
-        installed = re.search(r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"]), re.M)
-    except RuntimeError:
+        installed = re.search(
+            r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"], timeout = 60), re.M
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
         installed = None
     if not installed or installed.group(1) != UV["version"]:
         archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)

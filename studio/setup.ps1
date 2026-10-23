@@ -8066,13 +8066,14 @@ function Get-InstalledUvVerdict {
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 # A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). Unreadable leaves it in use; a staged run never downloads.
+# download fails (offline). One that hangs or fails the probe counts as old; a staged run never downloads.
 function Get-SetupPathUvTooOld {
     if ($StageRoot) { return $null }
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
     # Timed: a uv that hangs on --version must not stall every setup before the pinned one installs.
-    $null = Get-SetupUvExecutableVerdict -Path $pathUv.Source
+    $verdict = @(Get-SetupUvExecutableVerdict -Path $pathUv.Source)[-1]
+    if ($verdict -ne "ok") { return $pathUv.Source }
     $line = $script:SetupUvVersionLine
     if ("$line" -match '^\s*uv\s' -and
         -not (Test-SetupUvVersionAtLeast -VersionLine "$line" -Minimum $SetupUvMinVersion)) {
@@ -8091,9 +8092,10 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     # step in front of the staged interpreter.
     $env:PATH = "$env:PATH;$installedUvDir"
     if ($pathUvOld) {
-        # In front of the old uv on PATH, then the venv back in front of both.
-        $env:PATH = "$installedUvDir;$env:PATH"
+        # Re-entering the venv restores the pre-venv PATH first, so it goes before the current uv
+        # is put in front of the old one, right behind the venv's Scripts.
         Enter-StudioVenv
+        $env:PATH = (Join-Path $VenvDir "Scripts") + ";$installedUvDir;$env:PATH"
     }
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true

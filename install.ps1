@@ -6863,9 +6863,12 @@ exit 0
         } catch {
             return $false
         }
-        if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)') { return $false }
+        if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)(\S*)') { return $false }
+        $found = $Matches[1]
+        $pre = if ($Matches.ContainsKey(2)) { $Matches[2] } else { "" }
         try {
-            if ([version]$Matches[1] -ge [version]$Minimum) {
+            if ([version]$found -gt [version]$Minimum -or
+                ([version]$found -eq [version]$Minimum -and -not $pre)) {
                 # Pin the executable that actually answered: every install command below runs
                 # this path, so a later Refresh-SessionPath or a profile alias cannot swap it.
                 $script:UvExe = $exe

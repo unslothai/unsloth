@@ -977,7 +977,12 @@ def test_an_amd_distro_checks_for_the_dxg_device(wsl, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "answer, fetched",
-    [("uv 0.12.19 (x86_64-unknown-linux-gnu)", True), (None, True), ("uv {pin} (x)", False)],
+    [
+        ("uv 0.12.19 (x86_64-unknown-linux-gnu)", True),
+        (None, True),
+        ("hang", True),
+        ("uv {pin} (x)", False),
+    ],
 )
 def test_an_existing_guest_uv_is_replaced_unless_it_is_the_pin(
     monkeypatch, tmp_path, answer, fetched
@@ -996,6 +1001,8 @@ def test_an_existing_guest_uv_is_replaced_unless_it_is_the_pin(
         if argv[-1] == "--version":
             if answer is None:
                 raise RuntimeError("missing")
+            if answer == "hang":
+                raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
             return answer.format(pin = wsl_host.UV["version"]) + "\n"
         return ""
 

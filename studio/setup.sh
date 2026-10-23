@@ -3370,18 +3370,20 @@ _setup_find_installed_uv() {
 
 USE_UV=false
 # A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). Unreadable leaves it in use; a staged run never downloads.
+# download fails (offline). One that hangs or fails the probe counts as old; a staged run never downloads.
 _SETUP_UV_PATH_OLD=""
 if command -v uv &>/dev/null && [ -z "$STAGE_ROOT" ] && command -v mktemp >/dev/null 2>&1; then
     _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
     _spu_ver=""
     if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
         read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+        case "$_spu_ver" in
+            "uv "*) _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+                        || _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+        esac
+    elif [ -n "$_spu_file" ]; then
+        _SETUP_UV_PATH_OLD=$(command -v uv)
     fi
-    case "$_spu_ver" in
-        "uv "*) _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
-                    || _SETUP_UV_PATH_OLD=$(command -v uv) ;;
-    esac
     if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
     unset _spu_file _spu_ver
 fi
