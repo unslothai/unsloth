@@ -57,7 +57,8 @@ from typing import Any, Iterable, Optional
 
 # Unknown rotation kinds are refused so a future scheme is never misread as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
-# Marker set on a transformer whose rotation is installed, so callers can tell rotated from unrotated modules without re-deriving; diagnostic only
+# Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` / ``curve_grid``): a form tag
+# plus the parameters needed to reproduce the form.
 ROTATION_KEY = "activation_rotation"
 ROTATION_GROUP_KEY = "activation_rotation_group"
 ROTATION_FQNS_KEY = "activation_rotation_fqns"

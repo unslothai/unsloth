@@ -206,7 +206,9 @@ def _pick(
     if not missing:
         return chosen
     if not any(_takeable(index) for index in missing):
-        # Pairs cannot be recovered from rendered text, so the block goes in as one unit; a newest-first re-cap could keep an opening and drop its correction
+        # What is missing costs more than the whole budget, so there was never a unit to take. Dropping the opening buys
+        # nothing here: it is usually the ONLY turn that fits, so the block would go out empty, which is the failure
+        # this pass exists to stop (a 43-token instruction then eight 160-token sections under 100 tokens).
         return chosen
     # Whole or nothing: half a unit carries the abandoned request without its correction.
     return _walk([index for index in plain if index != unit[0]]) or chosen
@@ -412,7 +414,9 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            # Tracked apart from projected, which is rebound below on a path that does not re-count; the refusal reports the pair together
+            # The pair rule travels with the merge: a plain newest-first re-cap could take the opening request and drop
+            # the correction to it. Which bullets were the pair is not recoverable from rendered text, so the block goes
+            # in as one unit.
             items = _recap(
                 prior + items,
                 max_tokens = budget,
@@ -458,7 +462,8 @@ def fit_checkpoint_context(
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
-    # If one turn plus X still does not fit, drop X and re-measure before giving up: X is a convenience, the user's message is not
+    # What `current_tokens` prices, tracked separately because `projected` is rebound below on a path that does not
+    # re-count. The refusal reports the pair together.
     measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
@@ -496,7 +501,8 @@ def fit_checkpoint_context(
         projected = list(messages)
 
     if current_tokens > prompt_target:
-        # Lets the UI say "reset" rather than "trimmed" and lets the recall gate spot the first turn of an epoch, where forced retrieval fires
+        # One turn plus X still does not fit: drop X and re-measure before giving up, since X is a convenience and the
+        # user's actual message is not.
         if block:
             projected = _without_block(fitted)
             block = ""

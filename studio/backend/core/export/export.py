@@ -652,7 +652,8 @@ def _push_mlx_merged(
     with contextlib.ExitStack() as stack:
         upload_dir = output_path
         if not output_is_fresh:
-            # A reused folder can hold leftovers, so upload a clean second save.
+            # A reused folder can hold leftovers, so upload a clean second save; without a
+            # local save this is the only one.
             upload_dir = stack.enter_context(
                 _staging_dir(Path(output_path).parent)
                 if output_path

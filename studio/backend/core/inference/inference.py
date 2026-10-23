@@ -1700,6 +1700,7 @@ class InferenceBackend:
                 messages = _without_image_parts(messages)
 
         # Text path: messages are already in ChatML format from eval.py.
+
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
@@ -1934,7 +1935,8 @@ class InferenceBackend:
         tool_protocol_active: Optional[bool] = None,
         stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Reset stats so a failed or uncountable run cannot surface stale stats from an earlier run."""
+        """Handle vision model generation with true token-by-token streaming."""
+        # Reset so a failed or uncountable run cannot surface stale stats.
         self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]

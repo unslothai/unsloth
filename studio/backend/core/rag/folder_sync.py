@@ -1220,7 +1220,8 @@ def _snapshot(root: str, metadata: dict) -> str:
             metadata["inode"],
         )
         actual = (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino)
-        # Writer-lock contention must not retire the only worker; init and periodic paths retry instead.
+        # Only an identity os.fstat can reproduce is comparable: os.scandir reports none on Windows, and the
+        # lstat fallback disagrees with fstat on file systems without stable ids.
         usable = metadata["inode"] not in (None, 0) and not metadata.get("identity_from_path")
         compared = 4 if usable else 2
         if actual[:compared] != expected[:compared]:
@@ -2187,7 +2188,8 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     job = _next_account_job()
                 except Exception:
-                    # Worker retries init, so DB contention at startup must not become a process-lifetime outage.
+                    # Writer-lock contention must not retire the only worker; the initialization and periodic paths
+                    # retry.
                     logger.warning("linked-folder queue selection failed", exc_info = True)
                     stop_event.wait(1.0)
                     continue

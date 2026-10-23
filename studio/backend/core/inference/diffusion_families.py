@@ -97,7 +97,8 @@ class DiffusionFamily:
     denoiser_attr: str = "transformer"
     # True when a single-file ``.safetensors`` is the WHOLE pipeline (SDXL), so the loader calls ``from_single_file``.
     single_file_is_pipeline: bool = False
-    # Optional image-conditioned pipeline classes, built via Pipeline.from_pipe (no reload); None means unsupported
+    # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
+    # is valid.
     pipeline_only: bool = False
     # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
     native_transformer_files_only: bool = False
@@ -118,7 +119,8 @@ class DiffusionFamily:
     # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no
     # ``strength``, size from width/height.
     reference: bool = False
-    # True for families whose activations overflow float16 (black image); the backend promotes a resolved float16 to float32
+    # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
+    # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
     unified_edit: bool = False
     # Qwen-Image-Layered: RGBA layers per input (each an output image); 0 = not layered.
     layer_count: int = 0
@@ -156,7 +158,8 @@ class DiffusionFamily:
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
-    # Optional pre-quantized transformer checkpoints as (scheme, repo_id), fetched instead of dense bf16 for lower load VRAM and download
+    # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
+    # to float32.
     fp16_incompatible: bool = False
     # diffusion_fp16_guard recipe keeping an fp16_incompatible family in float16 on fp16-only cards; None = promote.
     fp16_guard: Optional[str] = None
@@ -171,7 +174,9 @@ class DiffusionFamily:
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
-    # sd.cpp single-file assets, used only on the no-GPU engine; transformer GGUF is shared with diffusers, VAE and text encoders are (repo_id, filename)
+    # Hosted checkpoints for NON-DEFAULT bases as (base_repo, scheme, repo_id), base_repo lowercased: one family entry
+    # covers variants whose weights differ. Resolution prefers an exact variant match, then falls back to
+    # ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Lowercased bases with different weights: never inherit ``prequant_repos``; their variant rows still win.
     prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
@@ -195,7 +200,9 @@ class DiffusionFamily:
     # different models (T5, CLIP, Qwen3-VL, Gemma) and fp8 tolerance does not transfer between them, so a family joins
     # this list only once the fp8-vs-bf16 delta has been measured on it.
     te_quant_auto: Optional[str] = None
-    # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA prequant repo, then bf16); surfaced by the Train UI
+    # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
+    # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
+    # field name.
     sd_cpp_vae: Optional[tuple[str, str]] = None
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
@@ -226,7 +233,9 @@ class DiffusionFamily:
     # When set, deploying a LoRA trained on this family loads THIS repo instead (Krea: train on Raw, preview on
     # Turbo). Same precision both sides.
     deploy_base_repo: Optional[str] = None
-    # Checkpoints baked from dev / Krea-dev weights (same arch, different weights); without them every int8/fp8 load pays dense download plus quantising
+    # Variant-specific training-base to inference-base mappings. FLUX.2 Klein trains on an undistilled base and runs
+    # the adapter on the matching 4-step checkpoint, so its 4B and 9B variants cannot share the single family-wide
+    # deploy_base_repo above.
     deploy_base_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Display label (Train UI); None = the family name.
     label: Optional[str] = None
@@ -421,7 +430,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.1-schnell-FP8"),
             ("fp8", "unsloth/FLUX.1-schnell-FP8"),
         ),
-        # Pre-cast T5-XXL (9.52 to 5.90 GB; CLIP-L stays dense); one artifact serves schnell, dev and Krea-dev since the T5 shards are byte-identical
+        # Checkpoints baked from the dev / Krea-dev weights (same arch, different weights); without these every
+        # int8/fp8 load pays the dense download + on-the-fly quantise.
         prequant_variant_repos = (
             ("black-forest-labs/flux.1-dev", "int8", "unsloth/FLUX.1-dev-FP8"),
             ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
@@ -430,7 +440,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # schnell ONLY: dev and Krea-dev would download it just for _validate_checkpoint to refuse.
             ("black-forest-labs/flux.1-schnell", "nvfp4", "unsloth/FLUX.1-schnell-NVFP4"),
         ),
-        # Flux2KleinPipeline takes reference images via image, so it exposes a reference workflow atop text-to-image; inpaint but no img2img
+        # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense). One artifact serves schnell/dev/Krea-dev (T5 shards
+        # are byte-identical).
         te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
         # No te_quant_auto: a small encoder (T5-XXL, 4.8B) stays bf16 unless ComfyUI's template quantizes it, and the
         # FLUX.1 templates load t5xxl_fp16. Measured against the bf16 encoder (bf16 DiT, schnell 4 steps, 24 prompts,
@@ -517,7 +528,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 "black-forest-labs/FLUX.2-klein-9B",
             ),
         ),
-        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor, so an fp8 host seeds it instead of quantising bf16 in memory
+        # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop
+        # text-to-image. Inpaint but no img2img.
         reference = True,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
@@ -870,7 +882,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Qwen-Image-FP8"),
             ("fp8", "unsloth/Qwen-Image-FP8"),
         ),
-        # Model card: ten inputs, alpha kept for the VAE, 32 px grid (16x VAE, 2x2 tokens), 2K presets up to 2400x1792; reference_resolutions maps to output_resolution
+        # 2512 is a different checkpoint with its own baked artifacts; without these rows a 2512 pick
+        # plans the Qwen-Image artifact, refused by base_model_id once the shards are already dropped.
         prequant_variant_repos = (
             ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
             ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
@@ -984,7 +997,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_output_side = 2752,
         max_output_pixels = 2400 * 1792,
         reference_resolutions = (512, 1024, 2048),
-        # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and must quantise its own dense weights
+        # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
+        # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
         condition_pixel_weight = 0.32,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
         prompt_hint = (
@@ -1063,7 +1077,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
             ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
-        # The undistilled base is what the upstream DreamBooth recipe trains on; no deploy pairing, since its adapters preview on the base at 20 steps, guidance 4
+        # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and
+        # must quantize its own dense weights.
         prequant_excluded_bases = ("tongyi-mai/z-image",),
         # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB), shared with the undistilled base (byte-identical encoder). NOT
         # shared with flux.2-klein-4B: klein ships stock Qwen3-4B (sha256-identical to unsloth/Qwen3-4B), while this
@@ -1076,7 +1091,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA
         trainable = True,
-        # Pre-cast Qwen3-VL-4B TE (8.88 to 4.83 GB), handed straight into load_krea2_pipeline, since assembly never sees pipe_kwargs
+        # The undistilled base is what the upstream DreamBooth recipe trains on. No deploy pairing: its adapters
+        # preview on the base itself at the 20-step / guidance 4 recipe.
         train_base_repos = (
             "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
             "Tongyi-MAI/Z-Image-Turbo",
@@ -1109,7 +1125,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Both are baked from the distilled Turbo denoiser: Raw quantizes its own dense weights.
         prequant_excluded_bases = ("krea/krea-2-raw",),
-        # Lumina Image 2.0 (2.6B single-stream DiT, Gemma2-2B encoder, AutoencoderKL) loads via from_pretrained; not aliased to bare lumina, as Lumina-Next differs
+        # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
+        # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
         # int8 ConvRot by default. ComfyUI loads qwen3vl_4b_fp8_scaled; our layerwise fp8 scores LPIPS-alex mean 0.110
         # against the bf16 encoder (bf16 DiT, Turbo 8 steps, 12 prompts, bf16 A/A repeat bit-identical), int8 ConvRot
@@ -1150,7 +1167,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
-    # Ideogram 4: a 34-layer DiT pair (conditional and unconditional, ~9B each, so planning counts two) with a Qwen3-VL encoder
+    # HunyuanImage 2.1: a 17B dual-stream DiT with a Qwen2.5-VL encoder, a ByT5 glyph encoder and the 32x HunyuanImage
+    # VAE.
+    # HiDream-I1: a 17B MoE DiT with FOUR text encoders. The repos ship CLIP-L/CLIP-G/T5-XXL but NOT the Llama-3.1-8B
+    # text_encoder_4 their model_index names, so the loader assembles it from the open unsloth mirror. One family
+    # covers Full/Dev/Fast.
     DiffusionFamily(
         name = "hunyuanimage-2.1",
         comfy_shift_node = "sd3",
@@ -1217,7 +1238,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("hidream", "hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"),
         fp16_incompatible = True,
     ),
-    # SDXL: the denoiser is pipe.unet and a single-file .safetensors is the whole pipeline; img2img, inpaint and ControlNet are standard; no GGUF path
+    # Ideogram 4: a 34-layer DiT PAIR (conditional + unconditional, ~9B each, so planning counts two) with a Qwen3-VL
+    # encoder
     DiffusionFamily(
         name = "ideogram-4",
         profile = FamilyProfile(
@@ -1364,7 +1386,8 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
     return None
 
 
-# Exactly what cache_dir = None resolves to: the root the per-file reuse probe falls back to (file_download reads constants.HF_HUB_CACHE per call)
+# Editing / inpaint checkpoints share an arch keyword but need a different pipeline + input image. "layered" rejects a
+# layered checkpoint of any family without a layered entry of its own; Qwen-Image-Layered has one, so it matches that.
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 # Repos named after a family that are not image models: FLUX.3's prompt upsampler (``flux-3-image-klein-pup``) is a
 # Qwen3.5 LLM, not a checkpoint any pipeline loads.
@@ -1850,7 +1873,8 @@ def _upstream_is_cached(
                 roots.append(fallback)
         wanted = tuple(files or ())
         if wanted and len(roots) > 1:
-            # A local path is never a Hub id: rewriting it sends loads other sites resolve on disk to the Hub, skipping the copy already downloaded
+            # One revision per root, unioned across roots: a name may come from either root, but within a root it has
+            # to come from the revision that root's fetch would resolve.
             reachable = {frozenset()}
             for root in roots:
                 covers = _root_revision_coverage(root, repo_id, wanted)
@@ -1913,7 +1937,8 @@ def prefer_ungated_mirror(
     mirror = mirror_repo(base)
     if not mirror:
         return base
-    # HunyuanImage 2.1 card: 50 steps; guidance feeds distilled_guidance_scale, while real CFG runs inside the guiders
+    # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
+    # the copy already downloaded
     if _is_local_path(base):
         return base
     # ``other_root`` for a fetch that resolves each file through either cache root (``reuse_other_cache_root``):
@@ -2227,7 +2252,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageInpaintPipeline": "0.35.0",
     "FluxKontextPipeline": "0.35.0",
     "HiDreamImagePipeline": "0.34.0",
-    # A placeholder, not the pipeline: default leaves it alone; strict refuses, as the trainer child's from_pretrained raises only after GPU residents are gone
+    # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only 0.35 carries, but this
+    # table answers class presence, like the attribute probe before it.
     "WanPipeline": "0.33.0",
     "Lumina2Pipeline": "0.33.0",
     "FluxPipeline": "0.30.0",
@@ -2665,7 +2691,9 @@ def assert_pipeline_class_available(
         return
 
     if present and dummy_backends:
-        # A modular family is judged on its own transformer class, not the generic ModularPipeline entry point; see family_probe_class
+        # A placeholder, not the pipeline. Under the default this is left alone like every other unusable install;
+        # strict refuses, because the trainer child imports the same placeholder and its from_pretrained raises only
+        # after the GPU residents are gone.
         if not strict:
             return
         raise ValueError(
@@ -2733,7 +2761,8 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     open."""
     if fam is None:
         return False
-    # A dim this family does not have (a FLUX.2-dev file, or a misread) falls through to the strings rather than guessing, as the base-size guard does
+    # A modular family is judged on its own transformer class, not on the generic ``ModularPipeline`` entry point --
+    # see ``family_probe_class``.
     name = family_probe_class(fam)
     # No class name: answer open; hasattr(diffusers, "") is False and would hide the model.
     if not name:
@@ -3143,7 +3172,9 @@ def _gguf_header_tensors(header: bytes) -> Optional[list]:
         with os.fdopen(fd, "wb") as fh:
             fh.write(header)
         reader = _HeaderOnlyGGUFReader(tmp_path)
-        # Short-circuit on the free half: an unmapped base fails open anyway, so a mirror id must not cost a memory-map of the whole checkpoint
+        # Belt and braces on top of the refusing ``_get``: ``data_offset`` is where the table ends, so a table that
+        # ran past the prefix is not one to read a shape out of. The alignment slack is for a header-only file, whose
+        # padding was never written.
         if reader.data_offset > len(header) + min(int(reader.alignment), 4096):
             return None
         return list(reader.tensors)

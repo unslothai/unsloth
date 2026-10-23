@@ -632,7 +632,10 @@ class AnthropicStreamEmitter:
         self._open_tool_args_sent: bool = False
         self._open_tool_args: dict = {}
         self._prev_text: str = ""
-        # Split the generator's <think>...</think> markup back into typed thinking blocks.
+        # <think> routing: the generator folds reasoning_content into the cumulative text as <think>...</think> markup
+        # (the UI chat parses it), but Anthropic clients expect typed thinking blocks. Split the markup back out: text
+        # inside the tags streams as thinking_delta in a "thinking" content block, everything else as ordinary text.
+        # _tag_buf holds back a trailing partial tag until the next delta decides it.
         self._route_mode: str = "text"
         self._tag_buf: str = ""
         # Hold leading thinking whitespace until real reasoning arrives, so blank traces open no block

@@ -1913,7 +1913,12 @@ def usable_prequant_source(
     readable = [n for n in candidates if restricted_prequant_load_supported(scheme, n)]
     if not readable:
         return None
-    # A derived safetensors name is a guess: require it declared or cached before planning on it.
+    # A DERIVED safetensors name is a guess: most repos do not host one yet, and a guess must not be
+    # what planning bets the dense shards on. So when the only readable candidates are safetensors
+    # names, require evidence that one is really there -- the family declared it, or it is already
+    # in the cache. Without that, an install that cannot open a pickle would plan a 6 GB artifact
+    # for a .pt-only repo, get a 404 then a refusal, and fall back to dense under a plan that never
+    # budgeted for it, which is the evict-then-OOM this function exists to prevent.
     from .prequant_safetensors import is_safetensors_checkpoint
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):

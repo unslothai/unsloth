@@ -356,7 +356,8 @@ def _compacted_arguments(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
         )
-        # The destination is never expendable: it names which file the call touched, and the receipt promises the content is there
+        # Checked here as well as at the end: without the general floor a short refused call can get a receipt longer
+        # than what it replaces.
         return _unparseable if len(_unparseable) < len(arguments) else None
     if not isinstance(parsed, dict):
         return None
@@ -383,7 +384,8 @@ def _compacted_arguments(
             return value
         if isinstance(value, str) and len(value) >= _leaf_floor:
             elided += len(value)
-            # Same receipt for tools that write no file (python, terminal, search, MCP), since file wording told the model a code argument was on disk
+            # Repeated in each leaf's receipt only when cheaper than the field it points at. `path` is preserved
+            # verbatim either way.
             where = (
                 f" to {path}"
                 if path and key not in _PATH_KEYS and len(str(path)) <= _RECEIPT_PATH_MAX_CHARS
@@ -416,7 +418,8 @@ _REFUSED_PHRASE = (
 )
 # Must not read as tool OUTPUT: the model concluded its file was mangled.
 _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
-# A reply opening like this reports a call that ran but did not do what was asked, so file wording would describe a write that never landed
+# Same receipt for tools that write no file (`python`, `terminal`, search, MCP): the file wording told the model a
+# `code` argument was on disk.
 _COMPLETED_NEUTRAL_PHRASE = (
     "of arguments you sent, elided to save room; the call already ran. Not tool output"
 )
@@ -455,7 +458,8 @@ def compaction_receipt_field(
     return None
 
 
-# Split by whether a file is involved, judged on the call that dominates the turn's size; ask-for-a-smaller-file cannot shrink a python or MCP payload
+# A reply opening like this reports a call that ran and did NOT do what was asked, so the file wording would describe
+# a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
 # `_fit_result_to_room` swaps even an `Error: ...` for a stub without the markers above.
@@ -645,7 +649,8 @@ def _blamed_role(message: dict) -> str:
     wrong lever for an 8 KB payload."""
     role = str(message.get("role") or "")
     if role == "assistant" and message.get("tool_calls"):
-        # With nothing countable left, price the message's own JSON and record no floor, since that estimate carries none
+        # Split by whether a FILE is involved, from the call that accounts for the turn's SIZE: ask-for-a-smaller-file
+        # cannot shrink a `python` or MCP payload.
         _dominant = None
         _dominant_size = -1
         for call in message.get("tool_calls") or []:
@@ -758,7 +763,8 @@ def turn_diagnosis(
         if marginal is not None and marginal > 0:
             latest = marginal + shared
         else:
-            # Phase one runs only when the prompt does not fit: a saved boundary describes the branch it was measured on and would evict a fitting chat after a rollback
+            # Nothing countable left: price the message's own JSON, and record no floor, because that estimate carries
+            # none.
             latest = int(estimate_messages_tokens(messages[-1:]))
             shared = 0
             # What is REPORTED is now the estimate, and that is what the flag describes.
@@ -811,7 +817,8 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    # Summed, not max()'d: recalled passages spend the reserve at once. Only for callers that can restore the boundary, since a deeper cut pays only if remembered
+    # Phase one, gated on the prompt not already fitting: a saved boundary describes the branch it was measured on,
+    # and after a rollback would evict a chat that fits.
     if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, dropped = truncate_oldest_messages(
             fitted,
@@ -839,7 +846,8 @@ def fit_rolling_context(
     # Keyed on the ratio, not `headroom`, which is zeroed for threadless and incognito requests that chose nothing.
     min_bite = True
     if current_tokens > prompt_target:
-        # Floor for the conversation and the share just sent; together they show whether the chat or the message is the problem
+        # Summed, not max()'d: the reserve is spent at once on recalled passages. Only for callers that can restore
+        # the boundary, since a deeper cut pays only if remembered.
         ratio = clamp_compaction_headroom_ratio(headroom_ratio)
         if ratio is None:
             ratio = _COMPACTION_HEADROOM_RATIO

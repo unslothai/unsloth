@@ -2521,7 +2521,10 @@ def _openai_admission_cancelled_error(
 async def _raise_if_openai_admission_cancelled(
     reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
-    # Flag failed so the middleware does not claim a preview-owned slot on the empty 200.
+    # Cancelled before leasing an upstream, so the model was never used. A streaming caller
+    # has flushed the 200 headers and its `except LlamaAdmissionCancelled` just returns, so
+    # flag failed: the middleware must not treat that empty 200 as a successful generation and
+    # claim a preview-owned slot. Harmless for non-streaming callers (they surface a non-2xx).
     from core.inference.llama_keepwarm import mark_current_response_failed
     if reservation.is_cancelled:
         mark_current_response_failed()
@@ -3030,7 +3033,9 @@ async def _send_stream_with_preheader_cancel(
     from core.inference.llama_keepwarm import mark_response_failed
 
     def _mark_preheader_cancel() -> None:
-        # Flag failed so the middleware does not claim a preview-owned slot.
+        # Cancelled before the upstream response started: the caller ends its 200
+        # stream without serving tokens, so flag it failed or the middleware claims
+        # a preview-owned slot for a request that never used the model.
         mark_response_failed(getattr(request, "scope", None))
 
     if await _preheader_cancelled(cancel_event, request):
@@ -13487,7 +13492,10 @@ def _gguf_memory_breakdown(
     companion_bytes = max(0, gpu_files_bytes - main_bytes)
     # Projector is the only charged companion that can sit off-GPU (--no-mmproj-offload).
     host_companion_bytes = 0
-    # Encoder buffers cost about _MMPROJ_VRAM_SAFETY - 1 times the projector file.
+    # The projector costs more than its file: the encoder's buffers run about 1.3x it,
+    # which the placement path budgets as _MMPROJ_VRAM_SAFETY - 1. Charged whenever the
+    # projector is in the resident set, and it is in the total wherever it sits, so a
+    # near-capacity multimodal load is not called a fit on the file size alone.
     projector_runtime_bytes = 0
     mmproj_bytes = _charged_projector_bytes(config, extras, disable_vision)
     if mmproj_bytes and mmproj_bytes <= companion_bytes:
@@ -26920,7 +26928,8 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = f"Base URL is required for provider type: {provider_type}",
         )
-    # Validate the destination before decrypting the key so a refused target never sees a credential.
+    # Validate the proxy destination before the API key is decrypted, so a
+    # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
     if managed is None:
         try:
             base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
@@ -43652,7 +43661,9 @@ async def _anthropic_passthrough_stream(
                     resp.status_code,
                     _err_text,
                 )
-                # Flag failed so the middleware does not claim a preview-owned model.
+                # The outer 200 stream headers are already flushed, so flag the failure: the
+                # middleware must not claim a preview-owned model on a passthrough whose
+                # upstream errored before any SSE.
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))

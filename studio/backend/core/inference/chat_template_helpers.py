@@ -406,7 +406,10 @@ def model_markup(
             # Qwen's "<function-name>" placeholders are prose, not structure.
             if marker in known or _CONTROL_MARKUP.search(marker):
                 markers.add(marker)
-        # First choice: migrate an opener only between truly adjacent carriers, so no image or JSON part sits between them
+        # A template that emits "{{ bos_token }}" inserts and tokenizes that value as a document boundary, but its
+        # concrete spelling is never in the template text. The vocabulary pass covers it only when the token was
+        # harvested, which a partial or stubbed vocabulary does not guarantee, so resolve it from the tokenizer
+        # (#7066).
         for name, value in (specials or {}).items():
             if not isinstance(value, str) or not value:
                 continue
@@ -657,7 +660,9 @@ def _neutralize_content_parts(
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
-            # Same guard for arguments that arrived already decoded: they skip json.loads, so its depth limit never bounds them
+            # The split straddles a non-text part and a trimming renderer would re-form the marker. Moving the opener
+            # across that part is a smaller harm than the collapse below: one marker character changes side, rather
+            # than every carrier's text being pulled into the first one (#7066).
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
@@ -707,7 +712,8 @@ def _neutralized_arguments(arguments, markup = None):
                 return json.dumps(safe, ensure_ascii = True)
             return None
     new_arguments = _neutralize_argument_leaves(arguments, markup)
-    # Concatenated into the header by a recipient-addressed template, so markup here forged a whole system turn; never holds delimiters
+    # Same guard for arguments that arrived already decoded, which never passed through json.loads and so were never
+    # depth-limited by it.
     return new_arguments if _differs(new_arguments, arguments) else None
 
 
@@ -892,7 +898,8 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
-        # Gemma-4 legacy tool_responses goes through format_tool_response_block, which renders every leaf: markup closes <|tool_response> and opens a turn
+        # Concatenated into the header by a recipient-addressed template, so one carrying markup forged a whole system
+        # turn (#7066). Never holds delimiters.
         recipient = msg.get("recipient")
         if isinstance(recipient, str) and recipient:
             new_recipient = neutralize_control_markup(recipient, markup)
@@ -905,7 +912,8 @@ def neutralize_control_markup_in_messages(
                 new_value = neutralize_control_markup(value, markup)
                 if new_value != value:
                     updates[field] = new_value
-        # Llama-3.1 serializes mapping content with tojson and /generate/stream takes raw dicts, so object values reach the prompt as live structure
+        # Gemma-4's legacy assistant-level "tool_responses": format_tool_response_block renders the name and every
+        # leaf, so markup there closes "<|tool_response>" and opens a model turn. Tool output, so the full rewrite.
         tool_responses = msg.get("tool_responses")
         # Gemma-4 renders tool_responses regardless of role: assistant-only like tool_calls.
         if tool_responses is not None and role not in _ASSISTANT_ROLES:
@@ -928,7 +936,8 @@ def neutralize_control_markup_in_messages(
             if isinstance(content, str):
                 new_content = rewrite(content)
             elif isinstance(content, dict):
-                # Keyed by property name (dependentSchemas, dependentRequired) and list-valued too (dependentRequired values, draft-07 dependencies): checked both ways
+                # Llama-3.1 serializes mapping content with tojson and /generate/stream takes raw dicts, so object
+                # values reach the prompt as live structure too (#7066).
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
                 # Nothing resolves media inside a tool result; Llama-3.1 serializes it with tojson.
@@ -1034,7 +1043,9 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset(
         "patternProperties",
         "$defs",
         "definitions",
-        # Under format assertion or a custom validator the MCP server checks format, so rewriting it targets a different contract, as for pattern
+        # Both dependent* keywords are keyed BY a property name, and dependentRequired's values are property-name
+        # lists too, so it is checked on both sides below. "dependencies" is draft-07's spelling of both, so keyed and
+        # list-valued as well.
         "dependentSchemas",
         "dependentRequired",
         "dependencies",
@@ -1051,7 +1062,8 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
-        # OpenAPI discriminator holds only propertyName and an identifier mapping, so every leaf is machine-valued; the server resolves the original, not the rewrite
+        # Under format assertion (or a custom validator) this is a constraint the MCP server checks, so a rewrite
+        # leaves the model targeting a different contract from the one the server enforces, exactly as for "pattern".
         "format",
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
@@ -1060,7 +1072,8 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # with no prose field to protect, so every leaf under it is machine-valued: the server resolves the original
         # while the model sees the rewrite.
         "discriminator",
-        # Gemma-4 emits a response declaration from function.response, and a JSON-serializing template exposes the rest of it
+        # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
+        # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
         "xml",
         # References are resolved, not read; "$ref" can also name an external URI.
         "$ref",
@@ -1155,7 +1168,8 @@ def _unsafe_schema_identifier(value, markup = None):
                             stack.append(value)
                     continue
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
-                    # An entry may hold an empty function mapping beside the flat name that dispatches; nested-only reads forwarded a dropped tool's tool_choice unchanged
+                    # Every leaf, not just a top-level string: an enum entry or const can be any value, so "enum":
+                    # [["<s>"]] and "const": {"tag": "</think>"} are literals the model must reproduce exactly.
                     unsafe = _first_unsafe_leaf(item, markup)
                     if unsafe is not None:
                         return unsafe
@@ -1190,7 +1204,9 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        # The Jinja variable HF passes the tool schema in; a template that never reads it cannot put a tool in the prompt, whatever the caller asked
+        # Both spellings: an entry may carry an empty "function" mapping beside the flat name that actually
+        # dispatches, and reading only the nested level made a dropped tool look as though it had never been in the
+        # caller's catalog -- so a forced tool_choice for it was forwarded unchanged (#7066).
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1287,7 +1303,8 @@ _TOOL_TURN = re.compile(
     r"|\[\s*['\"]tool_calls['\"]\s*\]"
     r"|['\"]tool_calls['\"]\s+in\b"
     r"|\btool_calls\s+in\b"
-    # Include special tokens: native render resolves "{{ bos_token }}" via markup_for_tokenizer; without them a catalog kept a tool the render then dropped
+    # "message['role'] == 'tool'" as well as "message.role == 'tool'": the closing quote and bracket sit between the
+    # name and the comparison.
     r"|role['\"\]\s]*==\s*['\"]tool['\"]"
     r"|['\"]tool['\"]\s*==[\s\['\"]*role"
 )
@@ -1529,7 +1546,9 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    # Only a generated opener carries the protocol newline; a prompt-supplied opener is already consumed, so a streamed newline is content
+    # With the special tokens too: the native render profiles through markup_for_tokenizer and so resolves "{{
+    # bos_token }}", and a catalog built without them kept a tool whose schema carries that value while the render
+    # dropped it (#7066).
     native = model_markup(
         native_tpl,
         _vocabulary_of(tokenizer),
@@ -1870,7 +1889,8 @@ class ReasoningChannelNormalizer:
         self._buffer = ""
         self._in_reasoning = in_reasoning
         self._reasoning_done = False
-        # Chars of a held tool block already searched for a terminator, so a long argument is scanned once rather than once per delta
+        # Only a generated opener carries the protocol newline; from the prompt it is already consumed, so a streamed
+        # newline is content.
         self._skip_opening_newline = False
         # A prompt-supplied opener never reaches the stream, so <think> is owed to the first delta carrying text.
         self._pending_open = in_reasoning
@@ -1960,7 +1980,8 @@ class RecipientChannelNormalizer:
         self._passthrough = False
         self._skip_opening_newline = False
         self._between_blocks = True
-        # No call in the block: keep its body, but the block's close is not the turn's end, so keep normalizing the next header
+        # How much of a held tool block has already been searched for a terminator, so a long argument is scanned once
+        # rather than once per delta.
         self._tool_scanned = 0
 
     def feed(self, text: str) -> str:
@@ -1994,7 +2015,8 @@ class RecipientChannelNormalizer:
                 continue
 
             if self._in_reply:
-                # A terminator with no block open is framing, since the streamer keeps special tokens and continue_final_message resumes inside a block
+                # The reply is content, but the turn can continue after it, so follow it to its close rather than
+                # giving up on the rest.
                 index, length = _find_atem_block_end(self._buffer)
                 if index < 0:
                     stable, self._buffer = _split_partial_atem_block_end(self._buffer)
@@ -2040,7 +2062,8 @@ class RecipientChannelNormalizer:
             match = _ATEM_HEADER_RE.search(self._buffer)
             block_end, end_len = _find_atem_block_end(self._buffer)
             if block_end >= 0 and (match is None or block_end < match.start()):
-                # No terminator arrived, so unlike feed() there is no complete block to hand on: keep the model's written text and drop the rest
+                # A terminator with no block open is framing: the streamer keeps special tokens, and
+                # continue_final_message resumes inside a block.
                 output.append(self._buffer[:block_end])
                 self._buffer = self._buffer[block_end + end_len :]
                 self._between_blocks = True
@@ -2098,7 +2121,8 @@ class RecipientChannelNormalizer:
                 output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
             self._tool_header = None
         elif output:
-            # A tokenizer property can raise on a partially loaded model; a missing special is one fewer marker, never a failed request
+            # feed() held this back because it could still become framing. The stream ended before it did, so drop it
+            # rather than show the control markup.
             held = _atem_partial_framing_len(output)
             output = output[: len(output) - held] if held else output
         if not self._in_reasoning:
@@ -2329,7 +2353,8 @@ def _special_token_strings(tokenizer) -> dict:
         try:
             value = getattr(tokenizer, name, None)
         except Exception:
-            # An explicit template is what this request renders with, so profile it: the load-time one left the authorization catalog a step behind the prompt
+            # A tokenizer property can raise on a partially loaded model; a missing special is simply one fewer
+            # marker, never a failed request.
             continue
         # AddedToken rather than str on some tokenizers, and its str() is the content.
         if value is not None and not isinstance(value, str):
@@ -2355,7 +2380,9 @@ def markup_for_tokenizer(
         cached = None
     # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
     inner = getattr(tokenizer, "tokenizer", tokenizer)
-    # A processor always renders "default", so its profile does not vary with tools; the cache must not key identical entries under different selectors
+    # An explicit *template* is the one this request will actually render with: the generate-time mapper installs its
+    # template later, so profiling the load-time one left the authorization catalog a step behind the prompt it was
+    # gating (#7066).
     if not template:
         template = getattr(tokenizer, "chat_template", None)
     if not template:
@@ -2382,7 +2409,9 @@ def markup_for_tokenizer(
         cached = None
     tokens = None
     tokens = _tokenizer_strings(inner)
-    # Anything not continuable, an empty partial included to match the route guard and render_prompt_with_boundary, renders as an ordinary new turn
+    # ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it renders "default" unless
+    # chat_template= names another. Profiling with the tokenizer rule left a processor's own default-template boundary
+    # unswept while the render emitted it (#7066).
     profile = model_markup(
         template,
         tokens,
@@ -2798,7 +2827,8 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    # Pass tools: apply_chat_template_for_generation profiles with them, and omitting them here described a default template the request never rendered
+    # Anything not continuable (an empty partial included, matching the route guard and render_prompt_with_boundary)
+    # renders as an ordinary new turn.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
     _resumes_thought = (

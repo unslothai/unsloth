@@ -72,7 +72,8 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# Build at the target dtype: from_config materializes the full ~9B module while the first DiT and the encoder are resident
+# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future
+# change cannot mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -82,7 +83,12 @@ def _transformer_shard_paths(
     token: Optional[str],
     check_cancelled: Optional[Callable[[], None]] = None,
 ) -> list[str]:
-    """Safetensors shard paths from the index or single file; repo_id may be a local directory."""
+    """The local safetensors shard paths for ``repo_id/subfolder``.
+
+    Prefers the sharded index; falls back to the single-file name when the subfolder
+    ships one file. Resolves through a local dir when ``repo_id`` is a path, else the
+    Hub cache.
+    """
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     from huggingface_hub import hf_hub_download
@@ -369,7 +375,8 @@ def load_ideogram4_transformer(
     check_cancelled()
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class and size, always required)
+    # build at the target dtype: from_config materializes the full ~9B module while the first DiT and the encoder are
+    # resident
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

@@ -34,7 +34,8 @@ BLOCK_GRAPHS_ENV = "UNSLOTH_DIFFUSION_BLOCK_GRAPHS"
 # Recordings kept per block (input layouts x weight placements); the least recently replayed goes first.
 MAX_GRAPHS_PER_BLOCK = 6
 
-# Call trees like diffusion_cuda_graph's, plus Qwen-Image-2.1's per-layer prefix K/V caches: read-only on a cached step, so their tensors become static buffers
+# Distinct weight placements a block may see without one replay before it stops trying (address churn: a streaming
+# path without the slot ring, or disk offload). Each attempt costs one eager call, never a recording.
 MAX_UNREPLAYED_PLACEMENTS = 6
 
 _OFF = ("0", "off", "false", "no")
@@ -67,6 +68,8 @@ MODEL_OFFLOAD_REASON = (
 
 
 # Auto engages FBCache only at 20+ steps, since its win scales with step count: "dev" schedules qualify, distilled turbo never does
+
+
 def _kv_layer_cache(obj: Any) -> bool:
     name = type(obj).__name__
     return name.endswith("KVLayerCache") and hasattr(obj, "k") and hasattr(obj, "v")

@@ -48,7 +48,8 @@ from core.inference.diffusion_families import (
 
 # FLUX.2 tensor table sits in the first ~15 KiB; this is only a buffer ceiling.
 _GGUF_HEADER_BYTES = 256 * 1024
-# Published by the worker once it has something interruptible and read on timeout; a one-element list, not a nonlocal, so the assignment is visible
+# One short read. A pick is blocked on this in the UI, and a slow Hub must not stall the picker;
+# a timeout is just another fail-open.
 _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
@@ -198,7 +199,8 @@ def _read_gguf_header(
     max_bytes = _GGUF_HEADER_BYTES if max_bytes is None else max_bytes
     timeout_seconds = _HEADER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     buffer = bytearray()
-    # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the copy; it can only lose a chunk arriving too late
+    # Published by the worker as soon as it has something interruptible; read by this thread on
+    # timeout. A one-element list rather than a nonlocal, so the worker's assignment is visible.
     holder: list[Any] = [None]
 
     def _fetch() -> None:
@@ -270,7 +272,8 @@ def flux2_inner_dim_for_pick(
             _shared_gguf_header(repo_id, gguf_filename, token, local)
         )
     with _CACHE_LOCK:
-        # Cheapest first: a base outside the size table (local path, unshipped repo) has nothing to compare against, so it must not cost a round trip
+        # Plain FIFO-ish eviction: this only bounds a session's worth of picks, and a re-probe
+        # after an eviction costs one range request.
         if len(_INNER_DIM_CACHE) >= _INNER_DIM_CACHE_MAX:
             _INNER_DIM_CACHE.clear()
         _INNER_DIM_CACHE[key] = inner_dim
@@ -302,7 +305,8 @@ def flux2_pick_mismatch(
     if not gguf_filename or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return None
     want = flux2_base_inner_dim(base_repo)
-    # An empty prefix is a failed read; the two probes disagreeing on that is not worth a sticky miss, so each memoises its own no-verdict
+    # Cheapest order: a base outside the size table (a local path, a repo we do not ship) leaves
+    # nothing to compare against, so it must not cost a round trip either.
     if want is None:
         return None
     got = flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token)
@@ -348,7 +352,8 @@ def _shared_gguf_header(
                 return prefix
             del _HEADER_PREFIX_CACHE[key]
     prefix = _read_gguf_header(repo_id, gguf_filename, token)
-    # A cache-only caller cannot make the HEAD revalidation, so it does not memoise this answer; a later caller that can reach the Hub still revalidates
+    # An empty prefix is a failed read, and the two probes disagreeing about that is not worth a
+    # sticky miss: each still memoises its own "no verdict" on its own terms.
     if not prefix:
         return prefix
     with _CACHE_LOCK:
@@ -389,7 +394,8 @@ def _revalidated_speech_arch(
     if cached is None:
         return arch
     if not allow_network:
-        # Memo or local header only, as the size pairing does; nothing is memoised, so a later caller that can wait still gets a real answer
+        # A cache-only caller cannot wear the HEAD; the caller declines to memoise this answer,
+        # so the next one that CAN reach the Hub still revalidates it.
         return arch
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:

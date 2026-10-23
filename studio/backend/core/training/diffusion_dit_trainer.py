@@ -1043,7 +1043,8 @@ def _zimage_load_conditioners(cfg, device, weight_dtype):
 
 
 def _zimage_load_transformer(cfg, device, weight_dtype, base_precision):
-    # Z-Image is bf16 only: its RoPE and embedder run fp32, and fp16 overflows.
+    # Prequant default loads 4-bit as-is under nf4; the dense modes use the bf16 Tongyi-MAI base. Z-Image is bf16 only
+    # (its RoPE/embedder run fp32; fp16 overflows).
     from diffusers import ZImageTransformer2DModel
     return _load_dit_transformer(ZImageTransformer2DModel, cfg, device, base_precision)
 

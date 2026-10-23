@@ -33,7 +33,8 @@ import json
 import os
 import sys
 
-# Remap only while the prefix is ABSENT so a real host mount is never shadowed.
+# Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
+# mount / user dir is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)

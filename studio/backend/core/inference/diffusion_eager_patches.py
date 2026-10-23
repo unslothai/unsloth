@@ -64,7 +64,8 @@ except Exception:  # noqa: BLE001
     _NPU = False
 
 
-# Install/uninstall via the shared patch backend: the live original is fingerprinted so a changed forward stays unpatched, and stashed for exact restore
+# Patched forwards, each mirroring diffusers semantics with the fused fast path (``addcmul(input, t1, t2) == input + t1
+# * t2``).
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
     scale, shift = torch.chunk(emb, 2, dim = 1)

@@ -32,7 +32,8 @@ TC_MODES = (TC_FBCACHE, TC_STATIC)
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
-# diffusers cache hook names whose compute branch is re-pointed at a compiled inner forward (leader measures the first block); same fn_ref layout
+# Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
+# qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
 
 # == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
@@ -229,7 +230,8 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
-# Same runtime fallback as the block's own compile: a lowering failure on the first computed step restores the eager inner, not a failed render
+# diffusers cache hook names whose compute branch we re-point at a compiled inner forward (leader = measuring first
+# block, block = the rest); both share the fn_ref layout.
 _CACHE_HOOK_NAMES = (
     "mag_cache_leader_block_hook",
     "mag_cache_block_hook",
@@ -266,7 +268,8 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
                 extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
                 compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
-                # May not be a cache we installed, so post-enable integration is not assumed; both are idempotent, and skipping the first strands the child-registry list
+                # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
+                # restores the eager inner instead of failing the render.
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
                 if guard is not None:
 
@@ -736,7 +739,8 @@ def apply_step_cache(
             type(live).__name__ == "FirstBlockCacheConfig"
             and getattr(live, "threshold", None) == thr
         ):
-            # Toggle path with blocks already regionally compiled: re-point fresh hooks at compiled inners; the load path is armed by _compile_repeated_blocks
+            # May not be a cache we installed, so the post-enable integration cannot be assumed
+            # done. Both idempotent; skipping the first strands the child-registry list.
             _invalidate_child_registry_cache(transformer)
             _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)

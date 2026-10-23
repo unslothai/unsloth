@@ -929,7 +929,8 @@ def _resolved_snapshot_ids(candidates) -> frozenset[str]:
 
 
 def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[str]]:
-    """Snapshot-relative: only the directory marks an MTP/ drafter as a companion."""
+    """Snapshot dirs a GGUF load can actually use, plus the newest of them. Size sums quants over every revision but variant resolution reads only the ``load_id`` directory, so they must agree or an advertised quant resolves to nothing. Prefer a snapshot holding a whole quant (a mixed one counts; the lister trims to the completed subset), else any primary GGUF."""
+    # Snapshot-relative: only the directory marks an ``MTP/`` drafter as a companion.
     with_gguf = [
         snapshot
         for revision in repo_info.revisions

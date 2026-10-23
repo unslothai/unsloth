@@ -62,7 +62,8 @@ CAPTURE_SAFE_ENV = "UNSLOTH_DIFFUSION_CAPTURE_SAFE"
 
 _HUNYUANIMAGE_CLS = "HunyuanImageTransformer2DModel"
 
-# HunyuanVideo-1.5 (diffusers 0.36.0-0.40.0): is_t2v is a device bool that a host if reads; the merge uses mask indexing, with padded byt5/mllm rows zeroed
+# The stock merge block, stripped line by line (blank lines dropped). Order of the four pieces is
+# what the permutation reproduces, so the match is exact rather than a needle search.
 _HUNYUANIMAGE_MERGE_BLOCK: tuple[str, ...] = (
     "# reorder and combine text tokens: combine valid tokens first, then padding",
     "new_encoder_hidden_states = []",
@@ -129,7 +130,9 @@ def merge_text_streams(
 
 _HUNYUANVIDEO15_CLS = "HunyuanVideo15Transformer3DModel"
 
-# The source-level decorator (@apply_lora_scale, from 0.37) re-applies when the def executes, so the rebuilt function keeps the installed LoRA handling
+# HunyuanVideo-1.5 (diffusers 0.36.0 through 0.40.0, unchanged): ``is_t2v`` is a 0-d device bool that
+# ``if`` reads on the host, then the per-batch merge of [image ; byt5 ; mllm] uses boolean-mask
+# indexing like HunyuanImage's, with the padded byt5/mllm rows replaced by zeros.
 _HV15_T2V_BLOCK: tuple[str, ...] = (
     "is_t2v = torch.all(image_embeds == 0)",
     "if is_t2v:",
@@ -313,7 +316,8 @@ def _rebuild_forward(
     for (start, end), replacement in reversed(spans):
         indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
         lines = lines[:start] + [indent + replacement] + lines[end:]
-    # Declined at load so status reads "off" instead of arming a refusing wrapper; Qwen-Image-2.1 lands here unless diffusion_qwenimage21's fast step is installed
+    # A source-level decorator (``@apply_lora_scale`` from 0.37) re-applies when the def executes,
+    # so the rebuilt function carries the installed version's LoRA handling unchanged.
     new_source = "\n".join(lines) + "\n"
     filename = f"<unsloth capture-safe {getattr(target, '__qualname__', 'forward')}>"
     namespace = dict(vars(module))

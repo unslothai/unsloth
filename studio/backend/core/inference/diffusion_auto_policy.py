@@ -73,7 +73,10 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-edit": (40.9, 16.6, 0.3),
     # Same DiT and Qwen2.5-VL 7B encoder; the RGBA VAE is 0.25 GB.
     "qwen-image-layered": (40.9, 16.6, 0.3),
-    # 17B MoE DiT (34.2 GB bf16) with four encoders: CLIP-L 0.5, CLIP-G 2.8, T5-XXL 9.5, plus Llama-3.1-8B (~16 GB) fetched from the open mirror at load
+    # A different architecture, not a refreshed Qwen-Image: 32 single-stream blocks against 60
+    # dual-stream ones, so the DiT is 14.2 GB rather than 40.9, while the Qwen3-VL 8B encoder is
+    # LARGER than Qwen-Image's Qwen2.5-VL 7B. Ships bf16, so resident equals on-disk. Read off the
+    # Hub sibling metadata for Qwen/Qwen-Image-2.1: transformer 14.23, text_encoder 17.53, vae 1.35.
     "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
@@ -86,11 +89,15 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5, plus Llama-3.1-8B (~16 GB
     # bf16) from the open mirror at load time.
     "hidream-i1": (34.2, 28.8, 0.2),
-    # Same conversion as companions, of which this is the text-encoder half, so the planner's companions - text_encoders leaves just the VAE
+    # Two ~9.3B DiTs (Ideogram's dual-branch CFG), both resident, plus a Qwen3-VL encoder. The vendor stores raw float8,
+    # so each doubles at bf16.
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
-# Hub download bytes per resident byte for checkpoints not stored at bf16.
+# Hub DOWNLOAD bytes relative to the bf16-resident sizes above, for families whose published checkpoints are not
+# stored at bf16. The free-disk gate needs what lands in the HF cache, which differs by 2x in either direction here.
+# From HF metadata: z-image and lumina-2 publish fp32 (2.00x), ideogram-4 publishes fp8 (0.50x). Anything absent ships
+# bf16 and downloads what it occupies (measured 0.99-1.07x).
 _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
     "z-image": 2.0,
     "lumina-2": 2.0,
@@ -272,7 +279,8 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
-        # force_dense: the loader skips the prequant shortcut (e.g. a LoRA bake), so the candidate is sized for the dense build
+        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's `companions -
+        # text_encoders` is the VAE and nothing else.
         text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
@@ -345,7 +353,8 @@ def resolve_dense_quant_candidate(
         return None
     prequant_available = False
     prequant_cached = False
-    # The dense path may download into the HF cache, which must not wedge a nearly full disk; size by what lands on disk: prequant or base repo
+    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense
+    # build.
     if not force_dense:
         try:
             from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source

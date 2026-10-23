@@ -11,7 +11,9 @@ from typing import Dict, Optional
 QUANT_4BIT_FACTOR = 16 / 5
 DOUBLE_QUANT_4BIT_FACTOR = 3.6
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)
-NON_FLASH_ATTENTION_FACTOR = 12.0  # eager attention overhead; see VRAM_ESTIMATION.md section 5
+NON_FLASH_ATTENTION_FACTOR = (
+    12.0  # eager attention score+workspace overhead; see VRAM_ESTIMATION.md section 5
+)
 
 LINEAR_ATTENTION_IMPLS = frozenset({"flash_attention_2", "sdpa", "flex_attention"})
 
@@ -49,7 +51,8 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
     "sgd": 4,
 }
 
-# Dense-MLP indices; position matters. Exaone-MoE, Laguna, Hy_v3, GLM-MoE-DSA, GLM4-MoE-Lite, Ernie4_5_VL_MoE use mlp_layer_types over first_k_dense_replace.
+# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
+# LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
     "true": (2.0, 1.0),

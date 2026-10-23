@@ -985,7 +985,8 @@ except Exception as exc:
     )
 
 
-# SHA256 digest of the token as cache key (never the raw bearer in memory); the anonymous sentinel gets its own slot apart from None.
+# PEP 562 keeps the two script strings and three detection sets reachable under their
+# original module-level names. Memoised so access doesn't rebuild the ~40 KB script.
 _LAZY_MODULE_ATTRS = {
     "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
     "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
@@ -1220,7 +1221,9 @@ def _is_vision_model_or_none(
     # beside an existing weight file after it was first inspected.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
-        # Online fallback is guarded inside _raw_config_has_vision_config, not here, since gating the whole call would deny a valid token on any Hub hiccup.
+        # Same rule as ModelConfig.from_identifier: variant lookup is directory-only, and
+        # detect_gguf_model reads only the directory root, which holds no weights in a
+        # repo that files every quant under a per-quant subdir.
         if gguf_variant and Path(local_path).is_dir():
             gguf_file = _find_local_gguf_by_variant(local_path, gguf_variant)
         else:

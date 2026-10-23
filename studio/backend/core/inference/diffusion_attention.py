@@ -2295,7 +2295,8 @@ def _install_fa4_dispatch_guard() -> bool:
     )
 
 
-# On-demand install gate like UNSLOTH_DIFFUSION_SD_CPP_INSTALL: auto (default) or 1 installs a missing package on request; 0 never installs, falls back to native
+# Whether the hub FA4 build runs correctly here, once per (device, dtype, head_dim) through diffusers' dispatch: catches
+# cards with no code (sm110 / sm120 unverified) and API drift. An exact kernel, so the bound is tight.
 _FA4_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _FA4_MIN_COSINE = 0.999
 _FA4_MAX_REL_L1 = 0.02
@@ -2823,7 +2824,8 @@ _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
     "xformers": ("xformers", "xformers"),
 }
 
-# include_windows: this is the one resolver with win_amd64 wheels upstream; timeout matches the other probe_torch_wheel_env callers
+# On-demand install gate (mirrors UNSLOTH_DIFFUSION_SD_CPP_INSTALL): auto (default) / 1 installs a missing package
+# when a gated backend is requested; 0 never installs and falls back to native.
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
 # A recorded attempt stops the in-lock apply re-running the 600s install under _generate_lock.
@@ -2873,7 +2875,9 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
             )
         url = xformers_wheel_url(env)
         if url is None:
-            # importlib.invalidate_caches() after install: the import system caches directory listings, so find_spec can miss the new wheel
+            # Name the platform. Linux aarch64 reaches here with a perfectly ordinary torch, and reporting only the
+            # torch and CUDA would read as "upstream never built this pair" when the truth is "upstream never built it
+            # for this arch".
             target = (
                 None,
                 f"no xFormers wheel is published for torch "
@@ -3032,7 +3036,8 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
             timeout = 600,
             check = True,
         )
-        # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in; one reset covers every fresh DiT
+        # The import system caches directory listings, so invalidate the finder caches or the next find_spec can miss
+        # the new wheel.
         importlib.invalidate_caches()
         if package == "kernels":
             _refresh_diffusers_kernels_version(logger)
@@ -3387,7 +3392,8 @@ def apply_attention_backend(
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
-    # All remaining slots valid for every element: vacuously True for a 0-length stream, and fine for an unused secondary stream like byt5 in t2v
+    # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel that decision is MATH.
+    # Say so now; the flags this would otherwise be read off lie (#8225).
     if target is not None:
         _configure_native_attention(pipe, target, logger)
     return None
@@ -3591,7 +3597,8 @@ def _trim_stream(states, mask):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
-    # Kwargs may be trimmed before a failure; restore the caller's untrimmed inputs so the stock dense-mask path (flag False) gets what it expects
+    # All remaining slots valid for every element (vacuously True for a 0-length stream, fine for an unused secondary
+    # stream e.g. byt5 in t2v).
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 

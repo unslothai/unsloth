@@ -136,7 +136,8 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
-    # Loaded artifacts equal on-disk ones, so nothing to save; a new static-compile shape re-dirties via register_shape, and mode "on" keeps saving
+    # auto: save by default (without a saved bundle no user gets a warm restart); the SAVE env overrides: "0" load-only,
+    # "1" on.
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -648,7 +649,8 @@ def begin(
     if not ctx.hit:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
     elif mode != "on":
-        # The manifest is the commit point here too, so it decides which legacy bundle is live; a pre-content-addressing one names cache.bin
+        # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape
+        # re-dirties via register_shape; mode "on" keeps saving.
         ctx.saved = True
     # A hit never saves, so an over-budget cache would otherwise never shrink.
     if _save_enabled(mode):
@@ -663,7 +665,8 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         return False
     ldir = root / ctx.key
     manifest_path = ldir / _MANIFEST_NAME
-    # Named as the copied manifest names it, not ctx.bundle unless the pair predates content addressing; published like begin() so ctx names the live bundle
+    # The manifest is the commit point here too, so it decides which legacy bundle is live; a
+    # pre-content-addressing one names cache.bin.
     published = _read_manifest(manifest_path)
     if published is None:
         return False
@@ -679,7 +682,9 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
     if _save_enabled(ctx.mode):
         try:
             ctx.dir.mkdir(parents = True, exist_ok = True)
-            # The bundle THIS manifest pairs with; content-addressed, so a save writes a file no reader uses and the previous pair stays whole until the manifest commits
+            # Under the name the copied manifest names, which is not ctx.bundle unless the legacy
+            # pair predates content addressing. Published like begin() does, so the context goes
+            # on naming the live bundle in the write root.
             migrated = _manifest_bundle(ctx.dir, published)
             _atomic_copy(bundle, migrated)
             # Bundle first: a manifest without one reads as a miss, not an unservable hit.
@@ -931,7 +936,8 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
             "created": time.time(),
             "bytes": len(data),
             "sha256": digest,
-            # A shape registered while this ran is not in the bundle just written, so leave the context dirty for the save its register_shape queued
+            # The bundle THIS manifest is paired with. Content-addressed, so a save writes a file no reader is
+            # using and the previous pair stays whole and addressed until the manifest below commits.
             "bundle": bundle.name,
             "env": ctx.env_fp,
             "model": ctx.model_fp,

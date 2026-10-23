@@ -27,7 +27,8 @@ from utils.paths.path_utils import is_appledouble_metadata
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Curated, family-tagged catalog; union models (one model, many modes) are the default picks, and local dirs or a bare owner/name repo id also work
+# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along
+# with GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 

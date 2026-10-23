@@ -71,7 +71,8 @@ def _device() -> str:
     """
     if config.embed_device_preference() != "gpu":
         return "cpu"
-    # Own lock, not _lock: _lock is held across model construction, making a probe wait out downloads.
+    # Still a table lookup: asking for a GPU on a host without one lands on CPU rather than on a device
+    # string torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -125,7 +126,8 @@ def _load_dtype(device: str, name: str) -> str:
 
 
 _torchao_stub_done = False
-# Adapter-backed models log via the PEFT integration's own logger, not a descendant of the others.
+# Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
+# a preflight probe wait out someone else's download.
 _stub_lock = threading.Lock()
 
 
@@ -305,7 +307,8 @@ class _CaptureLoadReport(logging.Filter):
 _LOAD_REPORT_LOGGERS = (
     "transformers.utils.loading_report",
     "transformers.modeling_utils",
-    # local_only loads from cache; the gate needs real offline or it rejects a scanned .bin-only repo.
+    # An adapter-backed embedding model reports through the PEFT integration's own logger, not a
+    # descendant of either above.
     "transformers.integrations.peft",
 )
 
@@ -576,7 +579,8 @@ def _get(model_name: str | None = None):
     except Exception:  # noqa: BLE001 - old/unavailable settings store
         download_pending = False
     offline = hf_env_offline()
-    # Must be ST-specific and complete: a hybrid GGUF or a first shard alone must not retire the marker.
+    # local_only means "load from cache"; offline is what the security gate needs, and claiming offline
+    # while online rejects a .bin-only repo the resolver just scanned.
     local_only = offline or download_pending
     with _lock:
         if _model is None or _name != name:
@@ -650,7 +654,8 @@ def _get(model_name: str | None = None):
             _route_linears_through_onednn(_model)
             _name = name
             if download_pending:
-                # Admission and model lookup are one lease; lookup first lets unload clear globals mid-call.
+                # Retire only once the model is constructed: retiring earlier let a failed construction fall through
+                # to llama-server with no marker, freeing the fallback to fetch the GGUF companion.
                 try:
                     from utils.embedding_model_settings import clear_stored_download_pending
                     clear_stored_download_pending(name)
@@ -914,7 +919,8 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
         key = stored.strip().lower()
         if key in _ST_ALIASES or key in _LLAMA_ALIASES:
             return key
-    # Failed ST wrapper is unpublished, but its module-level model would outlive a later llama unload.
+    # Below the stored record, since a name is only a guess: a repo with a torn GGUF family and usable
+    # safetensors has a validated ST plan.
     if _model_names_gguf_repo(model):
         return "llama-server"
     return _resident_hardware_choice()
@@ -1147,7 +1153,8 @@ def _dispose_replaced_backend(old, new = None) -> None:
     if old is None or old is new:
         return
     if isinstance(old, _SentenceTransformersBackend):
-        # No published backend doesn't mean nothing is loaded; False here stranded module-level weights.
+        # Two ST wrappers share the module-level model and the replacement is already warmed, so clearing it
+        # here would discard the model just selected.
         if not isinstance(new, _SentenceTransformersBackend):
             _release_st_model()
         return
@@ -1212,7 +1219,8 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
     """Lock-free on purpose: the load locks are held across whole model loads, which would stall status."""
     backend = _backend
     if backend is None:
-        # _model_repo outlives the subprocess, so a repo match alone would call a dead server resident.
+        # No published backend does not mean nothing is loaded: answering False stranded module-level
+        # weights, since release_backend returns on the same test.
         if model_name is None:
             return _model is not None
         return _model is not None and _name == model_name

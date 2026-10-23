@@ -5147,7 +5147,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pin the subset before any checkpoint lands so resume reads it back.
+        # Pin the subset before any checkpoint lands here, so a resume reads it back rather than deriving it from a
+        # config the user may have edited in between.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
             # Not fatal, no fallback: the dataset is already bounded; a resume will read this run as unbounded.
             logger.warning(

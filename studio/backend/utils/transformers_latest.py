@@ -73,7 +73,8 @@ _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
 # urlopen's timeout bounds each read, not the transfer, so the transfer gets its own budget.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
-# Set when no refresh is in flight; concurrent callers wait on it for the running fetch rather than reporting no answer (see _get_snapshot).
+# One attempt's true worst case: the budget, plus the single socket read already blocking
+# when it runs out (the deadline is only tested between reads).
 _FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
 _READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -117,7 +118,13 @@ _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
 def _read_within(resp, deadline: float) -> str | None:
-    """GET url, bounded budget, one retry; None on failure; _FETCH_MISSING on 404 without retrying, so absent is told apart from a transient error."""
+    """Body of *resp*, or None if the transfer is still running at *deadline*.
+
+    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
+    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
+    returns what has arrived instead of blocking for a full chunk, which is what lets the
+    budget be checked as the body comes in.
+    """
     read1 = getattr(resp, "read1", None)
     if read1 is None:
         # A file-like that hands back the whole body in one go has nothing to dribble.
@@ -644,7 +651,17 @@ def install_latest_transformers(
     before_swap = None,
     reserved: bool = False,
 ) -> dict:
-    """Re-verify against a live snapshot (a release may land within the TTL); fall back to the cached one on fetch failure."""
+    """Consented install of the latest transformers sidecar; returns a structured result.
+
+    Guards: the requested *version* must match the current PyPI latest from the (cached)
+    snapshot, so a client cannot pin an arbitrary package version through this endpoint.
+    On success ``.venv_t5_latest`` is provisioned and pinned; routing then resolves the
+    new tier automatically on this and every future start. *before_swap* is forwarded
+    to the stage-and-swap: it runs only after the staged install succeeded, right
+    before the live sidecar is replaced. *reserved* means the caller already holds the
+    sidecar swap reservation (the install route takes it before waiting on the
+    inference lifecycle gate, so worker starts see it for the whole window).
+    """
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
     if not reserved and not try_begin_sidecar_swap():

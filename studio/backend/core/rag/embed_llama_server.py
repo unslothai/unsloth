@@ -476,7 +476,8 @@ class LlamaServerBackend:
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
-        # Only the preferred repo; a fallback-cached file must not pre-empt a companion the hub can resolve.
+        # Identity carries the model and repo but not the file, so a preferred variant arriving later would
+        # change the weights under an existing index without changing its tag.
         planned = self._planned_family_path(model, desired)
         if planned is not None:
             try:
@@ -522,7 +523,8 @@ class LlamaServerBackend:
                 # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
                 # model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
-            # Only when the hub named no file; a transfer failing on its own (disk, checksum) must still surface.
+            # Typed: the same condition the ST path raises, and /v1/embeddings answers it
+            # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.
             from .embeddings import EmbeddingModelDownloadRequiredError
 
             raise EmbeddingModelDownloadRequiredError(
@@ -637,7 +639,8 @@ class LlamaServerBackend:
             from utils.hf_cache_settings import active_hf_hub_cache
 
             cache_dir = active_hf_hub_cache()
-            # A shutdown refusal is terminal: the CPU fallback would hit the same latch and be refused again.
+            # Fetch the whole split family, not just the picked shard: -m shard1 makes llama-server open the
+            # siblings itself.
             downloaded = None
             for name in family:
                 fetched = hf_hub_download(
@@ -833,7 +836,8 @@ class LlamaServerBackend:
     ) -> None:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path(model_name)
-        # Unload/rebuild is routine; a grow-only registry pins every retired backend and its stdout tail.
+        # The cached path can be replaced in place between server lifetimes. Capture pooling once
+        # per spawn so the explicit llama-server flag and the vectors' recorded identity agree.
         pooling = _gguf_pooling(model_path)
         self._model_pooling = pooling
         port = config.EMBED_PORT or self._find_free_port()

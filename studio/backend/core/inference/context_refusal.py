@@ -100,7 +100,10 @@ def _blame_latest_turn(context_tokens: int):
         return None
     # Use the WINDOW (not prompt_target) and the turn without shared floor; llama-server admits on size.
     window = recorded_context or context_tokens
-    # Same shape, no file: an oversized program, command, query or MCP payload; "ask for a smaller file" names the wrong thing, so say what holds for every tool
+    # Reached only on a counted turn, per the gate above, so this is a claim about a size that was measured. A turn
+    # the template renders as nothing on its own is counted by difference, so every Gemma tool result can earn this
+    # wording again rather than being hedged down for being a guess. Not defaulted to "user": `describe_oversize`
+    # gives an unnameable role generic advice.
     role = str(refusal.get("latest_turn_role") or "")
     return role, not (window and latest_turn >= window)
 
