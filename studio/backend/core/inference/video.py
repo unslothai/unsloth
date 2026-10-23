@@ -29,6 +29,7 @@ family's official base repos, or a local path the user explicitly picked.
 """
 
 from __future__ import annotations
+from core.inference.inference_gate import holds_inference
 
 import contextlib
 import dataclasses
@@ -11581,6 +11582,7 @@ class VideoBackend:
                     video_id = (video or {}).get("id"),
                 )
 
+    @holds_inference
     def generate(
         self,
         *,

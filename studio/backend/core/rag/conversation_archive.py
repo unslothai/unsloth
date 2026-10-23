@@ -45,6 +45,7 @@ _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
 _VECTOR_CACHE_MAX = 8192
 _NOTED_MAX = 8
+_PAUSE_JOIN_S = 10.0
 
 # Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
 # user-authored text.
@@ -541,11 +542,14 @@ def inference_running():
 
 
 def _pause_prewarm() -> None:
-    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end."""
+    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end. Bounded, so a
+    wedged embedder can never hold a generation back."""
     _prewarm_stop.set()
     worker = _prewarm_worker
     if worker is not None and worker is not threading.current_thread():
-        worker.join()
+        worker.join(_PAUSE_JOIN_S)
+        if worker.is_alive():
+            logger.warning("conversation_archive.prewarm_pause_timed_out after=%ss", _PAUSE_JOIN_S)
 
 
 def _start_prewarm() -> None:
@@ -620,9 +624,11 @@ def _prewarm_thread(
     from core.inference.context_window import group_turns
 
     model = config.effective_embedding_model()
+    if not _embedder_free():
+        return
     identity = embeddings.embedding_identity(model)
     scope = store.conversation_archive_scope(thread_id)
-    count = embeddings.token_counter(model)
+    count = _yielding(embeddings.token_counter(model))
     chunk_limit = embeddings.chunk_tokens(model)
     conn = rag_db.get_connection()
     try:
@@ -647,13 +653,40 @@ def _prewarm_thread(
         while todo and not (_gap_closed() or stopped()):
             done += _prewarm_batch(model, identity, todo[:_PREWARM_BATCH])
             todo = todo[_PREWARM_BATCH:]
+    except _GapClosed:
+        pass
     finally:
         conn.close()
     if done:
         logger.info("conversation_archive.prewarmed thread_id=%s chunks=%s", thread_id, done)
 
 
+class _GapClosed(Exception):
+    pass
+
+
+def _yielding(count: Callable[[str], int]) -> Callable[[str], int]:
+    def call(text: str) -> int:
+        if not _embedder_free():
+            raise _GapClosed
+        return count(text)
+
+    return call
+
+
+def _embedder_free() -> bool:
+    """Wait for the in-process embedder without queueing on its lock: a queued worker cannot see a stop, so a
+    generation would wait behind another caller's (e.g. ingestion's) whole batch."""
+    while embeddings._compute_lock.locked():
+        if _gap_closed():
+            return False
+        time.sleep(0.05)
+    return not _gap_closed()
+
+
 def _prewarm_batch(model: str, identity: str, texts: list[str]) -> int:
+    if not _embedder_free():
+        return 0
     vectors, got = embeddings.encode_with_identity(texts, model_name = model, normalize = True)
     if got != identity:
         # The embedder changed under us; the next request's archive re-embeds in the new space.

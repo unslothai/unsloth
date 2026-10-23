@@ -1763,9 +1763,13 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     """MLX / Transformers generation, audio and model loads pause the worker too, not only llama streams."""
     import threading
 
-    from core.inference.inference_gate import holds_inference
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.inference_gate import holds_inference, pauses_background_embedding
     from core.inference.llama_cpp import LlamaCppBackend
     from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.video import VideoBackend
+    from core.training.diffusion_training_service import DiffusionTrainingService
+    from core.training.training import TrainingBackend
 
     for fn in (
         InferenceOrchestrator._generate_dispatched,
@@ -1776,6 +1780,10 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
         InferenceOrchestrator.load_model,
         LlamaCppBackend.generate_audio_response,
         LlamaCppBackend.load_model,
+        DiffusionBackend.generate,
+        VideoBackend.generate,
+        TrainingBackend.start_training,
+        DiffusionTrainingService.start,
     ):
         assert hasattr(fn, "__wrapped__"), fn.__qualname__
 
@@ -1805,6 +1813,43 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert load() == 1
     assert conversation_archive._inference_depth == 0
     assert threading.current_thread().name != "archive-prewarm"
+
+    # A training start stops the worker before admitting the job; its busy probe keeps it idle after.
+    conversation_archive._start_prewarm()
+
+    @pauses_background_embedding
+    def start():
+        worker = conversation_archive._prewarm_worker
+        return worker is not None and worker.is_alive()
+
+    assert start() is False
+
+
+def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypatch):
+    """While ingestion holds the embedder, a new generation must not wait for the worker to get and finish its turn."""
+    import time
+
+    from core.rag import embeddings
+
+    thread_id = "lock-thread"
+    turns = _gap_thread(thread_id, 6, tag = "lock")
+    real = embeddings.encode_with_identity
+
+    def locked(texts, **kwargs):
+        with embeddings._compute_lock:
+            time.sleep(0.5)
+            return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", locked)
+    monkeypatch.setattr(conversation_archive, "_PAUSE_JOIN_S", 30.0)
+    conversation_archive.note_branch(thread_id, turns)
+    with embeddings._compute_lock:
+        conversation_archive._start_prewarm()
+        time.sleep(0.3)
+        started = time.monotonic()
+        with conversation_archive.inference_running():
+            waited = time.monotonic() - started
+    assert waited < 1.0
 
 
 @pytest.mark.parametrize("busy", ["training", "diffusion_training", "media", "unreadable"])

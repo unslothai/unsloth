@@ -29,3 +29,16 @@ def holds_inference(fn):
             return fn(*args, **kwargs)
 
     return call
+
+
+def pauses_background_embedding(fn):
+    """For starts of long jobs (training): stop the gap worker and wait out its batch before admitting the job;
+    the worker's own busy probe keeps it idle for the job's lifetime."""
+
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        from core.rag.conversation_archive import _pause_prewarm
+        _pause_prewarm()
+        return fn(*args, **kwargs)
+
+    return call

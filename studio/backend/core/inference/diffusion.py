@@ -18,6 +18,7 @@ in the arbiter the routes call, not here.
 """
 
 from __future__ import annotations
+from core.inference.inference_gate import holds_inference
 
 from contextlib import contextmanager
 import contextvars
@@ -12276,6 +12277,7 @@ class DiffusionBackend:
         )
 
     @_release_render_on_unload
+    @holds_inference
     def generate(
         self,
         *,
