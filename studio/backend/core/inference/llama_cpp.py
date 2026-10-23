@@ -28562,6 +28562,23 @@ class LlamaCppBackend:
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
                             ) -> int:
+                                # An explicit draft micro-batch, capped by the batch (and below
+                                # by the context) as llama_context caps it. Applied here, not in
+                                # one wrapper, so every gate that takes this callback prices it.
+                                _draft_ub = _draft_n_ubatch(extra_args, os.environ)
+                                if _draft_ub:
+                                    _n_ubatch = min(
+                                        _draft_ub,
+                                        _named_batch_sizes(
+                                            extra_args,
+                                            os.environ,
+                                            _emitted_n_batch(n_batch, _np),
+                                            n_ubatch,
+                                        )[0]
+                                        & 0xFFFFFFFF,
+                                    )
+                                    if ctx > 0:
+                                        _n_ubatch = min(_n_ubatch, ctx)
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
                                     spec_draft_n_max = _n,
@@ -28585,22 +28602,6 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
-                    # An explicit draft micro-batch, capped by the batch (and below by the
-                    # context) as llama_context caps it: every planning gate prices it, not
-                    # only the spawn reprice.
-                    _planned_draft_ub = _draft_n_ubatch(extra_args, os.environ)
-                    if _planned_draft_ub:
-                        _planned_draft_ub = min(
-                            _planned_draft_ub,
-                            _named_batch_sizes(
-                                extra_args,
-                                os.environ,
-                                _emitted_n_batch(n_batch, n_parallel),
-                                n_ubatch,
-                            )[0]
-                            & 0xFFFFFFFF,
-                        )
-
                     def _mtp_bytes(
                         ctx: int,
                         slots: Optional[int] = None,
@@ -28611,8 +28612,6 @@ class LlamaCppBackend:
                         # fit re-prices it per candidate.
                         if mtp_overhead_fn is None:
                             return 0
-                        if ubatch is None and _planned_draft_ub:
-                            ubatch = min(_planned_draft_ub, ctx) if ctx > 0 else _planned_draft_ub
                         if slots is None:
                             if ubatch:
                                 return mtp_overhead_fn(ctx, _n_ubatch = ubatch)

@@ -305,3 +305,48 @@ def test_a_server_that_names_its_common_library_is_read_through_it(tmp_path, lin
     binary = _elf(tmp_path / "llama-server", linked.encode())
     _elf(tmp_path / linked, _MARKER)
     assert _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+def test_every_context_gate_prices_the_draft_micro_batch(tmp_path, monkeypatch):
+    """The Metal context search takes the draft callback directly, not through the wrapper
+    that read --spec-draft-n-ubatch, so it priced the draft at the target's micro-batch."""
+    import test_metal_explicit_context_guard as _metal
+    import test_spec_sidecar_fit_reserve as _r1
+
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    real_init = _lc.GgufLoadIntent.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs.setdefault("dspark_draft_path", str(sidecar))
+        kwargs.setdefault("speculative_type", "dspark")
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(_lc.GgufLoadIntent, "__init__", init)
+    B = _lc.LlamaCppBackend
+    monkeypatch.setattr(
+        B, "probe_server_capabilities", classmethod(lambda cls, binary = None: dict(_r1._CAPS))
+    )
+    seen = []
+    real = B._estimate_mtp_overhead_bytes
+
+    def spy(self, n_ctx, *args, **kwargs):
+        seen.append(kwargs.get("n_ubatch"))
+        return real(self, n_ctx, *args, **kwargs)
+
+    monkeypatch.setattr(B, "_estimate_mtp_overhead_bytes", spy)
+    cmd = _metal._launch(
+        tmp_path,
+        monkeypatch,
+        n_ctx = 0,
+        backend = B(),
+        real_fit = True,
+        budget_bytes = 16 * _r1._GIB,
+        wired_bytes = 16 * _r1._GIB,
+        weights_bytes = 4 * _r1._GIB,
+        kv_per_token = 32 * 1024,
+        extra_args = ["--spec-draft-n-ubatch", "32"],
+    )["cmd"]
+    assert "--model-draft" in cmd
+    # The first call only asks whether the reserve can be sized at all.
+    assert len(seen) > 2 and set(seen[1:]) == {32}, seen
