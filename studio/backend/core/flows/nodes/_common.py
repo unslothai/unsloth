@@ -773,6 +773,14 @@ async def generate_image(
         raise FlowNodeError("The image prompt is empty")
     if mask is not None and init_image is None:
         raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
+    if control is not None and not float(control.get("strength") or 0) > 0:
+        # Strength 0 is ControlNet off: Studio skips it, so do not reload the model in bf16 for it.
+        control = None
+    if control is not None and (init_image is not None or mask is not None or references):
+        raise FlowNodeError(
+            "ControlNet works with plain text-to-image here: disconnect the Init image, mask and references, "
+            "or the control image"
+        )
     if control is not None:
         await _controlnet_ready(ctx, model)
     await ensure_model(ctx, "image", model)

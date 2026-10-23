@@ -536,3 +536,23 @@ def test_controlnet_on_an_unpicked_quantized_model_says_how_to_fix_it(monkeypatc
     with pytest.raises(FlowNodeError, match = "load it in bf16 on the Images page"):
         asyncio.run(_common.generate_image(ctx, model = None, prompt = "a fox", control = _control()))
     assert loads == []
+
+
+def test_controlnet_at_zero_strength_or_with_an_init_image_never_reloads(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": False}
+    ctx = _StatusCtx(status, files = {"c": _png((16, 16)), "src": _png((16, 16))})
+    # Strength 0 is ControlNet off: no bf16 reload, and the request carries no control.
+    asyncio.run(
+        _common.generate_image(
+            ctx, model = FLUX1, prompt = "a fox", control = {**_control(), "strength": 0.0}
+        )
+    )
+    # An Init image with ControlNet is refused before anything loads.
+    with pytest.raises(FlowNodeError, match = "plain text-to-image"):
+        asyncio.run(
+            _common.generate_image(
+                ctx, model = FLUX1, prompt = "a fox", init_image = _media("src"), control = _control()
+            )
+        )
+    assert loads == []
