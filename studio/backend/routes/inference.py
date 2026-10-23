@@ -31315,10 +31315,12 @@ async def _proxy_to_external_provider(
         )
         # The compaction nudge is not part of the general nudge: once the thread has an archive
         # the catalogue carries search_conversation, and without this the model is never told
-        # that turns it cannot see exist, so it answers that it has no record of them.
-        _external_nudge = _apply_compaction_nudge(
-            _external_nudge, external_studio_tools, payload = payload
-        )
+        # that turns it cannot see exist, so it answers that it has no record of them. Not when
+        # no call can happen: the loop withdraws the catalogue and inline recall still runs.
+        if not _tool_calls_are_disabled(payload):
+            _external_nudge = _apply_compaction_nudge(
+                _external_nudge, external_studio_tools, payload = payload
+            )
     _served_template = None
     if (
         provider_type == "llama_cpp"

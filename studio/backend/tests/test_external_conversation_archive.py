@@ -249,3 +249,24 @@ def test_caller_owned_tools_do_not_halve_the_recall_budget(archive_ready, monkey
     ri._fit_external_context(messages, _payload(THREAD), tools = caller_tools, tool_loop = True)
 
     assert seen == [False, True]
+
+
+def test_no_compaction_nudge_when_tool_calls_are_disabled(monkeypatch):
+    monkeypatch.setattr(ri, "_thread_has_conversation_archive", lambda thread_id: True)
+
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    _, sent = _proxy(
+        "openrouter",
+        [{"role": "user", "content": "Was there a phone number on the report?"}],
+        thread_id = THREAD,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        tool_choice = "none",
+    )
+
+    system = " ".join(str(m.get("content")) for m in sent["messages"] if m.get("role") == "system")
+    assert "call search_conversation" not in system
