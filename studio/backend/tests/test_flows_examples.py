@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.flows import compiler
-from core.flows.examples.build_examples import build
+from core.flows.examples.build_examples import REVIEW_TOPICS, build
 from core.flows.nodes import transform
 from core.flows.schema import FlowDocument
 from core.flows.specs import SPECS_BY_TYPE
@@ -25,7 +25,7 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 43
+    assert len(BUILT) == 46
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -152,3 +152,185 @@ def test_contact_cleanup_list_blocks_clean_the_rows():
         ("Ana Lima", "ana@example.com", "Acme"),
         ("ben ortiz", "ben@example.org", "unknown"),
     ]
+
+
+def _png(
+    size: tuple[int, int],
+    color: tuple,
+    mode: str = "RGB",
+) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new(mode, size, color).save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def _run_example(name: str, stubs: dict):
+    """Run a bundled example through the real engine: real CPU blocks, the given stubs for models and uploads."""
+    import asyncio
+
+    from core.flows.compiler import parse_document
+    from core.flows.engine import FlowEngine
+    from core.flows.registry import load_handlers
+
+    eng = FlowEngine()
+    eng.handlers = {**load_handlers(), **stubs}
+    eng.mint_key = lambda account: ("sk-unsloth-test", None)
+    eng.revoke_key = lambda key_id: None
+    parsed, errors = parse_document(_example(name))
+    assert not errors, errors
+
+    async def go():
+        rs = await eng.start_run(app = None, flow_id = name, doc = parsed, options = {})
+        await asyncio.wait_for(rs.task, timeout = 60)
+        return rs
+
+    rs = run(go())
+    failed = {nid: s.error for nid, s in rs.nodes.items() if s.status == "failed"}
+    assert rs.status == "completed", failed
+    return rs
+
+
+def test_review_insights_counts_topics_into_a_table_and_chart():
+    tags = {
+        "early": ("delivery", "positive", 5),
+        "snapped": ("quality", "negative", 2),
+        "five minutes": ("support", "positive", 5),
+        "expensive": ("price", "negative", 2),
+        "Setup": ("ease of use", "positive", 5),
+        "rain": ("delivery", "negative", 1),
+        "Solid": ("quality", "positive", 5),
+        "never got": ("support", "negative", 1),
+    }
+    summaries = []
+
+    async def extract(ctx):
+        text = ctx.inputs["text"]
+        topic, sentiment, stars = next(v for k, v in tags.items() if k in text)
+        assert ctx.params["json_schema"]["properties"]["topic"]["enum"] == REVIEW_TOPICS
+        return {
+            "json": {
+                "topic": topic,
+                "sentiment": sentiment,
+                "stars": stars,
+                "review": text,
+                "extra": 1,
+            }
+        }
+
+    async def generate(ctx):
+        summaries.append(ctx.inputs["context"])
+        return {"text": "Fix delivery and support replies first."}
+
+    rs = _run_example("review-insights", {"llm.extract": extract, "llm.generate": generate})
+    scores = rs.outputs["scores"]
+    assert scores["kind"] == "table"
+    by_topic = {r["topic"]: (r["stars"], r["n"]) for r in scores["rows"]}
+    assert by_topic == {
+        "delivery": (3, 2),
+        "quality": (3.5, 2),
+        "support": (3, 2),
+        "price": (2, 1),
+        "ease of use": (5, 1),
+    }
+    reviews = rs.outputs["reviews"]
+    assert [c["id"] for c in reviews["columns"]] == ["topic", "sentiment", "stars", "review"]
+    assert len(reviews["rows"]) == 8
+    chart = rs.nodes["plot"].outputs["chart"]
+    assert chart["kind"] == "chart" and chart["x"][:2] == ["delivery", "quality"]
+    series = {s["name"]: s["y"] for s in chart["series"]}
+    assert series["positive"][:2] == [1, 1] and series["negative"][:2] == [1, 1]
+    assert rs.outputs["summary"] == "Fix delivery and support replies first."
+    assert len(summaries) == 1 and len(summaries[0][0]) == 8
+
+
+def test_image_alt_text_splits_the_vision_answer_into_fields():
+    asked = []
+
+    async def upload(ctx):
+        return {
+            "image": await ctx.save_asset(_png((64, 48), (200, 30, 30)), "image/png", kind = "image")
+        }
+
+    async def vision(ctx):
+        asked.append((ctx.inputs["image"]["kind"], ctx.params["json_schema"]["required"]))
+        value = {
+            "alt_text": "A red poster on a wall",
+            "description": "A plain red poster hangs on a white wall in soft daylight.",
+            "visible_text": "SALE",
+        }
+        return {"text": json.dumps(value), "json": value}
+
+    rs = _run_example("image-alt-text", {"input.image": upload, "llm.vision": vision})
+    assert asked == [("image", ["alt_text", "description", "visible_text"])]
+    assert rs.outputs == {
+        "alt_text": "A red poster on a wall",
+        "description": "A plain red poster hangs on a white wall in soft daylight.",
+        "visible_text": "SALE",
+    }
+    shown = rs.nodes["show"].outputs["value"]
+    assert shown[0]["kind"] == "image" and shown[1] == "A red poster on a wall"
+
+
+def test_background_swap_places_the_cutout_on_the_new_scene():
+    import io
+
+    from PIL import Image
+
+    from core.flows import assets as asset_store
+
+    calls = {}
+
+    async def upload(ctx):
+        return {
+            "image": await ctx.save_asset(
+                _png((300, 200), (10, 10, 200)), "image/png", kind = "image"
+            )
+        }
+
+    async def remove_bg(ctx):
+        calls["subject"] = ctx.params["subject"]
+        cut = await ctx.save_asset(
+            _png((100, 100), (255, 0, 0, 255), "RGBA"), "image/png", kind = "image"
+        )
+        mask = await ctx.save_asset(_png((300, 200), 255, "L"), "image/png", kind = "image")
+        return {"image": cut, "mask": mask}
+
+    async def generate(ctx):
+        calls["prompt"] = ctx.inputs["prompt"]
+        bg = await ctx.save_asset(_png((400, 400), (0, 255, 0)), "image/png", kind = "image")
+        return {"image": bg, "images": [bg]}
+
+    saved = []
+
+    async def library(ctx):
+        saved.append(ctx.inputs["value"])
+        return {}
+
+    rs = _run_example(
+        "background-swap",
+        {
+            "input.image": upload,
+            "image.remove_bg": remove_bg,
+            "image.generate": generate,
+            "output.library": library,
+        },
+    )
+    assert calls["subject"] == "the product" and "marble kitchen counter" in calls["prompt"]
+
+    def pixels(media):
+        data, _ = asset_store.read(asset_store.parse_ref(media["ref"]))
+        return Image.open(io.BytesIO(data))
+
+    placed = rs.nodes["place"].outputs["image"]
+    im = pixels(placed).convert("RGB")
+    assert im.size == (400, 400)
+    # The product sits centred at 62% height on the generated background, which shows around it.
+    assert im.getpixel((200, 248)) == (255, 0, 0)
+    assert im.getpixel((10, 10)) == (0, 255, 0)
+    assert saved and saved[0][0]["ref"] == placed["ref"]
+    sheet = rs.nodes["sheet"].outputs["image"]
+    assert pixels(sheet).size[0] >= 3 * 512

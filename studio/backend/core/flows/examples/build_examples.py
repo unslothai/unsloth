@@ -3307,6 +3307,283 @@ def xy_plot() -> B:
     return b
 
 
+REVIEW_TOPICS = ["price", "quality", "delivery", "support", "ease of use"]
+
+
+def review_insights() -> B:
+    b = B(
+        "review-insights",
+        "Review Insights",
+        "pipeline",
+        "Reads customer reviews one by one, tags each with a topic and sentiment, then counts them into a "
+        "table and a chart with a short summary of what to fix first.",
+        tags = ["table", "chart", "extract", "for each"],
+        seed = 54,
+    ).need("chat")
+    b.n(
+        "reviews",
+        "input.list",
+        0,
+        1,
+        label = "Reviews",
+        items = [
+            "Arrived a day early and the box was well packed. Great start.",
+            "The handle snapped after two weeks. Feels cheap for the money.",
+            "Support answered my question in five minutes and sorted the refund.",
+            "Way too expensive compared with the shop down the road.",
+            "Setup took one minute, my dad figured it out on his own.",
+            "Courier left it in the rain and the box was soaked through.",
+            "Solid build, heavy and well finished. Worth every penny.",
+            "Emailed support three times and never got a reply.",
+        ],
+    )
+    b.n("each", "logic.for_each", 1, 1, group = "r_loop", max_items = 16)
+    b.e("reviews.items", "each.items")
+    b.n(
+        "tag",
+        "llm.extract",
+        2,
+        1,
+        group = "r_loop",
+        label = "Topic and sentiment",
+        model = CHAT,
+        instructions = "Pick the one topic the review is mostly about. stars is the rating the writer would "
+        "most likely give, 1 to 5.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "enum": REVIEW_TOPICS},
+                "sentiment": {"type": "string", "enum": ["positive", "negative", "mixed"]},
+                "stars": {"type": "integer", "minimum": 1, "maximum": 5},
+                "review": {"type": "string"},
+            },
+            "required": ["topic", "sentiment", "stars", "review"],
+        },
+    )
+    b.e("each.item", "tag.text")
+    b.e("tag.json", "each.collect")
+    b.group("r_loop", "For each review", (1, 0.6, 2, 1.6), "#0d9488")
+    b.n(
+        "cols",
+        "json.set",
+        3.2,
+        1,
+        label = "Pick columns",
+        keep_only = True,
+        fields = {k: {"var": f"item.{k}"} for k in ("topic", "sentiment", "stars", "review")},
+    )
+    b.e("each.results", "cols.value")
+    b.n("rows", "table.concat", 4.2, 1, label = "Review table")
+    b.e("cols.value", "rows.tables")
+    b.n(
+        "mix",
+        "table.aggregate",
+        5.2,
+        1.2,
+        label = "Count by topic and sentiment",
+        group_by = ["topic", "sentiment"],
+        metrics = ["stars"],
+        stat = "mean",
+    )
+    b.e("rows.table", "mix.table")
+    b.n(
+        "plot",
+        "table.chart",
+        6.2,
+        1.2,
+        label = "Mentions chart",
+        type = "bar",
+        x = "topic",
+        y = ["n"],
+    )
+    # `group` on b.n names a frame, so set the chart's series column directly.
+    b.doc["nodes"][-1]["params"]["group"] = "sentiment"
+    b.e("mix.table", "plot.table")
+    b.n(
+        "scores",
+        "table.aggregate",
+        5.2,
+        0.2,
+        label = "Average stars per topic",
+        group_by = ["topic"],
+        metrics = ["stars"],
+        stat = "mean",
+    )
+    b.e("rows.table", "scores.table")
+    b.n(
+        "summary",
+        "llm.generate",
+        5.2,
+        2.4,
+        label = "What to fix first",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 300,
+        system = "You are a product manager. In three short sentences say what customers like, what hurts "
+        "most, and the one thing to fix first. Use only the tagged reviews in the context.",
+        prompt = "Summarise these tagged reviews.",
+    )
+    b.e("cols.value", "summary.context")
+    b.n("show_chart", "output.preview", 7.2, 1.2)
+    b.e("plot.chart", "show_chart.value")
+    b.n("table_out", "output.result", 6.2, 0.2, name = "scores")
+    b.e("scores.table", "table_out.value")
+    b.n("summary_out", "output.result", 6.2, 2.4, name = "summary")
+    b.e("summary.text", "summary_out.value")
+    b.n("all_out", "output.result", 4.2, 2, name = "reviews")
+    b.e("rows.table", "all_out.value")
+    b.note(
+        "tip",
+        "Paste your own reviews into the list, one per line, and edit the topics in Topic and sentiment.",
+        0,
+        2,
+        1.6,
+        0.6,
+    )
+    return b
+
+
+def image_alt_text() -> B:
+    b = B(
+        "image-alt-text",
+        "Image Alt Text",
+        "pipeline",
+        "Writes accessibility text for a picture: a short alt text, a longer description and any words "
+        "visible in the image.",
+        tags = ["vision", "accessibility", "json"],
+        seed = 55,
+    ).need("vision")
+    b.n("photo", "input.image", 0, 1, label = "Your picture")
+    b.n(
+        "look",
+        "llm.vision",
+        1,
+        1,
+        label = "Describe for screen readers",
+        model = VISION,
+        question = "Write accessibility text for this image. alt_text: one sentence under 125 characters "
+        "that says what matters, without starting with 'image of'. description: two or three sentences "
+        "for someone who cannot see it, covering people, setting, colours and mood. visible_text: every "
+        "word printed in the image, or an empty string.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "alt_text": {"type": "string"},
+                "description": {"type": "string"},
+                "visible_text": {"type": "string"},
+            },
+            "required": ["alt_text", "description", "visible_text"],
+        },
+        max_tokens = 600,
+    )
+    b.e("photo.image", "look.image")
+    for row, (field, name) in enumerate(
+        (("alt_text", "alt"), ("description", "long"), ("visible_text", "words"))
+    ):
+        b.n(f"get_{name}", "json.get", 2, row * 0.9 + 0.1, path = field)
+        b.e("look.json", f"get_{name}.json")
+        b.n(f"{name}_out", "output.result", 3, row * 0.9 + 0.1, name = field)
+        b.e(f"get_{name}.value", f"{name}_out.value")
+    b.n("show", "output.preview", 1, 2.2, label = "Picture and alt text")
+    b.e("photo.image", "show.value")
+    b.e("get_alt.value", "show.value")
+    b.note(
+        "tip",
+        "Upload a photo, chart or screenshot in the first block, then Run. Add an <img alt> straight from "
+        "alt_text.",
+        0,
+        2.3,
+        0.9,
+        0.8,
+    )
+    return b
+
+
+def background_swap() -> B:
+    b = B(
+        "background-swap",
+        "Background Swap",
+        "pipeline",
+        "Cuts the product out of your photo and places it on a freshly generated scene, with a before and "
+        "after sheet.",
+        tags = ["image", "product", "remove background", "composite"],
+        seed = 56,
+    ).need("image")
+    b.n("photo", "input.image", 0, 0.5, label = "Product photo")
+    b.n(
+        "cut",
+        "image.remove_bg",
+        1,
+        0.5,
+        label = "Cut out product",
+        subject = "the product",
+        trim = True,
+    )
+    b.e("photo.image", "cut.image")
+    b.n(
+        "scene",
+        "input.text",
+        0,
+        1.6,
+        label = "New background",
+        value = "an empty white marble kitchen counter by a sunny window, soft morning light, plants blurred "
+        "in the background, product photography",
+    )
+    b.n(
+        "backdrop",
+        "image.generate",
+        1,
+        1.6,
+        label = "Paint the background",
+        model = IMAGE,
+        size = "1024x1024",
+        seed = 12,
+    )
+    b.e("scene.text", "backdrop.prompt")
+    b.n(
+        "place",
+        "image.composite",
+        2,
+        1,
+        label = "Place product",
+        x = 0.5,
+        y = 0.62,
+        scale = 0.5,
+    )
+    b.e("backdrop.image", "place.image")
+    b.e("cut.image", "place.overlay")
+    b.n("steps", "logic.collect", 3, 0.4)
+    b.e("photo.image", "steps.items")
+    b.e("cut.image", "steps.items")
+    b.e("place.image", "steps.items")
+    b.n(
+        "sheet",
+        "image.grid",
+        4,
+        0.4,
+        columns = 3,
+        caption_style = "none",
+        cell_size = 512,
+        background = "#ffffff",
+        column_labels = ["Original", "Cut out", "New background"],
+    )
+    b.e("steps.list", "sheet.images")
+    b.n("show", "output.preview", 5, 0.4)
+    b.e("sheet.image", "show.value")
+    b.n("save", "output.library", 3, 1.6, folder = "Product shots")
+    b.e("place.image", "save.value")
+    b.note(
+        "tip",
+        "Upload a product photo, describe the scene, then Run. Move or resize the product with X, Y and "
+        "Width on Place product.",
+        0,
+        2.6,
+        1.8,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -3351,6 +3628,9 @@ BUILDERS = (
     outpaint,
     controlnet_canny,
     xy_plot,
+    review_insights,
+    image_alt_text,
+    background_swap,
 )
 
 
