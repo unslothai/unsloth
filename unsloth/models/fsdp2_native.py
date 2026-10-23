@@ -1507,7 +1507,14 @@ def native_clip_grad_norm_(
     norm_type = 2.0,
 ):
     """Global gradient norm over DTensor (sharded) and plain gradients; clips in place and returns a
-    plain float32 tensor (the same value on every rank)."""
+    plain tensor (the same value on every rank).
+
+    Follows torch.nn.utils.clip_grad_norm_ (what one GPU runs through Accelerator.clip_grad_norm_):
+    one norm per tensor in the gradient's dtype, combined by vector_norm(stack(norms), p) in that
+    dtype (mixed dtypes promote as torch.stack does), clip coefficient and returned norm in it too.
+    A sharded gradient's norm is vector_norm over its ranks' local norms (gathered in the gradient's
+    dtype, not reduced as p-th powers: a float16 power sum overflows from a norm of 256 where one
+    GPU's vector_norm does not)."""
     import torch.distributed as dist
 
     try:
@@ -1547,65 +1554,62 @@ def native_clip_grad_norm_(
     p = norm_type
 
     def _per_tensor(grads):
-        """One float64 norm per tensor (torch.linalg.vector_norm semantics); an empty local shard
-        (uneven sharding: dim 0 smaller than the world) is the identity of the combine. 0 for p >= 0;
-        +inf for every negative p (its p-th power is 0, and -inf takes the min), where vector_norm
-        itself refuses an empty tensor."""
-        if not grads:
-            return torch.zeros(0, device = device, dtype = torch.float64)
-        empty = math.inf if p < 0 else 0.0
-        live = [g.detach() for g in grads if g.numel()]
-        try:
-            norms = list(torch._foreach_norm(live, p)) if live else []
-        except Exception:
-            norms = [torch.linalg.vector_norm(g, p) for g in live]
-        if len(norms) == len(grads) and len({(n.device, n.dtype) for n in norms}) == 1:
-            # Common case (no empty shard, one device and dtype): one stack and one cast instead of
-            # two small kernels per tensor; the same float64 values in the same order.
-            return torch.stack(norms).double().to(device)
-        it = iter(norms)
-        return torch.stack(
-            [
-                next(it).double().to(device)
-                if g.numel()
-                else torch.tensor(empty, device = device, dtype = torch.float64)
-                for g in grads
-            ]
-        )
+        """Per-tensor norms in each gradient's own dtype (torch._foreach_norm, as clip_grad_norm_
+        takes them), as a list of 1-D tensors on `device`, one per dtype. An empty local
+        shard (uneven sharding: dim 0 smaller than the world) is the identity of the combine: 0 for
+        p >= 0, +inf for a negative p (its p-th power is 0 and -inf takes the min), where
+        vector_norm itself refuses an empty tensor. Positions are the same on every rank."""
+        by_dtype = {}
+        for i, g in enumerate(grads):
+            by_dtype.setdefault(g.dtype, []).append(i)
+        chunks = []
+        for dtype, idx in by_dtype.items():
+            live = [k for k, i in enumerate(idx) if grads[i].numel()]
+            norms = []
+            if live:
+                tensors = [grads[idx[k]].detach() for k in live]
+                try:
+                    norms = list(torch._foreach_norm(tensors, p))
+                except Exception:
+                    norms = [torch.linalg.vector_norm(g, p) for g in tensors]
+                if len({n.device for n in norms}) > 1:
+                    norms = [n.to(device) for n in norms]
+            if len(live) == len(idx):
+                values = torch.stack(norms).to(device)
+            else:
+                values = torch.full((len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = dtype)
+                if live:
+                    values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
+            chunks.append(values)
+        return chunks
 
-    # torch.nn.utils.clip_grad_norm_ is vector_norm(stack(per-tensor norms), p): for p = 0 the number
-    # of tensors with a nonzero element, for +-inf the max / min, else the p-th root of the sum of
-    # p-th powers. A sharded tensor's norm combines over ranks first (counts and powers add up).
-    replicated_norms = _per_tensor(replicated)
+    def _over_shards(chunks, mesh, dims):
+        """Full-tensor norms of sharded gradients from their local norms: each dtype's local norms
+        are all-gathered in that dtype over every shard dim and combined per tensor by vector_norm
+        (dim 0) in that dtype. Every rank holds the same tensors (empty shards included), so the
+        shapes agree."""
+        out = []
+        for values in chunks:
+            rows = values.unsqueeze(0)
+            if initialized:
+                for dim in dims:
+                    group = mesh.get_group(dim)
+                    parts = [torch.empty_like(rows) for _ in range(dist.get_world_size(group))]
+                    dist.all_gather(parts, rows, group = group)
+                    rows = torch.cat(parts, dim = 0)
+            out.append(torch.linalg.vector_norm(rows, p, dim = 0))
+        return out
 
-    def _over_shards(value, op, mesh, dims):
-        if initialized:
-            for dim in dims:
-                dist.all_reduce(value, op = op, group = mesh.get_group(dim))
-        return value
-
-    if p == 0:
-        total = (replicated_norms > 0).sum().double()
-        for (mesh, dims), grads in groups.items():
-            counts = _over_shards(_per_tensor(grads), dist.ReduceOp.SUM, mesh, dims)
-            total = total + (counts > 0).sum().double()
-    elif p in (math.inf, -math.inf):
-        pick, op = (torch.max, dist.ReduceOp.MAX) if p > 0 else (torch.min, dist.ReduceOp.MIN)
-        total = torch.tensor(0.0 if p > 0 else math.inf, device = device, dtype = torch.float64)
-        parts = [pick(replicated_norms)] if replicated_norms.numel() else []
-        for (mesh, dims), grads in groups.items():
-            parts.append(_over_shards(pick(_per_tensor(grads)), op, mesh, dims))
-        if parts:
-            total = pick(torch.stack(parts))
-    else:
-        total = replicated_norms.pow(p).sum()
-        for (mesh, dims), grads in groups.items():
-            powers = _per_tensor(grads).pow(p).sum()
-            total = total + _over_shards(powers, dist.ReduceOp.SUM, mesh, dims)
-        total = total.pow(1.0 / p)
+    # torch.nn.utils.clip_grad_norm_: total = vector_norm(stack(per-tensor norms), p) in the
+    # (promoted) gradient dtype; for p = 0 the number of tensors with a nonzero norm, for +-inf the
+    # max / min, else the p-th root of the sum of p-th powers. The same holds one level down for a
+    # sharded tensor over its shards, so per-tensor norms come first and the combine is torch's.
+    norms = _per_tensor(replicated)
+    for (mesh, dims), grads in groups.items():
+        norms.extend(_over_shards(_per_tensor(grads), mesh, dims))
+    total = torch.linalg.vector_norm(torch.cat(norms), p)
     clip_coef = float(max_norm) / (total + 1e-6)
-    clip_coef = torch.clamp(clip_coef, max = 1.0).float()
-    total = total.float()
+    clip_coef = torch.clamp(clip_coef, max = 1.0)
     grads = sharded + replicated
     if grads:
         by_device = {}

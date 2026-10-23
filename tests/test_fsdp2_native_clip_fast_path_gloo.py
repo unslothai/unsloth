@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""native_clip_grad_norm_ stacks the per-tensor norms once (one cast) when every local shard is
-non-empty and the norms share a device and dtype. On a gloo CPU world of 2, for norm types 0, 1, 2 and
-inf, the total norm and the clipped gradients are bitwise equal to the per-tensor computation it
-replaces, both on that fast path and on the fallback (an empty local shard, mixed gradient dtypes)."""
+"""native_clip_grad_norm_ batches the per-tensor norms (one foreach_norm, stack and all-gather per
+gradient dtype). On a gloo CPU world of 2, for norm types 0, 1, 2 and inf, the total norm and the
+clipped gradients are bitwise equal to the same computation done one tensor at a time, both with
+every local shard non-empty and with an empty local shard or mixed gradient dtypes."""
 
 import multiprocessing
 import os
@@ -56,50 +56,30 @@ class _Many(torch.nn.Module):
 
 
 def _reference(native_dtensor, params, max_norm, p):
-    """The per-tensor computation the fast path replaces (norm, cast to float64, stack)."""
+    """The same computation one tensor at a time (torch.nn.utils.clip_grad_norm_ semantics): each
+    local norm in its gradient's dtype, a sharded tensor's norm = vector_norm over its ranks' local
+    norms (all-gathered in that dtype), total = vector_norm(stack(per-tensor norms)) in the promoted
+    dtype, coefficient in that dtype too."""
     import torch.distributed as dist
 
-    grads_sharded, grads_plain = [], []
+    norms = {}  # (sharded, dtype) -> norms; the summation order: plain then sharded, by dtype
     for q in params:
         g = q.grad
-        if isinstance(g, native_dtensor):
-            grads_sharded.append(g.to_local())
+        sharded = isinstance(g, native_dtensor)
+        local = g.to_local() if sharded else g
+        if local.numel():
+            n = torch._foreach_norm([local.detach()], p)[0]
         else:
-            grads_plain.append(g)
-
-    def per_tensor(grads):
-        if not grads:
-            return torch.zeros(0, dtype = torch.float64)
-        empty = math.inf if p < 0 else 0.0
-        live = [g.detach() for g in grads if g.numel()]
-        norms = iter(list(torch._foreach_norm(live, p)) if live else [])
-        return torch.stack(
-            [
-                next(norms).double() if g.numel() else torch.tensor(empty, dtype = torch.float64)
-                for g in grads
-            ]
-        )
-
-    rep = per_tensor(grads_plain)
-    sh = per_tensor(grads_sharded)
-    if p == 0:
-        counts = sh.clone()
-        dist.all_reduce(counts, op = dist.ReduceOp.SUM)
-        total = (rep > 0).sum().double() + (counts > 0).sum().double()
-    elif p == math.inf:
-        part = sh.max()
-        dist.all_reduce(part, op = dist.ReduceOp.MAX)
-        total = (
-            torch.max(torch.stack([rep.max(), part]))
-            if rep.numel()
-            else torch.max(torch.stack([part]))
-        )
-    else:
-        powers = sh.pow(p).sum()
-        dist.all_reduce(powers, op = dist.ReduceOp.SUM)
-        total = (rep.pow(p).sum() + powers).pow(1.0 / p)
-    coef = torch.clamp(float(max_norm) / (total + 1e-6), max = 1.0).float()
-    return total.float(), coef
+            n = torch.tensor(math.inf if p < 0 else 0.0, dtype = local.dtype)
+        if sharded:
+            parts = [torch.empty_like(n) for _ in range(dist.get_world_size())]
+            dist.all_gather(parts, n)
+            n = torch.linalg.vector_norm(torch.stack(parts), p)
+        norms.setdefault((sharded, local.dtype), []).append(n)
+    ordered = [n for key in sorted(norms, key = lambda k: k[0]) for n in norms[key]]
+    total = torch.linalg.vector_norm(torch.stack(ordered), p)
+    coef = torch.clamp(float(max_norm) / (total + 1e-6), max = 1.0)
+    return total, coef
 
 
 def _case(native, empty_shard, mixed):
