@@ -612,6 +612,9 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
 class GpuLeaseHeldError(GpuBusyForAnotherAccountError):
     """An operation (a benchmark, an eval) holds the GPU for a measurement; routes answer 409 ``gpu_leased``."""
 
+    # A training start that meets a lease at its teardown aborts instead of freeing the GPU anyway.
+    blocks_training = True
+
     def __init__(self, label: str, remaining_s: float):
         self.label = label
         self.remaining_s = max(0.0, remaining_s)
@@ -892,11 +895,15 @@ def acquire_for(
                 )
         _residents[owner] = gpus_now
         _owner_epoch += 1
-        if register is not None or replacing:
+        counted = register is not None or replacing
+        if counted:
             _loads += 1
         try:
             result = register() if register is not None else None
         except BaseException:
+            if counted:
+                # A refused load changed nothing, so a loaded model's settings stay current.
+                _loads -= 1
             if held_before is not ...:
                 # The model already loaded stays where it was.
                 _residents[owner] = held_before
