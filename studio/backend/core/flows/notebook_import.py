@@ -165,6 +165,13 @@ class _Reader(ast.NodeVisitor):
                     self.tune["load_in_4bit"] = False
         elif fn == "train_on_responses_only":
             self.tune["train_on_completions"] = True
+        elif fn == "get_peft_model" and any(
+            k.arg == "qat_scheme"
+            and not (isinstance(k.value, ast.Constant) and k.value.value is None)
+            for k in node.keywords
+        ):
+            # Plain LoRA would drop the fake-quantized layers the notebook trains with.
+            self.unsupported.add("quantization-aware training (qat_scheme)")
         elif fn == "get_peft_model":
             self.found["peft"] = True
             r = self.kw(node, "r")
@@ -286,10 +293,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     # TTS and Gemma-style vision notebooks load through FastLanguageModel / FastModel; the name says which they are.
     if found["task"] == "text" and _category(name) in ("audio", "vision"):
         found["task"] = _category(name)
-    if found["task"] == "embedding" and tune.pop("dataset_streaming", None):
-        # Studio's embedding trainer loads the whole dataset; it refuses streaming.
+    if found["task"] != "text" and tune.pop("dataset_streaming", None):
+        # Studio's embedding, vision and audio trainers load the whole dataset; they refuse streaming.
         report["approximated"].append(
-            "Streaming: Studio's embedding training loads the whole dataset instead"
+            f"Streaming: Studio's {found['task']} training loads the whole dataset instead"
         )
     tune["base_model"] = found["model"]
     if found["task"] != "text":

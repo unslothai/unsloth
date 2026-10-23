@@ -387,3 +387,28 @@ def test_bundled_templates_keep_the_notebooks_lora_alpha():
     for template in ("notebook-embedding", "notebook-tts-sft"):
         doc = next(d for d in build_examples.build() if d["id"] == template)
         assert _tune(doc)["lora_alpha"] == 64
+
+
+def test_vision_streaming_qat_and_text_deepseek_import_runnable_or_refused():
+    vision, report = notebook_import.read_notebook(
+        _nb(
+            "model, processor = FastVisionModel.from_pretrained(model_name = 'unsloth/Qwen2.5-VL-3B-Instruct')",
+            "dataset = load_dataset('unsloth/LaTeX_OCR', split = 'train', streaming = True)",
+        ),
+        "Qwen2.5_VL_(3B)-Vision.ipynb",
+    )
+    assert _tune(vision)["task"] == "vision" and "dataset_streaming" not in _tune(vision)
+    assert any("Streaming" in line for line in report["approximated"])
+    # DeepSeek-R1 distills are text; only the OCR recipe is vision.
+    assert catalog._category("DeepSeek_R1_0528_Qwen3_(8B)_GRPO.ipynb") == "grpo"
+    assert catalog._category("Llama3.1_(8B)-DeepSeek_R1_Distill.ipynb") != "vision"
+    assert catalog._category("Deepseek_OCR_(3B).ipynb") == "vision"
+    qat, report = notebook_import.read_notebook(
+        _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Instruct-2507')",
+            "model = FastLanguageModel.get_peft_model(model, r = 16, qat_scheme = 'int4')",
+            "dataset = load_dataset('imdb', split = 'train')",
+        ),
+        "Qwen3_(4B)_Instruct-QAT.ipynb",
+    )
+    assert qat is None and any("qat_scheme" in line for line in report["unsupported"])

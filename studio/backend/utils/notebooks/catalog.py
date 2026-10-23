@@ -48,7 +48,7 @@ _CATEGORY_RULES = (
     ("preference", ("_dpo", "_orpo", "_kto")),
     # Continued pretraining trains on raw text, an objective the Flow Fine-tune block does not run.
     ("cpt", ("_cpt", "continued_pretraining", "text_completion")),
-    ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
+    ("vision", ("vision", "_vl_", "ocr", "pixtral")),
     ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
     ("embedding", ("embedding", "minilm", "bge", "modernbert")),
     ("inference", ("inference", "deployment", "phone")),
