@@ -2897,7 +2897,13 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
+# MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
+    "qwen-image-2.1": 1849,
+    "flux.1": 2666,
+    "z-image": 2666,
+    "moss-image": 2976,
+}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256

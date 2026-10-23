@@ -151,6 +151,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
 from .diffusion_flux3 import (
     FLUX3_COMPONENTS,
     FLUX3_COMPONENT_FOLDERS,
@@ -1953,6 +1954,17 @@ def _generation_defaults_for(
     return {"steps": int(steps), "guidance": float(guidance)}
 
 
+def _refuse_lora_without_loader(fam: Any, loras: Any) -> None:
+    """A family whose pipeline has no LoRA loader refuses an active selection before anything loads."""
+    from core.inference import diffusion_lora
+
+    name = getattr(fam, "name", None)
+    if _has_active_lora(loras) and not diffusion_lora.diffusers_lora_family_supported(name):
+        raise ValueError(
+            diffusion_lora.diffusers_lora_family_message(getattr(fam, "label", None) or name)
+        )
+
+
 _WHOLE_PIPELINE_GGUF_LORA_MSG = (
     "LoRA is not available on a whole-pipeline GGUF: its UNet runs as the stored GGUF weights, which cannot carry "
     "adapters. Load the .safetensors checkpoint to use a LoRA, or clear the LoRA selection."
@@ -2038,6 +2050,14 @@ def _install_gguf_dim_restore(logger: Any) -> None:
             sfm.load_model_dict_into_meta = _restoring_loader
     except Exception as exc:  # noqa: BLE001 - loader-compat shim only, never fail the load
         logger.warning("diffusion.gguf: dim-restore shim not installed: %s", exc)
+
+
+def _family_model_class(diffusers: Any, name: str) -> Any:
+    """``getattr(diffusers, name)``, or Studio's in-tree class of that name (MOSS-Image), imported on first use."""
+    if name in ("MOSSImagePipeline", "MOSSImageTransformer", "MOSSImageScheduler"):
+        from .diffusion_moss_image import in_tree_class
+        return in_tree_class(name)
+    return getattr(diffusers, name)
 
 
 @functools.lru_cache(maxsize = None)
@@ -4257,7 +4277,12 @@ class DiffusionBackend:
         """Header-only, so a bad pick is a 400 before eviction. Single-file / GGUF denoisers only."""
         from .diffusion_comfy_components import validate_component_specs
 
-        if kind not in ("gguf", "single_file") or fam.single_file_is_pipeline or fam.pipeline_only:
+        if (
+            kind not in ("gguf", "single_file")
+            or fam.single_file_is_pipeline
+            or fam.pipeline_only
+            or getattr(fam, "native_transformer_files_only", False)
+        ):
             raise ValueError(
                 "text_encoder_file / vae_file load beside a single-file or GGUF transformer; a full pipeline "
                 "(or a whole-pipeline single file) already carries its own text encoders and VAE."
@@ -4266,6 +4291,11 @@ class DiffusionBackend:
             # The supplied-component loader resolves classes from a model_index.json, which FLUX.3 does not ship, and
             # its encoder is a Qwen3-VL with its processor in the same folder: refuse up front rather than load the
             # official encoder and VAE in place of the files the user picked.
+            raise ValueError(
+                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
+                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
+            )
+        if fam.name == MOSS_IMAGE_FAMILY_NAME and (vae_file or text_encoder_files):
             raise ValueError(
                 f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
                 "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
@@ -4365,6 +4395,7 @@ class DiffusionBackend:
             or not _is_local_path(repo_id)
             or getattr(fam, "single_file_is_pipeline", False)
             or getattr(fam, "pipeline_only", False)
+            or getattr(fam, "native_transformer_files_only", False)
             or os.environ.get("UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS", "").strip().lower()
             in ("0", "false", "off", "no")
         ):
@@ -4511,6 +4542,20 @@ class DiffusionBackend:
         # same predicate. Imported here, not at module import, because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
+        # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
+        if getattr(fam, "native_transformer_files_only", False) and (
+            kind == "single_file"
+            or (
+                kind == "gguf"
+                and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
+            )
+        ):
+            raise ValueError(
+                f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
+                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
+                f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
+                f"engine available."
+            )
         if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
@@ -4733,6 +4778,7 @@ class DiffusionBackend:
             and resolve_model_kind(gguf_filename, model_kind) == "gguf"
         ):
             raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
+        _refuse_lora_without_loader(fam, loras)
         if auto_ordinal:
             # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
             gpu_ordinal = auto_cuda_ordinal_for_load()
@@ -7481,6 +7527,7 @@ class DiffusionBackend:
             family_override = family_override,
             model_kind = model_kind,
         )
+        _refuse_lora_without_loader(fam, loras)
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise BEFORE this load evicts the previous pipeline.
         normalize_transformer_quant(transformer_quant)
@@ -7650,8 +7697,8 @@ class DiffusionBackend:
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
                 comfy_compile = False
-                transformer_cls = getattr(diffusers, fam.transformer_class)
-                pipeline_cls = getattr(diffusers, fam.pipeline_class)
+                transformer_cls = _family_model_class(diffusers, fam.transformer_class)
+                pipeline_cls = _family_model_class(diffusers, fam.pipeline_class)
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
                 plan = self._plan_memory(
@@ -8821,6 +8868,22 @@ class DiffusionBackend:
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
                                             family_name = fam.name,
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                elif fam.name == MOSS_IMAGE_FAMILY_NAME:
+                                    from .diffusion_moss_image import load_moss_image_pipeline
+                                    try:
+                                        pipe = load_moss_image_pipeline(
+                                            _base_local_dir or fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10756,6 +10819,36 @@ class DiffusionBackend:
             check_cancelled()
             pipe.to(device)
             return pipe
+        if getattr(fam, "name", None) == MOSS_IMAGE_FAMILY_NAME:
+            from .diffusion_moss_image import load_moss_image_pipeline
+
+            moss_te = None
+            if target is not None:
+                moss_te = te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
+                ).get("text_encoder")
+            check_cancelled()
+            pipe = load_moss_image_pipeline(
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                text_encoder = moss_te,
+                check_cancelled = check_cancelled,
+                local_files_only = local_files_only,
+            )
+            check_cancelled()
+            pipe.to(device)
+            return pipe
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
@@ -12036,6 +12129,8 @@ class DiffusionBackend:
         current = getattr(pipe, "_unsloth_loras", ())
         specs = [(i, w) for (i, w) in (loras or []) if w != 0]
 
+        if specs:
+            _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
         if quant in ("int8", "fp8", "nvfp4", "mxfp8"):
@@ -14247,7 +14342,7 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     name = getattr(fam, "name", None)
     if is_flux3_family(fam):
         return FLUX3_COMPONENTS
-    if name == KREA2_FAMILY_NAME:
+    if name in (KREA2_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
         return (

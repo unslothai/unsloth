@@ -499,6 +499,42 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     assert entry.families == () and entry.weight_default == 1.0
 
 
+def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
+    import threading
+
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    assert not hasattr(MOSSImagePipeline, "load_lora_weights")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = quant
+        )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
+    )
+    fam = detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    assert fam is not None and fam.name == "moss-image"
+
+    backend = _backend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: fam)
+    # Refused before anything loads; a weight-0 selection is not active and is not refused here.
+    for load in (backend.begin_load, backend.load_pipeline):
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            load("OpenMOSS-Team/MOSS-Image-SFT", loras = [("styleA", 1.0)])
+    # A generation-time selection on a loaded MOSS pipe is refused the same way, for every quant.
+    for quant in (None, "int8"):
+        state = types.SimpleNamespace(
+            pipe = _FakePipe(), family = fam, kind = "pipeline", transformer_quant = quant, hf_token = None
+        )
+        with pytest.raises(ValueError, match = "no LoRA loader"):
+            backend._apply_loras(state, [("styleA", 1.0)], threading.Event())
+        backend._apply_loras(state, [("styleA", 0.0)], threading.Event())
+
+
 def _peft_add_adapter(layer, name, config):
     # PEFT >= 0.19 takes ``config``; 0.18 takes every option positionally (``use_rslora`` required). Pass by keyword
     # what the installed signature names, read off ``config``, so the helper holds across PEFT 0.18.0 -> 0.20.0.

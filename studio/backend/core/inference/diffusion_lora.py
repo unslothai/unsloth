@@ -667,6 +667,19 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
+# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+
+
+def diffusers_lora_family_supported(family: Optional[str]) -> bool:
+    return (family or "").strip().lower() not in _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES
+
+
+def diffusers_lora_family_message(family: Optional[str]) -> str:
+    return (
+        f"LoRA is not supported for {family} yet: its pipeline has no LoRA loader. "
+        "Clear the LoRA selection to load or generate."
+    )
 
 
 def supports_lora(
@@ -691,6 +704,8 @@ def supports_lora(
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
+    if not diffusers_lora_family_supported(fam):
+        return False
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return True  # load-time bake; adapters ride inside the compiled quantized build
