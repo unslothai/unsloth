@@ -12,6 +12,7 @@ import {
   type Edge,
   type EdgeTypes,
   type Node,
+  type NodeChange,
   type NodeTypes,
   Panel,
   ReactFlow,
@@ -33,6 +34,7 @@ import { buildRecipeEditorTourSteps } from "./tour";
 import { BlockSheet } from "./components/block-sheet";
 import { CANVAS_DELETE_KEYS } from "./constants";
 import { LayoutControls } from "./components/controls/layout-controls";
+import { SuperCardControls } from "./components/controls/super-card-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
@@ -42,6 +44,7 @@ import {
   type RecipeGraphAuxNodeData,
 } from "./components/recipe-graph-aux-node";
 import { RecipeNode } from "./components/recipe-graph-node";
+import { RecipeGraphSuperCardNode } from "./components/recipe-graph-super-card-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
 import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { DataEdge } from "./components/rf-ui/data-edge";
@@ -68,12 +71,21 @@ import {
   FIT_VIEW_PADDING,
   getFitViewTargetNodes,
 } from "./utils/graph/fit-view";
+import {
+  SUPER_CARD_NODE_TYPE,
+  applySuperCardView,
+  getCombinableSelection,
+} from "./utils/graph/super-cards";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
 
-const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
+const NODE_TYPES: NodeTypes = {
+  builder: RecipeNode,
+  aux: RecipeGraphAuxNode,
+  [SUPER_CARD_NODE_TYPE]: RecipeGraphSuperCardNode,
+};
 const EDGE_TYPES: EdgeTypes = {
   canvas: DataEdge,
   semantic: RecipeGraphSemanticEdge,
@@ -158,6 +170,15 @@ export function RecipeStudioPage({
     applyLayout,
     setAuxNodePosition,
     setExecutionLocked,
+    superCards,
+    openSuperCardId,
+    selectedSuperCardIds,
+    combineSelectionIntoSuperCard,
+    ungroupSuperCard,
+    openSuperCard,
+    renameSuperCard,
+    setSuperCardPosition,
+    setSelectedSuperCardIds,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -198,6 +219,15 @@ export function RecipeStudioPage({
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
       setExecutionLocked: state.setExecutionLocked,
+      superCards: state.superCards,
+      openSuperCardId: state.openSuperCardId,
+      selectedSuperCardIds: state.selectedSuperCardIds,
+      combineSelectionIntoSuperCard: state.combineSelectionIntoSuperCard,
+      ungroupSuperCard: state.ungroupSuperCard,
+      openSuperCard: state.openSuperCard,
+      renameSuperCard: state.renameSuperCard,
+      setSuperCardPosition: state.setSuperCardPosition,
+      setSelectedSuperCardIds: state.setSelectedSuperCardIds,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -311,8 +341,17 @@ export function RecipeStudioPage({
         processors,
         layoutDirection,
         auxNodePositions,
+        superCards,
       ),
-    [auxNodePositions, configs, edges, layoutDirection, nodes, processors],
+    [
+      auxNodePositions,
+      configs,
+      edges,
+      layoutDirection,
+      nodes,
+      processors,
+      superCards,
+    ],
   );
   const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
@@ -323,6 +362,7 @@ export function RecipeStudioPage({
       state.processors,
       state.layoutDirection,
       state.auxNodePositions,
+      state.superCards,
     ).payload;
   }, []);
   const {
@@ -381,8 +421,7 @@ export function RecipeStudioPage({
   const {
     activeExecution,
     runtimeVisualState,
-    displayGraph,
-    displayNodeIds,
+    displayGraph: flatDisplayGraph,
     currentColumnIcon,
   } = useRecipeRuntimeVisuals({
     executions,
@@ -393,6 +432,86 @@ export function RecipeStudioPage({
     auxNodePositions,
     llmAuxVisibility,
   });
+  const displayGraph = useMemo(
+    () =>
+      applySuperCardView({
+        graph: flatDisplayGraph,
+        superCards,
+        openSuperCardId,
+        selectedSuperCardIds: new Set(selectedSuperCardIds),
+        configs,
+        edges,
+        layoutDirection,
+        executions,
+        runtime: runtimeVisualState,
+      }),
+    [
+      configs,
+      edges,
+      executions,
+      flatDisplayGraph,
+      layoutDirection,
+      openSuperCardId,
+      runtimeVisualState,
+      selectedSuperCardIds,
+      superCards,
+    ],
+  );
+  const displayNodeIds = useMemo(
+    () => displayGraph.nodes.map((node) => node.id),
+    [displayGraph.nodes],
+  );
+  const combinableCount = useMemo(
+    () =>
+      openSuperCardId ? 0 : getCombinableSelection(nodes, superCards).length,
+    [nodes, openSuperCardId, superCards],
+  );
+  const handleCanvasNodesChange = useCallback(
+    (changes: NodeChange<Node<RecipeNodeData | RecipeGraphAuxNodeData>>[]) => {
+      const rest: typeof changes = [];
+      let selection: string[] | null = null;
+      for (const change of changes) {
+        if (!("id" in change && superCards[change.id])) {
+          rest.push(change);
+          continue;
+        }
+        if (change.type === "position" && change.position) {
+          setSuperCardPosition(change.id, change.position);
+        } else if (change.type === "select") {
+          selection ??= [...selectedSuperCardIds];
+          selection = change.selected
+            ? [...new Set([...selection, change.id])]
+            : selection.filter((id) => id !== change.id);
+        }
+      }
+      if (selection) {
+        setSelectedSuperCardIds(selection);
+      }
+      if (rest.length > 0) {
+        handleNodesChange(rest);
+      }
+    },
+    [
+      handleNodesChange,
+      selectedSuperCardIds,
+      setSelectedSuperCardIds,
+      setSuperCardPosition,
+      superCards,
+    ],
+  );
+  const handleCanvasNodeDoubleClick = useCallback(
+    (
+      event: Parameters<typeof handleNodeDoubleClick>[0],
+      node: Node<RecipeNodeData | RecipeGraphAuxNodeData>,
+    ) => {
+      if (node.type === SUPER_CARD_NODE_TYPE) {
+        openSuperCard(node.id);
+        return;
+      }
+      handleNodeDoubleClick(event, node);
+    },
+    [handleNodeDoubleClick, openSuperCard],
+  );
   const tourSteps = useMemo(
     () =>
       buildRecipeEditorTourSteps({
@@ -665,11 +784,11 @@ export function RecipeStudioPage({
           type: "canvas",
           data: { path: "smoothstep" },
         }}
-        onNodesChange={handleNodesChange}
+        onNodesChange={handleCanvasNodesChange}
         onEdgesChange={handleEdgesChange}
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
-        onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeDoubleClick={handleCanvasNodeDoubleClick}
         deleteKeyCode={CANVAS_DELETE_KEYS}
         isValidConnection={isValidConnection}
         onMoveEnd={(event) => {
@@ -687,6 +806,15 @@ export function RecipeStudioPage({
           direction={layoutDirection}
           onLayout={applyLayout}
           onToggleDirection={handleToggleDirection}
+        />
+        <SuperCardControls
+          openCard={openSuperCardId ? superCards[openSuperCardId] ?? null : null}
+          combinableCount={combinableCount}
+          locked={executionLocked}
+          onCombine={combineSelectionIntoSuperCard}
+          onExit={() => openSuperCard(null)}
+          onRename={renameSuperCard}
+          onUngroup={ungroupSuperCard}
         />
         <InternalsSync nodeIds={displayNodeIds} />
         <Background

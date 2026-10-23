@@ -31,6 +31,12 @@ import type {
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
+  type SuperCard,
+  combineSelection,
+  pruneSuperCards,
+  ungroupCard,
+} from "../utils/graph/super-cards";
+import {
   HANDLE_IDS,
   normalizeRecipeHandleId,
   remapRecipeEdgeHandlesForLayout,
@@ -79,6 +85,9 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
+  superCards: Record<string, SuperCard>;
+  openSuperCardId: string | null;
+  selectedSuperCardIds: string[];
   // Upload-uid directories whose owning block dropped them; server-side deletion is deferred until
   // a save no longer references them, so a reload before autosave cannot leave a saved recipe
   // pointing at deleted files.
@@ -123,6 +132,12 @@ type RecipeStudioState = {
   updateConfig: (id: string, patch: Partial<NodeConfig>) => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   setAuxNodePosition: (id: string, position: XYPosition) => void;
+  combineSelectionIntoSuperCard: () => void;
+  ungroupSuperCard: (id: string) => void;
+  openSuperCard: (id: string | null) => void;
+  renameSuperCard: (id: string, title: string) => void;
+  setSuperCardPosition: (id: string, position: XYPosition) => void;
+  setSelectedSuperCardIds: (ids: string[]) => void;
   onNodesChange: (changes: NodeChange<RecipeNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<Edge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -145,6 +160,9 @@ const INITIAL_STATE = {
   nextId: 3,
   nextY: 280,
   fitViewTick: 0,
+  superCards: {},
+  openSuperCardId: null,
+  selectedSuperCardIds: [],
   pendingUploadCleanups: [],
 } satisfies Pick<
   RecipeStudioState,
@@ -163,6 +181,9 @@ const INITIAL_STATE = {
   | "nextId"
   | "nextY"
   | "fitViewTick"
+  | "superCards"
+  | "openSuperCardId"
+  | "selectedSuperCardIds"
   | "pendingUploadCleanups"
 >;
 
@@ -180,12 +201,54 @@ function buildAddedNodeState(
     return state;
   }
   const config = definition.createConfig(id, existing);
-  return buildNodeUpdate(
+  const update = buildNodeUpdate(
     state,
     config,
     state.layoutDirection,
     position,
     openDialog,
+  );
+  // A block added while a super card is open lands inside it.
+  const openCard = state.openSuperCardId
+    ? state.superCards[state.openSuperCardId]
+    : null;
+  if (!openCard) {
+    return update;
+  }
+  return {
+    ...update,
+    superCards: {
+      ...state.superCards,
+      [openCard.id]: { ...openCard, nodeIds: [...openCard.nodeIds, id] },
+    },
+  };
+}
+
+function placeSuperCardsAtMembers(
+  superCards: Record<string, SuperCard>,
+  nodes: RecipeNode[],
+): Record<string, SuperCard> {
+  const positions = new Map(nodes.map((node) => [node.id, node.position]));
+  return Object.fromEntries(
+    Object.values(superCards).map((card) => {
+      const points = card.nodeIds.flatMap((id) => {
+        const point = positions.get(id);
+        return point ? [point] : [];
+      });
+      if (points.length === 0) {
+        return [card.id, card];
+      }
+      return [
+        card.id,
+        {
+          ...card,
+          position: {
+            x: Math.min(...points.map((point) => point.x)),
+            y: Math.min(...points.map((point) => point.y)),
+          },
+        },
+      ];
+    }),
   );
 }
 
@@ -386,6 +449,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       );
       return {
         auxNodePositions: {},
+        superCards: placeSuperCardsAtMembers(state.superCards, centeredNodes),
         edges: optimizedEdges,
         nodes: applyLayoutDirectionToNodes(
           centeredNodes,
@@ -744,6 +808,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       dialogOpen: false,
       sheetView: "root",
       fitViewTick: state.fitViewTick + 1,
+      superCards: snapshot.superCards ?? {},
+      openSuperCardId: null,
+      selectedSuperCardIds: [],
       // Queued cleanups belong to the previous recipe; draining them after
       // a save of this one could delete files its saved payload still uses.
       pendingUploadCleanups: [],
@@ -761,6 +828,70 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         },
       };
     }),
+  combineSelectionIntoSuperCard: () =>
+    set((state) => {
+      if (state.executionLocked) {
+        return state;
+      }
+      return combineSelection(state) ?? state;
+    }),
+  ungroupSuperCard: (id) =>
+    set((state) => {
+      const update = state.executionLocked ? null : ungroupCard(state, id);
+      if (!update) {
+        return state;
+      }
+      return {
+        ...update,
+        fitViewTick:
+          state.openSuperCardId === id
+            ? state.fitViewTick + 1
+            : state.fitViewTick,
+      };
+    }),
+  openSuperCard: (id) =>
+    set((state) => {
+      const nextId = id && state.superCards[id] ? id : null;
+      if (nextId === state.openSuperCardId) {
+        return state;
+      }
+      return {
+        openSuperCardId: nextId,
+        selectedSuperCardIds: [],
+        nodes: state.nodes.map((node) =>
+          node.selected ? { ...node, selected: false } : node,
+        ),
+        fitViewTick: state.fitViewTick + 1,
+      };
+    }),
+  renameSuperCard: (id, title) =>
+    set((state) => {
+      const card = state.superCards[id];
+      if (state.executionLocked || !card || card.title === title) {
+        return state;
+      }
+      return { superCards: { ...state.superCards, [id]: { ...card, title } } };
+    }),
+  setSuperCardPosition: (id, position) =>
+    set((state) => {
+      const card = state.superCards[id];
+      if (
+        !card ||
+        (card.position.x === position.x && card.position.y === position.y)
+      ) {
+        return state;
+      }
+      return {
+        superCards: { ...state.superCards, [id]: { ...card, position } },
+      };
+    }),
+  setSelectedSuperCardIds: (ids) =>
+    set((state) =>
+      ids.length === state.selectedSuperCardIds.length &&
+      ids.every((id) => state.selectedSuperCardIds.includes(id))
+        ? state
+        : { selectedSuperCardIds: ids },
+    ),
   updateConfig: (id, patch) => {
     const applyUpdate = (state: RecipeStudioState) => {
       if (state.executionLocked) {
@@ -866,11 +997,24 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
                 ([id]) => !removedIds.includes(id),
               ),
             );
+      const superCards =
+        removedIds.length === 0
+          ? state.superCards
+          : pruneSuperCards(
+              state.superCards,
+              new Set(nodes.map((node) => node.id)),
+            );
+      const openSuperCardId =
+        state.openSuperCardId && superCards[state.openSuperCardId]
+          ? state.openSuperCardId
+          : null;
       return {
         nodes,
         edges: removed.edges,
         configs: removed.configs,
         llmAuxVisibility,
+        superCards,
+        openSuperCardId,
       };
     };
     set(applyNodesChange);
