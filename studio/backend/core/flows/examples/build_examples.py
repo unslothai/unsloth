@@ -1365,6 +1365,142 @@ def sticker_pack() -> B:
     return b
 
 
+COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
+
+
+def notebook_template(
+    id: str,
+    name: str,
+    notebook: str,
+    description: str,
+    *,
+    dataset: str,
+    tune: dict[str, Any],
+    export: Optional[dict[str, Any]],
+    ask: Optional[str] = None,
+    tags: list[str],
+) -> B:
+    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
+    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
+    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
+    b.n("tune", "train.finetune", 1, 1, training_type = "lora", **tune)
+    b.e("data.dataset", "tune.dataset")
+    b.n("metrics", "output.preview", 2, 0)
+    b.e("tune.metrics", "metrics.value")
+    if ask:
+        b.n("ask", "input.text", 1, 2.2, value = ask)
+        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
+        b.e("tune.checkpoint", "test.checkpoint")
+        b.e("ask.text", "test.prompt")
+        b.n("answer", "output.preview", 3, 1)
+        b.e("test.text", "answer.value")
+    if export:
+        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
+        b.e("tune.checkpoint", "export.checkpoint")
+    b.note(
+        "n1",
+        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
+        "models while it runs.",
+        0,
+        -0.2,
+        1.8,
+        0.9,
+    )
+    return b
+
+
+def text_sft() -> B:
+    return notebook_template(
+        "notebook-text-sft",
+        "Notebook: Llama 3.1 Alpaca fine-tune",
+        "Llama3.1_(8B)-Alpaca.ipynb",
+        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
+        dataset = "unsloth/alpaca-cleaned",
+        tune = {
+            "base_model": "unsloth/Llama-3.1-8B",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "format_type": "alpaca",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["sft"],
+    )
+
+
+def vision_sft() -> B:
+    return notebook_template(
+        "notebook-vision-sft",
+        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
+        "Qwen2.5_VL_(7B)-Vision.ipynb",
+        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
+        dataset = "unsloth/LaTeX_OCR",
+        tune = {
+            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+            "task": "vision",
+            "max_steps": 30,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["vision"],
+    )
+
+
+def tts_sft() -> B:
+    return notebook_template(
+        "notebook-tts-sft",
+        "Notebook: Orpheus TTS voice fine-tune",
+        "Orpheus_(3B)-TTS.ipynb",
+        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
+        dataset = "Etherll/kaira",
+        tune = {
+            "base_model": "unsloth/orpheus-3b-0.1-ft",
+            "task": "audio",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 64,
+            "max_seq_length": 2048,
+            "batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["audio", "tts"],
+    )
+
+
+def embedding_sft() -> B:
+    return notebook_template(
+        "notebook-embedding",
+        "Notebook: EmbeddingGemma retrieval fine-tune",
+        "EmbeddingGemma_(300M).ipynb",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for medical retrieval, then export to GGUF.",
+        dataset = "tomaarsen/miriad-4.4M-split",
+        tune = {
+            "base_model": "unsloth/embeddinggemma-300m",
+            "task": "embedding",
+            "max_steps": 30,
+            "learning_rate": 0.00002,
+            "lora_r": 32,
+            "max_seq_length": 1024,
+            "batch_size": 64,
+            "gradient_accumulation_steps": 2,
+        },
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["embedding"],
+    )
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1512,10 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    text_sft,
+    vision_sft,
+    tts_sft,
+    embedding_sft,
 )
 
 

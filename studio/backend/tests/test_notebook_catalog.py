@@ -29,7 +29,8 @@ def test_readme_parser_keeps_public_unsloth_notebooks_only():
 def fresh_cache(monkeypatch):
     monkeypatch.setattr(catalog, "_cached_files", None)
     monkeypatch.setattr(catalog, "_cache_until", 0.0)
-    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+    monkeypatch.setattr(catalog, "_refreshing", False)
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UNSLOTH_STUDIO_OFFLINE"):
         monkeypatch.delenv(name, raising = False)
 
 
@@ -68,14 +69,19 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
         "Qwen3_(4B)-GRPO.ipynb",
         "gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb",
         "NeMo-Gym-Sudoku.ipynb",
-        "Zephyr_(7B)-DPO.ipynb",
-        "Llama3_(8B)-ORPO.ipynb",
         "Llama3.2_(1B)-PPO.ipynb",
     ],
 )
-def test_rl_and_preference_recipes_are_not_sft(name):
-    # The frontend keys "Use in Studio" off this category: Studio trains SFT / CPT only.
+def test_rl_recipes_are_not_sft(name):
+    # Studio trains SFT / CPT only, so these open in Colab.
     assert catalog._category(name) == "grpo"
+    assert catalog.STUDIO_TASKS.get("grpo") is None
+
+
+@pytest.mark.parametrize("name", ["Zephyr_(7B)-DPO.ipynb", "Llama3_(8B)-ORPO.ipynb"])
+def test_preference_recipes_are_labelled_and_colab_only(name):
+    assert catalog._category(name) == "preference"
+    assert catalog.STUDIO_TASKS.get("preference") is None
 
 
 @pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])

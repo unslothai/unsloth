@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Turn an Unsloth fine-tuning notebook into a flow by reading its code, never running it.
+
+Code cells are parsed with `ast` and matched against the calls every Unsloth notebook makes
+(`from_pretrained`, `get_peft_model`, `load_dataset`, the trainer config, `save_pretrained_gguf`).
+Anything Studio cannot train (RL and preference trainers, reward functions) is reported, not guessed.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+from typing import Any, Optional
+
+from core.flows.examples.build_examples import COLAB_NB, notebook_template
+from utils.notebooks.catalog import _category
+
+MAX_NOTEBOOK_BYTES = 32 * 1024 * 1024
+
+_LOADERS = {
+    "FastLanguageModel": "text",
+    "FastModel": "text",
+    "FastVisionModel": "vision",
+    "FastSentenceTransformer": "embedding",
+}
+_CONFIGS = {
+    "SFTConfig",
+    "TrainingArguments",
+    "UnslothTrainingArguments",
+    "SentenceTransformerTrainingArguments",
+}
+# Trainers Studio has no equivalent for: the notebook stays a Colab notebook.
+_UNSUPPORTED = {
+    "GRPOTrainer": "GRPO reinforcement learning",
+    "GRPOConfig": "GRPO reinforcement learning",
+    "DPOTrainer": "DPO preference training",
+    "DPOConfig": "DPO preference training",
+    "ORPOTrainer": "ORPO preference training",
+    "ORPOConfig": "ORPO preference training",
+    "KTOTrainer": "KTO preference training",
+    "PPOTrainer": "PPO reinforcement learning",
+}
+_ARGS = {
+    "max_steps": "max_steps",
+    "learning_rate": "learning_rate",
+    "per_device_train_batch_size": "batch_size",
+    "gradient_accumulation_steps": "gradient_accumulation_steps",
+    "warmup_steps": "warmup_steps",
+    "num_train_epochs": "num_epochs",
+    "weight_decay": "weight_decay",
+}
+_QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
+_MAGIC = re.compile(r"^\s*[!%]")
+
+
+class NotebookImportError(ValueError):
+    pass
+
+
+def _source(cell: dict) -> str:
+    src = cell.get("source", "")
+    text = "".join(src) if isinstance(src, list) else str(src)
+    # Shell and IPython magics are not Python: keep the block shape with a `pass` at the same indent.
+    return "\n".join(
+        line[: len(line) - len(line.lstrip())] + "pass" if _MAGIC.match(line) else line
+        for line in text.splitlines()
+    )
+
+
+def _name(node: ast.AST) -> Optional[str]:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+class _Reader(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.consts: dict[str, Any] = {}
+        self.found: dict[str, Any] = {}
+        self.tune: dict[str, Any] = {}
+        self.unsupported: set[str] = set()
+        self.approximated: list[str] = []
+
+    def value(self, node: ast.AST) -> Any:
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            return self.consts.get(node.id)
+        return None
+
+    def kw(
+        self,
+        call: ast.Call,
+        key: str,
+        pos: Optional[int] = None,
+    ) -> Any:
+        for k in call.keywords:
+            if k.arg == key:
+                return self.value(k.value)
+        if pos is not None and len(call.args) > pos:
+            return self.value(call.args[pos])
+        return None
+
+    def visit_If(self, node: ast.If) -> None:
+        # `if False: model.save_pretrained_gguf(...)` is the notebooks' way of switching a step off.
+        if isinstance(node.test, ast.Constant) and not node.test.value:
+            for child in node.orelse:
+                self.visit(child)
+            return
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            value = self.value(node.value)
+            if value is not None:
+                self.consts[node.targets[0].id] = value
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        fn = _name(node.func)
+        owner = _name(node.func.value) if isinstance(node.func, ast.Attribute) else None
+        if fn in _UNSUPPORTED:
+            self.unsupported.add(_UNSUPPORTED[fn])
+        elif fn == "from_pretrained" and owner in _LOADERS and "model" not in self.found:
+            model = self.kw(node, "model_name", 0)
+            if isinstance(model, str):
+                self.found["model"] = model
+                self.found["task"] = _LOADERS[owner]
+                seq = self.kw(node, "max_seq_length")
+                if isinstance(seq, int):
+                    self.tune["max_seq_length"] = seq
+        elif fn == "get_peft_model":
+            r = self.kw(node, "r")
+            if isinstance(r, int):
+                self.tune["lora_r"] = r
+        elif fn == "load_dataset" and "dataset" not in self.found:
+            repo = self.kw(node, "path", 0)
+            if isinstance(repo, str) and "/" in repo:
+                self.found["dataset"] = repo
+                subset = self.kw(node, "name", 1)
+                self.found["subset"] = subset if isinstance(subset, str) else ""
+                split = self.kw(node, "split")
+                self.found["split"] = split if isinstance(split, str) else "train"
+        elif fn in _CONFIGS:
+            for arg, param in _ARGS.items():
+                value = self.kw(node, arg)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    self.tune[param] = value
+        elif fn == "get_chat_template":
+            template = self.kw(node, "chat_template")
+            if isinstance(template, str):
+                self.approximated.append(
+                    f"Chat template {template!r}: Studio applies the model's own template automatically"
+                )
+        elif fn in ("save_pretrained_gguf", "push_to_hub_gguf"):
+            quant = self.kw(node, "quantization_method")
+            if isinstance(quant, str) and quant.lower() in _QUANTS:
+                self.found.setdefault("gguf", quant.lower())
+        for k in node.keywords:
+            if k.arg == "reward_funcs":
+                self.unsupported.add("custom reward functions")
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if "format" in node.name.lower():
+            self.approximated.append(
+                f"Formatting function {node.name}(): Studio formats the dataset with its own detected format"
+            )
+        self.generic_visit(node)
+
+
+def _cells(data: bytes) -> list[str]:
+    try:
+        nb = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NotebookImportError("That is not a notebook (.ipynb) file") from exc
+    cells = nb.get("cells") if isinstance(nb, dict) else None
+    if not isinstance(cells, list):
+        raise NotebookImportError("That notebook has no cells")
+    return [_source(c) for c in cells if isinstance(c, dict) and c.get("cell_type") == "code"]
+
+
+def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[dict], dict]:
+    """(flow document or None, report). None means Studio cannot run this notebook: open it in Colab."""
+    if len(data) > MAX_NOTEBOOK_BYTES:
+        raise NotebookImportError("That notebook is too large")
+    reader = _Reader()
+    skipped = 0
+    for src in _cells(data):
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            skipped += 1
+            continue
+        reader.visit(tree)
+    found, tune = reader.found, dict(reader.tune)
+    report: dict[str, Any] = {
+        "imported": [],
+        "approximated": list(dict.fromkeys(reader.approximated)),
+        "unsupported": [
+            f"Not runnable in Studio: {what}. Open it in Colab."
+            for what in sorted(reader.unsupported)
+        ],
+        "colab_url": f"{COLAB_NB}{name}" if name.endswith(".ipynb") else None,
+    }
+    if skipped:
+        report["approximated"].append(f"{skipped} code cell(s) could not be read and were skipped")
+    if not reader.unsupported:
+        for key, label in (("model", "a model"), ("dataset", "a Hub dataset")):
+            if key not in found:
+                report["unsupported"].append(
+                    f"Not runnable in Studio: no {label} found in the notebook. Open it in Colab."
+                )
+    if report["unsupported"]:
+        return None, report
+
+    if "num_epochs" in tune and "max_steps" in tune:
+        tune.pop("num_epochs")
+    # TTS notebooks load through FastLanguageModel; the notebook's own name says it is audio.
+    if found["task"] == "text" and _category(name) == "audio":
+        found["task"] = "audio"
+    tune["base_model"] = found["model"]
+    if found["task"] != "text":
+        tune["task"] = found["task"]
+    if isinstance(tune.get("learning_rate"), (int, float)):
+        tune["learning_rate"] = float(tune["learning_rate"])
+    report["imported"] = [f"Model {found['model']}", f"Dataset {found['dataset']}"] + [
+        f"{k} = {v}" for k, v in tune.items() if k != "base_model"
+    ]
+    if found.get("gguf"):
+        report["imported"].append(f"GGUF export ({found['gguf']})")
+    stem = name.removesuffix(".ipynb")
+    doc = notebook_template(
+        "notebook-import",
+        f"Notebook: {stem.replace('_', ' ')}"[:200],
+        name,
+        f"Imported from the Unsloth notebook {name}.",
+        dataset = found["dataset"],
+        tune = tune,
+        ask = "Hello! What can you do?" if found["task"] == "text" else None,
+        export = {"format": "gguf", "quant": found["gguf"]}
+        if found.get("gguf")
+        else {"format": "lora"},
+        tags = [found["task"]],
+    ).doc
+    for node in doc["nodes"]:
+        if node["type"] == "data.hf_dataset":
+            node["params"].update(split = found.get("split", "train"), subset = found.get("subset", ""))
+    doc["meta"].pop("example", None)
+    return doc, report

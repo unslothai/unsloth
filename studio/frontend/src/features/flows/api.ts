@@ -181,6 +181,9 @@ export interface ImportReport {
   license?: string | null;
   content_rating?: string | null;
   author?: string | null;
+  /** Notebook imports: why Studio cannot run it, and where it runs instead. */
+  unsupported?: string[];
+  colab_url?: string | null;
 }
 
 export const importFlow = async (
@@ -194,6 +197,58 @@ export const importFlow = async (
     body: data,
   });
 };
+
+/** An Unsloth notebook read as data (never run). `flow` is null when Studio cannot train it. */
+export async function importNotebook(
+  data: Blob | string,
+  name: string,
+): Promise<{ flow: FlowRecord | null; report: ImportReport }> {
+  const query = new URLSearchParams({ name }).toString();
+  const result = await request<{
+    flow: FlowRecord | null;
+    report: {
+      approximated?: string[];
+      unsupported?: string[];
+      colab_url?: string | null;
+      missing_models?: PlanModel[];
+    };
+  }>(`/import/notebook?${query}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: data,
+  });
+  const report = result.report;
+  return {
+    flow: result.flow,
+    report: {
+      missing_models: report.missing_models ?? [],
+      warnings: report.approximated ?? [],
+      baked_nodes: [],
+      unsupported: report.unsupported ?? [],
+      colab_url: report.colab_url ?? null,
+    },
+  };
+}
+
+export interface NotebookEntry {
+  id: string;
+  title: string;
+  notebook_file: string;
+  category: string;
+  featured: boolean;
+  studio_model?: string | null;
+  studio_task?: string | null;
+  colab_url: string;
+  github_url: string;
+}
+
+export async function listNotebooks(): Promise<NotebookEntry[]> {
+  const response = await transport("/api/notebooks");
+  if (!response.ok) {
+    throw new FlowsApiError(await readFastApiError(response), response.status);
+  }
+  return ((await response.json()) as { notebooks: NotebookEntry[] }).notebooks;
+}
 
 export type ExportMode = "json" | "package" | "baked";
 

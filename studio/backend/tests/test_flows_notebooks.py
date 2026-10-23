@@ -1,0 +1,234 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Unsloth notebooks in Flows: the catalog's Studio task, the static .ipynb importer, notebook templates,
+and the widened Fine-tune settings."""
+
+import asyncio
+import json
+
+import pytest
+
+from core.flows import notebook_import
+from core.flows.examples import build_examples
+from core.flows.nodes import training
+from core.flows.specs import SPECS_BY_TYPE
+from utils.notebooks import catalog
+
+from .test_flows_routes import client  # noqa: F401 - shared route fixture
+
+
+def _nb(*cells: str) -> bytes:
+    return json.dumps(
+        {
+            "cells": [{"cell_type": "markdown", "source": ["# Title"]}]
+            + [{"cell_type": "code", "source": c.splitlines(keepends = True)} for c in cells],
+            "nbformat": 4,
+        }
+    ).encode()
+
+
+SFT = _nb(
+    "%%capture\nimport os\nif 'COLAB_' not in ''.join(os.environ.keys()):\n    !pip install unsloth\nelse:\n    pass",
+    "from unsloth import FastLanguageModel\nmax_seq_length = 4096\n"
+    "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B', "
+    "max_seq_length = max_seq_length)\nmodel = FastLanguageModel.get_peft_model(model, r = 32)",
+    "from datasets import load_dataset\ndataset = load_dataset('mlabonne/FineTome-100k', split = 'train')\n"
+    "def formatting_prompts_func(examples):\n    return examples",
+    "from trl import SFTTrainer, SFTConfig\ntrainer = SFTTrainer(model = model, args = SFTConfig("
+    "per_device_train_batch_size = 2, gradient_accumulation_steps = 4, warmup_steps = 5, max_steps = 60, "
+    "learning_rate = 2e-4))",
+    "if False: model.save_pretrained_gguf('m', tokenizer, quantization_method = 'f16')\n"
+    "model.save_pretrained_gguf('m', tokenizer, quantization_method = 'q8_0')",
+)
+VISION = _nb(
+    "from unsloth import FastVisionModel\n"
+    "model, tokenizer = FastVisionModel.from_pretrained('unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit')",
+    "dataset = load_dataset('unsloth/LaTeX_OCR', split = 'train')",
+)
+GRPO = _nb(
+    "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+    "dataset = load_dataset('open-r1/DAPO-Math-17k-Processed', 'en', split = 'train')",
+    "trainer = GRPOTrainer(model = model, reward_funcs = [match_format], args = GRPOConfig(max_steps = 100))",
+)
+
+
+def _tune(doc: dict) -> dict:
+    return next(n["params"] for n in doc["nodes"] if n["type"] == "train.finetune")
+
+
+def test_sft_notebook_becomes_a_flow_with_its_settings():
+    doc, report = notebook_import.read_notebook(SFT, "Qwen3_(4B)-Instruct.ipynb")
+    tune = _tune(doc)
+    assert tune["base_model"] == "unsloth/Qwen3-4B"
+    assert tune["max_seq_length"] == 4096 and tune["lora_r"] == 32
+    assert tune["max_steps"] == 60 and tune["batch_size"] == 2 and tune["warmup_steps"] == 5
+    assert tune["learning_rate"] == pytest.approx(2e-4) and "task" not in tune
+    data = next(n["params"] for n in doc["nodes"] if n["type"] == "data.hf_dataset")
+    assert data["repo"] == "mlabonne/FineTome-100k"
+    export = next(n["params"] for n in doc["nodes"] if n["type"] == "train.export")
+    # The f16 save sits behind `if False:`, so only the q8_0 one counts.
+    assert export == {"format": "gguf", "quant": "q8_0"}
+    assert report["unsupported"] == []
+    assert any("formatting_prompts_func" in line for line in report["approximated"])
+    assert not any("could not be read" in line for line in report["approximated"])
+
+
+def test_vision_and_audio_notebooks_pick_the_model_task():
+    doc, _ = notebook_import.read_notebook(VISION, "Qwen2.5_VL_(7B)-Vision.ipynb")
+    assert _tune(doc)["task"] == "vision"
+    tts = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/orpheus-3b-0.1-ft')",
+        "dataset = load_dataset('Etherll/kaira', split = 'train')",
+    )
+    doc, _ = notebook_import.read_notebook(tts, "Orpheus_(3B)-TTS.ipynb")
+    assert _tune(doc)["task"] == "audio"
+
+
+def test_rl_notebook_is_reported_not_imported():
+    doc, report = notebook_import.read_notebook(GRPO, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None
+    assert any("GRPO" in line for line in report["unsupported"])
+    assert any("reward functions" in line for line in report["unsupported"])
+    assert report["colab_url"].endswith("/nb/Qwen3_(4B)-GRPO.ipynb")
+
+
+def test_importer_never_executes_notebook_code(tmp_path):
+    marker = tmp_path / "ran"
+    evil = _nb(
+        f"open({str(marker)!r}, 'w').write('x')\n"
+        + "model = FastLanguageModel.from_pretrained('a/b')"
+    )
+    notebook_import.read_notebook(evil, "x.ipynb")
+    assert not marker.exists()
+
+
+def test_not_a_notebook_is_refused():
+    with pytest.raises(notebook_import.NotebookImportError):
+        notebook_import.read_notebook(b"not json", "x.ipynb")
+
+
+def test_import_notebook_route(client):  # noqa: F811
+    ok = client.post(
+        "/api/flows/import/notebook", content = SFT, params = {"name": "Qwen3_(4B)-Instruct.ipynb"}
+    )
+    assert ok.status_code == 200, ok.text
+    flow = ok.json()["flow"]
+    assert any(n["type"] == "train.finetune" for n in flow["doc"]["nodes"])
+    rl = client.post(
+        "/api/flows/import/notebook", content = GRPO, params = {"name": "Qwen3_(4B)-GRPO.ipynb"}
+    )
+    assert rl.status_code == 200 and rl.json()["flow"] is None
+    assert client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
+
+
+def test_catalog_marks_what_studio_can_train():
+    entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
+    assert entry["category"] == "sft" and entry["studio_task"] == "text"
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("EmbeddingGemma_(300M).ipynb", {}, {})["studio_task"] == "embedding"
+    assert catalog._entry("Llama3.2_(1B)-Phone_Deployment.ipynb", {}, {})["studio_task"] is None
+
+
+def test_studio_offline_setting_skips_the_fetch(monkeypatch):
+    monkeypatch.setattr(catalog, "_cached_files", None)
+    monkeypatch.setattr(catalog, "_cache_until", 0.0)
+    monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
+    monkeypatch.setattr(
+        catalog, "_fetch_repo_notebook_files", lambda: pytest.fail("fetched while offline")
+    )
+    assert catalog._repo_notebook_files() == []
+
+
+def test_a_refresh_in_flight_does_not_block_other_callers(monkeypatch):
+    monkeypatch.setattr(catalog, "_cached_files", ("A.ipynb",))
+    monkeypatch.setattr(catalog, "_cache_until", 0.0)
+    monkeypatch.setattr(catalog, "_refreshing", True)
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UNSLOTH_STUDIO_OFFLINE"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(catalog, "_fetch_repo_notebook_files", lambda: pytest.fail("second fetch"))
+    assert catalog._repo_notebook_files() == ["A.ipynb"]
+
+
+def test_notebook_templates_are_valid_examples():
+    ids = {doc["id"] for doc in build_examples.build()}
+    assert {
+        "notebook-text-sft",
+        "notebook-vision-sft",
+        "notebook-tts-sft",
+        "notebook-embedding",
+    } <= ids
+
+
+class _Ctx:
+    def __init__(self, params):
+        self.calls = []
+        self.inputs = {
+            "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
+        }
+        self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
+        self.params.update(params)
+        self.seed = 1
+
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+        **_,
+    ):
+        if path == "/api/train/start":
+            self.calls.append(json)
+            raise RuntimeError("stop here")
+        raise AssertionError(path)
+
+    def on_cancel(self, fn):
+        pass
+
+
+def _start_body(params: dict) -> dict:
+    ctx = _Ctx(params)
+    with pytest.raises(RuntimeError):
+        asyncio.run(training.finetune(ctx))
+    body = dict(ctx.calls[0])
+    body.pop("start_request_id")
+    return body
+
+
+def test_unset_new_settings_send_the_same_start_request():
+    body = _start_body({})
+    assert body == {
+        "model_name": "unsloth/Qwen3-0.6B",
+        "training_type": "LoRA/QLoRA",
+        "format_type": "auto",
+        "max_steps": 60,
+        "learning_rate": "0.0002",
+        "lora_r": 16,
+        "max_seq_length": 2048,
+        "random_seed": 1,
+        "hf_dataset": "org/data",
+        "train_split": "train",
+    }
+
+
+def test_new_settings_reach_the_start_request():
+    body = _start_body(
+        {
+            "task": "vision",
+            "num_epochs": 2,
+            "batch_size": 4,
+            "gradient_accumulation_steps": 8,
+            "warmup_steps": 10,
+            "weight_decay": 0.01,
+            "vision_image_size": 512,
+            "custom_format_mapping": {"image": "image", "text": "caption"},
+        }
+    )
+    assert body["is_dataset_image"] is True
+    assert body["num_epochs"] == 2 and body["max_steps"] is None
+    assert body["batch_size"] == 4 and body["gradient_accumulation_steps"] == 8
+    assert body["warmup_steps"] == 10 and body["weight_decay"] == 0.01
+    assert body["vision_image_size"] == 512
+    assert body["custom_format_mapping"] == {"image": "image", "text": "caption"}
+    assert _start_body({"task": "embedding"})["is_embedding"] is True

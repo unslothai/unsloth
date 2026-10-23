@@ -41,11 +41,9 @@ _OFFLINE_VALUES = {"1", "true", "yes", "on"}
 _BASED_ON_RE = re.compile(r"#\s*Based on\s+(.+)", re.IGNORECASE)
 _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
-    # Studio trains SFT / CPT only, so these recipes stay Colab-only.
-    (
-        "grpo",
-        ("grpo", "gspo", "reinforcement_learning", "nemo_gym", "_ppo", "_dpo", "_orpo"),
-    ),
+    # Studio trains SFT / CPT only, so RL and preference recipes stay Colab-only.
+    ("grpo", ("grpo", "gspo", "reinforcement_learning", "nemo_gym", "_ppo")),
+    ("preference", ("_dpo", "_orpo", "_kto")),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
     ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
     ("embedding", ("embedding", "minilm", "bge", "modernbert")),
@@ -56,10 +54,24 @@ _CATEGORY_RULES = (
     ("classification", ("classification", "bert")),
 )
 
+# What Studio can train for each category (the Train page's model kind); the rest open in Colab.
+STUDIO_TASKS = {
+    "sft": "text",
+    "reasoning": "text",
+    "code": "text",
+    "raft": "text",
+    "vision": "vision",
+    "audio": "audio",
+    "embedding": "embedding",
+}
+# Studio's own offline switch, next to the Hugging Face ones.
+_OFFLINE_ENV = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "UNSLOTH_STUDIO_OFFLINE")
+
 logger = logging.getLogger(__name__)
 _cache_lock = threading.Lock()
 _cached_files: tuple[str, ...] | None = None
 _cache_until = 0.0
+_refreshing = False
 
 
 def _is_public(name: str) -> bool:
@@ -162,29 +174,32 @@ def parse_readme_notebooks(text: str) -> list[str]:
 
 
 def _repo_notebook_files() -> list[str]:
-    global _cached_files, _cache_until
+    global _cached_files, _cache_until, _refreshing
 
     # A force_hf_offline window (memory estimates, cache probes) is HF-only and transient: read the
     # user's own setting from before it opened.
     env = dict(os.environ)
     if force_hf_offline_active():
         _restore_saved_offline_env(env)
-    offline = any(
-        env.get(name, "").strip().lower() in _OFFLINE_VALUES
-        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
-    )
+    offline = any(env.get(name, "").strip().lower() in _OFFLINE_VALUES for name in _OFFLINE_ENV)
     if offline:
         return list(_cached_files or ())
 
     with _cache_lock:
-        if time.monotonic() < _cache_until:
+        # One caller refreshes; the others answer from the last index instead of queueing behind the fetch.
+        if time.monotonic() < _cache_until or _refreshing:
             return list(_cached_files or ())
-
+        _refreshing = True
+    files = None
+    try:
         files = _fetch_repo_notebook_files()
-        if files is not None:
-            _cached_files = tuple(files)
-        _cache_until = time.monotonic() + (_CACHE_TTL if files is not None else _FAILURE_TTL)
-        return list(_cached_files or ())
+    finally:
+        with _cache_lock:
+            _refreshing = False
+            if files is not None:
+                _cached_files = tuple(files)
+            _cache_until = time.monotonic() + (_CACHE_TTL if files is not None else _FAILURE_TTL)
+    return list(_cached_files or ())
 
 
 def _entry(
@@ -192,11 +207,13 @@ def _entry(
 ) -> dict[str, Any]:
     fields = overrides.get(notebook, {})
     stem = notebook.removesuffix(".ipynb")
+    category = _text(fields.get("category")) or _category(notebook)
     return {
         "id": re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-"),
         "title": _text(fields.get("title")) or stem.replace("_", " "),
         "notebook_file": notebook,
-        "category": _text(fields.get("category")) or _category(notebook),
+        "category": category,
+        "studio_task": STUDIO_TASKS.get(category),
         "featured": bool(fields.get("featured")),
         "studio_model": _text(fields.get("studio_model")) or studio_models.get(notebook),
         "colab_url": (

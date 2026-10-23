@@ -21,8 +21,9 @@ def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
 
 
-def test_there_are_ten_examples():
-    assert len(BUILT) == 10
+def test_there_are_fourteen_examples():
+    assert len(BUILT) == 14
+    assert sum("notebook" in BUILT[i]["meta"]["tags"] for i in BUILT) == 4
 
 
 @pytest.mark.parametrize("name", IDS)

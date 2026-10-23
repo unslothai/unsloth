@@ -20,6 +20,8 @@ class NotebookCatalogEntry(BaseModel):
     category: str
     featured: bool
     studio_model: Optional[str] = None
+    # The Train page model kind Studio can run this notebook as; None = open it in Colab.
+    studio_task: Optional[str] = None
     colab_url: str
     github_url: str
 

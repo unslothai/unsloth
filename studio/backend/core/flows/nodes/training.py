@@ -15,6 +15,14 @@ from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning"}
+# The same flags the Train page sets for each kind of model.
+TASK_FLAGS = {
+    "vision": {"is_dataset_image": True},
+    "audio": {"is_dataset_audio": True},
+    "embedding": {"is_embedding": True},
+}
+# Optional settings sent only when filled in, so a flow that leaves them blank starts the same run as before.
+OPTIONAL_INTS = ("batch_size", "gradient_accumulation_steps", "warmup_steps", "vision_image_size")
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
@@ -39,6 +47,18 @@ async def finetune(ctx: NodeContext) -> dict:
     }
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
+    config.update(TASK_FLAGS.get(str(ctx.params.get("task") or "text"), {}))
+    if ctx.params.get("num_epochs") not in (None, ""):
+        config["num_epochs"] = int(ctx.params["num_epochs"])
+        config["max_steps"] = None
+    for key in OPTIONAL_INTS:
+        if ctx.params.get(key) not in (None, ""):
+            config[key] = int(ctx.params[key])
+    if ctx.params.get("weight_decay") not in (None, ""):
+        config["weight_decay"] = float(ctx.params["weight_decay"])
+    mapping = ctx.params.get("custom_format_mapping")
+    if isinstance(mapping, dict) and mapping:
+        config["custom_format_mapping"] = mapping
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
         if dataset.get("subset"):
