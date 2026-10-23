@@ -382,3 +382,51 @@ export function isTerminalEvent(event: RunEvent): boolean {
   }
   return false;
 }
+
+/** What a flow reaches outside itself; approvals bind to code hashes and hosts. */
+export interface FlowCapabilitySet {
+  python: string[];
+  hosts: string[];
+  mcp: boolean;
+  providers: string[];
+  triggers: boolean;
+}
+
+export interface CapabilityReport {
+  needs: FlowCapabilitySet;
+  pending: FlowCapabilitySet;
+  approved: Partial<FlowCapabilitySet>;
+  can_approve: boolean;
+}
+
+export const getCapabilities = (flowId: string) =>
+  request<CapabilityReport>(`/${encodeURIComponent(flowId)}/capabilities`);
+
+/** Approves exactly what was shown; anything the flow gained since stays pending. */
+export const approveCapabilities = (flowId: string, shown: FlowCapabilitySet) =>
+  request<CapabilityReport>(
+    `/${encodeURIComponent(flowId)}/approve`,
+    json("POST", shown),
+  );
+
+export interface FlowTrigger {
+  node_id: string;
+  kind: "schedule" | "webhook";
+  enabled: boolean;
+  path?: string;
+  every_minutes?: number;
+  cron?: string;
+  cron_error?: string;
+  last_fired_at?: number | null;
+}
+
+export const listTriggers = (flowId: string) =>
+  request<{ triggers: FlowTrigger[]; owner_only: boolean }>(
+    `/${encodeURIComponent(flowId)}/triggers`,
+  );
+
+export const rotateTrigger = (flowId: string, nodeId: string) =>
+  request<{ triggers: FlowTrigger[]; owner_only: boolean }>(
+    `/${encodeURIComponent(flowId)}/triggers/${encodeURIComponent(nodeId)}/rotate`,
+    { method: "POST" },
+  );

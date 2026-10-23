@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from core.flows import assets as asset_store
+from core.flows import capabilities
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows.compiler import FOR_EACH, CompileError, Plan, compile_flow
@@ -68,6 +69,8 @@ class _Skip:
 
 
 SKIPPED = _Skip()
+# Blocks a schedule or webhook fires; in a run one of them started, the others do not run.
+TRIGGER_TYPES = ("trigger.schedule", "trigger.webhook")
 
 
 def _now() -> float:
@@ -205,6 +208,10 @@ class RunState:
     input_overrides: dict[str, dict] = field(default_factory = dict)
     finished_at: Optional[float] = None
     hf_token: Optional[str] = field(default = None, repr = False)
+    # Who started the run ({"kind": "ui" | "api_key" | "trigger" | "player", "owner": bool}) and what the owner
+    # approved this flow to do; together they gate Python, HTTP, MCP, provider and trigger blocks.
+    origin: dict = field(default_factory = dict)
+    approvals: dict = field(default_factory = dict)
 
     def node(self, node_id: str) -> NodeState:
         state = self.nodes.get(node_id)
@@ -354,7 +361,26 @@ class NodeContextImpl:
         self.flow_params = rs.options.get("params") or {}
         self.iteration = iteration
         self.doc = rs.doc
+        self.origin = dict(rs.origin)
         self.outputs_extra: dict[str, Any] = {}
+
+    def capability_refusal(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> Optional[str]:
+        """Why this run may not use ``cap`` ("python", "http" + host, "mcp", "provider" + id), or None."""
+        return capabilities.refusal(
+            self._rs.origin, self._rs.approvals, cap, detail or cap, self.spec["title"]
+        )
+
+    def capability_allowed(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> bool:
+        """For handlers that use a capability only sometimes, e.g. an agent turning on MCP tools."""
+        return self.capability_refusal(cap, detail) is None
 
     async def call(
         self,
@@ -419,6 +445,10 @@ class NodeContextImpl:
     ) -> tuple[dict, dict]:
         from core.flows.nodes import _common
         return await _common.remove_background(self, image, subject, trim)
+
+    async def segment(self, image: dict, subject: str) -> bytes:
+        from core.flows.nodes import _common
+        return await _common.segment(self, image, subject)
 
     async def speak(self, **kwargs: Any) -> dict:
         from core.flows.nodes import _common
@@ -586,11 +616,14 @@ class FlowEngine:
         doc: dict,
         options: Optional[dict] = None,
         hf_token: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> RunState:
         """Compile (raises CompileError) and start a run for the current account; returns at once."""
         plan = compile_flow(doc)
         options = dict(options or {})
         account = current_account()
+        run_origin = _origin(account, origin)
+        options["origin"] = run_origin["kind"]
         run_id = uuid.uuid4().hex
         flows_db.create_run(run_id, flow_id, _stored_options(options))
         rs = RunState(
@@ -601,6 +634,8 @@ class FlowEngine:
             plan = plan,
             options = options,
             app = app,
+            origin = run_origin,
+            approvals = flows_db.get_capabilities(flow_id),
         )
         rs.hf_token = hf_token
         for nid in plan.order:
@@ -650,6 +685,7 @@ class FlowEngine:
         inputs: Optional[dict] = None,
         params: Optional[dict] = None,
         hf_token: Optional[str] = None,
+        origin: Optional[str] = "player",
         events: Optional[asyncio.Queue] = None,
     ) -> dict:
         """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
@@ -665,6 +701,8 @@ class FlowEngine:
             options = {"params": params or {}, "force_nodes": [entry]},
             persist = False,
             app = app,
+            origin = _origin(account, origin),
+            approvals = flows_db.get_capabilities(flow_id),
         )
         rs.hf_token = hf_token
         overrides = {
@@ -1121,6 +1159,18 @@ class FlowEngine:
             rs.set_status(nid, "skipped", skip)
             self._record(rs, nid, "skipped", None, None, iteration)
             return
+        fired = (rs.options.get("params") or {}).get("__trigger")
+        if (
+            rs.origin.get("kind") == "trigger"
+            and isinstance(fired, dict)
+            and spec["type"] in TRIGGER_TYPES
+            and nid not in fired
+        ):
+            # Another trigger started this run: this one's branch stays still.
+            env.values[nid] = SKIPPED
+            rs.set_status(nid, "skipped", "Another trigger started this run")
+            self._record(rs, nid, "skipped", None, None, iteration)
+            return
         params = param_values(spec, node)
         _bind_params(spec, params, inputs)
         seed = self._seed(rs, nid, params, inputs, iteration)
@@ -1203,6 +1253,10 @@ class FlowEngine:
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
         try:
+            for cap, detail in capabilities.node_needs(spec, params):
+                refused = capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"])
+                if refused:
+                    raise FlowNodeError(refused)
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
                 if lock.locked():
@@ -1532,6 +1586,13 @@ def _bind_params(spec: dict, params: dict, inputs: dict) -> None:
         if pid and port["id"] in inputs:
             value = inputs.pop(port["id"])
             params[pid] = _clamp(by_id[pid], value) if pid in by_id else value
+
+
+def _origin(account: AccountContext, kind: Optional[str]) -> dict:
+    """An API key (MCP included) is never the owner's own hand, whatever account it acts for."""
+    if account.via_api_key:
+        return {"kind": "api_key", "owner": False}
+    return {"kind": kind or "ui", "owner": account.is_owner}
 
 
 def _local_fingerprint(path: str) -> Optional[list]:

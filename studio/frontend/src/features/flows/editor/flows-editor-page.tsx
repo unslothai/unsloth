@@ -14,6 +14,7 @@ import { usePinsStore } from "../stores/pins-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { FlowCanvas } from "./canvas";
+import { CapabilityBanner } from "./capability-banner";
 import { Inspector } from "./inspector";
 import { addNodeConnected } from "./node-factory";
 import { Palette } from "./palette";
@@ -101,6 +102,7 @@ function EditorBody({
           it opens read-only. Update Studio to edit or run it.
         </div>
       )}
+      {!readOnly && <CapabilityBanner flowId={flowId} />}
       <div className="flex min-h-0 flex-1">
         {paletteOpen && !readOnly && <Palette onAdd={addAtCenter} />}
         <div className="flex min-w-0 flex-1 flex-col">
