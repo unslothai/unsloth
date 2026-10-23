@@ -49,7 +49,8 @@ test("export is offered on every readable skill, not only editable ones", () => 
   assert.match(DIALOG, /\{readable \? \(\n\s*<Button[^]*?onClick=\{\(\) => void exportSelected\(\)\}/);
 });
 
-test("the Import label hides on phones but the button keeps its name", () => {
+test("on phones search gets its own row and Import keeps its name as an icon", () => {
+  assert.match(DIALOG, /max-sm:flex-wrap max-sm:justify-end">\n\s*<div className="relative min-w-0 flex-1 max-sm:basis-full">/);
   assert.match(DIALOG, /aria-label=\{t\("skills\.import"\)\}/);
   assert.match(DIALOG, /<span className="max-sm:hidden">\{t\("skills\.import"\)\}<\/span>/);
 });

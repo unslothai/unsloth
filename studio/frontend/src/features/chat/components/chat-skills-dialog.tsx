@@ -476,8 +476,9 @@ export function ChatSkillsDialog({
               <DialogDescription>{t("skills.description")}</DialogDescription>
             </DialogHeader>
 
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-0 flex-1">
+            {/* Phones: search takes its own row, the actions wrap under it. */}
+            <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:justify-end">
+              <div className="relative min-w-0 flex-1 max-sm:basis-full">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -561,7 +562,6 @@ export function ChatSkillsDialog({
                 onClick={() => fileInputRef.current?.click()}
               >
                 {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} strokeWidth={2} />}
-                {/* Icon-only on phones: the full-screen toolbar has no room for another label. */}
                 <span className="max-sm:hidden">{t("skills.import")}</span>
               </Button>
               <Button variant="secondary" type="button" size="sm" onClick={openNew}>
