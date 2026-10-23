@@ -1498,6 +1498,16 @@ def test_the_launch_respells_user_ngram_mod_extras_last():
     assert "translate_ngram_mod_args(" in emit
     assert '_caps.get("ngram_mod_flavor")' in emit
     assert emit.index("_strip_device_extra_args") < emit.index("translate_ngram_mod_args(")
+    # MTP turned on by the user's own --spec-type also keeps the min/max pair out.
+    assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
+
+
+def test_user_spec_type_with_mtp_counts_as_chained():
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_requests_mtp
+
+    extras = ["--spec-type", "ngram-mod,draft-mtp", "--spec-ngram-mod-n-min", "48"]
+    assert _extra_args_requests_mtp(extras, env = _child_spec_env(extras))
+    assert not _extra_args_requests_mtp(["--spec-ngram-mod-n-min", "48"], env = {})
 
 
 def test_owner_only_path_flags_names_each_file_option_once():
