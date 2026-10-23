@@ -752,20 +752,16 @@ def refine_plan_for_multigpu(
         # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
         # beside an idle second card).
         primary_limit = max(int(primary_limit), int(budget))
-    # A split keeps no resident offload groups a request can stream back: a measured reserve that leaves out the
-    # family's reference images (a reference request then needs the flat estimate) would leave it refused on the
-    # primary, so the split is priced as before the measured seed.
-    measured_headroom = (
-        None
-        if plan.estimates.get("measured_omits_references")
-        else plan.estimates.get("measured_runtime_headroom_mib")
+    measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
+    flat_headroom = plan.estimates.get("calibrated_headroom_mib") or plan.estimates.get(
+        "runtime_headroom_mib"
     )
-    headroom = int(
-        measured_headroom
-        or plan.estimates.get("calibrated_headroom_mib")
-        or plan.estimates.get("runtime_headroom_mib")
-        or 0
-    )
+    headroom = int(measured_headroom or flat_headroom or 0)
+    if plan.estimates.get("measured_omits_references"):
+        # A split keeps no resident offload groups a request can stream back: a measured reserve that leaves out the
+        # family's reference images (a reference request then needs the flat estimate) would leave it refused on the
+        # primary, so the split takes the flat headroom, or the measured one (a learned peak) where that is larger.
+        headroom = max(headroom, int(flat_headroom or 0))
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
     rejected: list[PlacementCandidate] = []
     if plan.offload_policy != "none":

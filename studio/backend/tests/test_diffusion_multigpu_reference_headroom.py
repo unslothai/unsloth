@@ -14,6 +14,7 @@ CPU-only: fake cards, loaded sizes stubbed.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import types
 from pathlib import Path
@@ -172,3 +173,25 @@ def test_klein_is_the_family_whose_references_go_unpriced():
         encoding = "utf-8"
     )
     assert "pipe._unsloth_unpriced_references = _references_unpriced(fam)" in src
+
+
+def test_a_learned_peak_above_the_flat_estimate_still_prices_the_split(monkeypatch):
+    # the reference fallback raises the split's headroom to the flat estimate, never below a larger measured one
+    measured, _ = _place(monkeypatch, T4, unpriced = True)
+    flat = int(measured.estimates["runtime_headroom_mib"])
+    seen = []
+    real = lsp.refine_plan_for_layer_split
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs["headroom_mib"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(lsp, "refine_plan_for_layer_split", spy)
+    for learned in (flat + 4096, 3072):
+        boosted = dataclasses.replace(
+            measured, estimates = {**measured.estimates, "measured_runtime_headroom_mib": learned}
+        )
+        seen.clear()
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = True)):
+            mg.refine_plan_for_multigpu(_Pipe(), boosted)
+        assert seen and seen[0] == max(learned, flat)
