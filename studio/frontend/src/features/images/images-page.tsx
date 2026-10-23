@@ -270,6 +270,7 @@ import { MaskFromTextPanel } from "./mask-from-text-panel";
 import { DetailerField, useDetailerSegmenter } from "./detailer-field";
 import {
   detailerAvailable,
+  detailerEngagesNegative,
   detailerErrors,
   detailerModelCapable,
   detailerRecordOf,
@@ -2300,12 +2301,6 @@ export function ImagesPage({
   // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
   const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
   const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
-  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
-  const negativeEngaged =
-    negativeCapable &&
-    (negativeMinGuidance === null ||
-      effectiveGuidance > negativeMinGuidance ||
-      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
@@ -2350,6 +2345,13 @@ export function ImagesPage({
   const detailerCapable = detailerModelCapable(status, Boolean(external));
   const detailerSegmenter = useDetailerSegmenter(detailerCapable, loadedModelKey(status) ?? "");
   const detailerReady = detailerAvailable(status, Boolean(external), detailerSegmenter);
+  // Hires CFG or the Detailer's CFG can turn CFG on for that pass alone; it then reads the negative prompt.
+  const negativeEngaged =
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance) ||
+      detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance));
   const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
     if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
     else setPrompt((p) => withEmbeddingTrigger(p, trigger));

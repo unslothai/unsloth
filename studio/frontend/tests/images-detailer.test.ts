@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   DETAILER_DEFAULTS,
   detailerAvailable,
+  detailerEngagesNegative,
   detailerErrors,
   detailerFromInfotext,
   detailerModelCapable,
@@ -263,4 +264,50 @@ test("the Detailer control learns about a finished SAM 3 download without a relo
   assert.match(field, /addEventListener\(SEGMENTER_STATUS_EVENT, onStatus\)/);
   assert.match(field, /status\?\.download\.downloading === true/);
   assert.match(field, /setInterval\(read, 2000\)/);
+});
+
+test("an imported default ADetailer run does not keep geometry stored from an earlier run", () => {
+  // The page merges a restore over the stored options; an infotext carries no crop factor, guide size or max size.
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  assert.match(page, /setDetailerOptions\(\{ \.\.\.readDetailerOptions\(\), \.\.\.detail\.options \}\)/);
+  const stored = { ...DETAILER_DEFAULTS, cropFactor: 6, guideSize: 1536, maxSize: 2048, guideSizeFor: "crop_region" as const };
+  const parsed = parseA1111Parameters(STUDIO_INFOTEXT);
+  assert.ok(parsed);
+  const restored = restoredDetailer(recipeSettings(parsed, { width: 1024, height: 1024, steps: 9, guidance: 0 }));
+  const sent = detailerRequestField(true, true, { ...stored, ...restored.options }).detailer;
+  assert.ok(sent);
+  assert.equal(sent.crop_factor, undefined);
+  assert.equal(sent.guide_size, undefined);
+  assert.equal(sent.max_size, undefined);
+  assert.equal(sent.guide_size_for, undefined);
+  assert.equal(sent.denoise, 0.4);
+  assert.equal(sent.steps, 12);
+  // A record that carries them still restores them.
+  const custom = restoredDetailer({ detailer: { targets: "face", crop_factor: 4, guide_size: 768, max_size: 1536 } });
+  const resent = detailerRequestField(true, true, { ...DETAILER_DEFAULTS, ...custom.options }).detailer;
+  assert.equal(resent?.crop_factor, 4);
+  assert.equal(resent?.guide_size, 768);
+  assert.equal(resent?.max_size, 1536);
+});
+
+test("the Detailer's own CFG sends the main negative prompt it inherits", () => {
+  // Base CFG 0 leaves the negative prompt unused; a Detailer CFG of 5 with no separate negative reads it.
+  const cfg = { ...DETAILER_DEFAULTS, guidance: 5 };
+  assert.equal(detailerEngagesNegative(true, true, cfg, 1), true);
+  assert.equal(detailerEngagesNegative(true, true, cfg, null), true);
+  // Not when off, unavailable, using the image's CFG, at or under the threshold, or with its own negative prompt.
+  assert.equal(detailerEngagesNegative(false, true, cfg, 1), false);
+  assert.equal(detailerEngagesNegative(true, false, cfg, 1), false);
+  assert.equal(detailerEngagesNegative(true, true, DETAILER_DEFAULTS, 1), false);
+  assert.equal(detailerEngagesNegative(true, true, { ...cfg, guidance: 1 }, 1), false);
+  assert.equal(detailerEngagesNegative(true, true, { ...cfg, negativePrompt: "blurry" }, 1), false);
+  // The page's gate reads it, after the Detailer state it depends on.
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  const gate = page.indexOf("const negativeEngaged =");
+  assert.ok(gate > page.indexOf("const detailerReady ="));
+  assert.match(
+    page.slice(gate, gate + 600),
+    /detailerEngagesNegative\(detailerOn, detailerReady, detailerOptions, negativeMinGuidance\)/,
+  );
+  assert.match(page, /negative_prompt: negativeEngaged \? negativePrompt\.trim\(\) \|\| undefined : undefined/);
 });

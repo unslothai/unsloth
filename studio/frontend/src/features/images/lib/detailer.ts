@@ -171,6 +171,19 @@ export function detailerRequestField(
   return { detailer: out };
 }
 
+/** The Detailer's own CFG turns guidance on for its inpaints while it inherits the image's negative prompt (no
+ *  separate one), so the request must carry the main negative prompt even when the base CFG leaves it unused. */
+export function detailerEngagesNegative(
+  enabled: boolean,
+  available: boolean,
+  options: DetailerOptions,
+  minGuidance: number | null,
+): boolean {
+  const req = detailerRequestField(enabled, available, options).detailer;
+  if (!req || req.negative_prompt || req.guidance === undefined) return false;
+  return minGuidance === null || req.guidance > minGuidance;
+}
+
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
@@ -210,7 +223,9 @@ export function restoredDetailer(image: { detailer?: unknown }): {
 } {
   const record = detailerRecordOf(image.detailer);
   if (!record) return { enabled: false, options: {} };
-  const options: Partial<DetailerOptions> = {};
+  // Every setting the record does not carry is its default (an ADetailer infotext has no crop factor, guide size or
+  // max size), so a restore never keeps a stale stored value from an earlier run.
+  const options: Partial<DetailerOptions> = { ...DETAILER_DEFAULTS };
   if (record.targets) options.targets = record.targets;
   options.prompt = record.prompt ?? "";
   const pairs: Array<[keyof DetailerOptions, number | undefined]> = [
@@ -226,9 +241,7 @@ export function restoredDetailer(image: { detailer?: unknown }): {
   for (const [key, value] of pairs) {
     if (value !== undefined) (options as Record<string, unknown>)[key] = value;
   }
-  // FaceDetailer's geometry: absent means its default, so a restore never keeps a stale stored value.
   options.guideSizeFor = isGuideSizeFor(record.guide_size_for) ? record.guide_size_for : DETAILER_DEFAULTS.guideSizeFor;
-  options.dropSize ??= DETAILER_DEFAULTS.dropSize;
   options.steps = record.steps ?? null;
   // ADetailer's separate negative prompt and CFG: absent means the image's own, so a restore clears a stale override.
   options.negativePrompt = record.negative_prompt ?? "";
