@@ -506,3 +506,57 @@ def test_eager_oom_split_keeps_static_skip_branch_keys(monkeypatch):
     finally:
         zs.uninstall_zimage_cfg_split(pipe)
         ss.uninstall_static_step_skip(pipe)
+
+
+def test_compiled_only_eager_with_a_disabled_router_runs_batched():
+    """A CFG-parallel router that gave up (replica build or run failed) pairs nothing: the eager call stays batched."""
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    router = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.disabled_reason = "replica failed"
+    model.__dict__["forward"] = router
+    model.__dict__["_unsloth_cfg_router"] = router
+    try:
+        with zs.render(pipe, 1):
+            _run(model, *_guided_args(_latent(14), torch.tensor([0.4]), 9, 12, 14))
+        assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    finally:
+        model.__dict__.pop("forward", None)
+        model.__dict__.pop("_unsloth_cfg_router", None)
+
+
+def test_compiled_only_ignores_a_poisoned_graph_handle():
+    """A whole-step capture that failed for good stays in ``_unsloth_cuda_graphs`` but replays nothing."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    handle = types.SimpleNamespace(enabled = True, poisoned = True, fallback = None, fallback_handle = None)
+    pipe._unsloth_cuda_graphs = (handle,)
+    args = _guided_args(_latent(15), torch.tensor([0.4]), 9, 12, 15)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    handle.fallback_handle = types.SimpleNamespace(enabled = True, poisoned = False)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_compiled_only_honours_the_background_compile_eager_gate():
+    """A render recording for a pending background compile bypasses compiled calls and graphs: it runs batched."""
+    from core.inference import diffusion_bg_compile as bg
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    pipe._unsloth_cuda_graphs = (object(),)
+    args = _guided_args(_latent(16), torch.tensor([0.4]), 9, 12, 16)
+    with bg.force_eager(), zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1

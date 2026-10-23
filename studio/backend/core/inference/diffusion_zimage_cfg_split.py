@@ -105,15 +105,38 @@ def _live_graph_wrapper(denoiser: Any) -> bool:
     )
 
 
+def _graph_handle_live(handle: Any) -> bool:
+    """A pipe graph handle that can still replay: enabled, and not poisoned unless a per-block fallback remains."""
+    if not getattr(handle, "enabled", True):
+        return False
+    if not getattr(handle, "poisoned", False):
+        return True
+    if getattr(handle, "fallback", None) is not None:
+        return True
+    fallback = getattr(handle, "fallback_handle", None)
+    return fallback is not None and _graph_handle_live(fallback)
+
+
 def _graphs_engaged(pipe: Any, denoiser: Any) -> bool:
     """Whether ``denoiser`` runs compiled code or replays CUDA graphs now, the only case a split saves anything."""
-    if getattr(pipe, "_unsloth_cuda_graphs", None):
-        return True
+    try:
+        from .diffusion_bg_compile import eager_forced
+
+        # A render recording for a pending background compile bypasses compiled calls and graphs alike.
+        if eager_forced():
+            return False
+    except Exception:  # noqa: BLE001 - unknown: read the denoiser
+        pass
     try:
         from .diffusion_cfg_batch import compiled_denoiser
     except Exception:  # noqa: BLE001 - unknown: keep the split
         return True
     try:
+        # A capture that failed for good leaves its poisoned handle in the tuple: it replays nothing.
+        if any(
+            _graph_handle_live(h) for h in tuple(getattr(pipe, "_unsloth_cuda_graphs", None) or ())
+        ):
+            return True
         if _live_graph_wrapper(denoiser):
             return True
         # A compile that failed at its first forward left this load eager (the guard cleared the compiled blocks but
@@ -187,6 +210,15 @@ def _empty_cache() -> None:
         pass
 
 
+def _router_declines_now() -> bool:
+    """A CFG-parallel router runs no pair under a background compile's eager or capture gate."""
+    try:
+        from .diffusion_multigpu import _background_compile_call
+        return bool(_background_compile_call())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _static_skip_state(slots: dict) -> Optional[tuple]:
     skip = slots.get("_unsloth_static_skip")
     if skip is None or not hasattr(skip, "ordinal"):
@@ -229,7 +261,12 @@ def _make_call(orig_call: Any) -> Any:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
         router = slots.get("_unsloth_cfg_router")
-        routed = router is not None and slots.get("forward") is router
+        routed = (
+            router is not None
+            and slots.get("forward") is router
+            and getattr(router, "disabled_reason", None) is None
+            and not _router_declines_now()
+        )
         # A CFG-parallel router needs the halves even eager: it cannot pair one batched call.
         if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR) and not routed:
             # Eager: one batched call is faster; two calls at half the activations only when it does not fit.
