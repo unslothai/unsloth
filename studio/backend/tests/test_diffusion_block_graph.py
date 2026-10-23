@@ -950,6 +950,34 @@ def test_a_block_poisoned_before_capture_counts_the_graphs_it_dropped(monkeypatc
     handle.free()
 
 
+def test_evicting_a_block_graph_from_a_retired_pool_counts_it(monkeypatch):
+    """After a failed capture replaced the shared pool, older recordings still hold the old one. When the LRU evicts
+    the last of them, that pool retires: it is counted, so the next capture flushes it before recording beside it."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 1).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    block = handle.graphs[0]
+    limit = block.max_graphs
+    with torch.inference_mode():
+        for rows in range(2, 2 + limit):
+            x = torch.randn(rows, 16, device = "cuda")
+            for _ in range(3):
+                assert torch.equal(net(x), ref(x))
+    assert len(block.cache) == limit
+    block.shared.pool = None  # what retire_failed_capture leaves: later recordings get a fresh pool
+    _reset_retired(monkeypatch)
+    with torch.inference_mode():
+        x = torch.randn(2 + limit, 16, device = "cuda")
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert block.stats["evictions"] >= 1
+    due = cg.retired_pool_due() if hasattr(cg, "retired_pool_due") else False
+    assert due
+    handle.free()
+
+
 def test_a_block_capture_refused_before_recording_flushes_nothing(monkeypatch):
     """Past the failure budget every block fails before capture_begin: no pool was retired, so no allocator flush."""
     _cuda()

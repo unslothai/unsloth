@@ -308,9 +308,11 @@ _POOL_FLUSHES = [0]  # retired-pool flushes performed (diagnostics, tests)
 # A deferred release also owed a cuBLAS workspace clear (the offloaded recordings' capture-stream workspaces): the
 # next entry flush does it with the empty_cache, then resets it.
 _CUBLAS_CLEAR_DUE = [False]
-# How long a capture waits for another thread's recording to end before its retired-pool flush is given up: the
-# capture is then refused (the step or block runs eager) and the next one retries. Woken as soon as that recording ends.
-RETIRED_FLUSH_WAIT_S = 0.25
+# How long a capture with a retired pool due waits for another thread's recording to end (woken as soon as it does).
+# It waits rather than falling back to eager: PyTorch runs no non-captured CUDA work on any thread while a capture is
+# underway, so an eager step here could invalidate that recording. Only a recording that never ends (the same bound as
+# replica-side work, OUTSIDE_WAIT_S) refuses the capture.
+RETIRED_FLUSH_WAIT_S = OUTSIDE_WAIT_S
 
 
 def note_pool_retired() -> None:
@@ -411,20 +413,17 @@ def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
     under the capture lock with no capture recording, acknowledging the retirements counted before it; or, while
     another thread records (either call is prohibited inside its recording and can invalidate it), counted as a
     retired pool with the cuBLAS clear owed, so the next capture's entry flush does both."""
+    # Owed first, in one step with the cuBLAS debt: a capture entering from here on sees it due, whether or not this
+    # flush gets the lock; a successful flush below acknowledges it.
     with _RETIRE_LOCK:
+        _RETIRED_POOLS[0] += 1
         seen = _RETIRED_POOLS[0]
+        if clear_cublas:
+            _CUBLAS_CLEAR_DUE[0] = True
     gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
     with hold_off_capture() as safe:
-        if safe:
-            if clear_cublas:
-                with _RETIRE_LOCK:
-                    _CUBLAS_CLEAR_DUE[0] = True
-            if _flush_retired_locked(seen):
-                return True
-    if clear_cublas:
-        with _RETIRE_LOCK:
-            _CUBLAS_CLEAR_DUE[0] = True
-    note_pool_retired()
+        if safe and _flush_retired_locked(seen):
+            return True
     return False
 
 
@@ -1144,7 +1143,10 @@ class GraphedForward:
 
     def reset(self) -> "GraphedForward":
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
+        dropped = bool(self.cache)
         self.cache.clear()
+        if dropped:
+            note_pool_retired()  # counted where it drops; the _release below flushes and acknowledges it
         self._recorded.clear()
         # Nothing recorded is left to replay: every scope's first render starts over (captures counted afresh).
         self._sealed_scopes.clear()

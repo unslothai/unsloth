@@ -378,6 +378,61 @@ def test_an_immediate_release_acknowledges_the_retirement_it_flushed(monkeypatch
     assert not _due()
 
 
+def test_a_capture_with_a_pool_due_waits_out_another_recording_instead_of_running_eager(
+    monkeypatch,
+):
+    """PyTorch runs no non-captured CUDA work on any thread while a capture is underway. A capture whose retired pool
+    must be flushed while another thread records therefore waits for that recording to end, then flushes and records;
+    it is not refused into an eager step that would run beside the recording."""
+    import threading
+    import time
+
+    monkeypatch.setattr(cg, "_RETIRED_POOLS", [1, 0], raising = False)
+    flushed = []
+    monkeypatch.setattr(
+        cg, "_flush_retired_locked", lambda seen: flushed.append(cg._CAPTURE_DEPTH) or True
+    )
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # another thread is recording
+
+    def other_recording_ends():
+        time.sleep(0.6)
+        with cg._CAPTURE_IDLE:
+            cg._CAPTURE_DEPTH = 0
+            cg._CAPTURE_IDLE.notify_all()
+
+    ender = threading.Thread(target = other_recording_ends)
+    ender.start()
+    try:
+        with cg._CAPTURE_IDLE:
+            cg._settle_retired_pools(1)
+    finally:
+        ender.join()
+    assert flushed == [0]
+
+
+def test_a_deferred_release_is_owed_before_it_tries_the_lock(monkeypatch):
+    """The release counts its pool (and the cuBLAS clear) before gc and the lock attempt: a capture entering meanwhile
+    already sees it due instead of recording beside the unflushed segments."""
+    _reset_retired(monkeypatch)
+    monkeypatch.setattr(cg, "_CUBLAS_CLEAR_DUE", [False], raising = False)
+    seen_during_gc = []
+
+    class _Gc:
+        @staticmethod
+        def collect():
+            seen_during_gc.append((cg.retired_pool_due(), cg._CUBLAS_CLEAR_DUE[0]))
+
+    @__import__("contextlib").contextmanager
+    def recording_elsewhere():
+        yield False
+
+    monkeypatch.setattr(cg, "gc", _Gc)
+    monkeypatch.setattr(cg, "hold_off_capture", recording_elsewhere)
+    assert cg.release_cached_outside_capture(clear_cublas = True) is False
+    assert seen_during_gc == [(True, True)]
+    assert cg.retired_pool_due() and cg._CUBLAS_CLEAR_DUE[0]
+
+
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
     """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
     held) before anything flushes: the flush stays due for the next capture."""
