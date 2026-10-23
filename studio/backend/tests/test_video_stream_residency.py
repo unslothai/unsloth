@@ -288,7 +288,6 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
 
 
 def _dropped_graph_handle():
-    # what a streamed Wan load's handle reports once the speed check dropped its only graph
     return types.SimpleNamespace(
         capture_error = {"type": "Refused", "msg": "replay measured within 5% of the eager step"},
         poisoned = False,
@@ -307,7 +306,6 @@ def test_a_dropped_graph_keys_the_request_on_the_eager_step(monkeypatch):
     optims = ("compile", "cuda_graph")
     dropped = types.SimpleNamespace(_unsloth_cuda_graphs = (_dropped_graph_handle(),))
     assert vr.live_speed_optims(dropped, optims) == ("compile",)
-    # graphs still replaying, or not armed yet: the load's record stands
     assert vr.live_speed_optims(types.SimpleNamespace(), optims) == optims
     assert vr.live_speed_optims(dropped, ("compile",)) == ("compile",)
     key = vr.calibration_key("wan2.2-ti2v-5b", speed_optims = vr.live_speed_optims(dropped, optims))
@@ -341,17 +339,17 @@ def test_a_request_after_a_dropped_graph_is_recorded_under_its_key(monkeypatch):
     module = types.SimpleNamespace(_unsloth_video_calibration_key = key)
     pipe = types.SimpleNamespace(transformer = module)
     dev = torch.device("cuda", 0)
-    vr._open_window(module, dev)  # render 1 starts with no graph alive
+    vr._open_window(module, dev)
     assert module._unsloth_video_graphs_clean
     live[0], gen[0] = 0, 1  # it captured one graph, which the speed check then dropped (pool freed)
     vr._open_window(module, dev)
     assert (
         module._unsloth_video_graphs_clean
-    )  # nothing alive on the card: nothing a peak could omit
+    )
     module._unsloth_video_pending = (100, 1000 << 20, dev)
     assert vr.record_request_peak(pipe) == 2000
     assert vr.measured_extra_mib(key, 100) == 2000
-    # a graph still alive from an unrecorded capture keeps the next request dirty, as before
+    # a graph alive from an unrecorded capture keeps the next request dirty
     live[0], gen[0] = 1, 2
     vr._open_window(module, dev)
     assert not module._unsloth_video_graphs_clean
