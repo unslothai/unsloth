@@ -369,8 +369,7 @@ export const TEXT_ATTACHMENT_BASENAMES = [
   ".htaccess",
 ] as const;
 const PATH_SEPARATOR_RE = /[\\/]/;
-// What browsers and file managers append to a second copy: "LICENSE(1)", "LICENSE (2)",
-// "README copy 2", "Makefile - Copy (3)". Keep in sync with native_path_policy.rs.
+// Duplicate-copy suffixes ("LICENSE(1)", "README copy 2"); mirrored in native_path_policy.rs.
 const DUPLICATE_SUFFIX_RE = /(?:\s*\(\d+\)|\s+(?:-\s+)?copy(?:\s+\d+)?)+$/i;
 
 /** Whether a path or filename belongs to the inline UTF-8 text adapter. */

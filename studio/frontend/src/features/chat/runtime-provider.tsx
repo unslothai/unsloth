@@ -330,13 +330,11 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     this.getThreadIds = getThreadIds;
   }
 
-  // "*" so every file reaches add(): the runtime's own accept check refuses a mismatch with only a
-  // console error, so a dropped "LICENSE(1)" or .exe vanished without a word.
+  // "*": the runtime's own accept check refuses a file with only a console error.
   readonly accept = "*";
 
   add(state: { file: File }) {
     let file = state.file;
-    // A second download is "LICENSE(1)", read as the extension ".license(1)" with no MIME type.
     if (!matchesAccept(file, this.delegate.accept) && isTextAttachmentName(file.name)) {
       file = new File([file], file.name, {
         type: "text/plain",

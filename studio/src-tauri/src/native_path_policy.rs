@@ -512,8 +512,7 @@ pub fn is_text_attachment_name(path: &Path) -> bool {
         .is_some_and(|name| TEXT_ATTACHMENT_NAMES.contains(&without_duplicate_suffix(&name)))
 }
 
-/// Drops what browsers and file managers append to a second copy: "license(1)", "license (2)",
-/// "readme copy 2", "makefile - copy (3)". Mirrors DUPLICATE_SUFFIX_RE in text-attachment-accept.ts.
+/// Strips duplicate-copy suffixes ("license(1)", "readme copy 2"); mirrors DUPLICATE_SUFFIX_RE.
 fn without_duplicate_suffix(name: &str) -> &str {
     let mut rest = name;
     while let Some(shorter) = strip_counter_suffix(rest).or_else(|| strip_copy_suffix(rest)) {

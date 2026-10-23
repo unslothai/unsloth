@@ -1023,7 +1023,6 @@ test("every basename the picker claims is one the drop paths accept", () => {
     assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
     assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "docs", name);
   }
-  // A second download or a Finder / Explorer duplicate is still the same file.
   for (const name of [
     "LICENSE(1)",
     "LICENSE (2)",
