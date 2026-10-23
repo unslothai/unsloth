@@ -175,6 +175,9 @@ class _Reader(ast.NodeVisitor):
                     self.tune["max_seq_length"] = seq
                 if self.kw(node, "load_in_4bit") is False:
                     self.tune["load_in_4bit"] = False
+                if self.kw(node, "trust_remote_code") is True:
+                    # The Fine-tune block never sends trust_remote_code, so the run could not load this model.
+                    self.unsupported.add("a model that needs trust_remote_code")
         elif fn == "train_on_responses_only":
             self.tune["train_on_completions"] = True
         elif fn == "get_peft_model" and any(
@@ -198,8 +201,14 @@ class _Reader(ast.NodeVisitor):
             self.unsupported.add("a dataset loaded from local files (data_files)")
         elif fn == "load_dataset" and "dataset" in self.found:
             repo = self.kw(node, "path", 0)
-            # A second Hub dataset (the Multiple Datasets recipe) would be silently dropped by a one-dataset flow.
-            if isinstance(repo, str) and _REPO.match(repo) and repo != self.found["dataset"]:
+            subset = self.kw(node, "name", 1)
+            subset = subset if isinstance(subset, str) else ""
+            # A second Hub dataset or subset (the Multiple Datasets recipe) would be silently dropped by a one-dataset flow.
+            if (
+                isinstance(repo, str)
+                and _REPO.match(repo)
+                and (repo, subset) != (self.found["dataset"], self.found["subset"])
+            ):
                 self.unsupported.add("training on more than one dataset")
         elif fn == "load_dataset" and "dataset" not in self.found:
             repo = self.kw(node, "path", 0)

@@ -6,7 +6,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { type NotebookEntry, listNotebooks } from "../api";
 import { ArrowDown01Icon, Search01Icon } from "../editor/icon-data";
-import { notebookActions, visibleNotebooks } from "./notebooks";
+import {
+  downloadNotebook,
+  notebookActions,
+  visibleNotebooks,
+} from "./notebooks";
 
 const SHOWN = 30;
 
@@ -102,7 +106,18 @@ export function NotebooksSection({
                       actions.importable && (
                         <>
                           <Button size="sm" variant="outline" asChild={true}>
-                            <a href={actions.download} download={true}>
+                            <a
+                              href={actions.download}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                void downloadNotebook(
+                                  actions.download,
+                                  entry.notebook_file,
+                                );
+                              }}
+                            >
                               Download .ipynb
                             </a>
                           </Button>

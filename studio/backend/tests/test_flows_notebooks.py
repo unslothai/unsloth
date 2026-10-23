@@ -500,3 +500,19 @@ def test_classification_and_multi_dataset_notebooks_are_reported_and_if_true_ski
         "x.ipynb",
     )
     assert _tune(live)["max_steps"] == 30
+
+
+def test_second_subset_and_remote_code_models_are_reported():
+    doc, report = notebook_import.read_notebook(
+        _plain("a = load_dataset('org/c', 'english')\nb = load_dataset('org/c', 'french')"),
+        "x.ipynb",
+    )
+    assert doc is None and any("more than one dataset" in line for line in report["unsupported"])
+    doc, report = notebook_import.read_notebook(
+        _nb(
+            "model, tok = FastLanguageModel.from_pretrained(model_name = 'org/custom', trust_remote_code = True)",
+            "dataset = load_dataset('imdb', split = 'train')",
+        ),
+        "x.ipynb",
+    )
+    assert doc is None and any("trust_remote_code" in line for line in report["unsupported"])

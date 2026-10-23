@@ -66,3 +66,20 @@ export function notebookName(
       : undefined);
   return picked?.toLowerCase().endsWith(".ipynb") ? picked : null;
 }
+
+/** Save a notebook from GitHub as a file. A cross-origin `<a download>` is ignored by browsers and would
+ * navigate Studio away to the raw JSON, so the file is fetched and saved from a blob instead. */
+export async function downloadNotebook(url: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(String(res.status));
+    const href = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}

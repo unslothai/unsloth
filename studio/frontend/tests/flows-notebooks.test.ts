@@ -8,7 +8,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { notebookActions, notebookName, visibleNotebooks } = await import(
+const { downloadNotebook, notebookActions, notebookName, visibleNotebooks } =
+  await import(
   "../src/features/flows/gallery/notebooks.ts"
 );
 type Entry = import("../src/features/flows/api.ts").NotebookEntry;
@@ -76,4 +77,30 @@ test("a picked or dropped .ipynb file goes to the notebook importer by its own n
   assert.equal(notebookName(new File(["{}"], "story.unslothflow")), null);
   assert.equal(notebookName('{"nodes": []}'), null);
   assert.equal(notebookName(new Blob(["{}"]), "x.ipynb"), "x.ipynb");
+});
+
+test("Download .ipynb saves the file from a blob instead of navigating Studio away", async () => {
+  const g = globalThis as Record<string, unknown>;
+  const saved = { fetch: g.fetch, document: g.document, window: g.window };
+  const clicked: { href: string; download: string }[] = [];
+  const opened: string[] = [];
+  g.fetch = async () => new Response("{}", { status: 200 });
+  g.document = {
+    createElement: () => {
+      const a = { href: "", download: "", click: () => clicked.push({ href: a.href, download: a.download }) };
+      return a;
+    },
+  };
+  g.window = { open: (url: string) => opened.push(url) };
+  try {
+    await downloadNotebook("https://raw.githubusercontent.com/x/y.ipynb", "y.ipynb");
+    assert.equal(clicked.length, 1);
+    assert.equal(clicked[0].download, "y.ipynb");
+    assert.ok(clicked[0].href.startsWith("blob:"));
+    g.fetch = async () => new Response("", { status: 404 });
+    await downloadNotebook("https://raw.githubusercontent.com/x/z.ipynb", "z.ipynb");
+    assert.deepEqual(opened, ["https://raw.githubusercontent.com/x/z.ipynb"]);
+  } finally {
+    Object.assign(g, saved);
+  }
 });
