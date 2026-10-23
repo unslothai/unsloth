@@ -3168,6 +3168,7 @@ def _fake_cuda(
 
 def test_a_large_discrete_card_in_a_small_host_does_not_share_host_memory(monkeypatch):
     """Regression: a 24 GiB RTX in a 32 GiB host passed the half-the-host-RAM ratio as unified."""
+    pytest.importorskip("torch")  # core.inference.llama_cpp imports torch at module level
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(
@@ -3180,6 +3181,7 @@ def test_a_large_discrete_card_in_a_small_host_does_not_share_host_memory(monkey
 
 def test_unified_memory_parts_are_still_detected(monkeypatch):
     """Detection only widens: a GB10, a Strix Halo and an unclassifiable Vulkan APU stay unified."""
+    pytest.importorskip("torch")  # core.inference.llama_cpp imports torch at module level
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(
