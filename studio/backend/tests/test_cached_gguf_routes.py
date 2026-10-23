@@ -5516,12 +5516,18 @@ def test_every_listing_probe_class_has_a_version_gate():
         _FAMILIES,
         _PIPELINE_MIN_DIFFUSERS,
         family_probe_class,
+        in_tree_pipeline,
     )
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
 
     predates_every_release = {"StableDiffusionXLPipeline"}
     probed = {family_probe_class(fam) for fam in (*_FAMILIES, *_VIDEO_FAMILIES)}
-    ungated = sorted(name for name in probed if name and name not in _PIPELINE_MIN_DIFFUSERS)
+    # In-tree pipelines are no diffusers class; in_tree_pipeline_refusal gates them instead.
+    ungated = sorted(
+        name
+        for name in probed
+        if name and name not in _PIPELINE_MIN_DIFFUSERS and not in_tree_pipeline(name)
+    )
     assert set(ungated) <= predates_every_release, ungated
 
 

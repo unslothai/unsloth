@@ -185,7 +185,7 @@ test("the expanded row and the flyout both show a pending tooltip", async () => 
   );
   assert.match(
     appSidebar,
-    /alwaysTooltip=\{rowState\.pending\}/,
+    /alwaysTooltip=\{rowState\.pending \|\| Boolean\(row\.dimmed\)\}/,
     "the inline rows never ask for the exception",
   );
   assert.match(appSidebar, /^\s*title=\{tooltip\}$/m, "MoreMenuItem drops a pending title");

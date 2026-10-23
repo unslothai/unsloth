@@ -56,8 +56,8 @@ test("the default fraction is exactly 0.97, not a float-drifted neighbour", () =
 });
 
 test("the bounds mirror the backend range", () => {
-  // vram_budget_settings.py: VRAM_FRACTION_MIN 0.80, MAX 1.00, DEFAULT 0.97.
-  assert.equal(vramPercentToFraction(VRAM_BUDGET_PERCENT_MIN), 0.8);
+  // vram_budget_settings.py: VRAM_FRACTION_MIN 0.10, MAX 1.00, DEFAULT 0.97.
+  assert.equal(vramPercentToFraction(VRAM_BUDGET_PERCENT_MIN), 0.1);
   assert.equal(vramPercentToFraction(VRAM_BUDGET_PERCENT_MAX), 1);
   assert.equal(VRAM_BUDGET_PERCENT_DEFAULT, 97);
 });

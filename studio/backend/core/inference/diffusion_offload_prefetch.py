@@ -620,9 +620,7 @@ class GroupPrefetcher:
         self._drop_ring()
 
     def _drop_ring(self) -> None:
-        import torch
-
-        from .diffusion_cuda_graph import hold_off_capture
+        from .diffusion_cuda_graph import flush_now_locked, hold_off_capture
         with hold_off_capture() as safe:
             if not safe:
                 # Another thread is recording: its capture prohibits these syncs and frees. Retry after a later forward.
@@ -630,16 +628,9 @@ class GroupPrefetcher:
                 return
             self._drop_slots_at_end = False
             self.disable_slots()
-            try:
-                import gc
-
-                gc.collect()  # a declined step graph's recordings, whose pool is flushed below with the ring
-                clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
-                if callable(clear):
-                    clear()  # and the workspace cuBLAS made for their capture stream
-                torch.cuda.empty_cache()  # the ring's segments go back to the device, not just to the cache
-            except Exception:  # noqa: BLE001
-                pass
+            # The ring's segments go back to the device, not just to the cache, with a declined step graph's
+            # recordings (their pool, and the workspace cuBLAS made for their capture stream): acknowledged as flushed.
+            flush_now_locked(clear_cublas = True)
 
     def disable_slots(self) -> None:
         """Drop the ring. Only between forwards: every streamed group is back on the host by then."""

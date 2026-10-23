@@ -16,8 +16,10 @@ __all__ = [
 ]
 
 import contextlib
+import copy
 import datetime
 import functools
+import logging
 import os
 
 import torch
@@ -130,6 +132,18 @@ def _gather_full(param, DTensor):
     return gathered.view(param.dtype)
 
 
+def _quant_state_on_cpu(quant_state):
+    """A CPU copy of a bitsandbytes QuantState. `QuantState.to` moves in place (its nested state
+    too), and the live one must stay where the sharded weight computes with it."""
+    if not hasattr(quant_state, "to"):
+        return quant_state
+    state = copy.copy(quant_state)
+    if getattr(state, "state2", None) is not None:
+        state.state2 = copy.copy(state.state2)
+    state.to("cpu")
+    return state
+
+
 def _rebuild(param, full, module):
     """A full parameter that looks like the one FSDP2 sharded (Params4bit keeps its QuantState)."""
     quant_state = getattr(param, "quant_state", None)
@@ -172,13 +186,16 @@ def fsdp2_gathered(
     trainable_only = False,
     offload_to_cpu = True,
     include = None,
+    offload_4bit = False,
 ):
     """Yields None for a model FSDP2 does not shard (nothing happens). Otherwise every rank must
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
     `offload_to_cpu` may be a predicate `(name, param) -> bool`.
-    Packed 4-bit weights stay on their device: the merge dequantizes them there."""
+    Packed 4-bit weights stay on their device (a merge dequantizes them there) unless `offload_4bit`:
+    a save that only writes the packed bytes then gets them, with a CPU copy of their QuantState, on
+    the CPU, so rank 0 never holds the whole quantized base on its accelerator."""
     if _ACTIVE:
         yield _ACTIVE[-1]
         return
@@ -222,9 +239,16 @@ def fsdp2_gathered(
                 continue
             module = owners[id(param)][0][0]
             offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
-            if offload and getattr(param, "quant_state", None) is None:
+            quant_state = getattr(param, "quant_state", None)
+            if offload and quant_state is None:
                 full = full.cpu()
-            replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
+            elif offload and offload_4bit:
+                full = full.cpu()
+                quant_state = _quant_state_on_cpu(quant_state)
+            rebuilt = _rebuild(param, full.detach(), module)
+            if quant_state is not None and rebuilt.quant_state is not quant_state:
+                rebuilt.quant_state = quant_state
+            replaced[id(param)] = (param, rebuilt)
         if writer:
             for key, (old, new) in replaced.items():
                 for module, name in owners[key]:
@@ -373,8 +397,7 @@ def install_dcp_bnb_state_dict():
     model. Inside adapter-only DCP calls (`_drops_frozen_weights`) Linear4bit reports just its weight
     and bias; the QuantState is unchanged in memory. A full DCP state dict of a sharded 4-bit model is
     built the same way and then gets bitsandbytes' entries back under their usual keys
-    (`_add_quant_state_entries`); loading takes them out before DCP sees them and copies them into
-    the live QuantState afterwards (`_restore_quant_state_entries`). Other DCP calls are untouched."""
+    (`_add_quant_state_entries`), which loading drops again. Other DCP calls are untouched."""
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
@@ -399,23 +422,17 @@ def install_dcp_bnb_state_dict():
         def wrapper(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
-            saved = None
             if not (adapter_only or full_4bit):
                 if name.startswith("set_") and _has_native_replicated_4bit(args, kwargs):
-                    args, kwargs, saved = _without_quant_state_entries(name, args, kwargs)
-                    out = fn(*args, **kwargs)
-                    _restore_quant_state_entries(args, kwargs, saved)
-                    return out
+                    args, kwargs = _without_quant_state_entries(name, args, kwargs)
                 return fn(*args, **kwargs)
             if full_4bit and name.startswith("set_"):
-                args, kwargs, saved = _without_quant_state_entries(name, args, kwargs)
+                args, kwargs = _without_quant_state_entries(name, args, kwargs)
             _DCP_DEPTH[0] += 1
             try:
                 out = fn(*args, **kwargs)
             finally:
                 _DCP_DEPTH[0] -= 1
-            if saved is not None:
-                _restore_quant_state_entries(args, kwargs, saved)
             if full_4bit and name in ("get_model_state_dict", "get_state_dict"):
                 model = args[0] if args else kwargs.get("model")
                 state_dict = out[0] if name == "get_state_dict" else out
@@ -466,55 +483,206 @@ def _add_quant_state_entries(model, state_dict, options):
             state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
 
 
+_LEGACY_4BIT_NOTICE = [False]
+logger = logging.getLogger(__name__)
+
+
+def _as_bytes(tensor):
+    return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
+
+
+def _same_packed_bytes(live, loaded, broadcast_dist):
+    """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
+    rank gathers the live weight (a collective); with `broadcast_dist` only rank 0 holds `loaded`,
+    decides, and sends the verdict, so all ranks agree."""
+    DTensor = _dtensor_class()
+    if DTensor is not None and isinstance(live, DTensor):
+        live = _gather_full(live, DTensor)
+    if DTensor is not None and isinstance(loaded, DTensor):
+        loaded = loaded.full_tensor()
+    same = False
+    if isinstance(loaded, torch.Tensor):
+        a, b = _as_bytes(live), _as_bytes(loaded)
+        same = a.numel() == b.numel() and torch.equal(a.cpu(), b.cpu())
+    if broadcast_dist is not None:
+        verdict = [same]
+        broadcast_dist.broadcast_object_list(verdict, src = 0)
+        same = bool(verdict[0])
+    return same
+
+
+def _restore_quant_state(model, state_dict, options):
+    """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
+    copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
+    scales they were saved with. A saved QuantState that does not fit the live one (other shape,
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. Saved
+    entries whose packed weight is not in the state dict (a partial one) are not applied, as DCP keeps
+    the live bytes: strict raises, strict=False warns and keeps the live QuantState. With
+    `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
+    entries = _linear4bit_entries(model)
+    if not entries:
+        return
+    dist = _dist()
+    broadcast = dist is not None and bool(getattr(options, "broadcast_from_rank0", False))
+    if not isinstance(state_dict, dict):
+        state_dict = {}
+    if broadcast:
+        # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
+        # broadcast_object_list stages on whatever device the group's backend needs.
+        has = [
+            any(
+                k == prefix + "weight" or k.startswith(prefix + "weight.")
+                for prefix, _ in entries
+                for k in state_dict
+            )
+        ]
+        dist.broadcast_object_list(has, src = 0)
+        if not has[0]:
+            return
+    from bitsandbytes.functional import QuantState
+
+    strict = bool(getattr(options, "strict", True)) if options is not None else True
+    orphans = []
+    for prefix, module in entries:
+        live = module.weight.quant_state
+        head = prefix + "weight."
+        saved = {
+            k[len(head) :]: v
+            for k, v in state_dict.items()
+            if k.startswith(head) and isinstance(v, torch.Tensor)
+        }
+        loads_weight = head[:-1] in state_dict
+        if broadcast:
+            payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
+            dist.broadcast_object_list(payload, src = 0)
+            loads_weight, saved = payload[0]
+        if not saved:
+            if loads_weight:
+                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
+                # bytes are the live ones, so the live scales are theirs. Other bytes would be
+                # dequantized with the wrong scales.
+                same = _same_packed_bytes(
+                    module.weight, state_dict.get(head[:-1]), dist if broadcast else None
+                )
+                if not same:
+                    raise ValueError(
+                        f"Unsloth: the checkpoint holds the 4-bit weight `{head[:-1]}` but none of "
+                        "its quantization state (`weight.absmax`, `weight.quant_state.*`), and its "
+                        "packed bytes differ from the model's, so they cannot be dequantized "
+                        "correctly. Save the full state dict again with Unsloth, or load it without "
+                        "the frozen 4-bit base weights."
+                    )
+                if not _LEGACY_4BIT_NOTICE[0]:
+                    _LEGACY_4BIT_NOTICE[0] = True
+                    logger.info(
+                        "Unsloth: the checkpoint has 4-bit weights without their quantization state "
+                        "(saved by an older Unsloth); their packed bytes match the model's, so its "
+                        "quantization state is kept."
+                    )
+            continue
+        if not loads_weight:
+            # Metadata without its packed weight: DCP leaves the live bytes, so their scales stay too.
+            if strict:
+                raise ValueError(
+                    f"Unsloth: the state dict has the 4-bit quantization state of `{head[:-1]}` but "
+                    "not its packed weight. Load the weight with it, or pass strict=False to keep "
+                    "the model's own weight and quantization state."
+                )
+            orphans.append(head[:-1])
+            continue
+        expected = set(live.as_dict(packed = True))
+        saved_nested = any(k.startswith("nested_") for k in saved)
+        if saved_nested != bool(live.nested):
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` (nested "
+                f"{saved_nested}) does not match the model's (nested {bool(live.nested)}). Load it "
+                "into a model quantized with the same bitsandbytes settings "
+                "(bnb_4bit_use_double_quant)."
+            )
+        if set(saved) != expected:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
+                f"{sorted(saved)}, the model's has {sorted(expected)}."
+            )
+        loaded = QuantState.from_dict(saved, device = live.absmax.device)
+        pairs = [("absmax", loaded.absmax, live.absmax), ("code", loaded.code, live.code)]
+        if live.nested:
+            pairs += [
+                ("offset", loaded.offset, live.offset),
+                ("state2.absmax", loaded.state2.absmax, live.state2.absmax),
+                ("state2.code", loaded.state2.code, live.state2.code),
+            ]
+        same = (
+            loaded.quant_type == live.quant_type
+            and loaded.blocksize == live.blocksize
+            and loaded.nested == live.nested
+            and tuple(loaded.shape) == tuple(live.shape)
+            and loaded.dtype == live.dtype
+            and (not live.nested or loaded.state2.blocksize == live.state2.blocksize)
+            and all(
+                isinstance(a, torch.Tensor) and a.shape == b.shape and a.dtype == b.dtype
+                for _, a, b in pairs
+            )
+        )
+        if not same:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` does not "
+                "match the model's (shape, blocksize, quant type or nesting differ)."
+            )
+        with torch.no_grad():
+            for _, a, b in pairs:
+                b.copy_(a.to(b.device))
+    if orphans and (not broadcast or dist.get_rank() == 0):
+        import warnings
+
+        warnings.warn(
+            f"Unsloth: skipped the 4-bit quantization state of {', '.join(orphans)}: the state dict "
+            "does not have the packed weight, so the model keeps its own weight and quantization "
+            "state.",
+            stacklevel = 3,
+        )
+
+
 # Every state dict key suffix bitsandbytes writes for a 4-bit QuantState (`QuantState.as_dict(packed =
-# True)`), nested or not, nf4 or fp4.
-_QUANT_STATE_KEYS = (
-    "absmax",
-    "quant_map",
-    "nested_absmax",
-    "nested_quant_map",
-    "quant_state.bitsandbytes__nf4",
-    "quant_state.bitsandbytes__fp4",
+# True)`), nested or not, nf4 or fp4: all are dropped, so a strict=False load whose metadata was not
+# applied never hands DCP a key it cannot resolve.
+_QUANT_STATE_KEYS = frozenset(
+    (
+        "absmax",
+        "quant_map",
+        "nested_absmax",
+        "nested_quant_map",
+        "quant_state.bitsandbytes__nf4",
+        "quant_state.bitsandbytes__fp4",
+    )
 )
 
 
 def _without_quant_state_entries(name, args, kwargs):
-    """Loading: take out the entries `_add_quant_state_entries` wrote (DCP would reject them as
-    unexpected keys). Every key bitsandbytes can write for a Linear4bit is recognised, whatever the
-    live layout (a nested checkpoint into a non-nested model still has its `nested_*` keys taken out,
-    so the mismatch is reported instead of half the metadata loading). Returns the new args / kwargs
-    and `{"entries": {prefix: {key: tensor}}, "orphans": [prefix]}` for
-    `_restore_quant_state_entries` to copy into the live QuantStates once DCP has loaded the packed
-    bytes: the bytes come from the checkpoint, so their scales must too. `orphans` are prefixes whose
-    metadata came without the packed weight (a partial state dict): DCP leaves those bytes alone, so
-    their scales must stay as well."""
+    """Loading: the entries `_add_quant_state_entries` wrote are restored into the live QuantState
+    (`_restore_quant_state`) and then dropped, as DCP would reject them as unexpected keys."""
     model = args[0] if args else kwargs.get("model")
     if not isinstance(model, torch.nn.Module):
-        return args, kwargs, None
-    suffixes = set(_QUANT_STATE_KEYS)
-    keys = {}
+        return args, kwargs
+    drop = set()
     for prefix, module in _linear4bit_entries(model):
-        for key in suffixes.union(module.weight.quant_state.as_dict(packed = True)):
-            keys[prefix + "weight." + key] = (prefix, key)
-    if not keys:
-        return args, kwargs, None
-    saved = {"entries": {}, "orphans": []}
+        drop.update(
+            prefix + "weight." + key
+            for key in _QUANT_STATE_KEYS.union(module.weight.quant_state.as_dict(packed = True))
+        )
+    if not drop:
+        return args, kwargs
+    if name == "set_model_state_dict" and len(args) > 1:
+        loading = args[1]
+    else:
+        loading = kwargs.get("model_state_dict")
+    if name in ("set_model_state_dict", "set_state_dict"):
+        _restore_quant_state(model, loading, kwargs.get("options", None))
 
     def strip(state_dict):
-        if not isinstance(state_dict, dict) or not any(k in keys for k in state_dict):
+        if not isinstance(state_dict, dict) or not drop.intersection(state_dict):
             return state_dict
-        kept = {}
-        for k, v in state_dict.items():
-            if k in keys:
-                prefix, key = keys[k]
-                saved["entries"].setdefault(prefix, {})[key] = v
-            else:
-                kept[k] = v
-        for prefix in list(saved["entries"]):
-            if prefix + "weight" not in state_dict:
-                saved["entries"].pop(prefix)
-                saved["orphans"].append(prefix)
-        return kept
+        return {k: v for k, v in state_dict.items() if k not in drop}
 
     if name == "set_model_state_dict":
         if len(args) > 1:
@@ -523,145 +691,7 @@ def _without_quant_state_entries(name, args, kwargs):
             kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
     elif "model_state_dict" in kwargs:
         kwargs = dict(kwargs, model_state_dict = strip(kwargs["model_state_dict"]))
-    return args, kwargs, saved
-
-
-def _quant_state_tensors(quant_state):
-    """The tensors a bitsandbytes QuantState dequantizes with, in a fixed order."""
-    tensors = [quant_state.absmax, quant_state.code]
-    if getattr(quant_state, "state2", None) is not None:
-        tensors += [quant_state.state2.absmax, quant_state.state2.code, quant_state.offset]
-    return tensors
-
-
-def _checkpoint_quant_state(prefix, live, entries):
-    """The checkpoint's QuantState for one Linear4bit, after checking it describes the same layout as
-    the live one (else the packed bytes DCP just loaded cannot be dequantized with either)."""
-    from bitsandbytes.functional import QuantState
-
-    nested = "nested_absmax" in entries or "nested_quant_map" in entries
-    live_nested = getattr(live, "state2", None) is not None
-    if nested != live_nested:
-        raise ValueError(
-            f"Unsloth: the checkpoint's 4-bit quantization metadata for `{prefix}weight` "
-            f"(nested {nested}) does not match the loaded model (nested {live_nested}). Load the "
-            "checkpoint into a model quantized with the same bitsandbytes settings "
-            "(bnb_4bit_use_double_quant)."
-        )
-    try:
-        saved = QuantState.from_dict(dict(entries), device = torch.device("cpu"))
-    except Exception as error:
-        raise ValueError(
-            f"Unsloth: the checkpoint's 4-bit quantization metadata for `{prefix}weight` cannot be "
-            f"read ({type(error).__name__}: {error})."
-        ) from error
-    same = (
-        saved.quant_type == live.quant_type
-        and saved.blocksize == live.blocksize
-        and tuple(saved.shape) == tuple(live.shape)
-        and (saved.state2 is None) == (getattr(live, "state2", None) is None)
-        and (saved.state2 is None or saved.state2.blocksize == live.state2.blocksize)
-    )
-    if same:
-        pairs = zip(_quant_state_tensors(saved), _quant_state_tensors(live))
-        same = all(a.numel() == b.numel() for a, b in pairs)
-    if not same:
-        raise ValueError(
-            f"Unsloth: the checkpoint's 4-bit quantization metadata for `{prefix}weight` "
-            f"({saved.quant_type}, blocksize {saved.blocksize}, nested {saved.state2 is not None}) "
-            f"does not match the loaded model ({live.quant_type}, blocksize {live.blocksize}, "
-            f"nested {getattr(live, 'state2', None) is not None}). Load the checkpoint into a model "
-            "quantized with the same bitsandbytes settings."
-        )
-    return saved
-
-
-def _restore_quant_state_entries(args, kwargs, saved):
-    """After a DCP load replaced the packed 4-bit bytes: copy the checkpoint's QuantState values into
-    the live QuantState of every Linear4bit, in place, so every reference to it (the sharded and the
-    unsharded parameter) dequantizes the loaded bytes with their own scales. With
-    `broadcast_from_rank0` only rank 0 holds the state dict, so it checks and sends the values."""
-    model = args[0] if args else kwargs.get("model")
-    if not isinstance(model, torch.nn.Module):
-        return
-    options = kwargs.get("options", None)
-    entries = _linear4bit_entries(model)
-    dist = _dist()
-    broadcast = (
-        bool(getattr(options, "broadcast_from_rank0", False))
-        and dist is not None
-        and dist.get_world_size() > 1
-    )
-    saved = saved or {}
-    loaded = saved.get("entries", {})
-    orphans = sorted(saved.get("orphans", ()))
-    strict = bool(getattr(options, "strict", True)) if options is not None else True
-    error = None
-    states = {}
-    if not broadcast or dist.get_rank() == 0:
-        # Any failure here is caught: with `broadcast_from_rank0` rank 0 must still send its status,
-        # or the other ranks wait on it forever.
-        try:
-            if orphans and strict:
-                raise ValueError(
-                    "Unsloth: the state dict has 4-bit quantization metadata but not the packed "
-                    f"weight for {', '.join(p + 'weight' for p in orphans)}. Load the weight with "
-                    "it, or pass strict=False to keep the model's own weight and metadata."
-                )
-            for prefix, module in entries:
-                if loaded.get(prefix):
-                    states[prefix] = _checkpoint_quant_state(
-                        prefix, module.weight.quant_state, loaded[prefix]
-                    )
-        except Exception as e:
-            error = e
-        if orphans and error is None:
-            import warnings
-
-            warnings.warn(
-                "Unsloth: skipped the 4-bit quantization metadata of "
-                f"{', '.join(p + 'weight' for p in orphans)}: the state dict does not have the "
-                "packed weight, so the model keeps its own weight and metadata.",
-                stacklevel = 3,
-            )
-    if broadcast:
-        device = torch.device("cpu")
-        if "nccl" in str(dist.get_backend()).lower() and torch.cuda.is_available():
-            device = torch.device("cuda", torch.cuda.current_device())
-        # 0: nothing to restore, 1: restore, 2: the checkpoint does not fit (every rank raises).
-        status = torch.tensor([2 if error else (1 if states else 0)], device = device)
-        dist.broadcast(status, src = 0)
-        if status.item() == 2:
-            # Every rank raises rank 0's error, word for word.
-            message = [str(error) if error is not None else None]
-            dist.broadcast_object_list(message, src = 0)
-            message = message[0] or (
-                "Unsloth: the checkpoint's 4-bit quantization metadata does not match the loaded "
-                "model (reported on rank 0)."
-            )
-            if isinstance(error, ValueError):
-                raise error
-            raise ValueError(message) from error
-        if status.item() == 0:
-            return
-        flags = torch.tensor([prefix in states for prefix, _ in entries], device = device)
-        dist.broadcast(flags, src = 0)
-    elif error is not None:
-        raise error
-    with torch.no_grad():
-        for index, (prefix, module) in enumerate(entries):
-            live = _quant_state_tensors(module.weight.quant_state)
-            if broadcast:
-                if not flags[index].item():
-                    continue
-                source = _quant_state_tensors(states[prefix]) if prefix in states else live
-                for target, value in zip(live, source):
-                    buffer = value.to(device = device, dtype = target.dtype).reshape(target.shape)
-                    dist.broadcast(buffer, src = 0)
-                    target.copy_(buffer)
-            elif prefix in states:
-                for target, value in zip(live, _quant_state_tensors(states[prefix])):
-                    target.copy_(value.reshape(target.shape))
+    return args, kwargs
 
 
 def _in_backward():

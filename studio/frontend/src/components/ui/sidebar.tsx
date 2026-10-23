@@ -784,6 +784,7 @@ function SidebarMenuButton({
   size = "default",
   tooltip,
   alwaysTooltip = false,
+  interactiveTooltip = false,
   className,
   ...props
 }: React.ComponentProps<"button"> & {
@@ -792,6 +793,8 @@ function SidebarMenuButton({
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
   /** Show the tooltip while expanded and enabled, not only on the collapsed rail. */
   alwaysTooltip?: boolean
+  /** The tooltip holds a control, so the pointer must be able to move onto it. */
+  interactiveTooltip?: boolean
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
@@ -831,7 +834,7 @@ function SidebarMenuButton({
   )
 
   return (
-    <Tooltip>
+    <Tooltip disableHoverableContent={interactiveTooltip ? false : undefined}>
       <TooltipTrigger asChild>{trigger}</TooltipTrigger>
       <TooltipContent
         side="right"

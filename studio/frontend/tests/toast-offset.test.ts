@@ -11,6 +11,7 @@ import {
   cornerInsets,
   getToastOffsets,
   insetPastChatSettings,
+  subscribeCornerInsets,
   watchChatSettingsInset,
 } from "../src/lib/toast-offset.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -265,6 +266,24 @@ test("the inset follows a drag through the corner scopes", (t) => {
   assert.equal(scope.vars.get(CHAT_SETTINGS_INSET_VAR), "480px");
   stop();
   assert.equal(scope.vars.has(CHAT_SETTINGS_INSET_VAR), false);
+});
+
+test("a corner inset change is announced once per new value", (t) => {
+  let calls = 0;
+  t.after(subscribeCornerInsets(() => calls++));
+  t.after(() => cornerInsets.style.removeProperty(CHAT_SETTINGS_INSET_VAR));
+  cornerInsets.style.setProperty(CHAT_SETTINGS_INSET_VAR, "320px");
+  cornerInsets.style.setProperty(CHAT_SETTINGS_INSET_VAR, "320px");
+  assert.equal(calls, 1, "the composer watcher rewrites the same lift on every resize");
+  cornerInsets.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+  cornerInsets.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+  assert.equal(calls, 2);
+});
+
+test("the published corner card frame is re-read when the rail insets move the card", () => {
+  const hook = readSrc("features/loaded-models/use-published-corner-frame.ts");
+  assert.match(hook, /const unsubscribe = subscribeCornerInsets\(measure\);/, "a growing composer lifts the card without resizing it, and the Live monitor kept dodging its old box and covered it");
+  assert.match(hook, /unsubscribe\(\);/);
 });
 
 test("panel insets are written to their consumers, never to <html>", () => {
