@@ -317,6 +317,17 @@ async def run_events(request: Request, run_id: str) -> StreamingResponse:
                     if len(page) < REPLAY_PAGE:
                         break
                 if rs is None:
+                    # A run a restart interrupted has no terminal event; its stored snapshot ends the stream.
+                    yield _sse(
+                        {
+                            "seq": max(sent, stored["last_seq"]),
+                            "run_id": run_id,
+                            "type": "snapshot",
+                            "node_id": None,
+                            "ts": time.time(),
+                            "data": stored,
+                        }
+                    )
                     return
             last = time.monotonic()
             while True:

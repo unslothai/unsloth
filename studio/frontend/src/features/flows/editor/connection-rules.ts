@@ -61,21 +61,38 @@ export function edgeHandles(edge: FlowEdge): {
   };
 }
 
-/** Whether a value of `source` type may flow into a `target` port. Explicit converters only. */
+/** JSON ports take any of these, as in the compiler's `JSON_LIKE`. */
+const JSON_LIKE: ReadonlySet<PortType> = new Set<PortType>([
+  "text",
+  "number",
+  "bool",
+  "json",
+  "list",
+  "story",
+  "world",
+]);
+
+/** Whether a value of `source` type may flow into a `target` port; mirrors the compiler's `port_compatible`. */
 export function typesCompatible(source: PortSpec, target: PortSpec): boolean {
   const s: PortType = source.type;
   const t: PortType = target.type;
   if (s === "flow" || t === "flow") return false;
   if (s === "any" || t === "any") return true;
-  if (s !== t) return false;
-  if (s === "list" && source.item && target.item) {
-    return (
-      source.item === target.item ||
-      source.item === "any" ||
-      target.item === "any"
-    );
+  if (s === t) {
+    if (s === "list" && source.item && target.item) {
+      return (
+        source.item === target.item ||
+        source.item === "any" ||
+        target.item === "any"
+      );
+    }
+    return true;
   }
-  return true;
+  if (t === "json" && JSON_LIKE.has(s)) return true;
+  // One value into a list port arrives as a one-item list.
+  return (
+    t === "list" && (!target.item || target.item === "any" || target.item === s)
+  );
 }
 
 export interface ConnectionCheck {

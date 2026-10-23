@@ -52,3 +52,20 @@ test("a copied node does not join the original's For Each body", () => {
   for (const copy of fragment.nodes) assert.equal(copy.group, null);
   assert.equal(useDocStore.getState().graph.nodes.t.group, "g1");
 });
+
+test("a pasted copy joins the frame it lands in, and only that one", () => {
+  const d = doc([
+    { ...node("fe", "logic.for_each"), group: "g1" },
+    { ...node("t", "text.template", [100, 100]), group: "g1" },
+  ]);
+  d.groups = [{ id: "g1", label: "Loop", rect: [0, 0, 800, 400] }];
+  useDocStore.getState().load(d);
+  const store = useDocStore.getState();
+  const inside = cloneFragment(store.graph, ["t"], [40, 40]);
+  const outside = cloneFragment(store.graph, ["t"], [2000, 0]);
+  store.insertFragment(inside);
+  useDocStore.getState().insertFragment(outside);
+  const nodes = useDocStore.getState().graph.nodes;
+  assert.equal(nodes[inside.nodes[0].id].group, "g1");
+  assert.equal(nodes[outside.nodes[0].id].group, null);
+});

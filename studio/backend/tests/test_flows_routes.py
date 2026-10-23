@@ -298,3 +298,28 @@ def test_deleting_a_flow_removes_its_run_history(client):
 
     assert flows_db.get_run(run_id) is None
     assert flows_db.events_after(run_id, 0) == []
+
+
+def test_reconnecting_to_a_run_a_restart_interrupted_ends(client):
+    from storage import flows_db
+
+    client.post("/api/flows", json = {"doc": _simple()})
+    run_id = client.post("/api/flows/flow1/runs", json = {}).json()["run_id"]
+    snap = _wait_terminal(client, run_id)
+    engine_mod.ENGINE.runs.clear()
+    token = bind_account(OWNER)
+    try:
+        # A crash leaves the row running (update_run never reopens a finished run, so set it directly).
+        conn = flows_db.get_connection()
+        conn.execute("UPDATE flow_runs SET status = 'running' WHERE id = ?", (run_id,))
+        conn.commit()
+        conn.close()
+        assert flows_db.reconcile_orphaned_runs() == 1
+    finally:
+        reset_account(token)
+    # The browser resumes from the last event it saw; the stream must end with a terminal snapshot.
+    events = _events(
+        client.post(f"/api/flows/runs/{run_id}/events", params = {"after": snap["last_seq"]}).text
+    )
+    assert events and events[-1]["type"] == "snapshot"
+    assert events[-1]["data"]["run"]["status"] == "interrupted"

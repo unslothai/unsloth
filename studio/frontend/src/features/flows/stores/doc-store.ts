@@ -444,7 +444,8 @@ export const useDocStore = create<DocState>((set, get) => {
         const nodeOrder = [...s.graph.nodeOrder];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          nodes[node.id] = node;
+          // A copy that lands inside a frame of this flow joins it, as a dragged node would.
+          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos) };
           nodeOrder.push(node.id);
         }
         const edges = { ...s.graph.edges };
@@ -529,7 +530,19 @@ export const useDocStore = create<DocState>((set, get) => {
   };
 });
 
-/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`, outside any group. */
+/** The smallest frame holding a node at `pos` (by its header centre, default node width), like a drag. */
+function frameAt(graph: DocGraph, pos: [number, number]): string | null {
+  const [x, y] = [pos[0] + 130, pos[1] + 16];
+  let best: { id: string; area: number } | null = null;
+  for (const id of graph.groupOrder) {
+    const [gx, gy, gw, gh] = graph.groups[id].rect;
+    if (x < gx || y < gy || x > gx + gw || y > gy + gh) continue;
+    if (!best || gw * gh < best.area) best = { id, area: gw * gh };
+  }
+  return best?.id ?? null;
+}
+
+/** Copy nodes (and the edges between them) with fresh ids, offset by `delta`; `insertFragment` places them in a frame. */
 export function cloneFragment(
   graph: DocGraph,
   nodeIds: string[],
@@ -550,7 +563,6 @@ export function cloneFragment(
         unknown
       >,
       pos: [node.pos[0] + delta[0], node.pos[1] + delta[1]],
-      // The copy lands outside the frame (or in another flow), so it must not join a For Each body.
       group: null,
     });
   }

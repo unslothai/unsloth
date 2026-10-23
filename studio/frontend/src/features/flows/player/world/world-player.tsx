@@ -386,6 +386,8 @@ export function WorldPlayer({
       return;
     }
     loads.current += 1;
+    // The reply in flight belongs to the old game; let the loaded one talk at once.
+    setThinking(false);
     setWs(state);
     setTalking(null);
     setPanel(null);

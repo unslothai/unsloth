@@ -12,6 +12,7 @@ registerBundlerResolver();
 const rules = await import("../src/features/flows/editor/connection-rules.ts");
 const {
   checkConnection,
+  typesCompatible,
   wouldCreateCycle,
   compatibleSpecs,
   inHandle,
@@ -191,4 +192,17 @@ test("a For Each body can feed its result back to collect", () => {
   );
   assert.equal(wouldCreateCycle(edges.slice(1), "fe", "t", "values"), false);
   assert.equal(wouldCreateCycle(edges.slice(0, 1), "t", "fe", "items"), true);
+});
+
+test("the editor accepts the same coercions as the compiler", () => {
+  const list = { id: "items", type: "list", item: "text" } as never;
+  const json = { id: "value", type: "json" } as never;
+  const text = { id: "text", type: "text" } as never;
+  const anyList = { id: "values", type: "list" } as never;
+  const image = { id: "image", type: "image" } as never;
+  assert.equal(typesCompatible(list, json), true);
+  assert.equal(typesCompatible(text, anyList), true);
+  assert.equal(typesCompatible(text, list), true);
+  assert.equal(typesCompatible(image, list), false);
+  assert.equal(typesCompatible(image, json), false);
 });
