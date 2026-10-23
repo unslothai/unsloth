@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from . import peer_owner
+
 CHUNK = 256 * 1024
 STREAM_LIMIT = 256 * 1024
 CLOSE_TIMEOUT_S = 2.0
@@ -389,15 +391,19 @@ def _loopback_owner_uid(client: tuple, server: tuple) -> Optional[int]:
 
 
 def local_client_is_ours(sock: socket.socket) -> bool:
-    """Whether a client of a loopback listener runs as this user."""
-    if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
-        return True
+    """Whether a client of a loopback listener runs as this user.
+
+    Linux reads /proc/net/tcp{,6}; macOS and Windows ask the OS which process owns the client end
+    (``peer_owner``). Every platform refuses when the owner cannot be established.
+    """
     try:
         client = sock.getpeername()
         server = sock.getsockname()
     except OSError:
         return False
-    return _loopback_owner_uid(client, server) == os.getuid()
+    if sys.platform.startswith("linux"):
+        return _loopback_owner_uid(client, server) == os.getuid()
+    return peer_owner.client_is_ours(client, server)
 
 
 class SpliceSession:
