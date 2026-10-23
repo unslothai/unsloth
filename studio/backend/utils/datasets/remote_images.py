@@ -77,7 +77,6 @@ def install_guarded_image_decode(hf_image = None):
     the guard; Hub URLs keep datasets' own token-aware fetch. Idempotent."""
     try:
         from datasets import config
-
         if hf_image is None:
             from datasets.features import image as hf_image
     except Exception:
