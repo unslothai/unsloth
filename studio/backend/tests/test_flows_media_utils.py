@@ -208,3 +208,37 @@ def test_video_frame_seeks_near_the_end_instead_of_decoding_everything(monkeypat
     last = _open(mu.video_frame(clip, "last", 0.0)).convert("RGB")
     assert last.getpixel((5, 5))[0] > 200
     assert _open(mu.video_frame(clip, "time", 1.0)).convert("RGB").getpixel((5, 5))[0] > 100
+
+
+def test_a_speed_change_without_a_track_warns_that_sound_is_dropped():
+    import asyncio
+
+    class _Ctx:
+        def __init__(self, params):
+            self.inputs = {"video": {"kind": "video", "ref": "x"}}
+            self.params, self.logs = params, []
+
+        async def media_bytes(self, media):
+            return _clip(frames = 12, fps = 12, tone_s = 1.0), "video/mp4"
+
+        def log(
+            self,
+            message,
+            level = "info",
+        ):
+            self.logs.append((level, message))
+
+        async def save_asset(
+            self,
+            data,
+            mime,
+            kind = None,
+        ):
+            return {"kind": "video", "ref": "y"}
+
+    fast = _Ctx({"speed": 2.0})
+    asyncio.run(mu.video_edit(fast))
+    assert fast.logs and fast.logs[0][0] == "warning" and "sound" in fast.logs[0][1]
+    same = _Ctx({"speed": 1.0})
+    asyncio.run(mu.video_edit(same))
+    assert same.logs == []

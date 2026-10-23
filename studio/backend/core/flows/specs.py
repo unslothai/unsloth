@@ -808,7 +808,8 @@ NODE_SPECS: list[dict] = [
         "video.edit",
         "Edit Video",
         "video",
-        "Trim a clip, change its speed, and keep its sound or lay a new audio track under it.",
+        "Trim a clip, change its speed, and keep its sound or lay a new audio track under it (a speed change "
+        "drops the clip's own sound).",
         inputs = [inp("video", "video"), inp("audio", "audio", optional = True)],
         outputs = [out("video", "video")],
         params = [

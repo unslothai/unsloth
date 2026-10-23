@@ -438,12 +438,18 @@ async def video_edit(ctx: NodeContext) -> dict:
         track, _ = await ctx.media_bytes(ctx.inputs["audio"])
     p = ctx.params
     end = p.get("end_s")
+    speed = _num(p.get("speed"), 1.0, 0.25, 4.0)
+    if speed != 1.0 and track is None:
+        ctx.log(
+            "Changing the speed drops the clip's own sound; connect an audio track to keep sound",
+            "warning",
+        )
     mp4 = await asyncio.to_thread(
         edit_video,
         data,
         start_s = _num(p.get("start_s"), 0.0, 0.0, 86400.0),
         end_s = None if end in (None, "", 0) else _num(end, 0.0, 0.0, 86400.0),
-        speed = _num(p.get("speed"), 1.0, 0.25, 4.0),
+        speed = speed,
         audio = track,
     )
     return {"video": await ctx.save_asset(mp4, "video/mp4", kind = "video")}
