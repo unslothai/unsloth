@@ -77,6 +77,16 @@ def gated_async_client(*args, **kwargs):
     client = httpx.AsyncClient(*args, **kwargs)
     release = weakref.finalize(client, hold_inference())
     close = client.aclose
+    send = getattr(client, "send", None)
+
+    async def gated_send(*send_args, **send_kwargs):
+        # The first request waits out the batch in flight (off the event loop); httpx routes every verb and
+        # stream() through send.
+        from core.rag.conversation_archive import _pause_prewarm, prewarm_running
+        if prewarm_running():
+            import asyncio
+            await asyncio.to_thread(_pause_prewarm)
+        return await send(*send_args, **send_kwargs)
 
     async def aclose():
         try:
@@ -85,4 +95,6 @@ def gated_async_client(*args, **kwargs):
             release()
 
     client.aclose = aclose
+    if inspect.iscoroutinefunction(send):
+        client.send = gated_send
     return client

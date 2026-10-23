@@ -1879,6 +1879,15 @@ def test_an_interrupted_gap_requeues_what_it_did_not_finish(conn, monkeypatch):
     assert queued == ["requeue-a", "requeue-b"]
 
 
+def test_cached_vectors_do_not_keep_their_batch_alive(conn):
+    import numpy as np
+
+    batch = np.ones((64, 8), dtype = np.float32)
+    conversation_archive._remember_vectors("identity", [f"chunk {i}" for i in range(64)], batch)
+    [vector] = conversation_archive._cached_vectors("identity", ["chunk 3"])
+    assert vector.base is None and np.array_equal(vector, batch[3])
+
+
 def test_a_job_start_keeps_the_gap_closed_until_it_returns(conn, monkeypatch):
     """A stream ending while a load validates (before it publishes its busy state) must not restart the worker."""
     from core.inference.inference_gate import pauses_background_embedding
@@ -1965,6 +1974,43 @@ def test_api_passthrough_clients_hold_the_gap_closed_until_closed(conn, monkeypa
     asyncio.run(client.aclose())
     assert closed == [{"trust_env": False}] * 2
     assert conversation_archive._inference_depth == 0
+
+    # The first send waits out a batch already in flight, then goes out.
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    real = embeddings.encode_with_identity
+    in_batch, encoding, sent_mid_batch = threading.Event(), threading.Event(), []
+
+    def slow(texts, **kwargs):
+        encoding.set()
+        try:
+            in_batch.set()
+            # Long enough to still be running when the request goes out on a loaded host.
+            time.sleep(3)
+            return real(texts, **kwargs)
+        finally:
+            encoding.clear()
+
+    class SendingClient(FakeClient):
+        async def send(self, request):
+            sent_mid_batch.append(encoding.is_set())
+            return "response"
+
+    monkeypatch.setattr(httpx, "AsyncClient", SendingClient)
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 6, tag = "send"))
+    conversation_archive._start_prewarm()
+    assert in_batch.wait(5)
+    client = inference_gate.gated_async_client()
+    assert asyncio.run(client.send("request")) == "response"
+    assert sent_mid_batch == [False]
+    conversation_archive._noted_branches.clear()
+    asyncio.run(client.aclose())
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
 
     # A path that never closes its client still reopens the gap once it is collected.
     inference_gate.gated_async_client()

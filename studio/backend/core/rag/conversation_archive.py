@@ -411,7 +411,9 @@ def _remember_vectors(identity: str, texts: list[str], vectors) -> None:
     with _vector_cache_lock:
         for text, vector in zip(texts, vectors):
             key = _chunk_key(identity, text)
-            _vector_cache[key] = vector
+            # A row of an (N, dim) batch is a view: cached as is, it would keep the whole batch alive.
+            copy = getattr(vector, "copy", None)
+            _vector_cache[key] = copy() if copy is not None else vector
             _vector_cache.move_to_end(key)
         while len(_vector_cache) > _VECTOR_CACHE_MAX:
             _vector_cache.popitem(last = False)
@@ -539,6 +541,11 @@ def _busy(restart: bool):
 def inference_running():
     """Hold while llama.cpp generates. Stops background embedding and waits out its batch in flight."""
     return _busy(restart = True)
+
+
+def prewarm_running() -> bool:
+    worker = _prewarm_worker
+    return worker is not None and worker.is_alive()
 
 
 def hold_inference() -> Callable[[], None]:
