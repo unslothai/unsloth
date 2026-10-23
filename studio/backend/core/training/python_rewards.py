@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -43,6 +44,8 @@ _WORKER_SOURCE = Path(__file__).with_name("reward_worker_main.py")
 _TRAINER_KWARGS = frozenset(
     {"trainer_state", "completion_ids", "log_extra", "log_metric", "environments"}
 )
+# The bundled exact-answer rule's reference_extract.
+_HASH_ANSWER = re.compile(r"####\s*(.+?)\s*$", re.DOTALL | re.MULTILINE)
 
 
 class PythonRewardError(RuntimeError):
@@ -62,6 +65,20 @@ def _jsonable(value: Any) -> Any:
     if callable(tolist):
         return _jsonable(tolist())
     return str(value)
+
+
+def _final_answers(kwargs: dict[str, Any]) -> dict[str, Any]:
+    # GSM8K answers end in "#### 72". The notebooks map them to the bare answer before TRL sees
+    # them and the bundled rules extract it, so Python rewards get it too; the full text stays
+    # under answer_raw.
+    answers = kwargs.get("answer")
+    if not isinstance(answers, (list, tuple)):
+        return kwargs
+    parsed = []
+    for value in answers:
+        match = _HASH_ANSWER.search(value) if isinstance(value, str) else None
+        parsed.append(match.group(1) if match else value)
+    return {"answer_raw": list(answers), **kwargs, "answer": parsed}
 
 
 def _safe_env(workdir: str) -> dict[str, str]:
@@ -270,7 +287,11 @@ class RewardWorker:
             "rewards": names,
             "prompts": _jsonable(prompts),
             "completions": _jsonable(completions),
-            "kwargs": {k: _jsonable(v) for k, v in kwargs.items() if k not in _TRAINER_KWARGS},
+            "kwargs": {
+                k: _jsonable(v)
+                for k, v in _final_answers(kwargs).items()
+                if k not in _TRAINER_KWARGS
+            },
         }
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:

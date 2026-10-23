@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 from core.training import python_rewards, rewards, rl
-from core.training.python_rewards import PythonRewardError, RewardWorker
+from core.training.python_rewards import PythonRewardError, RewardWorker, make_python_reward_funcs
 from routes.rewards import router
 from utils.account_context import AccountContext, bind_account
 
@@ -112,6 +112,29 @@ def test_notebook_rewards_score_the_same_in_the_worker(worker_factory):
     for spec, func in zip(specs, NOTEBOOK_FUNCS):
         expected = namespace[func](prompts = prompts, completions = completions, answer = answer)
         assert got[spec["name"]] == pytest.approx(expected), func
+
+
+def test_notebook_correctness_scores_a_raw_gsm8k_answer(worker_factory):
+    from datasets import Dataset
+
+    raw = Dataset.from_list(
+        [{"question": "q", "answer": "48 + 24 = <<48+24=72>>72 clips.\n#### 72"}]
+    )
+    row = rl.format_rl_dataset(raw, "grpo", keep_columns = ("*",))[0][0]
+    specs = [
+        _spec("correctness", NOTEBOOK, "correctness_reward_func"),
+        _spec("raw", "def reward(completions, answer_raw, **kw):\n    return [float(len(answer_raw[0]))]\n"),
+    ]
+    got = make_python_reward_funcs(specs, worker_factory(specs))
+    prompts, completions = [row["prompt"]], [[{"role": "assistant", "content": GOOD}]]
+    kwargs = {"answer": [row["answer"]]}
+    assert got[0](prompts = prompts, completions = completions, **kwargs) == [2.0]
+    assert got[1](prompts = prompts, completions = completions, **kwargs) == [float(len(row["answer"]))]
+    # A bare answer passes through, and a real answer_raw column is not replaced.
+    worker = worker_factory(specs)
+    assert worker.score(
+        ["correctness", "raw"], prompts, completions, {"answer": ["72"], "answer_raw": ["abc"]}
+    ) == {"correctness": [2.0], "raw": [3.0]}
 
 
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
