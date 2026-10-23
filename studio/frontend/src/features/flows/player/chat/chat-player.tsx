@@ -40,22 +40,30 @@ export function ChatPlayer({
   const saveWarned = useRef(false);
   const bottom = useRef<HTMLDivElement>(null);
 
+  const [attempt, setAttempt] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt re-runs the load after a failure
   useEffect(() => {
     let live = true;
     api
       .loadSession(flowId, SLOT)
       .then((saved) => {
-        if (live && saved) setTurns(restoreChat(saved.state));
+        if (!live) return;
+        if (saved) setTurns(restoreChat(saved.state));
+        setLoaded(true);
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (live) setLoaded(true);
+      .catch(() => {
+        // A failed read stays blocked: replying on an empty history would save over the real conversation.
+        if (live)
+          toast("Could not load this conversation", {
+            action: { label: "Retry", onClick: () => setAttempt((n) => n + 1) },
+          });
       });
     return () => {
       live = false;
       inflight.current?.abort();
     };
-  }, [api, flowId]);
+  }, [api, flowId, attempt]);
 
   // One save at a time, in order, so an earlier reply's save can never land after New chat cleared the slot.
   const persist = (next: ChatTurn[]) => {

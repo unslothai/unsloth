@@ -324,8 +324,8 @@ NODE_SPECS: list[dict] = [
         "llm.agent",
         "Agent",
         "chat",
-        "A local language model that can search a knowledge base, your MCP servers or (optionally) the web before "
-        "it answers. It never runs code or edits files.",
+        "A local language model that can search a knowledge base or (optionally) the web before it answers. It "
+        "never runs code or edits files. With an image connected it answers with the Vision model.",
         inputs = [
             inp("prompt", "text", optional = True),
             inp("history", "json", optional = True),
@@ -335,6 +335,13 @@ NODE_SPECS: list[dict] = [
         outputs = [out("text", "text"), out("steps", "json")],
         params = [
             P("model", "model", None, "Model", model_kind = "chat"),
+            P(
+                "vision_model",
+                "model",
+                None,
+                "Vision model (when an image is connected)",
+                model_kind = "vision",
+            ),
             P(
                 "system",
                 "textarea",

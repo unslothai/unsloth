@@ -72,3 +72,14 @@ test("a saved chat keeps a bounded tail of the conversation", () => {
   assert.ok(saved.turns[saved.turns.length - 1].content.length <= 20000);
   assert.equal(C.restoreChat(saved).length, C.SAVED_TURNS);
 });
+
+test("a failed load keeps the chat blocked and offers Retry instead of opening an empty history", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const src = readSrc("features/flows/player/chat/chat-player.tsx");
+  assert.ok(
+    !src.includes(
+      ".catch(() => undefined)\n      .finally(() => {\n        if (live) setLoaded(true);",
+    ),
+  );
+  assert.match(src, /label: "Retry", onClick: \(\) => setAttempt/);
+});

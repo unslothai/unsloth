@@ -242,16 +242,24 @@ def test_agent_sends_an_image_to_a_local_vision_model(monkeypatch):
         choice,
         options = None,
     ):
-        kinds.append(kind)
+        kinds.append((kind, choice))
 
     async def as_url(ctx, media):
         return "data:image/png;base64,AA=="
 
     monkeypatch.setattr(chat, "ensure_model", loaded)
     monkeypatch.setattr("core.flows.nodes._common.data_url", as_url)
+    chat_model, vision_model = {"repo": "chat-only"}, {"repo": "sees-images"}
     ctx = Ctx(
-        params = {"prompt": "what is this?"}, inputs = {"image": {"kind": "image", "ref": "image:1"}}
+        params = {"prompt": "what is this?", "model": chat_model, "vision_model": vision_model},
+        inputs = {"image": {"kind": "image", "ref": "image:1"}},
     )
     asyncio.run(chat.agent(ctx))
     content = ctx.calls[-1][2]["messages"][-1]["content"]
-    assert kinds == ["vision"] and content[1]["image_url"]["url"].startswith("data:image/png")
+    # The picture goes to the Vision model, never to the chat-only Model.
+    assert kinds == [("vision", vision_model)]
+    assert content[1]["image_url"]["url"].startswith("data:image/png")
+    asyncio.run(
+        chat.agent(Ctx(params = {"prompt": "hi", "model": chat_model, "vision_model": vision_model}))
+    )
+    assert kinds[-1] == ("chat", chat_model)

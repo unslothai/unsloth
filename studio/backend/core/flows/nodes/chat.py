@@ -80,8 +80,11 @@ async def agent(ctx: NodeContext) -> dict:
         raise FlowNodeError("The prompt is empty: type one or connect text to Prompt")
     system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
     image = ctx.inputs.get("image")
-    # A picture goes to a local vision model; otherwise the local chat model answers.
-    await ensure_model(ctx, "vision" if image else "chat", ctx.params.get("model"))
+    # A picture goes to the Vision model (or the vision model already loaded); a chat-only model cannot see it.
+    if image:
+        await ensure_model(ctx, "vision", ctx.params.get("vision_model"))
+    else:
+        await ensure_model(ctx, "chat", ctx.params.get("model"))
     content = await _images_content(ctx, prompt, [image] if image else None)
     body = agent_body(ctx, content, system, chat_history(ctx.inputs.get("history")))
     _register_chat_cancel(ctx, body["cancel_id"])
