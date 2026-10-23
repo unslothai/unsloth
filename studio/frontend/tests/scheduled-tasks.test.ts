@@ -22,6 +22,7 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
+  unseenChatChanges,
   shouldSaveSeen,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
@@ -349,6 +350,14 @@ test("a backlog longer than one poll reads is picked up again shortly", async ()
   assert.equal(fresh.length, 10);
   assert.equal(seen.since, 10);
   assert.equal(nextPollDelay(last), ACTIVE_POLL_MS);
+});
+
+test("unread chats follow the stored unseen results: added once, cleared only when opened", () => {
+  assert.deepEqual(unseenChatChanges({ a: "c1", b: null }, {}), { added: ["c1"], opened: [] });
+  assert.deepEqual(unseenChatChanges({ a: "c1" }, { a: "c1" }), { added: [], opened: [] });
+  // Today's run replaces yesterday's in the record; yesterday's chat stays unread.
+  assert.deepEqual(unseenChatChanges({ a: "c2" }, { a: "c1" }), { added: ["c2"], opened: [] });
+  assert.deepEqual(unseenChatChanges({}, { a: "c2", b: null }), { added: [], opened: ["c2"] });
 });
 
 test("a failed run is worded from its error code, else from the server's text", () => {

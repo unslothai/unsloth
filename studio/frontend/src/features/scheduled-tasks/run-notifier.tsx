@@ -25,6 +25,7 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
+  unseenChatChanges,
   shouldSaveSeen,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
@@ -125,6 +126,21 @@ export function ScheduledTaskRunNotifier() {
   useEffect(() => {
     if (typeof openThread === "string") useUnseenScheduledRuns.getState().clearThread(openThread);
   }, [openThread]);
+  // Recents' unread marks follow the account's stored unseen results, so every tab and a reload
+  // show them, and opening one anywhere clears it everywhere.
+  useEffect(() => {
+    const sync = (now: Record<string, string | null>, before: Record<string, string | null>) => {
+      const chats = useChatNavigationStore.getState();
+      const { added, opened } = unseenChatChanges(now, before);
+      const fresh = added.filter((id) => !chats.unreadThreadIds.has(id));
+      if (fresh.length > 0) chats.markThreadsUnread(fresh);
+      if (opened.length > 0) chats.clearThreadsUnread(opened);
+    };
+    sync(useUnseenScheduledRuns.getState().tasks, {});
+    return useUnseenScheduledRuns.subscribe((state, previous) => {
+      if (state.tasks !== previous.tasks) sync(state.tasks, previous.tasks);
+    });
+  }, []);
   useEffect(() => {
     navigateRef.current = navigate;
     pathnameRef.current = pathname;
@@ -149,14 +165,10 @@ export function ScheduledTaskRunNotifier() {
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
     };
 
-    // Only the claiming tab marks unread and notifies, so it cannot revive a dot cleared in a faster tab.
+    // Only the claiming tab records and notifies, so it cannot revive a dot cleared in a faster tab.
     const announce = (claimed: FinishedScheduledTaskRun[]) => {
       const runs = runsToAnnounce(claimed);
       if (runs.length === 0) return;
-      const threadIds = runs.flatMap((run) =>
-        run.status === "succeeded" && run.threadId ? [run.threadId] : [],
-      );
-      if (threadIds.length > 0) useChatNavigationStore.getState().markThreadsUnread(threadIds);
       useUnseenScheduledRuns.getState().markFinished(
         runs.map((run) => ({
           taskId: run.taskId,
