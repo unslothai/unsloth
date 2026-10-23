@@ -665,9 +665,59 @@ def test_lora_on_a_shared_base_weight_raises(monkeypatch):
         base, peft.LoraConfig(r = 2, target_modules = ["0", "2"], init_lora_weights = False)
     )
     trainer, rec = _peft_trainer(model)
-    with pytest.raises(RuntimeError, match = "one base weight adapted at"):
+    with pytest.raises(RuntimeError, match = "one base weight shared by"):
         _patched_method()(trainer)
     assert rec.loaded == []
+
+
+def test_lora_on_a_weight_tied_to_an_unadapted_module_raises(monkeypatch):
+    # Only one site of a tied weight adapted: vLLM still gets one tensor for both names.
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    base = _base_mlp()
+    base.append(torch.nn.Linear(16, 16, bias = False))
+    base[2].weight = base[0].weight
+    model = peft.get_peft_model(
+        base, peft.LoraConfig(r = 2, target_modules = ["2"], init_lora_weights = False)
+    )
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "one base weight shared by"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_accelerate_offloaded_model_raises(monkeypatch):
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
+    model.base_model.model[1]._hf_hook = types.SimpleNamespace(offload = True)
+    with pytest.raises(RuntimeError, match = "Accelerate device_map"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_switching_to_an_unsupported_adapter_is_refused_before_the_next_sync(monkeypatch):
+    peft = pytest.importorskip("peft")
+    if "alora_invocation_tokens" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no aLoRA")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    model = peft.get_peft_model(
+        _base_mlp(), peft.LoraConfig(r = 2, target_modules = ["0"], init_lora_weights = False)
+    )
+    model.add_adapter(
+        "other",
+        peft.LoraConfig(
+            r = 2, target_modules = ["0"], alora_invocation_tokens = [5], init_lora_weights = False
+        ),
+    )
+    model.set_adapter("default")
+    trainer, rec = _peft_trainer(model)
+    method = _patched_method()
+    assert method(trainer) is None and "0.weight" in rec.loaded
+    model.set_adapter("other")
+    before = len(rec.loaded)
+    with pytest.raises(RuntimeError, match = "cannot sync this PEFT model.*aLoRA"):
+        method(trainer)
+    assert len(rec.loaded) == before
 
 
 def test_inactive_unsupported_adapter_does_not_block_sync():

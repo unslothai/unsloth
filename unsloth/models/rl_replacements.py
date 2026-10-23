@@ -2551,22 +2551,34 @@ def _unsloth_vllm_active_adapters(model):
 
 
 def _unsloth_vllm_shared_targets(model):
-    """Base parameters reached by more than one adapted module (tied embed_tokens / lm_head): one vLLM
-    name cannot carry two different deltas."""
-    owners = {}
-    for module_name, module in model.named_modules():
-        base = module.get_base_layer() if hasattr(module, "get_base_layer") else None
-        if base is None or base is module:
+    """Adapted base parameters reachable under more than one name (tied embed_tokens / lm_head, adapted
+    at one or both sites): vLLM gets one tensor for them, so some call site would get the wrong delta."""
+    names = {}
+    for name, param in model.named_parameters(remove_duplicate = False):
+        names.setdefault(id(param), []).append(name)
+    shared = {}
+    for module in model.modules():
+        if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
             continue
-        for param in base.parameters(recurse = False):
-            owners.setdefault(id(param), {})[id(base)] = module_name
-    return [" and ".join(names.values()) for names in owners.values() if len(names) > 1]
+        for param in module.get_base_layer().parameters(recurse = False):
+            if len(names.get(id(param), ())) > 1:
+                shared[id(param)] = " and ".join(names[id(param)])
+    return list(shared.values())
 
 
-def _unsloth_vllm_block_swapped(model):
-    return any(
-        getattr(module, "_unsloth_block_swap", None) is not None for module in model.modules()
-    )
+def _unsloth_vllm_offloaded(model):
+    """How the model keeps weights off the device between forwards, or None: a sync would read the
+    empty or meta placeholders."""
+    for module in model.modules():
+        if getattr(module, "_unsloth_block_swap", None) is not None:
+            return "block-swapped decoder layers (offload_layers)"
+        hook = getattr(module, "_hf_hook", None)
+        hooks = getattr(hook, "hooks", None) or ([hook] if hook is not None else [])
+        if any(getattr(h, "offload", False) for h in hooks):
+            return "CPU / disk offloaded layers (Accelerate device_map)"
+    if any(param.device.type == "meta" for param in model.parameters()):
+        return "meta (offloaded) parameters"
+    return None
 
 
 def _unsloth_vllm_peft_unsupported(model):
@@ -2598,13 +2610,11 @@ def _unsloth_vllm_peft_unsupported(model):
             # LN tuning swaps modules, POLY / X-LoRA route per input: no single merged weight.
             problems.append(f"{peft_type} adapter '{name}' (no static merge into the base weights)")
     for module_name, module in model.named_modules():
-        # trainable_token_indices: TRL pushes token_adapter.* names that do not exist in vLLM.
+        # trainable_token_indices, even on an inactive adapter: its token_adapter.* parameters and
+        # names do not exist in vLLM and are pushed all the same.
         if type(module).__name__ in ("TrainableTokensWrapper", "TrainableTokensLayer"):
-            layer = getattr(module, "token_adapter", module)
-            adapters = set(getattr(layer, "trainable_tokens_delta", None) or ())
-            if not adapters or adapters & active:
-                problems.append(f"trainable tokens at {module_name}")
-                break
+            problems.append(f"trainable tokens at {module_name}")
+            break
     for module in _unsloth_vllm_lora_layers(model):
         for adapter, variant in (getattr(module, "lora_variant", None) or {}).items():
             if adapter not in active:
@@ -2688,20 +2698,19 @@ def _unsloth_vllm_sync_kind(trainer):
             "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
             "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
         )
-    if _unsloth_vllm_block_swapped(model):
-        # Swapped-out blocks hold empty tensors between forwards: any sync would send those.
+    offloaded = _unsloth_vllm_offloaded(model)
+    if offloaded is not None:
         if allow_stale:
             print(
                 "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
-                "block-swapped (offload_layers) model and every rollout uses the initial weights."
+                f"model with {offloaded} and every rollout uses the initial weights."
             )
             return "skip"
         raise RuntimeError(
-            "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a model whose "
-            "decoder blocks are swapped to the host (offload_layers): the swapped-out weights are empty "
-            "between forwards.\n"
-            "Turn off offload_layers, or load the model with fast_inference = True. Set "
-            "UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
+            "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a model with "
+            f"{offloaded}: those weights are empty or on the meta device between forwards.\n"
+            "Keep every layer on the GPU (no offload_layers, no CPU / disk device_map), or load the "
+            "model with fast_inference = True. Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
         )
     if not _unsloth_vllm_sync_unsafe(model):
         return "trl"
@@ -2712,7 +2721,7 @@ def _unsloth_vllm_sync_kind(trainer):
     )
     problems = _unsloth_vllm_peft_unsupported(model)
     problems.extend(
-        f"one base weight adapted at {names}" for names in _unsloth_vllm_shared_targets(model)
+        f"one base weight shared by {names}" for names in _unsloth_vllm_shared_targets(model)
     )
     # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
     # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
@@ -2747,6 +2756,18 @@ def _unsloth_vllm_sync_kind(trainer):
             "Use a plain LoRA adapter, or set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
         )
     return kind
+
+
+def _unsloth_vllm_sync_kind_cached(trainer):
+    """_unsloth_vllm_sync_kind, decided again whenever the active adapters change (set_adapter)."""
+    key = tuple(sorted(_unsloth_vllm_active_adapters(trainer.model)))
+    if getattr(trainer, "_unsloth_vllm_sync_kind", None) is None or (
+        getattr(trainer, "_unsloth_vllm_sync_key", None) != key
+    ):
+        trainer._unsloth_vllm_sync_kind = _unsloth_vllm_sync_kind(trainer)
+        trainer._unsloth_vllm_sync_skip = trainer._unsloth_vllm_sync_kind == "skip"
+        trainer._unsloth_vllm_sync_key = key
+    return trainer._unsloth_vllm_sync_kind
 
 
 def _unsloth_vllm_merged_weight(module, weight):
@@ -2907,16 +2928,14 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     #   trip in fp16 / bf16, so the frozen base would drift every sync.
     # - Other mergeable PEFT (LoHa, LoKr, IA3, VeRA, DoRA, lora_bias, target_parameters): PEFT's own
     #   merge run on copies of the base tensors, so the live base keeps its exact bytes.
-    # - ZeRO-3: TRL's body (its gathered copy is discarded on exit). FSDP: TRL's body on fp32 only.
+    # - ZeRO-3: TRL's body (its gathered copy is discarded on exit). FSDP with PEFT: raise.
     # - Quantized bases (bitsandbytes, GPTQ, AWQ, HQQ, FP8, ...), unmergeable adapters (aLoRA, Arrow,
     #   trainable tokens, prompt learning): raise instead of sampling from the initial weights all run.
     guard = (
         f"{indent}if getattr(getattr(self, 'llm', None), 'shared_weights', False):\n"
         f"{indent}    return None\n"
-        f"{indent}if getattr(self, '_unsloth_vllm_sync_kind', None) is None:\n"
-        f"{indent}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind\n"
-        f"{indent}    self._unsloth_vllm_sync_kind = _unsloth_vllm_sync_kind(self)\n"
-        f"{indent}    self._unsloth_vllm_sync_skip = self._unsloth_vllm_sync_kind == 'skip'\n"
+        f"{indent}from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind_cached\n"
+        f"{indent}_unsloth_vllm_sync_kind_cached(self)\n"
         f"{indent}if self._unsloth_vllm_sync_kind == 'skip':\n"
         f"{indent}    return None\n"
         f"{indent}if self._unsloth_vllm_sync_kind == 'peft_merged':\n"
