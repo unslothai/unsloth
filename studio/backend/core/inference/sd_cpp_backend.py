@@ -2099,31 +2099,13 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
-def _note_absent_rocm_runtime(klass: str, card: Optional[str]) -> None:
-    if klass != "rocm" or not fallback_accelerator_for(klass):
-        return
-    try:
-        if accelerator_runtime_failed(klass, card) or rocm_runtime_resolvable() is not False:
-            return
-        logger.warning(
-            "sd_cpp.rocm_runtime_absent: %s; using the %s build",
-            accelerator_fallback_reason(klass),
-            fallback_accelerator_for(klass),
-        )
-        note_accelerator_runtime_failure(klass, proven = True, card = card)
-    except Exception as exc:  # noqa: BLE001 - a failed preflight leaves the ladder as it was
-        logger.debug("ROCm runtime preflight failed: %s", exc)
-
-
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    A function of the stored record, plus one live preflight that only ever WRITES that record: a
-    ROCm runtime the loader cannot find is recorded as a proven failure before the 300 MB ROCm
-    bundle is fetched, replacing a working build, only to die at exec."""
+    A function of the stored record only, never of the live host: the loader preflight is applied
+    where the runtime verdict is interpreted, so this stays reproducible."""
     chosen = accelerator or "auto"
     klass = _accelerator_class_of(accelerator) or chosen
-    _note_absent_rocm_runtime(klass, card)
     seen: set[str] = set()
     # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
     while klass not in seen:

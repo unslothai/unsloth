@@ -2497,35 +2497,18 @@ class TestRocmRuntimePreflight:
     """The ROCm prebuilt needs host HIP/BLAS; preflight runs before the 244 MB download."""
 
     @staticmethod
-    def _sonames_that(fail: set) -> object:
-        import ctypes
-
-        real = ctypes.CDLL
-
-        def _fake(name, *a, **k):
-            if name in fail:
-                raise OSError(f"{name}: cannot open shared object file: No such file or directory")
-            if name in sd_backend._ROCM_RUNTIME_SONAMES:
-                return object()
-            return real(name, *a, **k)
-
-        return _fake
-
-    def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
-        import ctypes
-
+    def _sonames_that(monkeypatch, fail: set) -> None:
         monkeypatch.setattr(sd_backend.os, "name", "posix")
         monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        monkeypatch.setattr(sd_backend, "_rocm_missing_memo", ([s for s in sd_backend._ROCM_RUNTIME_SONAMES if s in fail],))
+
+    def test_a_host_missing_hipblas_is_diverted_without_downloading(self, monkeypatch):
+        self._sonames_that(monkeypatch, {"libhipblas.so.3"})
         assert sd_backend.rocm_runtime_resolvable() is False
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is True
 
     def test_a_host_with_rocm_keeps_rocm(self, monkeypatch):
-        import ctypes
-
-        monkeypatch.setattr(sd_backend.os, "name", "posix")
-        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that(set()))
+        self._sonames_that(monkeypatch, set())
         assert sd_backend.rocm_runtime_resolvable() is True
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
 
@@ -2553,12 +2536,8 @@ class TestRocmRuntimePreflight:
 
     def test_the_off_switch_beats_the_preflight(self, monkeypatch):
         """UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 means see the ROCm failure, including this one."""
-        import ctypes
-
         monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
-        monkeypatch.setattr(sd_backend.os, "name", "posix")
-        monkeypatch.setattr(sd_backend.sys, "platform", "linux")
-        monkeypatch.setattr(ctypes, "CDLL", self._sonames_that({"libhipblas.so.3"}))
+        self._sonames_that(monkeypatch, {"libhipblas.so.3"})
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
 
 
@@ -3051,24 +3030,6 @@ def test_trademark_marks_do_not_split_a_card_name():
     ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
     # Only the marks go: a model letter R or TM inside a word stays.
     assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"
-
-
-def test_an_absent_rocm_runtime_diverts_before_the_rocm_bundle_is_fetched(fake_settings, monkeypatch):
-    """No host ROCm 7 userspace: the ROCm prebuilt can only die at exec, so the first load goes to Vulkan."""
-    from core.inference import sd_cpp_backend
-
-    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
-    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
-    assert _noted_accelerators(fake_settings) == ["rocm"]
-
-
-def test_a_loadable_or_unknown_rocm_runtime_keeps_rocm(fake_settings, monkeypatch):
-    from core.inference import sd_cpp_backend
-
-    for verdict in (True, None):
-        monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda v = verdict: v)
-        assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
-    assert _noted_accelerators(fake_settings) == []
 
 
 def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(fake_settings, monkeypatch):
