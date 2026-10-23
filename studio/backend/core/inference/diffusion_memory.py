@@ -3798,10 +3798,7 @@ def install_encode_release(
             restore = release_resident_groups(
                 owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
             )
-            # No empty_cache here: the freed blocks stay cached, and an encoder allocation (also one on the copy
-            # stream, which cannot take the default stream's free blocks) that finds no room gets them back from
-            # the allocator, which releases cached segments to the driver and retries before it raises.
-            # Flushing on every prompt cost a device sync plus fresh cudaMallocs for the encoder.
+            # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
 
         def _after(module: Any, args: Any, output: Any) -> None:

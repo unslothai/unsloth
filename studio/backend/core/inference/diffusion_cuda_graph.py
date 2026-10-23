@@ -307,24 +307,17 @@ def hold_off_capture():
         _CAPTURE_LOCK.release()
 
 
-# Graph pools retired and not yet flushed. A pool retires when its last graph is gone (an invalidation, an eviction, a
-# speed drop, a poison, a failed capture): its segments stay cached until an ``empty_cache``, and a capture can neither
-# allocate from them nor flush them (the allocator releases nothing while one records), so a capture that starts
-# beside them can OOM a tight card. The one rule: no capture records until every pool retired before it entered was
-# flushed on a synchronized device with no capture recording (``_capturing`` -> ``_settle_retired_pools``). Counted, not
-# flagged: a flush acknowledges only the retirements counted before it began, so one that lands mid-flush stays due.
+# A retired pool's segments stay cached until empty_cache, which cannot run while a capture records, so a capture
+# beside them can OOM. Rule: no capture records until every pool retired before its entry was flushed. Counted, not
+# flagged, so a retirement landing mid-flush stays due.
 _RETIRE_LOCK = threading.Lock()
 _RETIRED_POOLS = [0, 0]  # [retirements counted, retirements flushed]
 _POOL_FLUSHES = [0]  # retired-pool flushes performed (diagnostics, tests)
-# A deferred release also owed a cuBLAS workspace clear (the offloaded recordings' capture-stream workspaces): the
-# next entry flush does it with the empty_cache, then resets it.
+# A deferred release owes a cuBLAS workspace clear; the next entry flush does it.
 _CUBLAS_CLEAR_DUE = [False]
-# How long a capture with a retired pool due waits for another thread's recording to end (woken as soon as it does).
-# It waits rather than falling back to eager: PyTorch runs no non-captured CUDA work on any thread while a capture is
-# underway, so an eager step here could invalidate that recording. Only a recording that never ends (the same bound as
-# replica-side work, OUTSIDE_WAIT_S) refuses the capture.
+# Wait (not eager fallback) for another thread's recording to end: eager CUDA work mid-capture can invalidate it.
 RETIRED_FLUSH_WAIT_S = OUTSIDE_WAIT_S
-# Flushes a capture entry makes for pools retired while it entered before it gives up (refused, nothing recorded).
+# Entry flush attempts before the capture is refused.
 _ENTRY_SETTLE_TRIES = 8
 
 
