@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""User-facing wording for a model served across paired cluster workers.
-
-Read-only over ``cluster_serving``'s state: no network calls and no state changes, so the load
-progress poll, the chat error path and the load route can all call it cheaply.
-"""
+"""User-facing wording for a model served across paired cluster workers."""
 
 from __future__ import annotations
 
@@ -37,12 +33,10 @@ def _worker_label(endpoint: str, nodes: List[Any]) -> str:
                 return node.name or node.node_id or node.host
         except Exception:
             continue
-    # An endpoint no paired worker claims: show its address, never the tls:// fingerprint.
     return endpoint.rsplit("@", 1)[-1]
 
 
 def _machines(state: Any, plan: Any) -> List[str]:
-    """Who holds the plan's layers: "this machine" first when a local device takes part, then workers."""
     devices = list(getattr(plan, "devices", None) or [])
     nodes = list(getattr(state, "nodes", None) or [])
     workers: List[str] = []
@@ -76,7 +70,6 @@ def split_summary() -> Optional[str]:
     """ "Split across this machine and ux-worker." for the served (or loading) split, else None."""
     state = _state()
     if getattr(state, "_passthrough", False):
-        # A load the cluster left alone: the plan still held is the previous model's split.
         return None
     plan = _split_plan(state)
     if plan is None:
@@ -88,11 +81,7 @@ def split_summary() -> Optional[str]:
 
 
 def load_progress_message(llama_started: bool) -> Optional[str]:
-    """What a planned cluster load is doing while the progress bar alone cannot say it.
-
-    ``llama_started``: whether llama-server is up (its RSS is all the progress bar measures). On a
-    split its RSS stalls well short of the model size while the layers go to the workers (the client
-    then showed a climbing ETA), and nothing at all is measured while the planner probes the workers."""
+    """What a planned cluster load is doing while the progress bar alone cannot say it."""
     state = _state()
     if (
         state is None

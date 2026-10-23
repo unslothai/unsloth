@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LAN announcements: a worker says where its agent listens, the master learns a paired worker's
-current address. An announcement carries no secret and grants nothing: the master only uses it to
-dial, and the mutual TLS handshake decides whether the far end is the paired worker."""
+"""LAN announcements of worker agents; mutual TLS, not the announcement, decides trust."""
 
 from __future__ import annotations
 
@@ -29,10 +27,7 @@ MAX_HOSTS_PER_NODE = 4
 
 
 def lan_ipv4_addresses() -> List[str]:
-    """Every up, non-loopback, private IPv4 address of this host, or [] when they cannot be listed.
-
-    Multicast without an interface goes out on the default route only: on a host with Docker bridges,
-    a VPN or WSL that can be the wrong network, so announcements and the group join use each of these."""
+    """Every up, non-loopback, private IPv4 address of this host, or [] when they cannot be listed."""
     try:
         import psutil
         addrs = psutil.net_if_addrs()
@@ -258,7 +253,6 @@ class Listener:
         self._joined_at = time.monotonic()
         if lan_ipv4_addresses() != self._ifaces:
             return True
-        # Same interfaces: retry failed memberships so a transient refusal does not leave a network deaf.
         for iface in self._ifaces:
             if iface in self._joined or sock is None:
                 continue
@@ -327,7 +321,6 @@ class Listener:
         while not self._stop.is_set():
             sock = self._sock
             if sock is None:
-                # Not listening yet or after an error: keep retrying, or moved workers go unseen until restart.
                 self._sock = sock = self._open()
                 if sock is None:
                     self._stop.wait(REOPEN_S)

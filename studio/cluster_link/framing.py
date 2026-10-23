@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Control frames: a 4-byte big-endian length, then one UTF-8 JSON object. Pairing and the agent's
-operation selection use these; once an RPC stream is opened the connection carries raw bytes only."""
+"""Control frames: a 4-byte big-endian length, then one UTF-8 JSON object."""
 
 from __future__ import annotations
 
@@ -91,7 +90,6 @@ def expect(obj: Dict[str, Any], kind: str, **fields: type) -> Dict[str, Any]:
         raise FrameError(f"expected {kind}, got {obj.get('type')!r}")
     for name, typ in fields.items():
         value = obj.get(name)
-        # bool is an int subclass: an int field must not accept True.
         if not isinstance(value, typ) or (typ is int and isinstance(value, bool)):
             raise FrameError(f"{kind}.{name} must be {typ.__name__}")
     return obj

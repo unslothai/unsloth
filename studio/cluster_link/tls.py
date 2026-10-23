@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""TLS contexts for cluster links and the identity a peer certificate carries.
-
-Studio injects truststore (utils/native_tls.py), which replaces ``ssl.SSLContext`` with a class that
-verifies peers against the OS store; a cluster certificate is issued by the cluster's own root and is
-in no OS store, so every context here is built from the original class.
-"""
+"""TLS contexts for cluster links and the identity a peer certificate carries."""
 
 from __future__ import annotations
 
@@ -34,8 +29,6 @@ def plain_ssl_context_class() -> type:
 
 
 def _set(ctx: ssl.SSLContext, name: str, value) -> None:
-    # The original class's Python setters call super(SSLContext, SSLContext) through the ssl module's
-    # global name, which truststore has replaced: that recurses forever. The C descriptors do not.
     import _ssl
     getattr(_ssl._SSLContext, name).__set__(ctx, value)
 
@@ -45,10 +38,8 @@ def _base(purpose_server: bool) -> ssl.SSLContext:
     ctx = cls(ssl.PROTOCOL_TLS_SERVER if purpose_server else ssl.PROTOCOL_TLS_CLIENT)
     _set(ctx, "minimum_version", ssl.TLSVersion.TLSv1_3)
     _set(ctx, "check_hostname", False)
-    # SSLKEYLOGFILE would write session keys for every cluster link to disk.
     if hasattr(ctx, "keylog_filename"):
         _set(ctx, "keylog_filename", None)
-    # Links never resume: skip the two TLS 1.3 session tickets sent after each handshake.
     import _ssl
 
     _set(ctx, "options", _ssl._SSLContext.options.__get__(ctx) | ssl.OP_NO_TICKET)
@@ -75,8 +66,7 @@ def bootstrap_server_context(*, certfile: str, keyfile: str) -> ssl.SSLContext:
 
 
 def bootstrap_client_context() -> ssl.SSLContext:
-    """The joining worker: no chain check, the caller MUST compare ``peer_fingerprint`` with the token
-    before sending a byte."""
+    """The joining worker."""
     ctx = _base(False)
     _set(ctx, "verify_mode", ssl.CERT_NONE)
     return ctx

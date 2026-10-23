@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The worker agent: a worker's control plane. It supervises one ``ggml-rpc-server``: bound to loopback,
-with one authenticated master's TLS connection spliced to it at a time, or (native mode, on that master's
-request) serving llama.cpp's own mutual TLS on the LAN to that master alone."""
+"""The worker agent: a worker's control plane."""
 
 from __future__ import annotations
 
@@ -50,20 +48,15 @@ logger = logging.getLogger(__name__)
 
 HANDSHAKE_TIMEOUT_S = 10.0
 RPC_CONNECT_TIMEOUT_S = 5.0
-# A model load can arrive right after `unsloth worker` starts: give rpc-server this long to bind.
 RPC_READY_TIMEOUT_S = 60.0
 RESTART_BACKOFF_MAX_S = 30.0
 STABLE_RUN_S = 60.0
 BUSY_GRACE_S = 0.25
-# Re-check the master's authorization this often: `cluster leave` elsewhere only edits the registry.
 REVALIDATE_S = 2.0
 _TAIL = 50
 
 
 def _die_with_agent_hook() -> Optional[Callable[[], None]]:
-    """A preexec_fn arming PR_SET_PDEATHSIG: the kernel stops rpc-server when the agent dies, even by
-    SIGKILL, so a killed worker never leaves an rpc-server holding its port. It fires when the forking
-    THREAD exits; that is the agent's event loop thread, which lives as long as the agent."""
     if not sys.platform.startswith("linux"):
         return None
     try:
@@ -88,7 +81,6 @@ _SETPRIV: List[Optional[str]] = []
 
 
 def _setpriv() -> Optional[str]:
-    """util-linux setpriv with --pdeathsig (2.33+), which arms the signal in the child itself."""
     if not _SETPRIV:
         found = shutil.which("setpriv")
         try:
@@ -106,9 +98,6 @@ def _setpriv() -> Optional[str]:
 
 
 def _die_with_agent_launch() -> Tuple[List[str], Optional[Callable[[], None]]]:
-    """An argv prefix and preexec_fn that make rpc-server die with the agent. preexec_fn is unsafe
-    once the process has other threads (the LAN announcer, executor threads): use setpriv then, and
-    the hook only while the agent is single-threaded. Neither: the next agent reaps a leftover."""
     hook = _die_with_agent_hook()
     if hook is None:
         return [], None
@@ -121,8 +110,6 @@ def _die_with_agent_launch() -> Tuple[List[str], Optional[Callable[[], None]]]:
 
 
 def _lock_rpc_port(port: int) -> int:
-    """An exclusive, non-blocking lock on this rpc port, machine-wide for this user: a held lock
-    means another live worker serves on the port."""
     fd = os.open(str(run_dir() / f"rpc-server-{port}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         if os.name == "nt":
@@ -154,9 +141,6 @@ def _unlock(fd: Optional[int]) -> None:
 
 
 def _reap_rpc_record(path: Path) -> None:
-    """Stop the ggml-rpc-server an ownership record names, then drop the record. Only the exact
-    process recorded (pid and creation time) and only an rpc-server: never a foreign process.
-    The caller holds the record's port lock, so the agent that wrote it is gone."""
     try:
         record = json.loads(path.read_text(encoding = "utf-8"))
     except Exception:
@@ -188,7 +172,6 @@ def _reap_rpc_record(path: Path) -> None:
 
 
 def _listen(host: str, port: int) -> socket.socket:
-    """The agent's listening socket for threaded sessions (asyncio.start_server's bind, minus asyncio)."""
     infos = socket.getaddrinfo(host or None, port, type = socket.SOCK_STREAM, flags = socket.AI_PASSIVE)
     family, socktype, proto, _, addr = infos[0]
     sock = socket.socket(family, socktype, proto)
@@ -237,8 +220,6 @@ class Agent:
         self.port = port
         self.rpc_binary = rpc_binary
         self.rpc_port = rpc_port
-        # Native: rpc-server serves llama.cpp's mutual TLS on the LAN to the asking master. Never two
-        # rpc-servers (each would hold an accelerator context). None = use it when the bundle has it.
         self.native_port = native_port
         self._native_tls = native_tls
         self.native_available = False
@@ -290,8 +271,7 @@ class Agent:
 
     @property
     def rpc_up(self) -> bool:
-        """rpc-server is running AND accepts on its loopback port: a live process that has not bound
-        yet would fail the master's load."""
+        """rpc-server is running AND accepts on its loopback port."""
         if self.rpc_binary is None:
             return True
         alive = self._proc is not None and self._proc.returncode is None
@@ -359,12 +339,10 @@ class Agent:
             wanted = not native.disabled()
         else:
             wanted = bool(self._native_tls)
-        # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
             try:
                 # Held for the agent's life: two workers starting on one rpc port cannot both pass the check.
                 self._port_lock = _lock_rpc_port(self.rpc_port)
-                # After the lock: a slow `--help` must not let a second worker pass it meanwhile.
                 self.native_available = bool(
                     wanted and await asyncio.to_thread(native.binary_supports_tls, self.rpc_binary)
                 )
@@ -429,7 +407,6 @@ class Agent:
             self._native_watch.cancel()
             self._native_watch = None
         if self.native_available:
-            # Nobody may connect to a later rpc-server on this port with a stale grant.
             try:
                 native.write_allowlist(native.allowlist_path(self.native_port), [])
             except OSError:
@@ -475,8 +452,6 @@ class Agent:
 
     def _reap_stale_rpc(self) -> None:
         _reap_rpc_record(self._record_path())
-        # A killed agent restarted on another --rpc-port: its record is named after the old port. A
-        # record whose port lock is free was left by an agent that is gone (a live one holds it).
         for path in sorted(run_dir().glob("rpc-server-*.json")):
             try:
                 port = int(path.stem[len("rpc-server-") :])
@@ -570,7 +545,6 @@ class Agent:
             if self._stopping:
                 return
             if self._planned_restart:
-                # A mode switch or a revocation stopped it on purpose: back at once, not counted.
                 self._planned_restart = False
                 backoff = 0.5
                 continue
@@ -585,7 +559,6 @@ class Agent:
         deadline = time.monotonic() + RPC_READY_TIMEOUT_S
         while proc.returncode is None and time.monotonic() < deadline:
             try:
-                # Bare connect+close: a TLS rpc-server drops it and keeps accepting; proves only the port is bound.
                 _, writer = await asyncio.wait_for(
                     asyncio.open_connection(*self._probe_target), 1.0
                 )
@@ -610,8 +583,6 @@ class Agent:
         self._forget_rpc()
 
     def _native_client(self) -> bool:
-        """In native mode the session bypasses this agent: whether its rpc-server holds a connection on
-        the TLS port is the only sign of one (Studio's busy check reads it)."""
         pid = self.rpc_pid
         if self.mode != "native" or pid is None:
             return False
@@ -645,8 +616,6 @@ class Agent:
         }
 
     async def _restart_rpc(self) -> bool:
-        """Stop rpc-server so the supervisor starts it again with the current mode's argv; a live
-        session through it ends here. True once the new one accepts."""
         if self.rpc_binary is None:
             return True
         if self._rpc_ready is not None:
@@ -679,13 +648,10 @@ class Agent:
             self._native_master = pid
             self.mode = "native"
             if switch or not same_master:
-                # A different master's live session must not survive the hand-over.
                 ok = await self._restart_rpc()
             else:
                 ok = await self.wait_rpc_ready(RPC_READY_TIMEOUT_S)
             if not ok:
-                # Back to loopback before answering: the master falls back to the relay, which needs
-                # the loopback rpc-server, and a worker left in native mode would report it down.
                 await asyncio.to_thread(native.write_allowlist, path, [])
                 self.mode = "loopback"
                 self._native_master = None
@@ -700,8 +666,6 @@ class Agent:
             }
 
     async def _leave_native(self) -> bool:
-        """Back to loopback rpc-server behind this agent: empties the allowlist and restarts, which
-        cuts a live native session."""
         assert self._native_lock is not None
         async with self._native_lock:
             if self.mode != "native":
@@ -717,8 +681,6 @@ class Agent:
             return await self._restart_rpc()
 
     async def _watch_native(self) -> None:
-        """The relay's 2 s revalidation, for a session the agent does not carry: `unsloth cluster leave`
-        or a re-pair edits the registry, and the next check revokes the master by restarting rpc-server."""
         while self.mode == "native" and not self._stopping:
             await asyncio.sleep(REVALIDATE_S)
             pid = self._native_master
@@ -847,11 +809,9 @@ class Agent:
                     sock, self._control_native_threaded(kind, tls.peer_identity(sock))
                 )
             elif kind == "open_rpc":
-                # A live native session is not counted in _active: switching back would cut it.
                 if self._native_client():
                     framing.send_frame(sock, {"type": "busy"})
                     return
-                # The relay needs the loopback rpc-server back (an older master, or native turned off).
                 self._leave_native_threaded()
                 self._open_rpc_threaded(sock)
             else:
@@ -892,7 +852,6 @@ class Agent:
                     self._active -= 1
 
         try:
-            # rpc-server may not have bound yet after a (re)start: wait, do not fail the load.
             loop = self._loop
             if self.rpc_binary is not None and loop is not None and not loop.is_closed():
                 try:
@@ -966,7 +925,6 @@ class Agent:
                 pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
                 await framing.write_frame(writer, await self._control_native(kind, pid))
             elif kind == "open_rpc":
-                # A live native session is not counted in _active: switching back would cut it.
                 if self._native_client():
                     await framing.write_frame(writer, {"type": "busy"})
                     return
@@ -1004,7 +962,6 @@ class Agent:
                     self._idle.set()
 
         try:
-            # rpc-server may not have bound yet after a (re)start: wait, do not fail the load.
             await self.wait_rpc_ready(RPC_CONNECT_TIMEOUT_S * 3)
             try:
                 up_reader, up_writer = await asyncio.wait_for(

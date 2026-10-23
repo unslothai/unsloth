@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native transport: llama.cpp's own mutual TLS 1.3 RPC (`tls://<fingerprint>@host:port`), used instead of
-the relay when both ends' bundles carry it. The agent stays the control plane: it starts the TLS
-rpc-server on request, keeps its client allowlist, and restarts it to cut a revoked session."""
+"""Native transport: llama.cpp's own mutual TLS 1.3 RPC."""
 
 from __future__ import annotations
 
@@ -14,7 +12,6 @@ from typing import Dict, Iterable, Optional, Tuple
 
 from .paths import run_dir
 
-# `ggml-rpc-server --help` lists these flags only in builds with GGML_RPC_TLS.
 TLS_FLAG = "--tls-cert"
 DISABLE_ENV = "UNSLOTH_CLUSTER_NATIVE_TLS"  # "0" keeps every link on the relay
 TLS_SCHEME = "tls://"
@@ -27,8 +24,7 @@ def disabled() -> bool:
 
 
 def binary_supports_tls(binary: Optional[str]) -> bool:
-    """Whether this ggml-rpc-server (and the ggml-rpc library beside it, which llama-server's client
-    uses) was built with the TLS transport. Cached per path and mtime: an updated bundle is re-probed."""
+    """Whether this ggml-rpc-server (and its ggml-rpc library) was built with the TLS transport."""
     if not binary:
         return False
     try:
