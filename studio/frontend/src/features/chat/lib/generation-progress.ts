@@ -3,6 +3,7 @@
 
 import type {
   LiveDecodeProgress,
+  LiveGenerationProgress,
   LivePrefillProgress,
 } from "../stores/chat-runtime-store";
 
@@ -71,15 +72,40 @@ export function formatPrefillDetails(
       ? `${prefill.processed.toLocaleString(locale)} / ${prefill.total.toLocaleString(locale)} tokens`
       : `${prefill.processed.toLocaleString(locale)} tokens`,
   ];
-  // llama.cpp's first sample lands a few tokens in, before the first batch, and its rate is noise.
-  const fresh = prefill.processed - (prefill.cached ?? 0);
-  if (prefill.tokPerS !== null && fresh >= MIN_TOKENS_FOR_PREFILL_RATE) {
+  // The label shows only once prefillLabelShown has a rate it trusts, so the rate is past the first sample.
+  if (prefill.tokPerS !== null) {
     parts.push(`${Math.round(prefill.tokPerS).toLocaleString(locale)} tok/s`);
   }
   return parts.join(" · ");
 }
 
 const MIN_TOKENS_FOR_PREFILL_RATE = 512;
+const PREFILL_LABEL_MIN_SECONDS = 2;
+
+/** Seconds left at the rate so far, or null while llama.cpp's first sample (a few tokens in, before
+ *  the first batch) is all there is, since its rate is noise. */
+function prefillSecondsLeft(prefill: LivePrefillProgress): number | null {
+  if (!prefill.total || prefill.tokPerS === null) return null;
+  if (prefill.processed - (prefill.cached ?? 0) < MIN_TOKENS_FOR_PREFILL_RATE) return null;
+  return (prefill.total - prefill.processed) / prefill.tokPerS;
+}
+
+/** Whether "Processing prompt" shows after this sample. Only a pass expected to keep it up for
+ *  PREFILL_LABEL_MIN_SECONDS turns it on, so a fast prompt stays on Working... instead of flashing it,
+ *  and it then stays for the rest of that pass instead of dropping as the estimate shrinks. */
+export function prefillLabelShown(
+  previous: LiveGenerationProgress | undefined,
+  prefill: LivePrefillProgress,
+): boolean {
+  const samePass =
+    previous?.prefill != null &&
+    previous.decode === null &&
+    previous.prefill.total === prefill.total &&
+    previous.prefill.processed <= prefill.processed;
+  if (samePass && previous.prefillShown) return true;
+  const left = prefillSecondsLeft(prefill);
+  return left !== null && left >= PREFILL_LABEL_MIN_SECONDS;
+}
 
 /** "4,306 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)", every number in the reader's locale. */
 export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): string {

@@ -7889,6 +7889,9 @@ const GeneratingStatus: FC = () => {
   const prefill = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.prefill ?? null,
   );
+  const labelShown = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.prefillShown === true,
+  );
   // A reply can decode with nothing to show yet (a tool call being written): past the prompt, back to Working.
   const decoding = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
@@ -7896,7 +7899,8 @@ const GeneratingStatus: FC = () => {
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const percent = prefill ? prefillPercent(prefill) : null;
-  if (prefill === null || percent === null || percent >= 100 || decoding) {
+  // Held at 100% until the first token: going back to Working... for that moment would flash too.
+  if (prefill === null || !labelShown || percent === null || decoding) {
     return (
       <span className="generating-glint text-sm text-muted-foreground">
         Working...

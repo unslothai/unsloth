@@ -120,6 +120,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { prefillLabelShown } from "../lib/generation-progress";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
   ResearchMcpSource,
@@ -452,6 +453,8 @@ export type LiveDecodeProgress = {
 /** Transient, like the diffusion canvas: set from generation_progress frames, cleared when the run ends. */
 export type LiveGenerationProgress = {
   prefill: LivePrefillProgress | null;
+  /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
+  prefillShown: boolean;
   decode: LiveDecodeProgress | null;
 };
 export type PendingImageEditReference = {
@@ -6364,11 +6367,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLivePrefill: (threadId, prefill) =>
     set((state) => {
       const key = threadId || "__default";
+      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
       // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
       return {
         liveGenerationByThreadId: {
           ...state.liveGenerationByThreadId,
-          [key]: { prefill, decode: null },
+          [key]: { prefill, prefillShown, decode: null },
         },
       };
     }),
@@ -6379,7 +6383,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         liveGenerationByThreadId: {
           ...state.liveGenerationByThreadId,
-          [key]: { prefill: current?.prefill ?? null, decode },
+          [key]: {
+            prefill: current?.prefill ?? null,
+            prefillShown: current?.prefillShown ?? false,
+            decode,
+          },
         },
       };
     }),

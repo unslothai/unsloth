@@ -6,12 +6,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { LiveDecodeProgress, LivePrefillProgress } from "../src/features/chat/stores/chat-runtime-store.ts";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { formatLiveDecode, formatPrefillDetails, prefillPercent, readGenerationProgress } = await import(
-  "../src/features/chat/lib/generation-progress.ts"
-);
+const { formatLiveDecode, formatPrefillDetails, prefillLabelShown, prefillPercent, readGenerationProgress } =
+  await import("../src/features/chat/lib/generation-progress.ts");
 const { describePlacement, loadedPlacementFrom } = await import(
   "../src/features/chat/lib/partial-offload.ts"
 );
@@ -55,15 +55,42 @@ test("decode frames keep draft acceptance only when both counts are there", () =
   assert.deepEqual(update.decode, { tokens: 40, tokPerS: 90, draftN: 23, draftAccepted: 23 });
 });
 
-test("the prefill details hide the first sample's noisy rate", () => {
-  assert.equal(
-    formatPrefillDetails({ processed: 22, total: 18844, cached: 0, tokPerS: 242 }, "en-US"),
-    "22 / 18,844 tokens",
-  );
+test("the prefill details give the rate when there is one", () => {
   assert.equal(
     formatPrefillDetails({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }, "en-US"),
     "4,118 / 18,880 tokens · 1,401 tok/s",
   );
+  assert.equal(formatPrefillDetails({ processed: 900, total: null, cached: null, tokPerS: null }, "en-US"), "900 tokens");
+});
+
+test("the prefill label shows only for a pass expected to keep it up, then stays for that pass", () => {
+  const sample = (processed: number, total: number, tokPerS: number | null, cached = 0) => ({
+    processed,
+    total,
+    cached,
+    tokPerS,
+  });
+  const after = (prefill: LivePrefillProgress, prefillShown: boolean, decode: LiveDecodeProgress | null = null) => ({
+    prefill,
+    prefillShown,
+    decode,
+  });
+  // llama.cpp's first sample, a few tokens in: its rate is noise, so no estimate yet.
+  assert.equal(prefillLabelShown(undefined, sample(22, 18844, 242)), false);
+  // One batch into a long prompt: about 10 s left.
+  const long = sample(4118, 18880, 1401.2);
+  assert.equal(prefillLabelShown(after(sample(22, 18844, 242), false), long), true);
+  // Stays up near the end, where the estimate alone would drop it.
+  assert.equal(prefillLabelShown(after(long, true), sample(18000, 18880, 1390)), true);
+  // A 5,000-token prompt at 2,600 tok/s has about 1 s left after its first batch, so it never shows.
+  const fast = sample(2048, 5000, 2600);
+  assert.equal(prefillLabelShown(after(sample(0, 5000, null), false), fast), false);
+  assert.equal(prefillLabelShown(after(fast, false), sample(4096, 5000, 2600)), false);
+  // A cache hit leaves too few fresh tokens for a rate.
+  assert.equal(prefillLabelShown(undefined, sample(29000, 30000, 0.5, 29000)), false);
+  // The next pass of a tool loop starts over: decode figures came in between.
+  const decode = { tokens: 40, tokPerS: 50, draftN: null, draftAccepted: null };
+  assert.equal(prefillLabelShown(after(long, true, decode), sample(2048, 5000, 2600)), false);
 });
 
 test("the live line writes every number in the reader's locale", () => {
@@ -118,7 +145,7 @@ test("persisted runs re-tag generation_progress and keep it out of timing", () =
 test("live progress is per thread, transient, and re-keyed with the thread's other run handles", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   // A new prompt pass (the next round of a tool loop) drops the previous round's decode figures.
-  assert.match(store, /\[key\]: \{ prefill, decode: null \}/);
+  assert.match(store, /\[key\]: \{ prefill, prefillShown, decode: null \}/);
   assert.match(store, /move\(state\.liveGenerationByThreadId, "liveGenerationByThreadId"\);/);
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
@@ -177,10 +204,10 @@ test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () =>
   });
 });
 
-test("the prefill label gives way once the prompt is done or decoding started", () => {
+test("the prefill label gives way once decoding started, not at 100%", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const status = thread.slice(thread.indexOf("const GeneratingStatus"), thread.indexOf("// Placeholder when stop fires"));
-  assert.match(status, /percent >= 100 \|\| decoding\)/);
+  assert.match(status, /!labelShown \|\| percent === null \|\| decoding\)/);
 });
 
 test("a followed run (reload, second tab) shows live figures and clears them on exit", () => {
