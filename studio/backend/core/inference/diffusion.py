@@ -13216,9 +13216,8 @@ class DiffusionBackend:
                     call_params["strength"].default if "strength" in call_params else None,
                 )
                 denoise_steps = effective_denoise_steps(steps, strength_applied)
-                # The AUTO cache toggle runs after the request guard; the guard prices the cache it will engage.
                 auto_step_cache_on = False
-                # (mode,) once the pre-guard disable ran: the re-check below reuses it instead of toggling twice
+                # (mode,) once the pre-guard disable ran, so the toggle below is not repeated
                 pre_guard_toggle = None
                 if state.cache_auto:
                     # Judged on the pipeline that RUNS: from_pipe workflows open no cache_context for FBCache.
@@ -13227,7 +13226,6 @@ class DiffusionBackend:
                     cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
                     if not auto_step_cache_on:
-                        # Disengage before the guard; a failed disable keeps the doubled price.
                         pre_guard_toggle = (
                             maybe_toggle_step_cache(
                                 state.pipe,
@@ -13289,7 +13287,6 @@ class DiffusionBackend:
                         and ref_resolution is None
                         and not is_flux3_family(fam)
                     )
-                    # CFG split = two guidance-off calls (plain pipelines only; control calls stay batched)
                     guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
                         guard_cfg,

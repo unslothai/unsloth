@@ -18,8 +18,7 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Group offload counts as resident (checked per call) while every offload group is pinned (int8 / fp8 Z-Image
-at 12 GiB: all resident, only the prompt encode streams some, re-pinned before step 0). Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
+recompile. Group offload counts as resident (checked per call) while every offload group is pinned. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
 Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 
 Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
@@ -83,7 +82,6 @@ def _skip_keys_calls_apart(skip: Any) -> bool:
 
 
 def _has_offload_groups(module: Any) -> bool:
-    """Whether ``module`` carries diffusers offload groups (unknown = it does)."""
     try:
         from .diffusion_memory import _offload_groups
         return bool(_offload_groups(module))
@@ -92,7 +90,7 @@ def _has_offload_groups(module: Any) -> bool:
 
 
 def _groups_stream(module: Any, slots: dict) -> bool:
-    """Whether any offload group streams now (unknown = streaming); no record and no groups = resident transformer."""
+    """Whether any offload group streams now (unknown = streaming)."""
     state = slots.get(_STREAM_STATE_ATTR)
     if not isinstance(state, dict):
         return _has_offload_groups(module)
@@ -245,7 +243,6 @@ def _router_declines_now() -> bool:
 
 
 def _routed_now(slots: dict) -> bool:
-    """Whether an active CFG-parallel router holds the forward slot and would pair the halves now."""
     router = slots.get("_unsloth_cfg_router")
     return (
         router is not None
@@ -447,8 +444,7 @@ def split_aware_request_extra(
     *,
     step_cache: bool = False,
 ) -> tuple:
-    """``(cfg priced, extra MiB)``: guidance-off price only if nothing is released and no AUTO step cache engages
-    (either declines the split, so the doubled call is priced)."""
+    """``(cfg priced, extra MiB)``: guidance-off price only when the split will engage (no AUTO step cache)."""
     if (
         cfg is not False
         and workflow in SPLIT_PRICED_WORKFLOWS
@@ -462,7 +458,7 @@ def split_aware_request_extra(
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
-    """Whether a guided render runs at the guidance-off batch; pricing it doubled released groups and recompiled."""
+    """Whether a guided render runs at the guidance-off batch."""
     denoiser = getattr(pipe, "transformer", None)
     slots = getattr(denoiser, "__dict__", None)
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():
@@ -492,7 +488,7 @@ def render(pipe: Any, samples: int):
     if not armed:
         yield
         return
-    # Decided once per render, as the guard priced it: eager stays batched (split on OOM), routed splits throughout.
+    # Decided once per render, matching the guard's price: eager stays batched (split on OOM).
     eager = _eager_now(pipe, denoiser, slots)
     denoiser.__dict__[_SAMPLES_ATTR] = int(samples)
     if eager:
