@@ -4,15 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { InvokeStreamEvent as Event } from "../src/features/flows/player/player-api.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const L = await import("../src/features/flows/player/world/live-reply.ts");
 const A = await import("../src/features/flows/player/player-api.ts");
-type Event = import(
-  "../src/features/flows/player/player-api.ts",
-).InvokeStreamEvent;
 
 async function* events(list: Event[]): AsyncGenerator<Event> {
   for (const e of list) yield e;
