@@ -22,6 +22,10 @@ export type PortType =
   | "checkpoint"
   | "story"
   | "world"
+  | "table"
+  | "chart"
+  | "heatmap"
+  | "tensor"
   | "any"
   | "flow";
 
