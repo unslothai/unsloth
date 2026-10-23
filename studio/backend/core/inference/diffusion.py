@@ -270,6 +270,7 @@ from .diffusion_speed import (
     snapshot_backend_flags,
 )
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
@@ -13412,10 +13413,13 @@ class DiffusionBackend:
                         pipe, fam, sd_controls, chunk_kwargs, guidance = guidance
                     ):
                         weighting_used[0] = True
-                    with sd_controls_mod.variation_latents(
-                        pipe,
-                        chunk_variation,
-                        sd_controls.variation_strength if sd_controls is not None else None,
+                    with (
+                        sd_controls_mod.variation_latents(
+                            pipe,
+                            chunk_variation,
+                            sd_controls.variation_strength if sd_controls is not None else None,
+                        ),
+                        pipeline_upcasts_keep_storage(pipe),
                     ):
                         return pipe(**chunk_kwargs).images
 
