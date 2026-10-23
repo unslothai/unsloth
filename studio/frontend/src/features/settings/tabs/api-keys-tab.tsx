@@ -31,7 +31,6 @@ import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteLanSummary } from "../components/remote-lan-summary";
 import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -212,8 +211,6 @@ export function ApiKeysTab() {
       {isOwner ? (
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
-          <RemoteLanSummary />
 
           <ModelAutoSwitchSection />
 
