@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -710,7 +711,9 @@ def _case_dcp_quant_state(rank, world_size, m):
         fully_shard(model, mesh = mesh)
         m.install_dcp_bnb_state_dict()
         save_opts = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
-        saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = save_opts).items()}
+        saved = {
+            k: v.clone() for k, v in dcp.get_model_state_dict(model, options = save_opts).items()
+        }
         states = [layer.weight.quant_state for layer in model]
         before = [s.absmax.clone() for s in states]
         results = {}
@@ -726,16 +729,18 @@ def _case_dcp_quant_state(rank, world_size, m):
         key = next(k for k in bad if k.endswith("weight.absmax"))
         bad[key] = bad[key][:-1].clone()
         try:
-            dcp.set_model_state_dict(
-                model, bad, options = StateDictOptions(full_state_dict = True)
-            )
+            dcp.set_model_state_dict(model, bad, options = StateDictOptions(full_state_dict = True))
             out[f"mismatch_nested_{nested}"] = "loaded"
         except ValueError as error:
             out[f"mismatch_nested_{nested}"] = "ValueError" if "4-bit" in str(error) else str(error)
     return out
 
 
-def _sharded_nf4(world_size, m, device = "cpu"):
+def _sharded_nf4(
+    world_size,
+    m,
+    device = "cpu",
+):
     q = _load("fsdp2_qlora")
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
@@ -759,7 +764,9 @@ def _legacy_and_mismatched_loads(rank, model, saved, out):
     import torch.distributed.checkpoint.state_dict as dcp
 
     def dequantized(state_dict):
-        stats = {k[len("0.weight.") :]: v for k, v in state_dict.items() if k.startswith("0.weight.")}
+        stats = {
+            k[len("0.weight.") :]: v for k, v in state_dict.items() if k.startswith("0.weight.")
+        }
         state = QuantState.from_dict(stats, device = "cpu")
         packed = state_dict["0.weight"].cpu().reshape(-1, 1)
         state.absmax, state.code = state.absmax.cpu(), state.code.cpu()
@@ -774,12 +781,13 @@ def _legacy_and_mismatched_loads(rank, model, saved, out):
     for broadcast in (False, True):
         options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
         try:
-            dcp.set_model_state_dict(model, legacy if (rank == 0 or not broadcast) else {}, options = options)
-            after = dcp.get_model_state_dict(model, options = full)
-            out[f"legacy_{broadcast}"] = (
-                torch.equal(model[0].weight.quant_state.absmax, live_absmax)
-                and torch.equal(dequantized(after), reference)
+            dcp.set_model_state_dict(
+                model, legacy if (rank == 0 or not broadcast) else {}, options = options
             )
+            after = dcp.get_model_state_dict(model, options = full)
+            out[f"legacy_{broadcast}"] = torch.equal(
+                model[0].weight.quant_state.absmax, live_absmax
+            ) and torch.equal(dequantized(after), reference)
         except Exception as error:
             out[f"legacy_{broadcast}"] = f"{type(error).__name__}: {error}"
         try:
@@ -788,7 +796,9 @@ def _legacy_and_mismatched_loads(rank, model, saved, out):
             )
             out[f"mismatch_{broadcast}"] = "loaded"
         except ValueError as error:
-            out[f"mismatch_{broadcast}"] = "ValueError" if "`0.weight`" in str(error) else str(error)
+            out[f"mismatch_{broadcast}"] = (
+                "ValueError" if "`0.weight`" in str(error) else str(error)
+            )
 
 
 def _case_dcp_quant_state_missing(rank, world_size, m):
@@ -910,7 +920,10 @@ def _worker(rank, world_size, port, case, queue):
 
         timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
         dist.init_process_group(
-            "nccl" if nccl else "gloo", rank = rank, world_size = world_size, **({"timeout": timeout} if timeout else {})
+            "nccl" if nccl else "gloo",
+            rank = rank,
+            world_size = world_size,
+            **({"timeout": timeout} if timeout else {}),
         )
         m = _load("fsdp2_save")
         if case == "slow_writer":
@@ -944,7 +957,11 @@ def _worker(rank, world_size, port, case, queue):
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
-def _run(case, world_size = 2, cpu_only = True):
+def _run(
+    case,
+    world_size = 2,
+    cpu_only = True,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -1117,7 +1134,8 @@ def test_full_dcp_load_refuses_a_packed_4bit_weight_without_its_quant_state():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available()
+    not has_real_cuda()
+    or not torch.cuda.is_available()
     or torch.cuda.device_count() < 2
     or not torch.distributed.is_nccl_available(),
     reason = "needs two CUDA GPUs and NCCL",

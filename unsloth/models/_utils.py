@@ -1029,16 +1029,15 @@ def _sibling_model_class_for_config(model_class, child_config):
     return candidates[0]
 
 
-def _flash_unsupported_sub_configs(config, model_class = None):
-    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+def _sub_config_model_classes(config, model_class = None):
+    """(sub-config name, model class) for every tower Transformers builds from a sub-config."""
     try:
         from transformers import AutoModel, AutoModelForCausalLM
         mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
     except Exception:
-        return {}
+        return
     # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
     declared = getattr(config, "sub_configs", None) or ()
-    out = {}
     for field_name, child_config in _config_items(config):
         if not isinstance(field_name, str):
             continue
@@ -1057,14 +1056,35 @@ def _flash_unsupported_sub_configs(config, model_class = None):
             child_class = child_class[0] if child_class else None
         if child_class is None and model_class is not None:
             child_class = _sibling_model_class_for_config(model_class, child_config)
-        if child_class is None:
-            continue
+        if child_class is not None:
+            yield field_name, child_class
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+    out = {}
+    for field_name, child_class in _sub_config_model_classes(config, model_class):
         if getattr(child_class, "_supports_flash_attn", False) or getattr(
             child_class, "_supports_flash_attn_2", False
         ):
             continue
         out[field_name] = "sdpa" if getattr(child_class, "_supports_sdpa", False) else "eager"
     return out
+
+
+def _scoped_sdpa(config, model_class = None):
+    """ "sdpa", or a mapping sending towers without SDPA to eager: a plain "sdpa" reaches every
+    sub-config and Transformers rejects it there (MusicGen's EnCodec, VibeVoice-ASR's tokenizers)."""
+    unsupported = {
+        field_name: "eager"
+        for field_name, child_class in _sub_config_model_classes(config, model_class)
+        if not getattr(child_class, "_supports_sdpa", False)
+    }
+    if not unsupported:
+        return "sdpa"
+    if not _transformers_supports_attn_impl_mapping():
+        return "eager"
+    return {"": "sdpa", **unsupported}
 
 
 def _scoped_flash_attention(
@@ -2060,6 +2080,54 @@ def _install_text_only_conversion_carry():
     modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping
 
 
+# Qwen/Qwen3-ASR-0.6B and -1.7B ship the qwen-asr package layout: sub-configs under thinker_config and
+# weights under thinker.*. transformers' Qwen3ASRConfig reads no thinker_config, so it builds a
+# default-sized model that matches none of the checkpoint's weights (the -hf repos are native).
+_QWEN3_ASR_PACKAGE_KEY_MAPPING = {
+    r"^thinker\.audio_tower\.proj1\.": "model.multi_modal_projector.linear_1.",
+    r"^thinker\.audio_tower\.proj2\.": "model.multi_modal_projector.linear_2.",
+    r"^thinker\.audio_tower\.": "model.audio_tower.",
+    r"^thinker\.model\.": "model.language_model.",
+    r"^thinker\.lm_head\.": "lm_head.",
+}
+
+
+def _convert_qwen3_asr_package_config(config):
+    """(native config, key_mapping) for a qwen-asr package layout Qwen3-ASR config, else (config, None)."""
+    if getattr(config, "model_type", None) != "qwen3_asr":
+        return config, None
+    thinker = getattr(config, "thinker_config", None)
+    if not isinstance(thinker, dict) or not {"audio_config", "text_config"} <= set(thinker):
+        return config, None
+    # Qwen3-ForcedAligner shares the layout but is a classifier (thinker model_type qwen3_forced_aligner).
+    if thinker.get("model_type", "qwen3_asr") != "qwen3_asr":
+        return config, None
+    native = type(config)
+
+    def sub(d):
+        return {k: v for k, v in dict(d).items() if k != "model_type"}
+
+    extra = {
+        k: thinker[k]
+        for k in (
+            "audio_token_id",
+            "pad_token_id",
+            "eos_token_id",
+            "initializer_range",
+            "tie_word_embeddings",
+        )
+        if k in thinker
+    }
+    new = native(
+        audio_config = sub(thinker["audio_config"]), text_config = sub(thinker["text_config"]), **extra
+    )
+    new.architectures = ["Qwen3ASRForConditionalGeneration"]
+    for k in ("_name_or_path", "_commit_hash"):
+        if hasattr(config, k):
+            setattr(new, k, getattr(config, k))
+    return new, dict(_QWEN3_ASR_PACKAGE_KEY_MAPPING)
+
+
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
@@ -2687,6 +2755,8 @@ def resolve_attention_implementation(
         )
         final_attn_impl = _set_attn_impl(config, "eager")
 
+    if final_attn_impl == "sdpa":
+        final_attn_impl = _set_attn_impl(config, _scoped_sdpa(config, model_class))
     return final_attn_impl
 
 
@@ -4822,6 +4892,10 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
+    # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
+    # unsloth_zoo probe sees it. Cheap (device properties only).
+    if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
+        return xpu_supports_native_bf16()
     return SUPPORTS_BFLOAT16
 
 
@@ -7642,7 +7716,6 @@ def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
 
 def _is_class_forward(module: torch.nn.Module, forward) -> bool:
     import types
-
     return (
         isinstance(forward, types.MethodType)
         and forward.__self__ is module
@@ -7653,18 +7726,27 @@ def _is_class_forward(module: torch.nn.Module, forward) -> bool:
 def _is_require_grads_hook(hook) -> bool:
     """transformers' enable_input_require_grads hook (make_inputs_require_grads, handles kept on the model) or
     PEFT's fallback (make_inputs_require_grad, no handle kept). Both are re-registered after the QAT swap."""
-    return getattr(hook, "__name__", None) in ("make_inputs_require_grads", "make_inputs_require_grad")
+    return getattr(hook, "__name__", None) in (
+        "make_inputs_require_grads",
+        "make_inputs_require_grad",
+    )
 
 
 def _unowned_require_grads_hooks(originals: Dict[str, torch.nn.Module]):
     """PEFT's make_inputs_require_grad hooks per embedding: nobody holds their handle, so they can be re-registered."""
     return {
-        fqn: [h for h in module._forward_hooks.values() if getattr(h, "__name__", None) == "make_inputs_require_grad"]
+        fqn: [
+            h
+            for h in module._forward_hooks.values()
+            if getattr(h, "__name__", None) == "make_inputs_require_grad"
+        ]
         for fqn, module in originals.items()
     }
 
 
-def _reregister_unowned_require_grads_hooks(model: torch.nn.Module, originals, hooks_by_fqn) -> None:
+def _reregister_unowned_require_grads_hooks(
+    model: torch.nn.Module, originals, hooks_by_fqn
+) -> None:
     for fqn, hooks in hooks_by_fqn.items():
         if not hooks:
             continue
@@ -7714,7 +7796,9 @@ def _flat_accelerate_hooks(hook):
 def _offload_hook(module: torch.nn.Module):
     """The offloading AlignDevicesHook on module, also inside a SequentialHook, else None."""
     hooks = [
-        h for h in _flat_accelerate_hooks(getattr(module, "_hf_hook", None)) if getattr(h, "offload", False)
+        h
+        for h in _flat_accelerate_hooks(getattr(module, "_hf_hook", None))
+        if getattr(h, "offload", False)
     ]
     return hooks[0] if hooks else None
 
@@ -7770,7 +7854,12 @@ def _exclude_unsupported_qat_embeddings(model: torch.nn.Module, torchao_config) 
     if not excluded:
         return
     torchao_config.base_config_and_filter_fns = [
-        (c, f if f is None or isinstance(f, _SkipExcludedEmbeddings) else _SkipExcludedEmbeddings(f))
+        (
+            c,
+            f
+            if f is None or isinstance(f, _SkipExcludedEmbeddings)
+            else _SkipExcludedEmbeddings(f),
+        )
         for c, f in configs
     ]
     warnings.warn(
@@ -7836,7 +7925,9 @@ def _offload_hook_problem(module: torch.nn.Module):
     return None
 
 
-def _check_offloaded_embeddings(originals: Dict[str, torch.nn.Module], base_config_and_filter_fns) -> None:
+def _check_offloaded_embeddings(
+    originals: Dict[str, torch.nn.Module], base_config_and_filter_fns
+) -> None:
     """Refuse, before QAT replaces anything, an offloaded embedding selected for QAT whose real weight could not
     follow it. A filter of None selects Linears only, so it never selects an embedding."""
     filters = [f for _, f in base_config_and_filter_fns if f is not None]
@@ -7870,7 +7961,6 @@ def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
         original_devices = dict(getattr(offload_hook, "original_devices", {}) or {})
     try:
         from accelerate.hooks import add_hook_to_module
-
         add_hook_to_module(dst, hook)
         if offload_hook is not None and original_devices:
             offload_hook.original_devices = original_devices
@@ -7961,7 +8051,9 @@ def _restore_fake_quantized_embedding_subclasses(
         if type(module) is not FakeQuantizedEmbedding:
             continue
         if type(original) is torch.nn.Embedding:
-            _move_dispatch_hook(module, original)  # torchao's own class already fake quantizes the lookup
+            _move_dispatch_hook(
+                module, original
+            )  # torchao's own class already fake quantizes the lookup
             continue
         module.__class__ = _fake_quantized_embedding_class(type(original))
         _copy_embedding_subclass_state(module, original)
@@ -10689,11 +10781,19 @@ def widen_target_regex_to_expert_submodules(
         # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
         for name, module in model.named_modules():
             parent, _, leaf = name.rpartition(".")
-            if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (
-                isinstance(module, torch.nn.Linear)
-                or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+            if (
+                leaf in requested
+                and any(re.fullmatch(p, parent) for p in native)
+                and (
+                    isinstance(module, torch.nn.Linear)
+                    or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+                )
             ):
-                siblings.add(r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")))
+                siblings.add(
+                    r"\.".join(
+                        r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")
+                    )
+                )
     if not parents:
         return target_modules, detect_targets, []
     # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).

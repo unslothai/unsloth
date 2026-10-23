@@ -120,6 +120,29 @@ def describe() -> dict:
     return dict(_STATE)
 
 
+_CACHE_TAG_PREFIX = "unsloth_nvfp4_act_quant="
+
+
+def _set_compile_cache_tag(tag: str | None) -> None:
+    """Key torch's FX/AOTAutograd caches on the quantiser: the Dynamo graph calls ``to_nvfp4`` by name, so untagged,
+    a graph cached with the patch on is replayed with it off (the kill switch then still runs the kernel) and the
+    reverse. ``None`` removes our tag; other tags (e.g. the fp8 dispatcher's) are kept."""
+    try:
+        import torch.compiler.config as _cc
+    except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
+        return
+    current = getattr(_cc, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    parts = [p for p in current.split(";") if p and not p.startswith(_CACHE_TAG_PREFIX)]
+    if tag:
+        parts.append(_CACHE_TAG_PREFIX + tag)
+    try:
+        _cc.cache_key_tag = ";".join(parts)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _build_op():
     """Register ``unsloth_nvfp4::act_quant(x, per_tensor_scale) -> (qdata u8 [M, K/2], scales u8 flat)``."""
     global _OP
@@ -332,6 +355,7 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
         if ok:
             NVFP4Tensor.to_nvfp4 = staticmethod(_patched_to_nvfp4)
             _STATE["installed"] = True
+            _set_compile_cache_tag("1")
     if logger is not None:
         try:
             logger.info(
@@ -348,4 +372,5 @@ def uninstall_nvfp4_act_quant_patch() -> None:
             from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
             NVFP4Tensor.to_nvfp4 = staticmethod(_ORIGINAL)
         _STATE["installed"] = False
+        _set_compile_cache_tag(None)
         _STATE["verified"] = None

@@ -364,3 +364,21 @@ def test_an_export_base_whose_index_escapes_is_refused(tmp_path):
     )
     (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
     assert _checkpoint_load_refusal(str(adapter), str(base))
+
+
+@pytest.mark.parametrize("path", ["..", "../..", "/", "\\", "./..", "..\\.."])
+def test_a_module_folder_of_only_dots_and_slashes_outside_the_model_is_flagged(tmp_path, path):
+    from utils.security.file_security import escaping_weight_references
+    folder = _write(
+        tmp_path / "st", {"modules.json": [{"idx": 0, "name": "0", "path": path, "type": "x"}]}
+    )
+    assert escaping_weight_references(folder) == [path]
+
+
+@pytest.mark.parametrize("path", ["", ".", "./"])
+def test_a_module_at_the_model_root_is_not_flagged(tmp_path, path):
+    from utils.security.file_security import escaping_weight_references
+    folder = _write(
+        tmp_path / "st", {"modules.json": [{"idx": 0, "name": "0", "path": path, "type": "x"}]}
+    )
+    assert escaping_weight_references(folder) == []
