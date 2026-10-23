@@ -723,6 +723,8 @@ class _EncoderPrefetcher:
         self.stage: list = []
         self.stage_events: list = []
         self.slot = 0
+        # The worker and a synchronous onload copy (a group skipped under a lowered Budget) share the staging ring.
+        self.copy_lock = threading.Lock()
         self.stats = {"prefetched": 0, "sync": 0, "passes": 0}
         self.by_id = {id(g): g for g in groups}
 
@@ -745,6 +747,11 @@ class _EncoderPrefetcher:
 
     def _copy_group(self, group: Any) -> tuple:
         """Device copies of ``group``'s host tensors, issued on the side stream. Returns (tensors, event, bytes)."""
+        # Held across staging write, H2D enqueue and slot event so the other thread cannot reuse a slot in between.
+        with self.copy_lock:
+            return self._copy_group_locked(group)
+
+    def _copy_group_locked(self, group: Any) -> tuple:
         import torch
 
         self._ensure_stage()
