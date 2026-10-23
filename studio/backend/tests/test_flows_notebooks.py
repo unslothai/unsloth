@@ -470,3 +470,33 @@ def test_streaming_is_dropped_on_apple_silicon(monkeypatch):
     doc, report = notebook_import.read_notebook(nb, "x.ipynb")
     assert "dataset_streaming" not in _tune(doc)
     assert any("Apple Silicon" in line for line in report["approximated"])
+
+
+def test_classification_and_multi_dataset_notebooks_are_reported_and_if_true_skips_else():
+    _, report = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('imdb', split = 'train')", "trainer = Trainer(model = model)"
+        ),
+        "bert_classification.ipynb",
+    )
+    assert any("classification" in line for line in report["unsupported"])
+    doc, report = notebook_import.read_notebook(
+        _plain(
+            "a = load_dataset('a/b', split = 'train')\nb = load_dataset('c/d', split = 'train')"
+        ),
+        "x.ipynb",
+    )
+    assert doc is None and any("more than one dataset" in line for line in report["unsupported"])
+    same, _ = notebook_import.read_notebook(
+        _plain("a = load_dataset('a/b', split = 'train')\nb = load_dataset('a/b', split = 'test')"),
+        "x.ipynb",
+    )
+    assert same is not None
+    live, _ = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('a/b', split = 'train')",
+            "if True:\n    args = SFTConfig(max_steps = 30)\nelse:\n    args = SFTConfig(max_steps = 999)",
+        ),
+        "x.ipynb",
+    )
+    assert _tune(live)["max_steps"] == 30

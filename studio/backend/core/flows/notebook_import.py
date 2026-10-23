@@ -144,8 +144,9 @@ class _Reader(ast.NodeVisitor):
 
     def visit_If(self, node: ast.If) -> None:
         # `if False: model.save_pretrained_gguf(...)` is the notebooks' way of switching a step off.
-        if isinstance(node.test, ast.Constant) and not node.test.value:
-            for child in node.orelse:
+        if isinstance(node.test, ast.Constant):
+            # `if True:` runs only its body, `if False:` only its else.
+            for child in node.body if node.test.value else node.orelse:
                 self.visit(child)
             return
         self.generic_visit(node)
@@ -195,6 +196,11 @@ class _Reader(ast.NodeVisitor):
         elif fn == "load_dataset" and "dataset" not in self.found and _local_files(self, node):
             # load_dataset("json", data_files = ...) reads the notebook's own files, which a flow cannot reach.
             self.unsupported.add("a dataset loaded from local files (data_files)")
+        elif fn == "load_dataset" and "dataset" in self.found:
+            repo = self.kw(node, "path", 0)
+            # A second Hub dataset (the Multiple Datasets recipe) would be silently dropped by a one-dataset flow.
+            if isinstance(repo, str) and _REPO.match(repo) and repo != self.found["dataset"]:
+                self.unsupported.add("training on more than one dataset")
         elif fn == "load_dataset" and "dataset" not in self.found:
             repo = self.kw(node, "path", 0)
             # Same rule as the Hub dataset block: `imdb` and `owner/name` are both valid ids.
@@ -268,6 +274,8 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         reader.visit(tree)
     if _category(name) == "decision":
         reader.unsupported.add("decision fine-tuning (use the Train page)")
+    elif _category(name) == "classification":
+        reader.unsupported.add("classification fine-tuning (open it in Colab)")
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
     found, tune = reader.found, dict(reader.tune)
