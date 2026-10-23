@@ -1278,13 +1278,16 @@ def _bind_params(spec: dict, params: dict, inputs: dict) -> None:
 
 
 def _local_fingerprint(path: str) -> Optional[list]:
-    """(name, size, mtime) of a local model file, or of the files directly in a model folder."""
+    """(name, size, mtime) of a local model file; a folder folds every file directly in it into one digest."""
     try:
         if os.path.isdir(path):
             entries = sorted(os.scandir(path), key = lambda e: e.name)
-            return [
-                [e.name, e.stat().st_size, e.stat().st_mtime_ns] for e in entries if e.is_file()
-            ][:256]
+            digest = hashlib.sha256()
+            for e in entries:
+                if e.is_file():
+                    st = e.stat()
+                    digest.update(f"{e.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            return [[os.path.basename(path.rstrip(os.sep)), digest.hexdigest()]]
         st = os.stat(path)
         return [[os.path.basename(path), st.st_size, st.st_mtime_ns]]
     except OSError:

@@ -3675,7 +3675,13 @@ async def start_diffusion_training(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Start an SDXL LoRA training job from an image + caption dataset."""
+    from core.inference import gpu_arbiter
     from core.training.diffusion_training_service import get_diffusion_training_service
+
+    # It frees the GPU below, so an operation holding the GPU lease (a benchmark, an eval) refuses it like LLM training.
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
 
     # Under API-key auth, refuse to start training while a request is in flight: _free_gpu_for_diffusion_training()
     # below unloads the chat backends, killing the stream. Mirrors start_training.

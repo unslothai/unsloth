@@ -263,11 +263,34 @@ def test_load_settings_reload_only_when_they_change(monkeypatch):
     assert loads[3]["extra_body"] is None
 
 
+def test_a_load_elsewhere_voids_the_remembered_settings(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    loads, _ = _llm_fakes(monkeypatch)
+    ctx = _ModelCtx()
+    choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
+    kv8 = {"cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    # Another caller swaps models and later reloads the same repo with defaults.
+    monkeypatch.setattr(gpu_arbiter, "_loads", gpu_arbiter._loads + 2)
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    assert len(loads) == 2 and loads[1]["extra_body"] == kv8
+
+
 def test_without_settings_a_model_loaded_elsewhere_is_reused_as_before(monkeypatch):
     loads, state = _llm_fakes(monkeypatch)
     state["llm"] = ["unsloth/Qwen3-0.6B-GGUF"]
     asyncio.run(_common.ensure_model(_ModelCtx(), "chat", {"repo": "unsloth/Qwen3-0.6B-GGUF"}))
     assert loads == []
+
+
+def test_a_requirement_that_cannot_be_checked_fails_closed(monkeypatch):
+    _, state = _llm_fakes(monkeypatch)
+    state["llm"] = ["unsloth/Qwen3-0.6B"]
+    state["is_gguf"] = None
+    ctx = _ModelCtx({"title": "Capture", "requires": ["transformers"]})
+    with pytest.raises(FlowNodeError, match = "could not check"):
+        asyncio.run(_common.ensure_model(ctx, "chat", {"repo": "unsloth/Qwen3-0.6B"}))
 
 
 def test_a_node_that_needs_transformers_refuses_a_gguf(monkeypatch):
@@ -529,8 +552,21 @@ def test_training_start_is_refused_while_another_holder_has_the_lease(no_lease):
         source = open(training.__file__).read()
         start = source.index("async def start_training(")
         assert "lease_refusal()" in source[start : start + 1500]
+        start = source.index("async def start_diffusion_training(")
+        assert "lease_refusal()" in source[start : start + 1500]
     finally:
         arb._lease = None
+
+
+def test_a_lease_waits_for_a_residency_change_already_under_way(no_lease):
+    # A load past its lease check holds _lock until its eviction finishes; the lease must not start under it.
+    with arb._lock:
+        with pytest.raises(arb.GpuLeaseHeldError):
+            with arb.operation_lease("bench", "run-1", 60):
+                pass
+    assert arb._lease is None
+    with arb.operation_lease("bench", "run-1", 60):
+        assert arb._lease is not None
 
 
 # Read-only system routes
@@ -547,3 +583,13 @@ def test_system_routes_are_reachable_for_reads_only():
         flow_caller.checked_path(url, "POST")
     with pytest.raises(RuntimeError):
         flow_caller.checked_path(httpx.URL("http://studio/api/system/shutdown"), "GET")
+
+
+def test_a_change_to_any_file_in_a_model_folder_changes_its_fingerprint(tmp_path):
+    from core.flows.engine import _local_fingerprint
+
+    for i in range(300):
+        (tmp_path / f"shard-{i:04d}.bin").write_bytes(b"x")
+    before = _local_fingerprint(str(tmp_path))
+    (tmp_path / "shard-0299.bin").write_bytes(b"xy")
+    assert _local_fingerprint(str(tmp_path)) != before

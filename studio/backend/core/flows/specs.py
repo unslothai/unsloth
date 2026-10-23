@@ -108,7 +108,8 @@ BIND_TYPES = {
     "text": "text",
     "textarea": "text",
     "select": "text",
-    "expr": "text",
+    # Expressions are JSON trees ({op, args}), like the field's JSON editor.
+    "expr": "json",
     "color": "text",
     "json": "json",
     "schema": "json",
