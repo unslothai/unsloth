@@ -53,6 +53,7 @@ _SFT_TRAINERS = {
     "SentenceTransformerTrainer",
     "Seq2SeqTrainer",
 }
+_EMBEDDING_LOSSES = {"MultipleNegativesRankingLoss", "CachedMultipleNegativesRankingLoss"}
 _ARGS = {
     "max_steps": "max_steps",
     "learning_rate": "learning_rate",
@@ -121,6 +122,7 @@ class _Reader(ast.NodeVisitor):
         self.tune: dict[str, Any] = {}
         self.unsupported: set[str] = set()
         self.approximated: list[str] = []
+        self.losses: set[str] = set()
 
     def value(self, node: ast.AST) -> Any:
         if isinstance(node, ast.Constant):
@@ -165,6 +167,8 @@ class _Reader(ast.NodeVisitor):
             self.unsupported.add(_UNSUPPORTED[fn])
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
             self.unsupported.add(f"{fn} training")
+        elif fn and fn.endswith("Loss"):
+            self.losses.add(fn)
         elif fn == "from_pretrained" and owner in _LOADERS and "model" not in self.found:
             model = self.kw(node, "model_name", 0)
             if isinstance(model, str):
@@ -287,6 +291,10 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         reader.unsupported.add("classification fine-tuning (open it in Colab)")
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
+    # Studio's embedding trainer always uses MultipleNegativesRankingLoss; another loss is a different objective.
+    if reader.found.get("task") == "embedding":
+        for loss in sorted(reader.losses - _EMBEDDING_LOSSES):
+            reader.unsupported.add(f"embedding training with {loss}")
     found, tune = reader.found, dict(reader.tune)
     report: dict[str, Any] = {
         "imported": [],

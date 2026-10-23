@@ -516,3 +516,17 @@ def test_second_subset_and_remote_code_models_are_reported():
         "x.ipynb",
     )
     assert doc is None and any("trust_remote_code" in line for line in report["unsupported"])
+
+
+def test_embedding_notebooks_with_another_loss_are_reported():
+    def emb(loss: str) -> bytes:
+        return _nb(
+            "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')",
+            "dataset = load_dataset('a/b', split = 'train')",
+            f"loss = {loss}(model)\ntrainer = SentenceTransformerTrainer(model = model, loss = loss)",
+        )
+
+    doc, report = notebook_import.read_notebook(emb("CosineSimilarityLoss"), "x.ipynb")
+    assert doc is None and any("CosineSimilarityLoss" in line for line in report["unsupported"])
+    doc, _ = notebook_import.read_notebook(emb("MultipleNegativesRankingLoss"), "x.ipynb")
+    assert doc is not None
