@@ -1431,7 +1431,6 @@ class GraphedForward:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
                     self.placement.release_slots()  # nothing will replay into the ring for this load
                     if self.placement.mode == "model":
-                        # nothing will replay over the stable range either
                         _retire_stable_range(self.module)
                 self.poison(exc)
                 self.stats["fallbacks"] += 1
@@ -1960,9 +1959,7 @@ class OffloadPlacement:
         if self.mode == "model":
             failed = _stable_range_failure(getattr(self, "module", None))
             if failed is not None:
-                # The onload fell back to the stock move, which lands at new addresses on every render: record
-                # nothing more, as with no stable range at all (MODEL_OFFLOAD_REASON). Retired, not detached: weights
-                # placed before the failure sit in the range until the offload takes them home and unmaps it.
+                # Stock onloads land at new addresses each render. Retire, not detach: placed weights still sit in the range.
                 _retire_stable_range(self.module)
                 self._declined = (
                     f"the stable device range failed ({failed}); " + MODEL_OFFLOAD_REASON
@@ -2097,7 +2094,6 @@ def _stable_range_failure(module: Any) -> Optional[str]:
 
 
 def _retire_stable_range(module: Any) -> None:
-    """A step that will never replay again gives its module the stock onload back (no per-offload card sync)."""
     try:
         from .diffusion_stable_arena import arena_of
         arena = arena_of(module)

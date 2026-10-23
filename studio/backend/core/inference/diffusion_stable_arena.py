@@ -364,7 +364,6 @@ class ModuleArena:
 
     def _reinstall(self, module: Any, _args: Any) -> None:
         if self.retiring:
-            # before the hook's onload: the weights that sat in the range went home (through any ``to``) by now
             self.retire()
             return
         if module.__dict__.get("to") != self._to and self.failed is None:
@@ -395,9 +394,7 @@ class ModuleArena:
             self.arena = None
 
     def retire(self) -> None:
-        """No graph will replay over the range again (its capture failed): give the module its stock onload back. The
-        weights may sit in the range right now, mid-render, so the detach waits for the offload that takes them home;
-        until then onloads take the stock move."""
+        """Restore the stock onload; detach waits for the offload that takes mapped weights home."""
         self.retiring = True
         module = self._module()
         if (
