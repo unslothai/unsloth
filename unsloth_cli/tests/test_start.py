@@ -7817,7 +7817,6 @@ def test_agent_context_check_refuses_before_installing_or_loading(
     assert "unsloth/other-GGUF would load with 8,192 tokens of context, too few" in result.output
     assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
     assert not launched
-    # A running Studio may resolve the name to a Connection, so the check waits for _connect (still before any load).
     assert bool(requirements) is running
 
 
