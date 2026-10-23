@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Packed fp32 attention keeps one xformers launch when torch varlen is preferred (#14158), and the
-xformers fp32 downcast is decided by Q's device, not device 0."""
+"""Packed fp32 keeps one xformers launch (#14158); the fp32 downcast follows Q's device."""
 
 import pytest
 import torch
@@ -144,7 +143,6 @@ def test_packed_fp32_large_head_dim_stays_on_sdpa_on_sm100(native_packed_host, m
     config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = KV, n_groups = H // KV)
     context = ad.AttentionContext(1, T, T, H, 512, True, _seq_info(lengths), None, None)
     assert not ad._packed_fp32_prefers_xformers(config, context, Q, K, V)
-    # Below sm_100 cutlass runs fp32 at any head dim, so the single call is kept.
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: False)
     assert ad._packed_fp32_prefers_xformers(config, context, Q, K, V)
 

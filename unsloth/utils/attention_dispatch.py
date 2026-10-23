@@ -87,7 +87,7 @@ if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and only its
 # fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there; below sm_100
-# cutlass handles fp32 natively. Device 0's answer; _xformers_rejects_fp32 reads Q's own card.
+# cutlass handles fp32 natively. Device 0 only: _xformers_rejects_fp32 reads Q's card.
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
@@ -129,13 +129,12 @@ def _visible_capabilities():
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
 # device-0 verdict is wrong for layers a device_map places on another card.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
-# Per CUDA index, read once at import so a traced call only indexes a tuple.
+# Read at import so a traced call only indexes a tuple.
 _XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())
 
 
 def _xformers_rejects_fp32(device) -> bool:
-    """Whether xformers needs fp32 Q/K/V downcast on this device. Only a CUDA card at sm_100+ does:
-    CPU tensors on a B200 host must not inherit device 0's answer."""
+    """sm_100+ CUDA only: CPU tensors on a B200 host must not inherit device 0's answer."""
     if getattr(device, "type", None) != "cuda":
         return False
     index = getattr(device, "index", None)
@@ -760,19 +759,16 @@ def select_attention_backend(use_varlen: bool = False, dropout_p: float = 0.0) -
 
 
 def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tensor) -> bool:
-    """select_attention_backend picked SDPA for a packed call only because torch varlen beats
-    xformers, but varlen takes fp16 / bf16 alone, so fp32 would run per segment (#14158)."""
+    """Torch varlen takes fp16 / bf16 only, so packed fp32 would run SDPA per segment (#14158)."""
     if not (HAS_XFORMERS and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
         return False
     if context.seq_info is None or context.attention_mask is not None or not Q.is_cuda:
         return False
     if torch.float32 not in (Q.dtype, K.dtype, V.dtype):
         return False
-    # Dropout and ring attention reach SDPA for their own reasons.
     if (config.sdpa_kwargs or {}).get("dropout_p") or _ring_attention_active():
         return False
-    # Deterministic mode keeps per-segment SDPA, as _torch_varlen_takes does: xformers' flash backward
-    # is non-deterministic. sm_100+ downcasts to that flash op, which has no head_dim above 256.
+    # xformers' flash backward is non-deterministic, and sm_100+ (downcast to it) lacks head_dim > 256.
     if torch.are_deterministic_algorithms_enabled():
         return False
     if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
@@ -877,8 +873,6 @@ def _run_attention(
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
     xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
-    # The packed route prefers torch's kernels only for what varlen takes: fp32 Q/K/V (DoRA) would
-    # otherwise fall to one SDPA launch per segment run, so keep xformers' single block-diagonal call.
     if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
         backend = XFORMERS
     if _DEVICE_BACKENDS is not None and backend != SDPA:
