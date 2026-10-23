@@ -10,6 +10,7 @@ import importlib.util
 import itertools
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -234,7 +235,8 @@ def test_the_venv_and_its_runtime_are_mirrored_and_caches_stay_additive(
         cluster._PYTHON_RUNTIME_LABEL: True,
         "HF cache": False,
     }
-    assert not any(deleting(force = True).values())
+    # --force only bypasses the busy-peer refusal; the venv mirror stays exact.
+    assert deleting(force = True) == deleting(force = False)
 
 
 def test_switched_setup_labels_each_block_with_its_own_node(cluster, capsys) -> None:
@@ -310,3 +312,59 @@ def test_an_update_of_a_paired_install_says_the_peer_needs_provisioning() -> Non
     start = text.index('if [ "$_sp_state" = "configured" ]; then')
     block = text[start : text.index("return 0", start)]
     assert "studio.spark_cluster provision" in block and "unsloth spark provision" in block
+
+
+@pytest.mark.parametrize(
+    "batch, microbatches, seq, needle",
+    [
+        (0, 1, 512, "--batch (0) must be at least 1."),
+        (-8, 4, 512, "--batch (-8) must be at least 1."),
+        (8, 0, 512, "--microbatches (0) must be at least 1."),
+        (8, 4, 1, "--seq (1) must be at least 2"),
+        (8, 4, 0, "--seq (0) must be at least 2"),
+        (10, 4, 512, "--batch (10) must be a multiple of --microbatches (4)"),
+    ],
+)
+def test_estimate_refuses_the_shapes_train_refuses(
+    cluster, monkeypatch, capsys, batch, microbatches, seq, needle
+) -> None:
+    monkeypatch.setattr(cluster, "is_dgx_spark", lambda: True)
+    monkeypatch.setattr(cluster, "model_size_report", lambda m: {"gib": 1.0, "why": ""})
+    monkeypatch.setattr(cluster, "bf16_resident_gib", lambda m: None)
+    monkeypatch.setattr(
+        cluster, "model_dimensions", lambda m: {"hidden": 64, "layers": 2, "vocab": 128}
+    )
+    monkeypatch.setattr(cluster, "peer_ip_for", lambda: None)
+    assert cluster.training_shape_error(batch, microbatches, seq) is not None
+    assert cluster._cmd_estimate("m", batch, microbatches, seq, False, False) == 2
+    out = capsys.readouterr().out
+    assert needle in out and "OK:" not in out
+    # A valid shape still estimates.
+    assert cluster.training_shape_error(8, 4, 512) is None
+    assert cluster._cmd_estimate("m", 8, 4, 512, False, False) == 0
+
+
+def test_a_directory_holding_one_gguf_is_served_by_llama_cpp(cluster, tmp_path) -> None:
+    model_dir = tmp_path / "my model"
+    model_dir.mkdir()
+    (model_dir / "m-Q4_K_M.gguf").write_bytes(b"x" * 16)
+    (model_dir / "README.md").write_text("card")
+    gguf = str(model_dir / "m-Q4_K_M.gguf")
+    for axis in ("single", "replicas", "layer-split"):
+        lines = cluster._serve_commands(axis, 2, str(model_dir))
+        text = "\n".join(lines)
+        assert not any(line.startswith("vllm serve") for line in lines), (axis, text)
+        assert "ray start" not in text, (axis, text)
+        assert shlex.quote(gguf) in text, (axis, text)
+    # A sharded GGUF series is pointed at shard 1.
+    shard_dir = tmp_path / "shards"
+    shard_dir.mkdir()
+    for i in (2, 1):
+        (shard_dir / f"m-0000{i}-of-00002.gguf").write_bytes(b"x" * 8)
+    single = cluster._serve_commands("single", 1, str(shard_dir))[0]
+    assert str(shard_dir / "m-00001-of-00002.gguf") in single and "vllm" not in single
+    # A safetensors directory still goes to vLLM.
+    hf_dir = tmp_path / "hf"
+    hf_dir.mkdir()
+    (hf_dir / "model.safetensors").write_bytes(b"x" * 8)
+    assert cluster._serve_commands("single", 1, str(hf_dir))[0].startswith("vllm serve")
