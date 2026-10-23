@@ -464,8 +464,15 @@ jobs:
               --ignore=tests/sh
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
+              --ignore-glob=tests/test_fsdp2*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
+          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
+          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
+          # beside it instead.
+          - shard: fsdp2
+            selection: >-
+              tests/test_fsdp2*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -485,7 +492,7 @@ jobs:
             studio/backend/requirements/*.txt
 
       # node and uv are optional; dependent suites self-skip without them.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 

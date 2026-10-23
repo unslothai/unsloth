@@ -23,6 +23,9 @@ name: Windows Unsloth GGUF CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # What the phases exercise: the backend's OpenAI and Anthropic surfaces over the
       # Windows llama.cpp prebuilt, the installer chain and the CLI. studio/frontend/**
@@ -131,6 +134,7 @@ jobs:
   # phase, earlier phases' logs survive it, and later phases still run -- the
   # same independence the three jobs had.
   inference-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: GGUF inference smoke (API, tools, vision)
     runs-on: windows-latest
     # Was 30 + 30 + 35 across three runners. Sequentially they share one install,
@@ -217,7 +221,7 @@ jobs:
           Write-Host "uninstall.ps1 parsed with no errors"
           pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -622,7 +626,7 @@ jobs:
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-openai-anthropic-log
           path: |
@@ -1118,7 +1122,7 @@ jobs:
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-tool-calling-log
           path: |
@@ -1507,7 +1511,7 @@ jobs:
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-json-images-log
           path: |
@@ -1518,6 +1522,7 @@ jobs:
 
   # ── folded from studio-windows-no-vs-smoke.yml: install + run with no Visual Studio ──
   no-vs-cpu:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth install + inference without Visual Studio
     runs-on: windows-latest
     timeout-minutes: 35
@@ -1537,7 +1542,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -1818,7 +1823,7 @@ jobs:
       - name: Upload logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-no-vs-cpu-log
           path: |
@@ -1852,6 +1857,7 @@ jobs:
   # of them writes the VC++ registry keys the round-trip reads as ground truth,
   # so its clean-box precondition still holds when it starts.
   small-checks:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -2051,7 +2057,7 @@ jobs:
 
       - name: Upload Pester results
         if: ${{ always() && contains(matrix.phases, ' pester ') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: pester-results-setup-ps1
           path: pester-results.xml

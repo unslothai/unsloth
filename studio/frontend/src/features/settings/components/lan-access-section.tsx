@@ -21,9 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
 import {
   loadLanAccess,
+  publishLanUrls,
   startLanAccess,
   stopLanAccess,
   updateLanAccessAddresses,
@@ -42,8 +42,8 @@ import {
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
-  lanApiUrls,
   sameLanAccessAddresses,
+  staleLanUrls,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -55,6 +55,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
+import { LineBox } from "@/components/ui/line-box";
 
 type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
@@ -157,7 +158,7 @@ function LanUrlQrButton({ url }: { url: string }) {
             Scan from a device on the same network to open this address.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -204,6 +205,13 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
     return null;
   }
   const single = status.urls.length === 1;
+  const stale = new Set(staleLanUrls(status));
+  const keylessInference =
+    // "full" stays localhost-only, so only "inference" reaches LAN callers.
+    status.keylessScope === "inference" && status.keylessLanEligible;
+  const keylessNote = keylessInference
+    ? "Anyone on this network can use the inference API without a key. "
+    : "";
   return (
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
@@ -215,26 +223,41 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
         ) : null}
       </div>
       {status.urls.map((url) => (
-        <div key={url} className="flex items-center gap-2">
-          <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-            {url}
-          </code>
-          {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+        <div key={url} className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <LineBox as="code" className="block w-full min-w-0 break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+              {url}
+            </LineBox>
+            {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+          </div>
+          {stale.has(url) ? (
+            <span className="text-xs text-destructive leading-snug">
+              This address is no longer on this computer, so nothing reaches it.
+              Stop and start LAN access to use the current one.
+            </span>
+          ) : null}
         </div>
       ))}
       {status.publicUrls.length > 0 ? (
         <span className="text-xs text-destructive leading-snug">
+          {keylessNote}
           {status.publicUrls[0]} is a public internet address, so this reaches
           beyond your local network. Anyone who has the password or an API key
           can sign in and run code on this machine.
         </span>
       ) : (
         <span className="text-xs text-muted-foreground leading-snug">
+          {keylessNote}
           {status.servesWebUi
             ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
             : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}
         </span>
       )}
+      <span className="text-xs text-muted-foreground leading-snug">
+        Can't connect from another device? Allow Unsloth through this computer's
+        firewall, and check both devices are on the same network (guest Wi-Fi
+        often keeps devices apart).
+      </span>
     </div>
   );
 }
@@ -259,7 +282,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
-    usePlatformStore.setState({ lanUrls: lanApiUrls(next) });
+    publishLanUrls(next);
   }, []);
 
   useEffect(() => {
@@ -293,6 +316,10 @@ export function LanAccessSection() {
     };
     const poll = () => {
       if (pollSuppressed.current) {
+        return;
+      }
+      if (document.hidden) {
+        schedule();
         return;
       }
       const epoch = mutationEpoch.current;
@@ -428,7 +455,7 @@ export function LanAccessSection() {
   return (
     <section
       data-settings-label="LAN access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
@@ -446,7 +473,7 @@ export function LanAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices on your Wi-Fi or wired
+              Use Unsloth and its APIs from devices on your Wi-Fi or wired
               network.
             </p>
           </div>
@@ -454,8 +481,8 @@ export function LanAccessSection() {
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          className="shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -473,7 +500,7 @@ export function LanAccessSection() {
         {status?.portConfigurationSupported ? (
           <SettingsRow
             label="Port"
-            description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
+            description="Automatic tries 8888, then 8889–8908. Custom uses only that port. Stop LAN access to change it."
             // Always mounted, even when empty: a live region has to exist before its
             // text changes for the change to be announced.
             below={
@@ -502,7 +529,7 @@ export function LanAccessSection() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-28"
+                  className="w-32"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -549,7 +576,7 @@ export function LanAccessSection() {
           <>
             <SettingsRow
               label="Addresses"
-              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it, and save before starting."
+              description="Automatic uses every address this machine has, public ones included. Choose limits it to the ones you tick, like a Tailscale address. Stop LAN access to change it; save before starting."
               below={
                 <span
                   id={addressErrorId}
@@ -580,7 +607,7 @@ export function LanAccessSection() {
                 >
                   <SelectTrigger
                     size="sm"
-                    className="w-28"
+                    className="w-32"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />
@@ -666,7 +693,7 @@ export function LanAccessSection() {
         </SettingsRow>
         <SettingsRow
           label="Start automatically"
-          description="Put Unsloth on the network each time it starts. Stopping LAN access now won’t turn this off."
+          description="Put Unsloth on the network each time it starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}

@@ -102,11 +102,27 @@ export function resolveDeferredQueuedModelSettings(
   };
 }
 
-/** A queued send may only fill in the model of a row that was written without one. */
-export function shouldPersistResolvedQueuedModel(
-  storedThread: { modelId?: string | null } | null | undefined,
+/** A chat remembers the model it last sent to, so reopening it offers that one back. Compare panes
+ *  keep the model they were opened with: their labels and pairing read it. An unknown variant
+ *  never clears a saved one for the same model. */
+export function shouldPersistRunModel(
+  storedThread:
+    | {
+        modelId?: string | null;
+        modelGgufVariant?: string | null;
+        pairId?: string | null;
+      }
+    | null
+    | undefined,
+  modelId: string,
+  modelGgufVariant: string | null,
 ): boolean {
-  return Boolean(storedThread && !storedThread.modelId);
+  if (!storedThread || !modelId || storedThread.pairId) return false;
+  if (storedThread.modelId !== modelId) return true;
+  return (
+    modelGgufVariant != null &&
+    modelGgufVariant !== (storedThread.modelGgufVariant ?? null)
+  );
 }
 
 export function registerQueuedChatRunSettings(

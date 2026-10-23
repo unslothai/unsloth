@@ -73,6 +73,11 @@ const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
+/// Absent or unreadable = shown, so a hidden start never loses its only way back (see `.setup`).
+const TRAY_ICON_VISIBLE_PREFERENCE_FILE: &str = "tray-icon-visible-v1";
+
+const TRAY_ID: &str = "main";
+
 /// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
 /// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
 /// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
@@ -220,6 +225,60 @@ fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<()
     })
 }
 
+fn tray_icon_visible_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(TRAY_ICON_VISIBLE_PREFERENCE_FILE)
+}
+
+fn read_tray_icon_visible_preference(config_dir: &Path) -> bool {
+    let path = tray_icon_visible_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(visible) => visible,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid tray icon visibility preference {}: {error}",
+                    path.display()
+                );
+                true
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "Could not read tray icon visibility preference {}: {error}",
+                path.display()
+            );
+            true
+        }
+    }
+}
+
+fn write_tray_icon_visible_preference(config_dir: &Path, visible: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = tray_icon_visible_preference_path(config_dir);
+    fs::write(&path, format!("{visible}\n")).map_err(|error| {
+        format!(
+            "Failed to save tray icon visibility preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn stored_tray_icon_visible_preference(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| read_tray_icon_visible_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            true
+        })
+}
+
 fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
     config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
 }
@@ -326,6 +385,52 @@ fn set_close_to_tray(
     Ok(enabled)
 }
 
+#[tauri::command]
+fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
+    cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
+}
+
+/// tray-icon rebuilds the status item on show, so the appearance observer must follow it.
+fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
+    tray.set_visible(visible)?;
+    #[cfg(target_os = "macos")]
+    if visible {
+        if let Err(error) = macos_tray::install_appearance_observer(tray) {
+            // The template icon remains visible and adaptive if native observation is unavailable.
+            warn!("Could not install the macOS tray appearance observer: {error}");
+        }
+    } else {
+        macos_tray::remove_appearance_observer();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar icon is only configurable on macOS".to_string());
+    }
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Menu bar icon is not available".to_string())?;
+    let previous = stored_tray_icon_visible_preference(&app);
+    apply_tray_icon_visible(&tray, enabled)
+        .map_err(|error| format!("Could not update the menu bar icon: {error}"))?;
+    let persisted = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+        .and_then(|config_dir| write_tray_icon_visible_preference(&config_dir, enabled));
+    if let Err(error) = persisted {
+        // Keep the icon matching the preference the next launch will read.
+        if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
+            warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
+        }
+        return Err(error);
+    }
+    Ok(enabled)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MainWindowCloseAction {
     Hide,
@@ -341,6 +446,9 @@ fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
         MainWindowCloseAction::Quit
     }
 }
+
+/// Passed to the app by every login entry; `--hidden` keeps it in the tray.
+const AUTOSTART_ARGS: &[&str] = &["--hidden"];
 
 /// The autostart state as the OS records it.
 ///
@@ -372,16 +480,58 @@ fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
     autostart_enabled(&app)
 }
 
+/// auto-launch 0.6 defaults to `Dynamic`, which writes HKLM when elevated (every account starts
+/// it, and the HKCU-only readers here miss it); `CurrentUser` keeps 0.5's HKCU behaviour.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_autostart_builder(name: &str, exe: &str) -> auto_launch::AutoLaunchBuilder {
+    let mut builder = auto_launch::AutoLaunchBuilder::new();
+    builder
+        .set_app_name(name)
+        .set_app_path(exe)
+        .set_args(AUTOSTART_ARGS)
+        .set_windows_enable_mode(auto_launch::WindowsEnableMode::CurrentUser);
+    builder
+}
+
+/// disable() first clears a value an older elevated build left in HKLM (a second copy at login).
+#[cfg(windows)]
+fn enable_windows_autostart(name: &str, exe: &str) -> Result<(), String> {
+    windows_autostart_builder(name, exe)
+        .build()
+        .and_then(|launcher| {
+            let _ = launcher.disable();
+            launcher.enable()
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// The plugin sets no Windows mode, so Windows enables via `windows_autostart_builder`; disable
+/// stays on the plugin, which clears both hives.
+fn enable_autostart_entry(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        enable_windows_autostart(&app.package_info().name, &exe.display().to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch()
+            .enable()
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    let autolaunch = app.autolaunch();
-    let result = if enabled {
-        autolaunch.enable()
+    if enabled {
+        enable_autostart_entry(&app)?;
     } else {
-        autolaunch.disable()
-    };
-    result.map_err(|error| error.to_string())?;
+        app.autolaunch()
+            .disable()
+            .map_err(|error| error.to_string())?;
+    }
     if enabled {
         harden_autostart_entry(&app);
     }
@@ -674,7 +824,6 @@ fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
 /// A moved or re-downloaded AppImage leaves a stale path that `is_enabled` still accepts, so
 /// repoint the entry at the current executable on every startup.
 fn reconcile_autostart_entry(app: &tauri::AppHandle) {
-    use tauri_plugin_autostart::ManagerExt;
     // A dev run would repoint the entry at target/debug.
     if cfg!(debug_assertions) {
         return;
@@ -692,7 +841,7 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     } else if !restore_missing_autostart_entry(app) {
         return;
     }
-    if app.autolaunch().enable().is_ok() {
+    if enable_autostart_entry(app).is_ok() {
         harden_autostart_entry(app);
     }
 }
@@ -1870,7 +2019,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
 
-    let tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Unsloth")
         .icon(tray_icon)
@@ -1896,9 +2045,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-        // The template icon remains visible and adaptive if native observation is unavailable.
-        warn!("Could not install the macOS tray appearance observer: {error}");
+    {
+        let visible = stored_tray_icon_visible_preference(app.handle());
+        if let Err(error) = apply_tray_icon_visible(&tray, visible) {
+            warn!("Could not apply the stored tray icon visibility: {error}");
+        }
     }
     #[cfg(not(target_os = "macos"))]
     drop(tray);
@@ -2242,10 +2393,11 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(webview_cache_plugin())
+        .plugin(browser_webview::page_guard_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec!["--hidden"]),
+            Some(AUTOSTART_ARGS.to_vec()),
         ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -2273,7 +2425,7 @@ fn main() {
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
-                invoke.resolver.reject("Studio commands are only available to the main webview");
+                invoke.resolver.reject("Unsloth commands are only available to the main webview");
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
@@ -2282,6 +2434,7 @@ fn main() {
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,
             browser_webview::browser_view_navigate,
+            browser_webview::browser_view_grant,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,
@@ -2383,6 +2536,8 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            get_tray_icon_visible,
+            set_tray_icon_visible,
             set_tray_server_status,
             ];
             handler(invoke)
@@ -2393,7 +2548,8 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             let _ = launched_hidden;
             #[cfg(target_os = "macos")]
-            if launched_hidden {
+            // Without a menu bar icon the Dock icon is the only way back to a hidden start.
+            if launched_hidden && stored_tray_icon_visible_preference(app.handle()) {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
@@ -2755,6 +2911,25 @@ media-src 'self' https:"
     }
 
     #[test]
+    fn tray_icon_visible_preference_defaults_on_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), false).unwrap();
+        assert!(!read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), true).unwrap();
+        assert!(read_tray_icon_visible_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_tray_icon_visible_preference_falls_back_to_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(tray_icon_visible_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
+    }
+
+    #[test]
     fn launch_at_login_preference_round_trips_and_starts_with_no_record() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -2810,6 +2985,66 @@ media-src 'self' https:"
         // No state byte at all is no state Windows recorded, and it starts such an entry.
         assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
         assert!(!startup_approved_disabled(&[]));
+    }
+
+    #[test]
+    fn windows_autostart_entry_is_written_for_the_current_user() {
+        let exe = r"C:\Users\A B\AppData\Local\Unsloth\unsloth.exe";
+        let builder = windows_autostart_builder("Unsloth", exe);
+        assert_eq!(
+            builder.windows_enable_mode,
+            auto_launch::WindowsEnableMode::CurrentUser
+        );
+        assert_eq!(builder.app_name.as_deref(), Some("Unsloth"));
+        assert_eq!(builder.app_path.as_deref(), Some(exe));
+        assert_eq!(builder.args, Some(vec!["--hidden".to_string()]));
+        assert_eq!(
+            quoted_windows_run_command(&format!("{exe} --hidden")).as_deref(),
+            Some(format!("\"{exe}\" --hidden").as_str())
+        );
+    }
+
+    /// Real registry: `Dynamic` writes HKLM when elevated; ours writes HKCU only and clears HKLM.
+    #[cfg(windows)]
+    #[test]
+    fn windows_enable_writes_hkcu_and_clears_a_legacy_hklm_value() {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+        use winreg::RegKey;
+        const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        let name = format!("Unsloth autostart test {}", std::process::id());
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let has = |hive, name: &str| {
+            RegKey::predef(hive)
+                .open_subkey_with_flags(RUN, KEY_QUERY_VALUE)
+                .and_then(|key| key.get_value::<String, _>(name))
+                .is_ok()
+        };
+        let elevated = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey_with_flags(RUN, KEY_SET_VALUE)
+            .is_ok();
+        // Hosted runners are elevated; without that the HKLM half below would pass untested.
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            assert!(elevated, "CI runner is not elevated");
+        }
+        if elevated {
+            let dynamic = auto_launch::AutoLaunchBuilder::new()
+                .set_app_name(&name)
+                .set_app_path(&exe)
+                .set_args(AUTOSTART_ARGS)
+                .build()
+                .unwrap();
+            dynamic.enable().unwrap();
+            assert!(has(HKEY_LOCAL_MACHINE, &name));
+        }
+        for _ in 0..2 {
+            enable_windows_autostart(&name, &exe).unwrap();
+            assert!(has(HKEY_CURRENT_USER, &name));
+            assert!(!has(HKEY_LOCAL_MACHINE, &name));
+        }
+        let launcher = windows_autostart_builder(&name, &exe).build().unwrap();
+        launcher.disable().unwrap();
+        assert!(!has(HKEY_CURRENT_USER, &name));
+        eprintln!("elevated={elevated}");
     }
 
     /// A re-enabled entry is present and on, so it is adopted and never restored over.

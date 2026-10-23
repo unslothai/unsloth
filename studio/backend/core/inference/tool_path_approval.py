@@ -99,7 +99,26 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/var/lib",
     "/proc",
     "/sys",
-    "/dev",
+    # Named pseudo-devices and accelerator nodes only: a raw disk or /dev/mem read is the host's data
+    # and asks. Mirrors tool_confinement._DEVICE_NODES / _ACCELERATOR_NODES.
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/pts",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-caps",
+    *(f"/dev/nvidia{index}" for index in range(64)),
+    "/dev/dri",
+    "/dev/kfd",
     # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
     # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
     "/run",
@@ -126,7 +145,23 @@ _WRITABLE_RUNTIME_SUBTREES = tuple(
     os.path.normcase(part)
     # `/dev/fd/<n>` is the same kernel link `/proc/self/fd/<n>` is, and it reaches whatever the
     # descriptor was opened on, so it is no more a property of /dev than the /proc spellings are.
-    for part in ("/dev/shm", "/dev/mqueue", "/dev/fd", "/run/user", "/run/lock")
+    # /run/media, /run/mount and /run/host are user storage (removable drives, a container's host root).
+    for part in (
+        "/dev/shm",
+        "/dev/mqueue",
+        "/dev/fd",
+        "/run/user",
+        "/run/lock",
+        "/run/media",
+        "/run/mount",
+        "/run/host",
+    )
+)
+
+
+# User-storage mounts: a configured root on one (model folder, HF cache) still covers paths under it.
+_USER_STORAGE_MOUNTS = tuple(
+    os.path.normcase(part) for part in ("/run/media", "/run/mount", "/run/host")
 )
 
 
@@ -145,6 +180,9 @@ _WRITE_SILENT_DEVICE_NODES = (
 # Roots are resolved from settings and a sqlite table, so they are cached rather than rebuilt per token. A stale entry
 # only ever costs (or spares) one approval prompt, so a short TTL beats invalidation plumbing.
 _SILENT_ROOT_TTL_S = 60.0
+
+# Listing /dev yields node names only, like listing the filesystem root.
+_DEV_DIR = os.path.normcase(os.path.normpath("/dev"))
 
 
 _silent_roots_cache = None
@@ -459,6 +497,30 @@ def _contained_in(candidate: str, roots) -> bool:
     return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
 
 
+def _uncovered_runtime_subtree(path: str, roots) -> bool:
+    """*path* is in a writable runtime subtree that no silent root on user storage covers."""
+    return _contained_in(path, _WRITABLE_RUNTIME_SUBTREES) and not _contained_in(
+        path, tuple(root for root in roots if _contained_in(root, _USER_STORAGE_MOUNTS))
+    )
+
+
+def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
+    """*candidate* sits under a root that is itself a link INTO a runtime subtree (`/dev/stdout` ->
+    `/dev/fd/1`), and *resolved* stays inside that link's target. A root linking to a broad directory
+    (`/var/run` -> `/run`) exempts nothing, or it would cover every runtime subtree under it."""
+    for root in roots:
+        if not _contained_in(candidate, (root,)):
+            continue
+        target = _resolved_fs_text(root)
+        if (
+            target != root
+            and _contained_in(target, _WRITABLE_RUNTIME_SUBTREES)
+            and _contained_in(resolved, (target,))
+        ):
+            return True
+    return False
+
+
 def _resolved_fs_text(text: str) -> str:
     """*text* with its symlinked components resolved, folded the way the roots are."""
     try:
@@ -531,7 +593,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # that folds to `os.sep`, or everything would be silent). Reading it yields the top-level names
     # and nothing else, so `ls /` asked for approval while `ls /usr` did not. Exact match only:
     # anything UNDER it is still decided by the roots below.
-    if not writing and candidate == os.sep:
+    if not writing and candidate in (os.sep, _DEV_DIR):
         return False
     # `/proc/<pid>/root`, `/cwd` and `/fd/<n>` are kernel magic symlinks: the kernel resolves them
     # before anything that follows, so `/proc/self/root/home/alice/report.txt` opens the very file
@@ -542,13 +604,11 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
     # user's own processes write into, so a read there is a read of somebody's data, not of the
     # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
-    if any(
-        candidate == root or candidate.startswith(root + os.sep)
-        for root in _WRITABLE_RUNTIME_SUBTREES
-    ):
-        return True
+    # Exception: a silent root INSIDE /run/media, /run/mount or /run/host covers it; `/run` itself never does.
     read_roots, write_roots = _silent_roots()
     roots = write_roots if writing else read_roots
+    if _uncovered_runtime_subtree(candidate, roots):
+        return True
     if not _contained_in(candidate, roots):
         return True
     # On a managed install the shared projects and tmp bases hold every account's own subtree, so a
@@ -562,10 +622,24 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # allowed rather than on every token. A link planted between this and the open is not covered;
     # that TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
-    # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
-    # macOS `/tmp`, `/dev/stdout`) would otherwise reject everything under it.
-    if resolved != candidate and not _contained_in(resolved, roots):
-        if not _contained_in(resolved, tuple(_resolved_fs_text(r) for r in roots)):
+    if resolved != candidate:
+        lexical_roots = roots
+        # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
+        # macOS `/tmp`, `/dev/stdout`, `/models -> /run/media/...`) would otherwise reject everything under it.
+        if not _contained_in(resolved, roots) or _contained_in(
+            resolved, _WRITABLE_RUNTIME_SUBTREES
+        ):
+            roots = roots + tuple(_resolved_fs_text(r) for r in roots)
+        if not _contained_in(resolved, roots):
+            return True
+        # Same carve-out for the target (a link may point into /run/user, held by the broad `/run` root).
+        # Exempt only when it follows its own root link: macOS `/dev/stdout` -> `/dev/fd/1` (`2> /dev/stderr`).
+        if _uncovered_runtime_subtree(resolved, roots) and not _follows_its_own_root_link(
+            candidate, resolved, lexical_roots
+        ):
+            return True
+        # And the account segment: a link can hide `Accounts/<other>/...` behind an innocent name.
+        if _names_a_managed_account_subtree(resolved):
             return True
     # Inside a silent root, so only a credential underneath one still asks. Running the (superlinear) credential
     # scan only here, rather than on every operand, keeps the ordering guarantee at a fraction of the cost:

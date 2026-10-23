@@ -531,6 +531,22 @@ def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[
     return pages, total_pages
 
 
+def mupdf_document_text(path: str) -> str:
+    """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
+    import pymupdf
+
+    with pymupdf.open(path) as doc:
+        # A tall page keeps paragraphs from splitting at page breaks.
+        doc.layout(width = 1000, height = 100000, fontsize = 11)
+        paragraphs = [
+            " ".join(block[4].split())
+            for page in doc
+            for block in page.get_text("blocks")
+            if block[6] == 0
+        ]
+    return "\n\n".join(p for p in paragraphs if p)
+
+
 def _merge_rects(boxes: list) -> list:
     """Union overlapping rectangles (largest-first) into figure regions."""
     import pymupdf
@@ -738,6 +754,54 @@ _DOCX_MATH_ROWS = {
     "m": ("mr", " \\\\ "),
     "mr": ("e", " & "),
 }
+# Symbol-font characters from 0x20, as mammoth (the + attachment reader) maps them.
+_DOCX_SYMBOL_FONTS = {
+    "symbol": (
+        " !∀#∃%&∍()*+,−./0123456789:;<=>?"
+        "≅ΑΒΧΔΕΦΓΗΙϑΚΛΜΝΟΠΘΡΣΤΥςΩΞΨΖ[∴]⊥_"
+        "‾αβχδεφγηιϕκλμνοπθρστυϖωξψζ{|}~\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "€ϒ′≤⁄∞ƒ♣♦♥♠↔←↑→↓°±″≥×∝∂•÷≠≡≈…⏐⎯↵"
+        "ℵℑℜ℘⊗⊕∅∩∪⊃⊇⊄⊂⊆∈∉∠∇®©™∏√⋅¬∧∨⇔⇐⇑⇒⇓"
+        "◊〈®©™∑⎛⎜⎝⎡⎢⎣⎧⎨⎩⎪\0〉∫⌠⎮⌡⎞⎟⎠⎤⎥⎦⎫⎬⎭"
+    ),
+    "wingdings": (
+        " 🖉✂✁👓🕭🕮🕯🕿✆🖂🖃📪📫📬📭🗀🗁🗎🗏🗐🗄⌛🖮🖰🖲🖳🖴🖫🖬✇✍"
+        "🖎✌🖏👍👎☜☞☝☟🖐☺😐☹💣🕱🏳🏱✈☼🌢❄🕆✞🕈✠✡☪☯🕉☸♈♉"
+        "♊♋♌♍♎♏♐♑♒♓🙰🙵⚫🔾◼🞏🞐❑❒🞟⧫◆❖⬩⌧⮹⌘🏵🏶🙶🙷▯"
+        "🄋➀➁➂➃➄➅➆➇➈➉🄌➊➋➌➍➎➏➐➑➒➓🙢🙠🙡🙣🙞🙜🙝🙟∙•"
+        "⬝⭘🞆🞈🞊🞋🔿▪🞎🟁🟅★🟋🟏🟓🟑⯐⌖⯎⯏⯑✪✰🕐🕑🕒🕓🕔🕕🕖🕗🕘"
+        "🕙🕚🕛⮰⮱⮲⮳⮴⮵⮶⮷🙪🙫🙕🙔🙗🙖🙐🙑🙒🙓⌫⌦⮘⮚⮙⮛⮈⮊⮉⮋🡨"
+        "🡪🡩🡫🡬🡭🡯🡮🡸🡺🡹🡻🡼🡽🡿🡾⇦⇨⇧⇩⬄⇳⬁⬀⬃⬂🢬🢭🗶✓🗷🗹"
+    ),
+    "wingdings 2": (
+        " 🖊🖋🖌🖍✄✀🕾🕽🗅🗆🗇🗈🗉🗊🗋🗌🗍📋🗑🗔🖵🖶🖷🖸🖭🖯🖱🖒🖓🖘🖙"
+        "🖚🖛👈👉🖜🖝🖞🖟🖠🖡👆👇🖢🖣🖑🗴🗸🗵☑⮽☒⮾⮿🛇⦸🙱🙴🙲🙳‽🙹🙺"
+        "🙻🙦🙤🙥🙧🙚🙘🙙🙛⓪①②③④⑤⑥⑦⑧⑨⑩⓿❶❷❸❹❺❻❼❽❾❿\0"
+        "☉🌕☽☾⸿✝🕇🕜🕝🕞🕟🕠🕡🕢🕣🕤🕥🕦🕧🙨🙩⋅🞄⦁●○🞅🞇🞉⊙⦿🞌"
+        "🞍◾■□🞑🞒🞓🞔▣🞕🞖🞗🞘⬩⬥◇🞚◈🞛🞜🞝🞞⬪⬧◊🞠◖◗⯊⯋⯀⯁"
+        "⬟⯂⬣⬢⯃⯄🞡🞢🞣🞤🞥🞦🞧🞨🞩🞪🞫🞬🞭🞮🞯🞰🞱🞲🞳🞴🞵🞶🞷🞸🞹🞺"
+        "🞻🞼🞽🞾🞿🟀🟂🟄🟆🟉🟊✶🟌🟎🟐🟒✹🟃🟇✯🟍🟔⯌⯍※⁂"
+    ),
+    "wingdings 3": (
+        " ⭠⭢⭡⭣⭦⭧⭩⭨⭰⭲⭱⭳⭶⭸⭻⭽⭤⭥⭪⭬⭫⭭⭍⮠⮡⮢⮣⮤⮥⮦⮧"
+        "⮐⮑⮒⮓⮀⮃⭾⭿⮄⮆⮅⮇⮏⮍⮎⮌⭮⭯⎋⌤⌃⌥␣⍽⇪⮸🢠🢡🢢🢣🢤🢥"
+        "🢦🢧🢨🢩🢪🢫🡐🡒🡑🡓🡔🡕🡗🡖🡘🡙▲▼△▽◀▶◁▷◣◢◤◥🞀🞂🞁\0"
+        "🞃⯅⯆⯇⯈⮜⮞⮝⮟🠐🠒🠑🠓🠔🠖🠕🠗🠘🠚🠙🠛🠜🠞🠝🠟🠀🠂🠁🠃🠄🠆🠅"
+        "🠇🠈🠊🠉🠋🠠🠢🠤🠦🠨🠪🠬🢜🢝🢞🢟🠮🠰🠲🠴🠶🠸🠺🠹🠻🢘🢚🢙🢛🠼🠾🠽"
+        "🠿🡀🡂🡁🡃🡄🡆🡅🡇⮨⮩⮪⮫⮬⮭⮮⮯🡠🡢🡡🡣🡤🡥🡧🡦🡰🡲🡱🡳🡴🡵🡷"
+        "🡶🢀🢂🢁🢃🢄🢅🢇🢆🢐🢒🢑🢓🢔🢖🢕🢗"
+    ),
+    "webdings": (
+        " 🕷🕸🕲🕶🏆🎖🖇🗨🗩🗰🗱🌶🎗🙾🙼🗕🗖🗗⏴⏵⏶⏷⏪⏩⏮⏭⏸⏹⏺🗚🗳"
+        "🛠🏗🏘🏙🏚🏜🏭🏛🏠🏖🏝🛣🔍🏔👁👂🏞🏕🛤🏟🛳🕬🕫🕨🔈🎔🎕🗬🙽🗭🗪🗫"
+        "⮔✔🚲⬜🛡📦🛱⬛🚑🛈🛩🛰🟈🕴⬤🛥🚔🗘🗙❓🛲🚇🚍⛳⦸⊖🚭🗮⏐🗯🗲\0"
+        "🚹🚺🛉🛊🚼👽🏋⛷🏂🏌🏊🏄🏍🏎🚘🗠🛢💰🏷💳👪🗡🗢🗣✯🖄🖅🖃🖆🖹🖺🖻"
+        "🕵🕰🖽🖾📋🗒🗓🕮📚🗞🗟🗃🗂🖼🎭🎜🎘🎙🎧💿🎞📷🎟🎬📽📹📾📻🎚🎛📺💻"
+        "🖥🖦🖧🕹🎮🕻🕼📟🖁🖀🖨🖩🖿🖪🗜🔒🔓🗝📥📤🕳🌣🌤🌥🌦☁🌨🌧🌩🌪🌬🌫"
+        "🌜🌡🛋🛏🍽🍸🛎🛍Ⓟ♿🛆🖈🎓🗤🗥🗦🗧🛪🐿🐦🐟🐕🐈🙬🙮🙭🙯🗺🌍🌏🌎🕊"
+    ),
+}
 
 
 def _docx_placeholder(element) -> bool:
@@ -803,7 +867,9 @@ def _docx_math_text(element) -> str:
     if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
         return ""
     if tag == _W + "r":
-        return element.text
+        return _docx_run_text(element)
+    if tag == _W + "sym":
+        return _docx_symbol(element)
     if tag == _M + "t":
         return element.text or ""
     name = tag[len(_M) :] if tag.startswith(_M) else ""
@@ -875,12 +941,30 @@ def _docx_checkbox(field) -> str:
     return "☒" if ticked else "☐"
 
 
+def _docx_symbol(sym) -> str:
+    try:
+        code = int(sym.get(_W + "char") or "", 16)
+    except ValueError:
+        return ""
+    table = _DOCX_SYMBOL_FONTS.get((sym.get(_W + "font") or "").lower())
+    if table is not None and code >> 8 in (0, 0xF0):
+        index = (code & 0xFF) - 0x20
+        code = ord(table[index]) if 0 <= index < len(table) else 0
+    return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
+
+
 def _docx_run_text(run) -> str:
-    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None:
+    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None and run.find(_W + "sym") is None:
         return run.text
     return "".join(
-        _docx_checkbox(e) if e.tag == _W + "fldChar" else str(e)
-        for e in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar")
+        _docx_checkbox(e)
+        if e.tag == _W + "fldChar"
+        else _docx_symbol(e)
+        if e.tag == _W + "sym"
+        else str(e)
+        for e in run.xpath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym"
+        )
     )
 
 
