@@ -4055,6 +4055,20 @@ def _hub_safetensors_header_dtypes(
     return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
 
 
+def _hub_live_commit(repo_id, revision = None, token = None):
+    """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
+    network error). A branch or tag can move past what the cache holds; transformers' online
+    `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    try:
+        from huggingface_hub import HfApi
+
+        return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
+    except Exception:
+        return None
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -4138,6 +4152,12 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
+        if not local_files_only and not _env_says_offline():
+            # Cached files of a moved branch are stale: look them up under the commit it names now
+            # (a miss falls through to the live header read), as transformers' online resolver does.
+            live_commit = _hub_live_commit(model_name, revision, token)
+            if live_commit is not None:
+                hub["revision"] = live_commit
 
         def _hub_index_dtypes(index_file):
             try:
@@ -4158,7 +4178,7 @@ def _checkpoint_tensor_dtypes(
                 if local_files_only or not shard.endswith(".safetensors"):
                     return {}
                 remote = f"{subfolder}/{shard}" if subfolder else shard
-                return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
 
             return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
 
@@ -4173,7 +4193,7 @@ def _checkpoint_tensor_dtypes(
             if not local_files_only:
                 remote = f"{subfolder}/{st_single}" if subfolder else st_single
                 try:
-                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                    return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
                 except Exception:
                     pass
         if st_index:
@@ -4196,7 +4216,7 @@ def _checkpoint_tensor_dtypes(
 
             remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
             try:
-                exists = file_exists(model_name, remote, revision = revision, token = token)
+                exists = file_exists(model_name, remote, revision = hub["revision"], token = token)
             except Exception:
                 exists = False
             if exists:

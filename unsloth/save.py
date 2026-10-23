@@ -269,6 +269,9 @@ def _save_bare_params4bit_quant_state(model):
     except Exception:
         yield
         return
+    if not callable(getattr(model, "modules", None)):
+        yield
+        return
     handles = []
     try:
         for module in model.modules():
@@ -301,8 +304,10 @@ def _add_bare_params4bit_quant_state(model, state_dict):
     """A caller-supplied `state_dict` (`save_pretrained(path, state_dict = model.state_dict())`, the
     Trainer's saves) was built before `_save_bare_params4bit_quant_state` installed its hooks, and
     transformers writes it as given. Returns a copy with the same quant state entries added next to
-    each bare `Params4bit` it holds, or the dict itself when there is nothing to add."""
-    if not isinstance(state_dict, dict):
+    each bare `Params4bit` it holds, or the dict itself when there is nothing to add. The live quant
+    state is only attached to the live parameter's own packed bytes; other packed bytes need their
+    quant state in the dict (or on a `Params4bit` value), else this raises."""
+    if not isinstance(state_dict, dict) or not callable(getattr(model, "named_modules", None)):
         return state_dict
     try:
         from bitsandbytes.nn import Linear4bit, Params4bit
@@ -318,14 +323,60 @@ def _add_bare_params4bit_quant_state(model, state_dict):
             key = f"{module_name}.{name}" if module_name else name
             if key not in state_dict:
                 continue
-            for entry, value in param.quant_state.as_dict(packed = True).items():
-                if f"{key}.{entry}" not in state_dict:
-                    added[f"{key}.{entry}"] = value.detach()
+            supplied = state_dict[key]
+            quant_state = _supplied_params4bit_quant_state(param, supplied)
+            if quant_state is None:
+                continue
+            missing = {
+                f"{key}.{entry}": value
+                for entry, value in quant_state.as_dict(packed = True).items()
+                if f"{key}.{entry}" not in state_dict
+            }
+            if not missing:
+                continue
+            if quant_state is param.quant_state and not _is_live_params4bit_data(param, supplied):
+                # Packed bytes from elsewhere (an EMA snapshot, another checkpoint): the live
+                # parameter's absmax would describe different codes and silently corrupt the save.
+                raise ValueError(
+                    f"Unsloth: the `state_dict` passed to `save_pretrained` holds 4-bit packed "
+                    f"`{key}` that is not this model's parameter, and has no quantization state "
+                    f"for it ({', '.join(sorted(missing))}). Include those entries in the "
+                    f"`state_dict`, or save without passing one."
+                )
+            added.update({k: v.detach() for k, v in missing.items()})
     if not added:
         return state_dict
     out = dict(state_dict)
     out.update(added)
     return out
+
+
+def _is_live_params4bit_data(param, value):
+    """True when `value` is `param`'s packed data: the same storage, or equal bytes."""
+    if not isinstance(value, torch.Tensor):
+        return False
+    if value.shape != param.shape or value.dtype != param.dtype:
+        return False
+    if value.device == param.device and value.data_ptr() == param.data_ptr():
+        return True
+    try:
+        return bool(torch.equal(value.detach().to(param.device), param.data))
+    except Exception:
+        return False
+
+
+def _supplied_params4bit_quant_state(param, value):
+    """The QuantState describing a supplied `value` for the bare `Params4bit` `param`: the value's
+    own (a `Params4bit` from another model), else the live one when `value` is packed like `param`
+    (whether it is the live data is checked by the caller), else None (not 4-bit packed: leave it)."""
+    own = getattr(value, "quant_state", None)
+    if own is not None and hasattr(own, "as_dict"):
+        return own
+    if not isinstance(value, torch.Tensor):
+        return None
+    if value.shape != param.shape or value.dtype != param.dtype:
+        return None
+    return param.quant_state
 
 
 def _with_bare_params4bit_state_dict(model, original, args, kwargs):

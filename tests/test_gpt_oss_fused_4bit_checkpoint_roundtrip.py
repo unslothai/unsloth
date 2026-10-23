@@ -191,3 +191,55 @@ def test_full_save_with_a_supplied_state_dict_keeps_fused_quant_state(tmp_path, 
     assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, out) is True
     # The augmented dict is a copy (transformers may consume the dict it is given).
     assert not any(k.endswith(".absmax") or ".quant_state." in k for k in supplied)
+
+
+def _quantized_tiny_gpt_oss():
+    from unsloth.save import patch_saving_functions
+
+    model = _tiny_gpt_oss()
+    experts = model.model.layers[0].mlp.experts
+    for name in ("gate_up_proj", "down_proj"):
+        setattr(experts, name, _quantize_cpu(getattr(experts, name).data.normal_(0.0, 0.05)))
+    model.config.quantization_config = dict(BNB_QC, bnb_4bit_quant_type = "nf4")
+    patch_saving_functions(model)
+    return model, experts
+
+
+def test_supplied_foreign_packed_bytes_without_quant_state_are_refused(tmp_path):
+    """Packed expert bytes that are not the live parameter's (an EMA snapshot, another checkpoint)
+    must not be saved with the live parameter's absmax."""
+    pytest.importorskip("bitsandbytes")
+    model, experts = _quantized_tiny_gpt_oss()
+    supplied = {k: v.clone() for k, v in model.state_dict().items()}
+    key = f"{P}.experts.gate_up_proj"
+    supplied[key] = torch.randint_like(supplied[key], 0, 255)
+    assert not torch.equal(supplied[key], experts.gate_up_proj.data)
+    with pytest.raises(ValueError, match = "not this model's parameter"):
+        model.save_pretrained(str(tmp_path / "saved"), state_dict = supplied)
+
+
+def test_supplied_quant_state_and_cloned_live_bytes_are_kept(tmp_path):
+    """A supplied dict carrying its own quant state keeps it; cloned (equal) live bytes get the live one."""
+    bnb = pytest.importorskip("bitsandbytes")
+    model, experts = _quantized_tiny_gpt_oss()
+    shape = experts.gate_up_proj.quant_state.shape
+    other = _quantize_cpu(torch.randn(shape, dtype = torch.bfloat16).mul_(0.05))
+    supplied = {k: v.clone() for k, v in model.state_dict().items()}  # copies, not the live storage
+    key = f"{P}.experts.gate_up_proj"
+    supplied[key] = other.data.clone()
+    for entry, value in other.quant_state.as_dict(packed = True).items():
+        supplied[f"{key}.{entry}"] = value
+    out = str(tmp_path / "saved")
+    model.save_pretrained(out, state_dict = supplied)
+
+    saved = load_file(os.path.join(out, "model.safetensors"))
+    for name, want in (("gate_up_proj", other), ("down_proj", experts.down_proj)):
+        k = f"{P}.experts.{name}"
+        stats = {s[len(k) + 1 :]: v for s, v in saved.items() if s.startswith(k + ".")}
+        restored = bnb.nn.Params4bit.from_prequantized(
+            data = saved[k], quantized_stats = stats, requires_grad = False, device = "cpu"
+        )
+        torch.testing.assert_close(
+            bnb.functional.dequantize_4bit(restored.data, restored.quant_state),
+            bnb.functional.dequantize_4bit(want.data, want.quant_state),
+        )
