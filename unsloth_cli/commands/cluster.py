@@ -57,15 +57,8 @@ def _registry(identity: Any) -> Any:
 
 
 def _addresses(peer: Any) -> List[Tuple[str, int]]:
-    default = int(getattr(peer, "agent_port", 0) or 0)
-    out: List[Tuple[str, int]] = []
-    for addr in getattr(peer, "addrs", None) or []:
-        host, sep, port = str(addr).rpartition(":")
-        if sep and host and port.isdigit() and ":" not in host:
-            out.append((host, int(port)))
-        elif addr and default:
-            out.append((str(addr), default))
-    return out
+    from studio.cluster_link.model import peer_addresses
+    return peer_addresses(peer)
 
 
 def parse_duration(text: str) -> float:
@@ -273,9 +266,7 @@ def pair(
     """Print a one-time token that adds one worker to this machine's cluster."""
     identity = _link(crypto = True)
     from studio.cluster_link import PAIR_PORT_DEFAULT
-    from studio.cluster_link.pairing import PairingWindow
-
-    from studio.cluster_link.pairing import PairingError
+    from studio.cluster_link.pairing import PairingError, PairingWindow
 
     seconds = parse_duration(ttl)
     try:
@@ -337,11 +328,7 @@ def join(
     """Pair this machine to a master as a worker."""
     _link(crypto = True)
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
-
-    try:
-        from studio.cluster_link.tokens import TokenError
-    except ImportError:
-        TokenError = PairingError
+    from studio.cluster_link.tokens import TokenError
 
     # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
     if token_stdin:
