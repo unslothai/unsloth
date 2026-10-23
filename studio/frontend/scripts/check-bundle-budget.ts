@@ -389,11 +389,12 @@ export const BUDGET = {
   // (a CI build measured about 100 B over a local one). Raised by that.
   // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
   // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
-  // Browser use step names in the agent bar (#14681): the step strings in the eager en locale, the executor's step
-  // bookkeeping and the tool card's fence strip: +930 B raw / +379 B transfer (6,920,526 -> 6,921,456 B raw,
-  // 2,084,371 -> 2,084,750 B transfer against 9a822f490b, Node 26, 97 chunks, one machine and build). Raised by that.
-  transferBytes: 2_084_837,
-  rawBytes: 6_921_245,
+  // Browser use step names in the agent bar (#14681): the step strings and docs link label in the eager en locale,
+  // the executor's step bookkeeping and the tool card's fence strip: +980 B raw / +383 B transfer (6,921,141 ->
+  // 6,922,121 B raw, 2,084,590 -> 2,084,973 B transfer against c2efedc690, Node 26, 97 chunks, one machine and
+  // build). Raised by that.
+  transferBytes: 2_085_220,
+  rawBytes: 6_922_225,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
