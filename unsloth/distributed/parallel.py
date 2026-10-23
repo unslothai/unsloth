@@ -412,6 +412,9 @@ def sft_loss(model, input_ids, labels, cp_group):
         position_ids = torch.arange(start, start + local, device = input_ids.device)
         position_ids = position_ids.unsqueeze(0).expand(input_ids.shape[0], -1)
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if not hasattr(base, "model") and hasattr(base, "language_model"):
+        # Multimodal shell (e.g. Kimi K3): the text backbone and lm_head live in language_model.
+        base = base.language_model
     outputs = base.model(input_ids = input_ids, position_ids = position_ids, use_cache = False)
     hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
     cfg = getattr(base, "config", None)
