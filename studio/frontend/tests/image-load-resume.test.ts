@@ -73,7 +73,7 @@ test("the page stores the pending load at start and clears it on every way a loa
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /lastLoad\.current = \{[\s\S]*?fieldFiles: \{[^}]*\},\s*\};[\s\S]{0,200}rememberPendingImageLoad\(lastLoad\.current\);/);
   // Success consumes it before the descriptor is checked against the status.
-  assert.match(source, /lastLoad\.current = finishedLoadTarget\(lastLoad\.current, loaded\);\s*if \(lastLoad\.current && matchesRememberedModel\(lastLoad\.current, loaded\)\)/);
+  assert.match(source, /lastLoad\.current = finishedLoadTarget\(lastLoad\.current, loaded\);\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded\);/);
   // Failed after starting, cancelled or evicted, refused at start, cancelled or ejected by the page, nothing to resume.
   assert.match(source, /if \(p\.phase === "error"\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /if \(p\.phase === null\) \{\s*clearPendingImageLoad\(\);/);
@@ -81,4 +81,30 @@ test("the page stores the pending load at start and clears it on every way a loa
   const drop = source.slice(source.indexOf("const dropResidentState = useCallback"));
   assert.ok(drop.slice(0, drop.indexOf("}, [dismissLoadToast")).includes("clearPendingImageLoad();"));
   assert.match(source, /if \(!inFlight\) clearPendingImageLoad\(\);/);
+});
+
+test("a load that finished while the page was closed records its paths before the descriptor is cleared", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const mount = source.slice(source.indexOf("inFlight = isLoadInFlightPhase(p.phase);"));
+  const probe = mount.slice(0, mount.indexOf("if (!inFlight) clearPendingImageLoad();"));
+  // The mount probe reads "ready": the poll that records finished loads never starts, so the mount reconciles the
+  // pending request with the resident build itself, the same way the poll does.
+  assert.match(
+    probe,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded\);/,
+  );
+  // The shared recorder saves the model and its component files only for the build that is resident.
+  const recorder = source.slice(source.indexOf("const rememberFinishedLoad = useCallback"));
+  const body = recorder.slice(0, recorder.indexOf("}, []);"));
+  assert.match(body, /if \(!matchesRememberedModel\(target, loaded\)\) return;/);
+  assert.match(body, /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);/);
+  assert.match(body, /rememberLoadedImageComponents\(target, loaded\)/);
+
+  // What the mount path then does with the store: the full typed paths survive into the per-model entry.
+  store.clear();
+  rememberPendingImageLoad({ ...zImage, fieldFiles: zFiles });
+  const resumed = finishedLoadTarget(null, ready);
+  assert.deepEqual(resumed?.fieldFiles, zFiles);
+  assert.deepEqual(rememberLoadedImageComponents(resumed!, ready), zFiles);
+  assert.deepEqual(readImageComponents(zImage), zFiles);
 });

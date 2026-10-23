@@ -3437,6 +3437,16 @@ export function ImagesPage({
   );
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
+  // Record a finished load's model and the component files it was started with (status names only basenames).
+  const rememberFinishedLoad = useCallback((target: LastLoad, loaded: DiffusionStatus) => {
+    if (!matchesRememberedModel(target, loaded)) return;
+    const remembered = withEngagedFamily(target, loaded);
+    rememberImageModel(remembered);
+    setRememberedModel(remembered);
+    const files = rememberLoadedImageComponents(target, loaded);
+    if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, target.kind);
+  }, []);
+
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
     const seq = cancelSeq.current;
@@ -3462,13 +3472,7 @@ export function ImagesPage({
         toast.success("Model loaded", evictedToastOptions(evicted));
         // A load resumed after a page reload takes its requested paths from the pending descriptor.
         lastLoad.current = finishedLoadTarget(lastLoad.current, loaded);
-        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
-          const remembered = withEngagedFamily(lastLoad.current, loaded);
-          rememberImageModel(remembered);
-          setRememberedModel(remembered);
-          const files = rememberLoadedImageComponents(lastLoad.current, loaded);
-          if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, lastLoad.current.kind);
-        }
+        if (lastLoad.current) rememberFinishedLoad(lastLoad.current, loaded);
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
@@ -3554,7 +3558,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -3626,6 +3630,15 @@ export function ImagesPage({
           lastLoadSig.current = null;
           loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
+        } else if (p.phase === "ready") {
+          // A load this page started finished while it was closed: record the paths it was started with, which
+          // the status cannot give back, before its pending descriptor goes.
+          const loaded = await getDiffusionStatus();
+          const resumed = finishedLoadTarget<LastLoad>(null, loaded);
+          if (resumed) {
+            lastLoad.current = resumed;
+            rememberFinishedLoad(resumed, loaded);
+          }
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3656,7 +3669,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
 
   // Seed the sliders from a resident model's recipe when the page finds one it did not load,
   // else a resident flux.1-dev generates garbage at 9 steps. Guarded by a per-repo ref.

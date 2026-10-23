@@ -131,7 +131,7 @@ test("a successful load stores the requested files per model and the page starts
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);\s*const files = rememberLoadedImageComponents\(lastLoad\.current, loaded\);/,
+    /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);\s*const files = rememberLoadedImageComponents\(target, loaded\);/,
   );
   // The requested files, not the load's: the native engine drops them from the request.
   assert.match(source, /const fieldFiles = componentFileFields\(opts\.kind, picked\.text_encoder_file, picked\.vae_file\);/);
@@ -294,7 +294,7 @@ test("a finished load owns the fields only while they show its files", () => {
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(componentFieldsShown\.current, files, componentFieldsOwner\.current, lastLoad\.current\.kind\);/,
+    /componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(componentFieldsShown\.current, files, componentFieldsOwner\.current, target\.kind\);/,
   );
 });
 
@@ -387,7 +387,7 @@ test("a resumed load the page did not start keeps the saved files it engages; a 
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /const files = rememberLoadedImageComponents\(lastLoad\.current, loaded\);\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
+    /const files = rememberLoadedImageComponents\(target, loaded\);\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
   );
 });
 

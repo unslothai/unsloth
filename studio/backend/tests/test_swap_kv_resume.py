@@ -491,3 +491,30 @@ def test_load_progress_is_unchanged_without_a_save(client, env, monkeypatch, cas
         "error": None,
         "error_code": None,
     }
+
+
+@pytest.mark.parametrize("saved", [True, False])
+@pytest.mark.parametrize("raises", [False, True])
+def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
+    env, monkeypatch, saved, raises
+):
+    # Chat's eviction and the VRAM wait run between the save and begin_load: a page resumed during the
+    # save must keep reading a load in flight there, not a null progress it would take for a cancel.
+    if not saved:
+        monkeypatch.setattr(env, "save_slots_for_resume", lambda should_abort: None)
+    seen = []
+
+    def acquire():
+        seen.append(cs.saving_progress("image"))
+        arb.acquire_for(arb.DIFFUSION)
+        seen.append(cs.saving_progress("image"))
+        if raises:
+            raise arb.GpuBusyForAnotherAccountError(arb.CHAT, 1)
+
+    try:
+        _load(acquire = acquire)
+    except arb.GpuBusyForAnotherAccountError:
+        assert raises
+    assert seen == [{"phase": cs.SAVING_CHAT_CONTEXT}] * 2
+    # Released once the acquire is done, whether it registered the load or failed.
+    assert cs.saving_progress("image") is None and cs._saving == {}
