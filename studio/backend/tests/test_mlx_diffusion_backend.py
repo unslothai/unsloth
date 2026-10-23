@@ -1868,3 +1868,12 @@ def test_release_buffer_cache_never_replaces_the_callers_exception():
         finally:
             mb.release_buffer_cache(mx)
     assert events == ["synchronize", "clear_cache"]
+
+
+def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
+    # The routed status reads it to offer the diffusers fallback's Shift control before that loads.
+    import fnmatch
+
+    from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
+    for name in ("scheduler/scheduler_config.json", "model_index.json"):
+        assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name

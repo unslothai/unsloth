@@ -58,6 +58,9 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    # A few hundred bytes: the routed status builds the diffusers fallback's Shift control from them.
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
