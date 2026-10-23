@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 
 import pytest
 import torch
@@ -165,15 +166,13 @@ def test_skips_a_torch_that_already_has_the_barrier(monkeypatch):
     assert fake.load is load
 
 
-def test_torch_without_custom_graph_pass_skips_the_fx_graph_cache(monkeypatch):
-    from torch._inductor import config as inductor_config
-
-    monkeypatch.setattr(inductor_config, "fx_graph_cache", True)
-    monkeypatch.setattr(inductor_config, "post_grad_custom_post_pass", None)
+def test_torch_without_custom_graph_pass_skips_the_fx_graph_cache():
+    # torch 2.4 / 2.5 config is a plain module; newer torch lets TORCHINDUCTOR_FX_GRAPH_CACHE override writes.
+    config = types.SimpleNamespace(fx_graph_cache = True, post_grad_custom_post_pass = None)
     fixes = _load_fixes("unsloth_import_fixes_readback_old")
-    fixes._key_inductor_caches_on_readback_barrier(inductor_config, None)  # torch 2.4 / 2.5
-    assert inductor_config.fx_graph_cache is False
-    assert inductor_config.post_grad_custom_post_pass is None
+    fixes._key_inductor_caches_on_readback_barrier(config, None)
+    assert config.fx_graph_cache is False
+    assert config.post_grad_custom_post_pass is None
 
 
 _GPU_RUNNER = textwrap.dedent(
