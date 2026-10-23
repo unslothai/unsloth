@@ -1577,7 +1577,9 @@ def native_clip_grad_norm_(
             if len(live) == len(idx):
                 values = torch.stack(norms).to(device)
             else:
-                values = torch.full((len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = dtype)
+                values = torch.full(
+                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = dtype
+                )
                 if live:
                     values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
             chunks.append(values)

@@ -32,8 +32,8 @@ NORM_TYPES = (0.0, 1.0, 2.0, 3.0, math.inf, -math.inf)
 # combine round once more than torch's single norm of the full tensor, a few ulp)
 CASES = {
     "float32": (torch.float32, 1e-5),
-    "bfloat16": (torch.bfloat16, 2 ** -6),
-    "float16": (torch.float16, 2 ** -8),
+    "bfloat16": (torch.bfloat16, 2**-6),
+    "float16": (torch.float16, 2**-8),
     "mixed": (None, 1e-5),
 }
 SHAPES = ((3, 4), (1, 5), (6, 2), (4,))  # (3, 4) uneven over 2 ranks, (1, 5) empty on rank 1
@@ -70,7 +70,9 @@ def _case(native, rank):
                         q = torch.nn.Parameter(torch.zeros_like(t))
                         q.grad = t.clone()
                     else:
-                        q = torch.nn.Parameter(distribute_tensor(torch.zeros_like(t), mesh, [Shard(0)]))
+                        q = torch.nn.Parameter(
+                            distribute_tensor(torch.zeros_like(t), mesh, [Shard(0)])
+                        )
                         q.grad = distribute_tensor(t.clone(), mesh, [Shard(0)])
                     params.append(q)
                 want = torch.nn.utils.clip_grad_norm_(ref, 0.5, norm_type = norm_type)
@@ -110,7 +112,6 @@ def _worker(rank, world, port, out):
         out.put((rank, _case(_load_native(), rank)))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
