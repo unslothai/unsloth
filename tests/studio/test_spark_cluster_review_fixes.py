@@ -415,3 +415,74 @@ def test_kv_per_user_is_read_through_a_gguf_directory_or_cached_repo(
     hf_dir.mkdir()
     (hf_dir / "model.safetensors").write_bytes(b"x" * 8)
     assert cluster.serving_kv_gib_per_user(str(hf_dir), 1024)["gib"] is None
+
+
+def _gguf_commands(plan) -> list:
+    return [c for c in plan["commands"] if "llama-server" in c or "spark serve" in c]
+
+
+@pytest.mark.parametrize(
+    "intent, concurrency, n_nodes, size, kv",
+    [
+        ("throughput", 16, 2, 10.0, 0.5),  # replicas
+        ("throughput", 2, 2, 10.0, 0.5),  # single
+        ("capacity", 4, 1, 10.0, 0.5),  # one node
+        ("throughput", 2, 2, 20.0, 0.5),  # prefill-heavy below: layer split
+    ],
+)
+def test_every_planned_gguf_command_carries_the_planned_context_and_users(
+    cluster, intent, concurrency, n_nodes, size, kv
+) -> None:
+    plan = cluster.plan_deployment(
+        size,
+        n_nodes = n_nodes,
+        intent = intent,
+        concurrency = concurrency,
+        model = "/m/model.gguf",
+        kv_gib_per_user = kv,
+        ctx = 4096,
+        prefill_heavy = size == 20.0,
+    )
+    commands = _gguf_commands(plan)
+    assert commands, plan["commands"]
+    per_server = -(-concurrency // n_nodes) if plan["axis"] == "replicas" else concurrency
+    for line in commands:
+        if "spark serve" in line:
+            assert f"--ctx 4096 --slots {concurrency}" in line, line
+        else:
+            assert f"--ctx-size {4096 * per_server} --parallel {per_server}" in line, line
+
+
+def test_replica_fit_prices_only_each_replicas_share_of_the_users(cluster) -> None:
+    """100 GiB model, 1 GiB KV per user, 16 users, two 113.69 GiB nodes: 108 GiB per replica."""
+    gib = 2**30
+    serving = cluster.recommend_topology(100 * gib, 1 * gib, 16, 512, 113.69 * gib, replicas = 2)
+    assert serving["topology"] == "replicas", serving["reason"]
+    assert serving["replica_node_bytes"] == 108 * gib
+    # One copy holding every user's KV still does not fit, so the default stays a layer split.
+    assert (
+        cluster.recommend_topology(100 * gib, 1 * gib, 16, 512, 113.69 * gib)["topology"]
+        == "layer_split"
+    )
+
+    plan = cluster.plan_deployment(
+        100.0,
+        n_nodes = 2,
+        intent = "throughput",
+        concurrency = 16,
+        model = "/m/model.gguf",
+        kv_gib_per_user = 1.0,
+        ctx = 8192,
+    )
+    assert plan["serving"]["topology"] == "replicas"
+    assert plan["axis"] == "replicas", plan["recommendation"]
+    assert any("--ctx-size 65536 --parallel 8" in c for c in plan["commands"])
+    # `spark serve --slots` is per engine, so every replica keeps all of them.
+    plan = cluster.plan_deployment(
+        100.0,
+        two_sparks = True,
+        concurrency = 16,
+        kv_gib_per_user = 1.0,
+        split_kv_across_replicas = False,
+    )
+    assert plan["serving"]["topology"] == "layer_split"

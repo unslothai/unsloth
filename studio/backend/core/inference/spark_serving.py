@@ -792,11 +792,14 @@ _CACHE_TYPE_V_FLAGS = ("--cache-type-v", "-ctv")
 
 def _last_operand(args: Sequence[str], flags: Sequence[str]) -> Optional[str]:
     """The last operand any of *flags* carries in *args*, or None. Last wins, as llama.cpp does."""
+    from core.inference.llama_server_args import _flag_name
+
     tokens = [str(a) for a in args or ()]
     found: Optional[str] = None
     for index, token in enumerate(tokens):
-        name, sep, inline = token.partition("=")
-        if name not in flags:
+        _, sep, inline = token.partition("=")
+        # llama.cpp folds long-option underscores (--ctx_size is --ctx-size), so the sizing does too.
+        if _flag_name(token) not in flags:
             continue
         value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
         if str(value).strip():
@@ -810,11 +813,21 @@ def effective_kv_settings(
     """``(context, cache_type_k, cache_type_v)`` this load will ACTUALLY run with."""
     ctx = int(getattr(request, "max_seq_length", None) or 0)
     from_extras = _last_operand(extras or (), _CTX_SIZE_FLAGS)
+    extras_ask_for_native = False
     if from_extras:
         try:
             ctx = int(from_extras)
+            extras_ask_for_native = ctx == 0
         except ValueError:
             pass  # llama-server will refuse it; nothing to price here
+    if ctx <= 0 and not extras_ask_for_native:
+        # Auto-layers omits -c, and the launch keeps a positive inherited LLAMA_ARG_CTX_SIZE
+        # (routes.inference._inherited_ctx_size): the child runs at that length.
+        raw_env_ctx = str(os.environ.get("LLAMA_ARG_CTX_SIZE") or "").strip()
+        try:
+            ctx = max(0, int(raw_env_ctx)) if raw_env_ctx else ctx
+        except ValueError:
+            pass
 
     def _cache(flags: Sequence[str], env_name: str) -> Optional[str]:
         value = _last_operand(extras or (), flags)
@@ -1893,10 +1906,12 @@ def pipeline_groups_plan(
             f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with {refused}"
         )
         return out
-    if extra_args_fit_off(extra_args):
+    from core.inference.llama_server_args import fit_is_effectively_on
+
+    if not fit_is_effectively_on(extra_args, os.environ):
         # Every group holds the full context's KV; only llama-server's fit pass reserves room for the extra ones.
         out["reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} not added: --fit off leaves the extra groups' KV unaccounted"
+            f"{PIPELINE_GROUPS_FLAG} not added: --fit off (or LLAMA_ARG_FIT=off) leaves the extra groups' KV unaccounted"
         )
         return out
     if not (

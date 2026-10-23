@@ -152,6 +152,7 @@
    "router": null,
    "split_config": "groups, no speculation",
    "split_config_reason": "--pipeline-groups 2 and no speculation to keep: no <arch>.nextn_predict_layers in the GGUF header",
+   "split_reload_pending": false,
    "topology": "layer_split"
   }
  },
@@ -258,6 +259,7 @@
    "router": null,
    "split_config": "one context, no speculation",
    "split_config_reason": "bundle llama-server lacks --pipeline-groups",
+   "split_reload_pending": false,
    "topology": "layer_split"
   }
  },
@@ -331,6 +333,7 @@
    "relaunch_gave_up": false,
    "split_config": null,
    "split_config_reason": "not a layer split (topology replicas)",
+   "split_reload_pending": false,
    "topology": "replicas"
   }
  },
@@ -362,6 +365,7 @@
     "router": null,
     "split_config": null,
     "split_config_reason": "not a layer split (topology single)",
+    "split_reload_pending": false,
     "topology": "single"
    }
   },
@@ -391,6 +395,7 @@
     "router": null,
     "split_config": null,
     "split_config_reason": "not a layer split (topology single)",
+    "split_reload_pending": false,
     "topology": "single"
    }
   },

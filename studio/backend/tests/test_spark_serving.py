@@ -1073,6 +1073,46 @@ def test_pipeline_groups_plan_is_off_when_fit_is_off(cluster, monkeypatch):
         ), args
 
 
+def test_pipeline_groups_plan_honours_llama_arg_fit_in_the_environment(cluster, monkeypatch):
+    # llama.cpp applies LLAMA_ARG_FIT before argv: off there means no fit pass for the extra groups' KV.
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
+    monkeypatch.setenv("LLAMA_ARG_FIT", "off")
+    out = ss.pipeline_groups_plan(8, [])
+    assert out["pipeline_groups"] == 0 and "LLAMA_ARG_FIT" in out["reason"], out
+    # an explicit -fit on in the argv overrides the environment
+    assert (
+        ss.pipeline_groups_plan(8, ["-fit", "on"])["pipeline_groups"] == ss.PIPELINE_GROUPS_DEFAULT
+    )
+
+
+def test_kv_sizing_reads_an_inherited_llama_arg_ctx_size(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "8192")
+    request = SimpleNamespace(max_seq_length = 0, cache_type_kv = None)
+    # no panel value and no -c: auto-layers omits -c and the child runs at the env length
+    assert ss.effective_kv_settings(request, [])[0] == 8192
+    # a panel value is passed as -c and wins over the environment
+    assert ss.effective_kv_settings(SimpleNamespace(max_seq_length = 4096), [])[0] == 4096
+    # a pass-through -c wins too, and -c 0 asks for the native length, not the env's
+    assert ss.effective_kv_settings(request, ["-c", "2048"])[0] == 2048
+    assert ss.effective_kv_settings(request, ["--ctx-size", "0"])[0] == 0
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "nope")
+    assert ss.effective_kv_settings(request, [])[0] == 0
+
+
+def test_kv_sizing_folds_long_option_underscores(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
+    request = SimpleNamespace(max_seq_length = 4096, cache_type_kv = "f16")
+    extras = ["--ctx_size", "65536", "--cache_type_k", "q8_0", "--cache_type_v=q4_0"]
+    assert ss.effective_kv_settings(request, extras) == (65536, "q8_0", "q4_0")
+
+
 def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster, monkeypatch):
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
