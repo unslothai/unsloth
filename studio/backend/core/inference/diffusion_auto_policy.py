@@ -586,6 +586,8 @@ def format_generation_for_log(
     """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
+    if not isinstance(size, tuple):
+        size = None  # a latent tensor (Hires fix base pass) has no pixel size
     fields = {
         "engine": engine,
         "workflow": result.get("workflow"),
