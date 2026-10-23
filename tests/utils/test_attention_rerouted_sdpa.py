@@ -20,7 +20,14 @@ def test_rerouted_sdpa_disables_cudnn_only(monkeypatch):
 
     def fake_sdpa(q, k, v, **kwargs):
         b = torch.backends.cuda
-        seen.append((b.cudnn_sdp_enabled(), b.flash_sdp_enabled(), b.mem_efficient_sdp_enabled(), b.math_sdp_enabled()))
+        seen.append(
+            (
+                b.cudnn_sdp_enabled(),
+                b.flash_sdp_enabled(),
+                b.mem_efficient_sdp_enabled(),
+                b.math_sdp_enabled(),
+            )
+        )
         return q
 
     monkeypatch.setattr(F, "scaled_dot_product_attention", fake_sdpa)

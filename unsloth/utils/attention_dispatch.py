@@ -110,7 +110,6 @@ def _rerouted_sdpa(*args, **kwargs):
 # Module level: reading SDPBackend's attributes while traced breaks the graph.
 try:
     from torch.nn.attention import SDPBackend as _SDPBackend, sdpa_kernel as _sdpa_kernel
-
     _XFORMERS_LIKE_BACKENDS = [
         _SDPBackend.FLASH_ATTENTION,
         _SDPBackend.EFFICIENT_ATTENTION,
