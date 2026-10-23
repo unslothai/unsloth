@@ -376,8 +376,10 @@ def test_convert_refuses_kquant_before_writing(tmp_path):
         w.add_tensor("layers.0.feed_forward.w2.weight", raw, raw_dtype = T.Q3_K)
 
     _write_gguf(src, extra = extra)
-    with pytest.raises(conv.UnsupportedGGUFError, match = "Q3_K"):
+    with pytest.raises(conv.UnsupportedGGUFError, match = "Q3_K") as err:
         conv.convert_gguf_to_mflux(src, tmp_path / "out")
+    supported = str(err.value).split("(supported: ", 1)[1].rstrip(")").split(", ")
+    assert set(supported) == conv.CONVERTIBLE_TYPES
     assert not (tmp_path / "out" / "transformer" / "0.safetensors").exists()
     assert not conv.conversion_complete(tmp_path / "out")
 

@@ -50,6 +50,9 @@ _residents: dict[str, Optional[frozenset[int]]] = {}
 _accounts: dict[str, tuple[Optional[str], Optional[str]]] = {}
 # What each image or video resident was admitted with under When they fit / Always (gpu_residency.MediaNeed).
 _media_needs: dict[str, dict] = {}
+# The price each media owner had before its newest load started (None: unpriced), put back by
+# restore_media_need when that load fails and the model it was replacing stays loaded.
+_media_need_rollback: dict[str, Optional[dict]] = {}
 
 # Phrases the refusal copy always contains, for readers that lose the X-Unsloth-Refusal header.
 MULTI_MODEL_REFUSAL_MARKERS = ("is set to Always", "is set to keep loaded")
@@ -430,6 +433,9 @@ def begin_media_load(
 ) -> Any:
     """``guarded_media_begin`` for a load that takes no GPU claim, under ``_lock`` all the same."""
     register = guarded_media_begin(owner, policy, requested, begin)
+    with _lock:
+        # This load reprices nothing, so an older load's rollback must not apply to its failure.
+        _media_need_rollback.pop(owner, None)
     if register is begin:
         return begin()
     with _lock:
@@ -545,6 +551,7 @@ def _drop_resident(owner: str) -> None:
         return
     del _residents[owner]
     _media_needs.pop(owner, None)
+    _media_need_rollback.pop(owner, None)
     if owner == _owner:
         if _residents:
             _owner = next(reversed(_residents))
@@ -786,6 +793,7 @@ def acquire_for(
             raise
         if owner in (DIFFUSION, VIDEO) and register is not None:
             # The price media_held_mib() reports for this resident; unpriced residents are evicted to make room.
+            _media_need_rollback[owner] = _media_needs.get(owner)
             if coreside and need_mib:
                 _media_needs[owner] = need_mib
             else:
@@ -885,6 +893,19 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
             return False
         _accounts[owner] = (prior, None)
         return True
+
+
+def restore_media_need(owner: str) -> None:
+    """Put back the price the newest load of ``owner`` overwrote, when that load failed and the
+    model it was replacing stays loaded; otherwise the kept model is priced as the failed one."""
+    with _lock:
+        if owner not in _media_need_rollback:
+            return
+        previous = _media_need_rollback.pop(owner)
+        if previous is None:
+            _media_needs.pop(owner, None)
+        else:
+            _media_needs[owner] = previous
 
 
 def release(owner: str) -> None:
