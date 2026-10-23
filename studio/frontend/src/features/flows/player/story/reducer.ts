@@ -126,6 +126,12 @@ export function restAt(lines: StoryLine[], from: number): number {
   return i;
 }
 
+/** The reader has not moved past the scene's first stop (directions before it are not a stop). */
+export function atSceneStart(m: StoryManifest, s: StoryState): boolean {
+  const scene = sceneOf(m, s, s.sceneId);
+  return !scene || s.line <= restAt(visibleLines(scene, s.vars), 0);
+}
+
 export function visibleChoices(
   scene: StoryScene,
   vars: Record<string, unknown>,
@@ -431,8 +437,8 @@ export function reduce(
       const scene = sceneOf(m, s, a.sceneId);
       if (!scene || a.lines.length === 0) return s;
       // Mid-scene the reader's line index belongs to the current list; the next visit writes fresh lines.
-      if (s.sceneId === a.sceneId && s.status === "reading" && s.line > 0)
-        return s;
+      const here = s.sceneId === a.sceneId && s.status === "reading";
+      if (here && !atSceneStart(m, s)) return s;
       const replaced: StoryScene = {
         ...scene,
         lines: a.lines,
@@ -443,7 +449,7 @@ export function reduce(
         extraScenes: { ...s.extraScenes, [a.sceneId]: replaced },
       };
       // Only restart the scene if the reader is still on its first line.
-      if (s.sceneId === a.sceneId && s.line === 0 && s.status === "reading") {
+      if (here) {
         const old = visibleLines(scene, s.vars);
         const shown = Boolean(old[restAt(old, 0)]?.text);
         const backlog = shown ? s.backlog.slice(0, -1) : s.backlog;
@@ -553,8 +559,13 @@ export function stageAt(m: StoryManifest, s: StoryState): StageView {
   const lines = visibleLines(scene, s.vars);
   const upto = s.status === "choosing" ? lines.length - 1 : s.line;
   let prev = -1;
-  for (let i = 0; i < upto; i++) {
-    if (!isDirection(lines[i]) || pauseOf(lines[i]) !== null) prev = i;
+  const stop = (i: number) =>
+    i < lines.length && (!isDirection(lines[i]) || pauseOf(lines[i]) !== null);
+  if (s.status !== "reading" && stop(s.line)) {
+    // Choices or the ending open after the last line was shown: its cues already played there.
+    prev = s.line;
+  } else {
+    for (let i = 0; i < upto; i++) if (stop(i)) prev = i;
   }
   const before = castAfter(scene, lines, prev);
   const now = castAfter(scene, lines, upto);

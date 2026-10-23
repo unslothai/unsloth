@@ -173,3 +173,59 @@ test("old manifests and v1 saves are untouched: stage is just on_stage", () => {
     s = R.reduce(moon, s, { type: "advance" });
   }
 });
+
+test("written lines replace a generated scene that opens with a direction", () => {
+  const m: Manifest = {
+    title: "W",
+    start: "a",
+    vars: {},
+    characters: [{ id: "mo", name: "Mo", side: "left" }],
+    mode: "live",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [
+          { text: "", stage: { show: "mo", at: "left" } },
+          { speaker: "mo", text: "Placeholder." },
+        ],
+        generate_lines: true,
+        choices: [],
+      },
+    ],
+  };
+  const s = R.initialState(m);
+  assert.equal(s.line, 1);
+  const after = R.reduce(m, s, {
+    type: "setLines",
+    sceneId: "a",
+    lines: [{ speaker: "mo", text: "Written." }],
+    rev: s.rev,
+  });
+  assert.equal(R.currentLine(m, after)?.text, "Written.");
+  assert.equal(R.atSceneStart(m, s), true);
+});
+
+test("a cue before the last line plays once, not again when the choices open", () => {
+  const m: Manifest = {
+    ...staged,
+    start: "a",
+    scenes: [
+      {
+        id: "a",
+        lines: [
+          { text: "One." },
+          { text: "", stage: { sound: "door" } },
+          { text: "Two." },
+        ],
+        choices: [{ id: "x", text: "Go", goto: "a" }],
+      },
+    ],
+  };
+  const last = R.reduce(m, R.initialState(m, 1), { type: "advance" });
+  assert.equal(R.currentLine(m, last)?.text, "Two.");
+  assert.deepEqual(R.stageAt(m, last).sounds, ["door"]);
+  const choosing = R.reduce(m, last, { type: "advance" });
+  assert.equal(choosing.status, "choosing");
+  assert.deepEqual(R.stageAt(m, choosing).sounds, []);
+});
