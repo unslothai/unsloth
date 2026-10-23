@@ -290,11 +290,7 @@ def test_shared_qkv_reported_and_gated_on_the_transformer_cards(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(
-        mod,
-        "arch_ok",
-        lambda device = None: (0 if device is None else torch.device(device).index) not in swap_cards,
-    )
+    monkeypatch.setattr(mod, "_swap_covers", lambda index: index in swap_cards)
     monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
     monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
     assert mod.install(model, offload_active = True) == {"fused_qkv": 2, "out": 0}
@@ -305,3 +301,47 @@ def test_shared_qkv_reported_and_gated_on_the_transformer_cards(monkeypatch):
     swap_cards.clear()  # every card on the stock path: the helper is not installed
     assert mod.install(model) == {"fused_qkv": 0, "out": 0}
     assert calls == [model, model]
+
+
+@pytest.mark.parametrize("rocm", ["hip", "tag"])
+def test_rocm_cards_are_not_swap_covered(monkeypatch, rocm):
+    """ROCm: ``torch.cuda.is_available()`` and a CUDA-like capability, but the int8 GEMM swap declines it, so no card
+    counts as swap-covered and the process-global QKV helper is not installed or reported."""
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (9, 0))
+    monkeypatch.setattr(g8, "_gates", lambda cap: (True, True))
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    assert mod._swap_card_present(model)  # NVIDIA with the swap gated in: covered
+    if rocm == "hip":
+        monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    else:
+        monkeypatch.setattr(torch, "__version__", "2.9.0+rocm6.4")
+    assert not mod._swap_card_present(model)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 0, "out": 0}
+    assert calls == []
+
+
+def test_swap_probe_failure_is_not_swap_covered(monkeypatch):
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+
+    def boom(index = None):
+        raise RuntimeError("no device")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", boom)
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    assert not mod._swap_card_present(model)

@@ -639,6 +639,18 @@ def _linear_forward(self: Any, x: Any) -> Any:
     return y.reshape(*lead, y.shape[-1])
 
 
+def _hooked(module: Any) -> bool:
+    """A forward hook / pre-hook (the module's own or a global one) or an instance ``forward`` override: a fused path
+    that skips calling ``module`` would bypass it. Plain dict lookups, as in ``_swapped_rec``."""
+    import torch
+
+    d = module.__dict__
+    if "forward" in d or d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return True
+    nn_module = torch.nn.modules.module
+    return bool(nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks)
+
+
 def _swapped_rec(module: Any) -> Optional[tuple]:
     """The record of a Linear this module swapped, holding its install-time weight and no offload hook, else None: a
     diffusers / accelerate hook on the Linear itself (leaf-level streaming) has to see the call, and a replaced weight
@@ -735,7 +747,7 @@ def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
         gate, value = self.gate_layer(hidden_states), self.proj(hidden_states)
     else:
         gate, value = pair
-    y = _swiglu_down(self.out, gate, value)
+    y = None if _hooked(self.activation_fn) else _swiglu_down(self.out, gate, value)
     if y is None:
         return self.out(self.activation_fn(gate) * value)
     return y
@@ -754,7 +766,8 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     parts = [getattr(module, n, None) for n in ("gate_layer", "proj", "out")]
     if any(p is None or _REC not in p.__dict__ for p in parts):
         return False
-    if type(getattr(module, "activation_fn", None)) is not nn.SiLU:
+    act = getattr(module, "activation_fn", None)
+    if type(act) is not nn.SiLU or "forward" in act.__dict__:
         return False
     # only a rotated down projection on the fused rotation kernel gains (its input is the product)
     return bool(parts[2].__dict__[_REC][2])

@@ -230,7 +230,26 @@ def _swap_card_present(transformer: Any) -> bool:
     from .diffusion_int8_fused import resident_cuda_cards
 
     cards = resident_cuda_cards(transformer) or range(torch.cuda.device_count())
-    return any(not arch_ok(torch.device("cuda", index)) for index in cards)
+    return any(_swap_covers(index) for index in cards)
+
+
+def _swap_covers(index: int) -> bool:
+    """True where ``diffusion_int8_gemm`` swaps rotated Linears on ``cuda:<index>``: NVIDIA CUDA only (ROCm reports a
+    CUDA-like capability but the swap declines it), the swap on, and its fused GEMM or ``rotq_i8`` gated in. Any
+    failure counts as not covered, so the shared-QKV helper is never installed on a guess."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return False
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+
+        if int8_gemm_mode() == "off":
+            return False
+        gemm, rotq = _gates(torch.cuda.get_device_capability(index))
+        return bool(gemm or rotq)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def install(
