@@ -791,6 +791,7 @@ class ExportBackend:
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
         self._checkpoint_token = None
+        self._checkpoint_local_files_only = False
         self.current_model = None
         self.current_tokenizer = None
         self.is_vision = False
@@ -820,6 +821,7 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
             self._checkpoint_token = None
+            self._checkpoint_local_files_only = False
             self._audio_type = None
             self.decision = None
 
@@ -1126,6 +1128,7 @@ class ExportBackend:
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
             self._checkpoint_token = token
+            self._checkpoint_local_files_only = bool(local_files_only)
             if not self.is_peft and not _IS_MLX:
                 self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
@@ -2167,8 +2170,14 @@ class ExportBackend:
             from core.export.drafter_export import training_manifest
 
             token = getattr(self, "_checkpoint_token", None)
-            # A Hub id reads its manifest from the Hub with the load's credential.
-            manifest = training_manifest(checkpoint_path, token)
+            # A Hub id reads its manifest with the load's credential, at the commit the load
+            # resolved (the shards below come from it too), and stays offline when the load did.
+            manifest = training_manifest(
+                checkpoint_path,
+                token,
+                revision = self._loaded_commit(),
+                local_files_only = getattr(self, "_checkpoint_local_files_only", False),
+            )
             if not manifest or manifest.get("strategy") != "mtp":
                 return
             source = checkpoint_path
@@ -2189,9 +2198,13 @@ class ExportBackend:
         except Exception as exception:
             logger.warning(f"Could not attach the trained MTP head: {exception}")
 
+    def _loaded_commit(self) -> Optional[str]:
+        """The Hub commit the current model's load resolved (None for a local folder)."""
+        return getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
+
     def _loaded_hub_snapshot(self, repo_id: str, token) -> Optional[str]:
         """The local snapshot folder of a Hub checkpoint the current model was loaded from."""
-        revision = getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
+        revision = self._loaded_commit()
         try:
             from huggingface_hub import hf_hub_download
 

@@ -1278,6 +1278,61 @@ def test_export_reattaches_the_head_of_a_hub_full_fine_tune(tmp_path, monkeypatc
     assert calls == []
 
 
+def _hub_full_fine_tune_backend(tmp_path, monkeypatch, local_files_only):
+    """An export backend holding a full fine-tune loaded by Hub id at commit abc123, whose manifest
+    and config are cached; records every hf_hub_download call."""
+    from core.export import export as export_module
+    import huggingface_hub
+
+    attached = []
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(
+        get_mtp_head = lambda model, source = None: attached.append(source)
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "drafter.json").write_text(json.dumps({"strategy": "mtp"}))
+    (snapshot / "config.json").write_text("{}")
+    calls = []
+
+    def fake_download(repo_id, filename, token = None, revision = None, local_files_only = False):
+        calls.append((filename, revision, local_files_only))
+        if not (snapshot / filename).is_file():
+            raise FileNotFoundError(filename)
+        return str(snapshot / filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = types.SimpleNamespace(
+        config = types.SimpleNamespace(_commit_hash = "abc123")
+    )
+    backend._checkpoint_token = None
+    backend._checkpoint_local_files_only = local_files_only
+    return backend, calls, attached, snapshot
+
+
+def test_hub_full_fine_tune_manifest_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
+    """The manifest and the head's shards come from the same commit, not the branch head."""
+    backend, calls, attached, snapshot = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert attached == [str(snapshot)]
+    assert calls and all(revision == "abc123" for _, revision, _ in calls)
+
+
+def test_offline_hub_full_fine_tune_keeps_the_manifest_probe_offline(tmp_path, monkeypatch):
+    """A cached load chosen because the Hub is unreachable must not touch the network for drafter.json."""
+    backend, calls, attached, snapshot = _hub_full_fine_tune_backend(tmp_path, monkeypatch, True)
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert attached == [str(snapshot)]
+    assert calls and all(offline for _, _, offline in calls)
+
+
+def test_load_records_its_offline_decision_for_the_manifest_probe():
+    src = _source("core/export/export.py")
+    assert "self._checkpoint_local_files_only = bool(local_files_only)" in src
+
+
 def test_in_place_eagle3_export_keeps_the_only_drafter_copy(tmp_path):
     """An export into the training folder itself must not delete eagle3/ before copying it."""
     from core.export.drafter_export import package_merged
