@@ -396,8 +396,9 @@ def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
         if (
             cached is None
             or cached[2] != static_gen
-            # A card attached, removed or swapped beside one that stays; an unreadable walk keeps the map.
-            or (topology is not None and cached[3] is not None and cached[3] != topology)
+            # A card attached, removed or swapped beside one that stays, or a first readable walk after an
+            # unreadable one (no baseline yet); only an unreadable current walk keeps the map.
+            or (topology is not None and cached[3] != topology)
             or (cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S)
         ):
             cached = _hip_id_map_cache = (

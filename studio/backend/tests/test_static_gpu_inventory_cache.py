@@ -265,6 +265,20 @@ def test_an_unreadable_topology_keeps_the_hip_id_map(rocm_cli, monkeypatch):
     assert _count(rocm_cli, "amd-smi", "list", "-e") == 1
 
 
+def test_a_topology_that_becomes_readable_sets_the_hip_id_map_baseline(rocm_cli, monkeypatch):
+    topology = [None]
+    monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: topology[0])
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
+    amd.get_hip_id_by_gpu_index()
+    topology[0] = (("0000:03:00.0", "0x744c"),)
+    amd.get_hip_id_by_gpu_index()
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") == 2
+    topology[0] = (("0000:03:00.0", "0x744c"), ("0000:0c:00.0", "0x7550"))
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") == 3
+
+
 def test_an_unreadable_topology_probes_the_gfx_target_every_pass(rocm_cli, monkeypatch):
     monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: None)
     hw._linux_amd_gfx_candidates()
