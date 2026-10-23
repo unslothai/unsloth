@@ -110,7 +110,12 @@ def _local_grad(grad, DTensor):
 _CHUNK_BLOCKS = 16384
 
 
-def _dequantize(raw, key, device, chunk_blocks = None):
+def _dequantize(
+    raw,
+    key,
+    device,
+    chunk_blocks = None,
+):
     """float32 copy of state `key` on `device`, built chunk by chunk into the one output tensor. Paged
     state reports the CPU device (unified memory)."""
     value = raw[key]
@@ -144,7 +149,13 @@ def _nearest_codes(padded, sorted_code, scale):
     return torch.where(pick_lo, lo, hi), torch.where(pick_lo, err_lo, err_hi).sum(dim = 1)
 
 
-def _quantize_into(values, code, out_codes, out_absmax, chunk_blocks = None):
+def _quantize_into(
+    values,
+    code,
+    out_codes,
+    out_absmax,
+    chunk_blocks = None,
+):
     """bitsandbytes' blockwise quantization of `values` (float32) into `out_codes` (uint8, same shape)
     and `out_absmax` (one float32 per 256 elements), inverting a dequantization exactly. bitsandbytes
     scales a block by its largest magnitude A, and the signed map has no -1.0: when that element is
@@ -170,7 +181,9 @@ def _quantize_into(values, code, out_codes, out_absmax, chunk_blocks = None):
             chunk = torch.nn.functional.pad(chunk, (0, blocks * _BLOCKSIZE - chunk.numel()))
         index, scale = _quantize_blocks(chunk.view(blocks, _BLOCKSIZE), sorted_code, min_code)
         codes_out[start:end].copy_(order[index].reshape(-1)[: end - start].to(torch.uint8))
-        out_absmax[start // _BLOCKSIZE : start // _BLOCKSIZE + blocks].copy_(scale.to(out_absmax.dtype))
+        out_absmax[start // _BLOCKSIZE : start // _BLOCKSIZE + blocks].copy_(
+            scale.to(out_absmax.dtype)
+        )
 
 
 def _quantize_blocks(padded, sorted_code, min_code):
