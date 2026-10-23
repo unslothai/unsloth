@@ -20,10 +20,24 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _block_weight(N, K, scale_dtype = torch.float32):
+@pytest.fixture(autouse = True)
+def _no_block_gemv(monkeypatch):
+    # The GEMV, which takes some decode shapes first, is tested in test_fp8_block_gemv.py.
+    monkeypatch.setattr(f, "_FP8_BLOCK_GEMV", False, raising = False)
+
+
+def _block_weight(
+    N,
+    K,
+    scale_dtype = torch.float32,
+):
     W = torch.randn(N, K, device = "cuda") * 0.02
     s = W.abs().view(N // 128, 128, K // 128, 128).amax((1, 3)) / 448.0
-    q = (W.view(N // 128, 128, K // 128, 128) / s[:, None, :, None]).view(N, K).to(torch.float8_e4m3fn)
+    q = (
+        (W.view(N // 128, 128, K // 128, 128) / s[:, None, :, None])
+        .view(N, K)
+        .to(torch.float8_e4m3fn)
+    )
     return q, s.contiguous().to(scale_dtype)
 
 
@@ -77,7 +91,9 @@ def test_small_m_matches_main(monkeypatch, dtype, scale_dtype, N, K, M):
         # Only the fp32 sum order over K splits differs: bound is one output rounding plus fp32 sum error.
         mag = torch.maximum(new.double().abs(), main.double().abs())
         k_blocks = K // 128
-        bound = torch.finfo(dtype).eps * mag + 2 * k_blocks * torch.finfo(torch.float32).eps * _oracle_abs(X, q, s)
+        bound = torch.finfo(dtype).eps * mag + 2 * k_blocks * torch.finfo(
+            torch.float32
+        ).eps * _oracle_abs(X, q, s)
         assert ((new.double() - main.double()).abs() <= bound + 1e-30).all()
         err_new = (new.double() - ref).abs().mean()
         err_main = (main.double() - ref).abs().mean()
@@ -119,7 +135,9 @@ def test_pre_sm89_keeps_dequant_route(monkeypatch):
     q, s = _block_weight(1024, 4096)
     X = torch.randn(1, 2, 4096, device = "cuda", dtype = torch.bfloat16)
     monkeypatch.setattr(f, "_fp8_device_lacks_kernel", lambda device: True)
-    monkeypatch.setattr(f, "fp8_block_small_m_linear", lambda *a: pytest.fail("small-M kernel used below sm89"))
+    monkeypatch.setattr(
+        f, "fp8_block_small_m_linear", lambda *a: pytest.fail("small-M kernel used below sm89")
+    )
     out = f.fp8_linear(X, q, s)
     ref = X @ f._blockwise_weight_dequant_any_shape(q, s, [128, 128], X.dtype).t()
     assert torch.equal(out, ref)

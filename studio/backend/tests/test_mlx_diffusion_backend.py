@@ -632,7 +632,11 @@ def _header_only_safetensors(path, shapes):
         size = 2
         for dim in shape:
             size *= dim
-        header[name] = {"dtype": "BF16", "shape": list(shape), "data_offsets": [offset, offset + size]}
+        header[name] = {
+            "dtype": "BF16",
+            "shape": list(shape),
+            "data_offsets": [offset, offset + size],
+        }
         offset += size
     blob = json.dumps(header).encode()
     path.write_bytes(struct.pack("<Q", len(blob)) + blob)
@@ -651,6 +655,9 @@ def test_a_16gb_mac_loads_z_image_q4_0_with_an_8bit_text_encoder(env, monkeypatc
     monkeypatch.setattr(mb.convert, "planned_output_bytes", lambda path, *a, **k: dict(ZIMAGE_Q4_0))
     monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 16 * GIB)
     monkeypatch.setattr(mb, "working_set_bytes", lambda ram_bytes = None: int(10.67 * GIB))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    # A runtime that tiles the decode when it would not fit, so the tiled 2 GiB decode peak is what is reserved.
+    monkeypatch.setattr(runtime, "vae_tiled", lambda: False, raising = False)
     assert _load(backend)["phase"] == "ready"
     assert runtime.builds[-1]["te_bits"] == 8
     assert calls["dense_bits"] == 0
@@ -659,6 +666,75 @@ def test_a_16gb_mac_loads_z_image_q4_0_with_an_8bit_text_encoder(env, monkeypatc
     plan = status["mlx"]["timings"]["quant_plan"]
     assert plan["source"] == "plan" and plan["fits"] is True
     assert plan["planned_bytes"] <= plan["budget_bytes"] == int(10.67 * GIB)
+
+
+def test_a_runtime_without_tiled_decode_reserves_the_untiled_decode_peak(
+    env, monkeypatch, tmp_path
+):
+    """The untiled 1024x1024 decode needs 6.64 GiB above the weights, not the tiled 2 GiB: on a 16 GB Mac nothing fits
+    then, so the plan takes the smallest build instead of an 8-bit text encoder that pages at decode."""
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    assert not hasattr(runtime, "vae_tiled")
+    base_dir = tmp_path / "base"
+    _header_only_safetensors(
+        base_dir / "text_encoder" / "model.safetensors", {"w": (3 * 1024, 1024, 1280)}
+    )
+    _header_only_safetensors(base_dir / "vae" / "model.safetensors", {"w": (80, 1024, 1024)})
+    monkeypatch.setattr(mb.convert, "planned_output_bytes", lambda path, *a, **k: dict(ZIMAGE_Q4_0))
+    monkeypatch.setattr(mb, "working_set_bytes", lambda ram_bytes = None: int(10.67 * GIB))
+    assert _load(backend)["phase"] == "ready"
+    plan = backend.status()["mlx"]["timings"]["quant_plan"]
+    assert (plan["te_bits"], plan["dense_bits"]) == (4, 4) and plan["fits"] is False
+    assert runtime.builds[-1]["te_bits"] == 4 and calls["dense_bits"] == 4
+
+
+def test_decode_headroom_follows_the_decode_path(monkeypatch):
+    class _Tiles:
+        def vae_tiled(self):
+            return False
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    assert mb.decode_headroom_bytes(object()) == mb.UNTILED_DECODE_HEADROOM_BYTES
+    assert mb.decode_headroom_bytes(_Tiles()) == mb.ACTIVATION_HEADROOM_BYTES
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "0")
+    assert mb.decode_headroom_bytes(_Tiles()) == mb.UNTILED_DECODE_HEADROOM_BYTES
+
+
+def test_unquantizable_text_encoder_tensors_stay_full_size(monkeypatch, tmp_path):
+    """Norms, biases and odd-width weights are not quantized by the runtime, so the plan keeps them at bf16."""
+    _clear_quant_env(monkeypatch)
+    folder = tmp_path / "text_encoder"
+    folder.mkdir()
+    _header_only_safetensors(
+        folder / "model.safetensors",
+        {"q.weight": (256, 128), "q.bias": (256,), "norm.weight": (128,), "odd.weight": (64, 100)},
+    )
+    quantizable, retained = mb._safetensors_numel_split(folder)
+    assert quantizable == 256 * 128 and retained == 256 + 128 + 64 * 100
+    assert mb._safetensors_numel(folder) == quantizable + retained
+    # A text encoder that is half retained tensors: the 8-bit rung must not count those at 8 bits.
+    half = int(2 * GIB)
+    assert (
+        mb.text_encoder_resident_bytes(half, 8, half)
+        == mb.text_encoder_resident_bytes(half, 8) + half
+    )
+    budget = (
+        ZIMAGE_Q4_0[0] + mb.text_encoder_resident_bytes(2 * half, 8) + mb.ACTIVATION_HEADROOM_BYTES
+    )
+    all_quantized = mb.plan_quantization(
+        budget_bytes = budget, transformer_bytes = ZIMAGE_Q4_0, text_encoder_bf16_bytes = 2 * half
+    )
+    split = mb.plan_quantization(
+        budget_bytes = budget,
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = half,
+        text_encoder_retained_bytes = half,
+    )
+    assert (all_quantized.te_bits, all_quantized.dense_bits) == (8, 0)
+    assert (split.te_bits, split.dense_bits) != (8, 0)
+    assert split.planned_bytes <= budget
 
 
 def test_an_unreadable_gguf_keeps_the_ram_rule(env, monkeypatch):
@@ -716,7 +792,9 @@ _GIB = 1024**3
         (2048, 20.0, True),
     ],
 )
-def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(monkeypatch, side, free_gib, tiled):
+def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(
+    monkeypatch, side, free_gib, tiled
+):
     monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
     assert mb.vae_tiling_needed(side, side, int(free_gib * _GIB)) is tiled
 
@@ -736,8 +814,12 @@ def test_untiled_decode_estimate_matches_the_metal_measurements():
     assert abs(mb.untiled_decode_bytes(1024, 1024) / _GIB - 6.64) < 0.05
 
 
-@pytest.mark.parametrize("free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)])
-def test_the_runtime_sets_mfluxs_tiling_config_per_generation(monkeypatch, free_gib, implicit, expected):
+@pytest.mark.parametrize(
+    "free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)]
+)
+def test_the_runtime_sets_mfluxs_tiling_config_per_generation(
+    monkeypatch, free_gib, implicit, expected
+):
     pytest.importorskip("mlx.core")
     tiling = pytest.importorskip("mflux.models.common.vae.tiling_config")
     pytest.importorskip("mflux.utils.exceptions")
@@ -781,6 +863,17 @@ def test_the_runtime_sets_mfluxs_tiling_config_per_generation(monkeypatch, free_
     assert image == "png"
     assert isinstance(seen["tiling_config"], tiling.TilingConfig) is expected
     assert runtime.vae_tiled() is expected
+
+
+def test_a_new_load_does_not_report_the_previous_models_tiled_decode(env):
+    backend, runtime, _calls = env
+    assert _load(backend)["phase"] == "ready"
+    # The previous model's last generation tiled its decode.
+    runtime.last_vae_tiled = True
+    assert backend.status()["vae_tiling"] is True
+    backend.unload()
+    assert _load(backend)["phase"] == "ready"
+    assert backend.status()["vae_tiling"] is False
 
 
 def test_importing_the_engine_does_not_import_mlx():
@@ -1025,7 +1118,7 @@ def test_base_fetch_is_cancellable_between_files(monkeypatch):
     out = mb.fetch_base_snapshot(
         "Tongyi-MAI/Z-Image-Turbo", None, local_files_only = False, cancel_event = cancel
     )
-    assert out == "/hub/snapshots/abc"
+    assert Path(out) == Path("/hub/snapshots/abc")  # native separators on Windows
     assert fetched == files[:3]  # README is outside the allow patterns
 
 
@@ -1554,7 +1647,7 @@ def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
     out = mb.fetch_base_snapshot(BASE, None, local_files_only = False)
     assert roots == [live] * len(files)
-    assert out == f"{live}/snapshots/abc"
+    assert Path(out) == Path(live) / "snapshots" / "abc"
 
 
 def test_cache_only_companions_skip_a_snapshot_without_tokenizer_config(monkeypatch, tmp_path):
@@ -1720,3 +1813,58 @@ def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatc
             runtime.generate(model, **kwargs)
     assert cleared == [1]
     assert model.callbacks.in_loop == []
+
+
+def test_every_mlx_cache_clear_goes_through_the_drain():
+    """The only ``clear_cache`` call is inside ``release_buffer_cache``, right after its synchronize."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mb))
+    sites = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "clear_cache"
+            ):
+                sites.append(func.name)
+    assert sites == ["release_buffer_cache"]
+
+
+def _recording_mx(sync_error = None, clear_error = None):
+    events = []
+
+    class _Mx:
+        @staticmethod
+        def synchronize(stream = None):
+            events.append("synchronize")
+            if sync_error is not None:
+                raise sync_error
+
+        @staticmethod
+        def clear_cache():
+            events.append("clear_cache")
+            if clear_error is not None:
+                raise clear_error
+
+    return _Mx, events
+
+
+def test_release_buffer_cache_drains_before_clearing():
+    mx, events = _recording_mx()
+    mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_release_buffer_cache_never_replaces_the_callers_exception():
+    mx, events = _recording_mx(sync_error = RuntimeError("sync"), clear_error = RuntimeError("clear"))
+    with pytest.raises(ValueError, match = "generation failed"):
+        try:
+            raise ValueError("generation failed")
+        finally:
+            mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]

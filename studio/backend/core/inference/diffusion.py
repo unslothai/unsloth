@@ -42,6 +42,7 @@ from core._torchao_stub import (
     install_xformers_windows_rocm_stub,
 )
 from hub.utils.hf_errors import modelscope_missing
+from hub.utils.hf_tokens import normalize_token
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
@@ -258,6 +259,7 @@ from .diffusion_speed import (
     arm_graphs_after_placement,
     normalize_speed_mode,
     resolve_speed_mode,
+    family_render_cudnn_scope,
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
@@ -358,6 +360,7 @@ from .diffusion_mask import (
 from .diffusion_sampler import (
     DEFAULT_SAMPLER,
     apply_checkpoint_prediction_type,
+    apply_pipeline_prediction_type,
     build_scheduler,
     sampler_options,
 )
@@ -2566,6 +2569,17 @@ def _controlnet_streams(state: Any) -> bool:
     )
 
 
+def _measured_target(target: Any) -> bool:
+    """Whether ``target`` is where the activation tables were measured: NVIDIA CUDA with a sub-quadratic SDPA kernel seen
+    to run. Math-only attention, ROCm and an unanswered probe are not."""
+    if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
+        return False
+    try:
+        return bool(sdpa_subquadratic_confirmed(target))
+    except Exception:  # noqa: BLE001 - unprobed attention keeps the flat estimate
+        return False
+
+
 def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
@@ -4679,6 +4693,8 @@ class DiffusionBackend:
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
+        # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
+        hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
         # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
@@ -4790,6 +4806,7 @@ class DiffusionBackend:
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
+                _hub_token = hub_token,
             ),
             daemon = True,
         ).start()
@@ -5178,10 +5195,11 @@ class DiffusionBackend:
             # sat unreproducible for want of the frames this logs.
             logger.error("diffusion.load_failed: %s", exc, exc_info = True)
             if self._state is not None:
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata(DIFFUSION)
             try:
                 clear_gpu_cache()
@@ -7331,10 +7349,13 @@ class DiffusionBackend:
                 # its dense size): out of both the share and the hosted bytes.
                 te4_in_table = "text_encoder_4" in sources
                 share = table_priced / max(1, len(sources) - (1 if te4_in_table else 0))
-                # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
+                # MPS and an automatic int8 pick only take the int8 ConvRot file, smaller than the fp8 one.
+                from .diffusion_te_prequant import auto_int8_takes_file_only
+
                 scale = (
                     te_int8_convrot_budget_scale(fam)
                     if int8_convrot_te_runs_on(target)
+                    or auto_int8_takes_file_only(text_encoder_quant)
                     else TE_PREQUANT_BUDGET_SCALE
                 )
                 from .diffusion_te_prequant import _TE_DENSE_SIBLING_GB
@@ -7441,11 +7462,14 @@ class DiffusionBackend:
         _pipeline_prequant_skipped: tuple[str, ...] = (),
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
+        # begin_load's ``normalize_token`` of the request token: False stays the anonymous sentinel.
+        _hub_token: Any = None,
     ) -> dict[str, Any]:
         with self._load_cancel_lock:
             if _load_token is None:
                 _load_token = self._load_token
             self._raise_if_load_cancelled(_load_token)
+        hub_token = _hub_token if _hub_token is not None else normalize_token(hf_token)
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
@@ -8838,6 +8862,19 @@ class DiffusionBackend:
                                         )
                                     finally:
                                         self._stop_load_prefetch()
+                                    if fam.single_file_is_pipeline:
+                                        # A v-pred SDXL repo can ship an epsilon scheduler config beside the root
+                                        # single file that declares v_pred / ztsnr (NoobAI-XL V-Pred 1.0).
+                                        # A staged snapshot omits that root file, so its header is read off the Hub.
+                                        apply_pipeline_prediction_type(
+                                            pipe,
+                                            _base_local_dir or fetch_base,
+                                            logger,
+                                            repo_id = fetch_base,
+                                            # Not hf_token: that collapsed False (anonymous) to None (ambient).
+                                            hf_token = hub_token,
+                                            allow_network = not local_files_only,
+                                        )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -9782,6 +9819,8 @@ class DiffusionBackend:
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # the dense default / max tier seeds hold on the measured target only
+                        pipe._unsloth_dense_tier_seeds = _measured_target(target)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
                         pipe._unsloth_peak_expects_cfg = bool(
                             getattr(fam, "uses_negative_prompt", False)
@@ -13029,6 +13068,14 @@ class DiffusionBackend:
                         guard_cfg = _negative_prompt_engaged(fam, guidance)
                     except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
                         guard_cfg = None
+                    # a reference family's source image joins the denoiser's sequence, and only FLUX.3 and the
+                    # ``reference_resolutions`` families price it in guard_condition_pixels
+                    guard_unpriced_refs = bool(
+                        getattr(fam, "reference", False)
+                        and init_pil is not None
+                        and ref_resolution is None
+                        and not is_flux3_family(fam)
+                    )
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
@@ -13036,10 +13083,13 @@ class DiffusionBackend:
                         batch_size = guard_batch,
                         condition_pixels = guard_condition_pixels,
                         cfg = guard_cfg,
+                        unpriced_references = guard_unpriced_refs,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
-                        if guard_condition_pixels > 0 and extra_mib > releasable_mib:
+                        if (
+                            guard_condition_pixels > 0 or guard_unpriced_refs
+                        ) and extra_mib > releasable_mib:
                             # The guard credits a conditioned request nothing the load reserved: hook the resident
                             # transformer so this request can stream part of it.
                             hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
@@ -13360,6 +13410,7 @@ class DiffusionBackend:
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
+                                family_render_cudnn_scope(state.family, state.device),
                             ):
                                 chunk_variation = (
                                     variation_seed_list[
