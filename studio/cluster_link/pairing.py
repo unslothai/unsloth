@@ -105,7 +105,6 @@ def local_ipv4_addresses() -> List[str]:
     found: List[str] = []
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            # No packet is sent: connect() on UDP only picks the outbound interface.
             s.connect(("192.0.2.1", 9))
             found.append(s.getsockname()[0])
     except OSError:
@@ -350,7 +349,6 @@ class PairingWindow:
             if self._server is not None:
                 self._server.close()
         except Exception as exc:
-            # The invitation is spent: tell whoever waits on it now instead of at expiry.
             if self._done is not None and not self._done.done():
                 self._fail(
                     PairingError(f"pairing failed after the worker's proof: {type(exc).__name__}")
@@ -393,7 +391,6 @@ async def _connect(addrs: Sequence[str], port: int, master_fp: str):
             continue
         seen = tls.peer_fingerprint(writer.get_extra_info("ssl_object"))
         if seen is None or not hmac.compare_digest(seen, master_fp):
-            # Nothing was sent, so a stale or reassigned address is just a failed candidate.
             writer.close()
             mismatched.append(f"{addr}:{port}")
             continue

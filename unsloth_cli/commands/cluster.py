@@ -189,7 +189,6 @@ def worker(
     rpc_port = rpc_port or RPC_PORT_DEFAULT
     native_port = native_port or NATIVE_RPC_PORT_DEFAULT
     if len({port, rpc_port, native_port}) < 3:
-        # Each is its own listener: the agent, the loopback rpc-server, and its TLS mode on the LAN.
         _fail(
             f"--port ({port}), --rpc-port ({rpc_port}) and --native-port ({native_port}) must all differ."
         )
@@ -468,7 +467,6 @@ def list_workers(
             return {"type": "error", "error": type(exc).__name__, "reachable": False}
 
     def answered(st: Any) -> bool:
-        # A refused or failed connection comes back as an error dict, not an exception.
         return (
             isinstance(st, dict)
             and st.get("reachable", True) is not False
@@ -478,7 +476,6 @@ def list_workers(
     found: dict = {}
     try:
         for peer in workers:
-            # Every recorded address, newest first, before discovery (which a network may block).
             for i, (addr, aport) in enumerate(_addresses(peer)):
                 st = ask(peer, addr, aport)
                 if i == 0 or answered(st):
@@ -564,7 +561,6 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
         _fail("No workers are paired to this machine, so there is nothing to remove.")
     registry = _registry(identity)
     peer = _find_worker(registry, target)
-    # Mutations persist only inside a transaction (reload, change, save under the lock).
     with registry.transaction():
         removed = registry.remove(peer.node_id)
     if not removed:

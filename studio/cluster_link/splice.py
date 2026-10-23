@@ -45,7 +45,6 @@ class _Trace:
         d["bytes"] += n
         d["tiny"] += n <= TINY_CHUNK
         d["max_chunk"] = max(d["max_chunk"], n)
-        # Direction switch: the time since the other direction's last chunk (a round trip's far side).
         if self.last_key is not None and self.last_key != key:
             spans = self.turnarounds[key]
             if len(spans) < MAX_TURNAROUNDS:
@@ -172,7 +171,6 @@ class _Pipe(asyncio.Protocol):
         self._finish(None)
         return False
 
-    # The peer's write buffer filled or drained: flow control for the transport feeding it.
     def pause_writing(self) -> None:
         if self.peer is not None and not self.peer.transport.is_closing():
             self.peer.transport.pause_reading()

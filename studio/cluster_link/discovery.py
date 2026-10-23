@@ -123,7 +123,6 @@ class Announcer:
 
     def _sockets(self):
         socks = []
-        # One socket per LAN interface; None = the default route, as before, when none can be listed.
         for iface in lan_ipv4_addresses() or [None]:
             try:
                 s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -168,7 +167,6 @@ class Announcer:
                     failure = exc
             finally:
                 sock.close()
-        # One interface refusing multicast (a VPN adapter) is fine while another carried the beacon.
         if failure is not None and not sent_v4:
             self._warn(failure)
         return sent
@@ -192,7 +190,6 @@ class Announcer:
 
 
 REOPEN_S = 2.0
-# Interfaces come and go (Wi-Fi reconnects, a VPN comes up): re-join the group when they change.
 REJOIN_S = 30.0
 
 
@@ -240,7 +237,6 @@ class Listener:
                 except OSError:
                     pass
             if not joined:
-                # Nothing listed (or every join refused): the default interface, as before.
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq("0.0.0.0"))
             self._ifaces, self._joined, self._joined_at = ifaces, joined, time.monotonic()
             sock.settimeout(0.5)

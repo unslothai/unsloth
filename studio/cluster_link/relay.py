@@ -44,7 +44,6 @@ OPEN_RPC_REPLY_TIMEOUT_S = 75.0
 BUSY_GRACE_S = 0.25
 # Re-check worker authorization this often: `cluster remove` elsewhere only edits the registry.
 REVALIDATE_S = 2.0
-# Backoff cap for re-sending native_close to a removed worker that did not answer.
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
 
 
@@ -389,7 +388,6 @@ class RelayManager:
         while True:
             await asyncio.sleep(REVALIDATE_S)
             try:
-                # The check reads the registry from disk: off the loop that carries the RPC bytes.
                 ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
             except Exception:
                 ok = False
@@ -617,7 +615,6 @@ class RelayManager:
             except (OSError, asyncio.TimeoutError):
                 first = b""
             if not first:
-                # A port check, or a client that left: the worker never hears of it.
                 return
             if not await self._wait_idle(relay):
                 return

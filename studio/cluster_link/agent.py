@@ -197,7 +197,6 @@ def _listen(host: str, port: int) -> socket.socket:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(addr)
         sock.listen(16)
-        # A short timeout lets the accept thread notice a stop on every platform.
         sock.settimeout(0.5)
     except OSError:
         sock.close()
@@ -276,7 +275,6 @@ class Agent:
         self.counters: Dict[str, int] = {}
         self._rpc_ready: Optional[asyncio.Event] = None
         self._port_lock: Optional[int] = None
-        # Threaded sessions (default): an accept thread and one thread per connection, see splice.py.
         self.threaded = False
         self._listener: Optional[socket.socket] = None
         self._accept_thread: Optional[threading.Thread] = None
@@ -349,7 +347,6 @@ class Agent:
                 ssl = ctx,
                 ssl_handshake_timeout = HANDSHAKE_TIMEOUT_S,
                 limit = STREAM_LIMIT,
-                # As in _listen: on Windows SO_REUSEADDR lets another process take the port.
                 reuse_address = os.name != "nt",
             )
             sockets = self._server.sockets or []
@@ -454,7 +451,6 @@ class Agent:
         env["LLAMA_CACHE"] = str(self._cache())
         return env
 
-    # No PR_SET_PDEATHSIG off Linux: the next agent finds a leftover rpc-server via this record.
     def _record_path(self) -> Path:
         return run_dir() / f"rpc-server-{self.rpc_port}.json"
 
@@ -478,7 +474,6 @@ class Agent:
             pass
 
     def _reap_stale_rpc(self) -> None:
-        # This agent holds the port lock, so the agent that wrote the record is gone.
         _reap_rpc_record(self._record_path())
         # A killed agent restarted on another --rpc-port: its record is named after the old port. A
         # record whose port lock is free was left by an agent that is gone (a live one holds it).
@@ -597,7 +592,6 @@ class Agent:
             except (OSError, asyncio.TimeoutError):
                 await asyncio.sleep(0.1)
                 continue
-            # Connect and close without a command: rpc-server reads EOF and goes back to accept.
             await close_writer(writer, abort = True)
             if self._rpc_ready is not None:
                 self._rpc_ready.set()
@@ -774,7 +768,6 @@ class Agent:
         while True:
             await asyncio.sleep(REVALIDATE_S)
             try:
-                # Reads the registry from disk: off the loop that carries the RPC bytes.
                 ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
             except Exception:
                 ok = False

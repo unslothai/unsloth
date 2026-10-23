@@ -1022,13 +1022,11 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     return nodes
 
 
-# Paired workers: reached via a loopback relay carrying RPC over mutual TLS. Process-wide.
 _RELAYS: Any = None
 _LISTENER: Any = None
 # Status polls (event loop) and loads (worker threads) both reach these: one creator each, ever.
 _LINKS_LOCK = threading.RLock()
 _LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
-# node_id -> the native port its agent granted on the last planning pass (status reads reuse it).
 _NATIVE: Dict[str, int] = {}
 LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
 
@@ -1099,7 +1097,6 @@ def _relays_locked() -> Optional[Any]:
         # Master reset and re-paired under a new root: no new worker trusts the cached certificate.
         _stop_links()
     if master is None:
-        # Not a master (any more, e.g. after `cluster leave`): there is nothing to relay to.
         return None
     if _RELAYS is None:
         from studio.cluster_link.relay import RelayManager
@@ -1125,7 +1122,6 @@ def _paired_announcement(node_id: str, fp: str) -> bool:
 # One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
 DISCOVERY_SETTLE_S = 6.5
 _LISTENER_STARTED = 0.0
-# node_id of each paired worker the last refresh could not verify at any known address.
 _UNVERIFIED: set = set()
 
 
@@ -1457,7 +1453,6 @@ def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]],
         return None, f"{type(exc).__name__}: {exc}"
     if not isinstance(answer, dict):
         return None, "no status"
-    # RelayManager.status() reports a failed or refused connection in the dict instead of raising.
     if answer.get("reachable") is False or answer.get("type") == "error":
         return None, str(answer.get("error") or "unreachable over mutual TLS")
     if answer.get("rpc_up") is False:
@@ -1966,7 +1961,6 @@ class ClusterServing:
         from core.inference import spark_serving as ss
 
         if _paired_workers() and not _passthrough_request(request):
-            # Wait for discovery so an early load sees its workers; in a thread, off Studio's event loop.
             await asyncio.to_thread(self.refresh_nodes)
             settle = discovery_settle_s()
             if settle:
@@ -3017,7 +3011,6 @@ class ClusterServing:
 
     def _status_nodes(self) -> List[Node]:
         if not self.nodes and not self.config_error:
-            # Called from async routes: list paired workers without checking them over the network.
             return self.refresh_nodes(verify = False)
         if not _paired_only():
             return self.nodes
@@ -3028,7 +3021,6 @@ class ClusterServing:
             nodes = load_nodes(verify = False)
         except ClusterConfigError:
             nodes = []
-        # The re-read starts LINK_DROPPED over; keep why the last load left out a worker still paired.
         paired = {n.name or n.node_id for n in nodes} | set(LINK_DROPPED)
         for label, why in dropped.items():
             if label in paired:

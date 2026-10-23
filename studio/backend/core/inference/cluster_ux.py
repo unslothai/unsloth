@@ -103,7 +103,6 @@ def load_progress_message(llama_started: bool) -> Optional[str]:
     plan = _split_plan(state)
     if plan is None:
         if llama_started or getattr(state, "plan", None) is not None:
-            # Planned onto this machine alone: the ordinary progress bar tells the story.
             return None
         return "Checking your paired workers and planning where the model's layers go."
     workers = _remote_workers(state, plan)
