@@ -30455,16 +30455,23 @@ def _fit_external_context(
     payload,
     *,
     tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
+    queries the user's turn rather than a controller re-prompt the loop appended."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
         messages_without_unpriced_media,
         prompt_budget,
+        retrieval_budget,
     )
     from core.inference.llama_cpp import (
+        _archive_and_recall,
         _boundary_metadata,
         _compaction_fit_kwargs,
+        _conversation_recall_reserve,
         _fit_with_instruction_pins,
         _keeps_compaction_boundary,
         _records_boundary,
@@ -30505,7 +30512,7 @@ def _fit_external_context(
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # No archive to search here, so a checkpoint reset may not start and the fit stays rolling.
+    # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
     sticky, sticky_is_checkpoint = _sticky_compaction_state(
         thread_id,
         messages,
@@ -30520,13 +30527,37 @@ def _fit_external_context(
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
         recall_offered = False,
+        reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
         estimate_message = estimate_message_tokens_without_unpriced_media,
         **_compaction_fit_kwargs(policy, ratio),
     )
     if truncation and _records_boundary(truncation):
+        # From the fit, not the recalled list: inline recall swaps the latest user dict and the
+        # anchor is matched by identity.
         truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
+    if truncation:
+        # The catalogue is chosen before this fit, so the turn that first evicts has no
+        # search_conversation: recall inline, as the local plain path does, or a question about
+        # an evicted attachment on that turn gets "I have no record of it".
+        recall = _archive_and_recall(
+            fitted,
+            messages,
+            branch_messages = branch or messages,
+            thread_id = str(thread_id) if thread_id else None,
+            style = "inline",
+            recall_done = not truncation.get("fits", True),
+            recall_budget_tokens = retrieval_budget(
+                context_length,
+                max_tokens,
+                truncation.get("prompt_tokens_after") or 0,
+                reply_returns = tool_loop,
+            ),
+            count_tokens = _count,
+        )
+        fitted = recall["conversation"]
+        truncation = {**truncation, **recall["counts"]}
     return fitted, truncation, max_tokens
 
 
@@ -31319,6 +31350,14 @@ async def _proxy_to_external_provider(
             full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
+        # The compaction nudge is not part of the general nudge: once the thread has an archive
+        # the catalogue carries search_conversation, and without this the model is never told
+        # that turns it cannot see exist, so it answers that it has no record of them. Not when
+        # no call can happen: the loop withdraws the catalogue and inline recall still runs.
+        if not _tool_calls_are_disabled(payload):
+            _external_nudge = _apply_compaction_nudge(
+                _external_nudge, external_studio_tools, payload = payload
+            )
     _served_template = None
     if (
         provider_type == "llama_cpp"
@@ -31366,6 +31405,7 @@ async def _proxy_to_external_provider(
     _external_context_fitter = None
     _compaction_fallback = None
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
+        _request_branch = chat_messages
 
         async def _external_context_fitter(messages):
             nonlocal _external_truncation
@@ -31374,6 +31414,8 @@ async def _proxy_to_external_provider(
                 messages,
                 payload,
                 tools = _external_fit_tools,
+                branch = _request_branch,
+                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
@@ -34594,6 +34636,9 @@ async def produce_openai_chat_completions(
                             chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
                         return chunks
 
+                    # Set by the frame that ends a park: other tabs clear their prompt on it, so it
+                    # is forwarded first and the slot is retaken before the generator does more.
+                    resume_before_next = False
                     while True:
                         if cancel_event.is_set():
                             mark_current_response_failed()
@@ -34603,6 +34648,10 @@ async def produce_openai_chat_completions(
                             mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
+
+                        if resume_before_next:
+                            resume_before_next = False
+                            await _park_admission(False)
 
                         next_task = asyncio.create_task(
                             asyncio.to_thread(next, gen, _tool_sentinel)
@@ -34648,7 +34697,7 @@ async def produce_openai_chat_completions(
                                 and event.get("status") == "awaiting_approval"
                             )
                         ):
-                            await _park_admission(False)
+                            resume_before_next = True
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -34660,6 +34709,7 @@ async def produce_openai_chat_completions(
                             "tool_args",
                             "skill_load",
                             "tool_model_note",
+                            "tool_approved",
                         ):
                             if (
                                 event["type"] == "skill_load"
@@ -36660,8 +36710,8 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
-                    if event["type"] in ("tool_output", "tool_args"):
-                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                    if event["type"] in ("tool_output", "tool_args", "tool_approved"):
+                        # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:
                             yield f"data: {json.dumps(event)}\n\n"
                         elif _drop_keepalive.due():

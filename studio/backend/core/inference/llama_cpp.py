@@ -42825,7 +42825,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None
