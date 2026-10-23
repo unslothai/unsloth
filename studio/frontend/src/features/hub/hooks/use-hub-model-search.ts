@@ -230,8 +230,7 @@ function makeMapModel(
     if (excludeGguf && isGguf) {
       return null;
     }
-    // The Hub derives both the gguf metadata and the "gguf" tag from uploaded .gguf files, so a
-    // "-GGUF" repo with neither is a placeholder created ahead of its upload: nothing to load yet.
+    // The Hub derives gguf metadata and the "gguf" tag from uploaded files: neither means none yet.
     if (
       hideEmptyUploads &&
       isGgufLike(m.name) &&
