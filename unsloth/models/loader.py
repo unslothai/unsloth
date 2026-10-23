@@ -833,14 +833,34 @@ def _resolve_audio_auto_model(
     return None
 
 
-def _resolve_non_vlm_auto_model(model_config, **hub_kwargs):
+def _resolve_non_vlm_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
     """CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
     (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names."""
-    causal_maps = resolve_model_class(AutoModelForCausalLM, model_config, **hub_kwargs) is not None
+    causal_maps = (
+        resolve_model_class(
+            AutoModelForCausalLM, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        )
+        is not None
+    )
     return (
-        _resolve_audio_auto_model(model_config, include_bare = not causal_maps, **hub_kwargs)
+        _resolve_audio_auto_model(
+            model_config,
+            include_bare = not causal_maps,
+            trust_remote_code = trust_remote_code,
+            **hub_kwargs,
+        )
         # moonshine-streaming's repo config names no architectures; only its speech seq2seq class builds it.
-        or (None if causal_maps else _resolve_speech_seq2seq_auto_model(model_config, **hub_kwargs))
+        or (
+            None
+            if causal_maps
+            else _resolve_speech_seq2seq_auto_model(
+                model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            )
+        )
         or AutoModelForCausalLM
     )
 

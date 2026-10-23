@@ -268,10 +268,25 @@ def test_rocm_kill_switch_restores_old_routes(monkeypatch, arch, triton_version,
 
 
 def test_kill_switch_env_is_read_at_import():
-    code = "from unsloth.kernels import fp8; print(fp8._HIP_FP8_BYTES_DEQUANT)"
-    env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = "0")
-    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
-    assert out.stdout.strip().splitlines()[-1] == "False", out.stderr[-2000:]
+    # A fresh interpreter has no conftest spoof, so on a CPU-only box `import unsloth` raises
+    # "cannot find any torch accelerator" before the switch is ever read; install the CI spoof.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    code = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "if not torch.cuda.is_available():\n"
+        "    import _zoo_aggressive_cuda_spoof\n"
+        "    _zoo_aggressive_cuda_spoof.apply()\n"
+        "from unsloth.kernels import fp8\n"
+        "print(fp8._HIP_FP8_BYTES_DEQUANT)\n"
+    )
+    for value, expected in (("0", "False"), ("1", "True")):
+        env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = value)
+        out = subprocess.run(
+            [sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600
+        )
+        lines = out.stdout.strip().splitlines()
+        assert lines and lines[-1] == expected, (value, out.stderr[-2000:])
 
 
 @needs_cuda
