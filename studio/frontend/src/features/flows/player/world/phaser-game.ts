@@ -54,6 +54,19 @@ export interface WorldGameHandle {
   walkTo(tile: Point): void;
   /** Where an NPC stands now (they wander). */
   npcTile(id: string): Point | null;
+  npcTiles(): Record<string, Point>;
+  /** Send an NPC to an area to spend time in; null goes back to wandering near home. */
+  setNpcPlace(id: string, area: Area | null): void;
+  setNpcBusy(id: string, busy: boolean): void;
+  setNpcStatus(id: string, icon: string): void;
+  say(id: string, text: string, ms?: number): void;
+}
+
+export interface Area {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 const VARIANTS = 4;
@@ -71,6 +84,9 @@ interface Actor {
   path: Point[];
   rest: number;
   phase: number;
+  area: Area | null;
+  busy: boolean;
+  speech: Phaser.GameObjects.Container | null;
 }
 
 export function createWorldGame(
@@ -358,6 +374,9 @@ export function createWorldGame(
         path: [],
         rest: 0,
         phase: Math.random() * 10,
+        area: null,
+        busy: false,
+        speech: null,
       };
     }
 
@@ -424,6 +443,7 @@ export function createWorldGame(
           this.nearby?.id !== a.id && this.distTo(a.body.x, a.body.y) < T * 5,
         );
       }
+      a.speech?.setPosition(a.body.x, a.body.y - T * 1.5).setDepth(1e6 - 1);
     }
 
     update(time: number, delta: number) {
@@ -458,7 +478,12 @@ export function createWorldGame(
         const nb = n.body.body as Phaser.Physics.Arcade.Body;
         const close = this.distTo(n.body.x, n.body.y) < T * 1.8;
         const spec_ = spec.npcs.find((x) => x.id === n.id);
-        if (this.talking === n.id || close || spec_?.wander === false) {
+        if (
+          this.talking === n.id ||
+          n.busy ||
+          close ||
+          spec_?.wander === false
+        ) {
           nb.setVelocity(0, 0);
           n.path = [];
           if (close) n.sprite.setFlipX(this.player.body.x < n.body.x);
@@ -466,12 +491,29 @@ export function createWorldGame(
           n.rest -= dt;
           if (n.rest <= 0) {
             n.rest = 2 + Math.random() * 4;
-            const target = {
-              x: n.home.x + Math.round((Math.random() - 0.5) * 6),
-              y: n.home.y + Math.round((Math.random() - 0.5) * 6),
-            };
-            if (!isSolid(map, target.x, target.y))
-              n.path = findPath(map, this.tileOf(n), target, 800).slice(0, 8);
+            const here = this.tileOf(n);
+            const a = n.area;
+            const inside =
+              a &&
+              here.x >= a.x &&
+              here.x < a.x + a.w &&
+              here.y >= a.y &&
+              here.y < a.y + a.h;
+            // Planned NPCs walk the whole way to their place, then mill about inside it.
+            const target = a
+              ? {
+                  x: a.x + Math.floor(Math.random() * a.w),
+                  y: a.y + Math.floor(Math.random() * a.h),
+                }
+              : {
+                  x: n.home.x + Math.round((Math.random() - 0.5) * 6),
+                  y: n.home.y + Math.round((Math.random() - 0.5) * 6),
+                };
+            if (a && !inside) {
+              n.rest = 0.5;
+              n.path = findPath(map, here, target);
+            } else if (!isSolid(map, target.x, target.y))
+              n.path = findPath(map, here, target, 800).slice(0, 8);
           }
         }
         this.animate(
@@ -610,6 +652,74 @@ export function createWorldGame(
     npcTile(id: string) {
       const npc = sceneRef?.npcs.find((n) => n.id === id);
       return npc && sceneRef ? sceneRef.tileOf(npc) : null;
+    },
+    npcTiles() {
+      const out: Record<string, Point> = {};
+      const scene = sceneRef;
+      for (const n of scene?.npcs ?? []) if (scene) out[n.id] = scene.tileOf(n);
+      return out;
+    },
+    setNpcPlace(id: string, area: Area | null) {
+      const npc = sceneRef?.npcs.find((n) => n.id === id);
+      if (!npc) return;
+      const same =
+        npc.area === area ||
+        (npc.area &&
+          area &&
+          npc.area.x === area.x &&
+          npc.area.y === area.y &&
+          npc.area.w === area.w &&
+          npc.area.h === area.h);
+      if (same) return;
+      npc.area = area;
+      npc.path = [];
+      npc.rest = 0;
+    },
+    setNpcBusy(id: string, busy: boolean) {
+      const npc = sceneRef?.npcs.find((n) => n.id === id);
+      if (npc) npc.busy = busy;
+    },
+    setNpcStatus(id: string, icon: string) {
+      const npc = sceneRef?.npcs.find((n) => n.id === id);
+      const label = npc?.sprite.getData("label") as
+        | Phaser.GameObjects.Text
+        | undefined;
+      if (npc && label) label.setText(icon ? `${icon} ${npc.name}` : npc.name);
+    },
+    say(id: string, text: string, ms = 4000) {
+      const scene = sceneRef;
+      const npc = scene?.npcs.find((n) => n.id === id);
+      if (!scene || !npc) return;
+      npc.speech?.destroy();
+      const t = scene.add
+        .text(0, 0, text, {
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontSize: `${Math.max(10, Math.round(T * 0.32))}px`,
+          color: "#1b1b28",
+          wordWrap: { width: T * 5.5 },
+          align: "center",
+        })
+        .setOrigin(0.5, 1);
+      const pad = 6;
+      const g = scene.add.graphics();
+      g.fillStyle(0xffffff, 0.94);
+      g.fillRoundedRect(
+        -t.width / 2 - pad,
+        -t.height - pad,
+        t.width + pad * 2,
+        t.height + pad * 2,
+        8,
+      );
+      g.fillTriangle(-5, pad, 5, pad, 0, pad + 6);
+      const bubble = scene.add.container(npc.body.x, npc.body.y - T * 1.5, [
+        g,
+        t,
+      ]);
+      npc.speech = bubble;
+      scene.time.delayedCall(ms, () => {
+        bubble.destroy();
+        if (npc.speech === bubble) npc.speech = null;
+      });
     },
   };
 }

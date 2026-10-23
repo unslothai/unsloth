@@ -831,6 +831,233 @@ def pocket_village() -> B:
     return b
 
 
+def smallville_lite() -> B:
+    b = B(
+        "smallville-lite",
+        "Smallville Lite",
+        "world",
+        "A small town whose six villagers live their own day: they remember, plan, walk between places and chat with "
+        "each other, so news spreads without you. After Park et al. 2023, Generative Agents.",
+        tags = ["world", "game", "npc", "memory", "agent"],
+        seed = 214,
+    ).need("chat")
+    places = [
+        {
+            "id": "hobbs_cafe",
+            "name": "Hobbs Cafe",
+            "x": 20,
+            "y": 6,
+            "w": 8,
+            "h": 5,
+            "on_enter_text": "Smells of fresh coffee.",
+        },
+        {
+            "id": "johnson_park",
+            "name": "Johnson Park",
+            "x": 5,
+            "y": 21,
+            "w": 10,
+            "h": 7,
+            "on_enter_text": "Birds and benches.",
+        },
+        {
+            "id": "the_market",
+            "name": "The Market",
+            "x": 33,
+            "y": 21,
+            "w": 10,
+            "h": 6,
+            "on_enter_text": "Stalls and chatter.",
+        },
+        {
+            "id": "lin_house",
+            "name": "Lin family home",
+            "x": 5,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A cosy blue house.",
+        },
+        {
+            "id": "moreno_house",
+            "name": "Moreno house",
+            "x": 36,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A tidy garden.",
+        },
+    ]
+
+    def npc(
+        name: str,
+        at: str,
+        persona: str,
+        routine: str,
+        relationships: dict,
+        memories: list,
+        dx: int = 0,
+    ) -> dict:
+        p = next(x for x in places if x["id"] == at)
+        return {
+            "name": name,
+            "persona": persona,
+            "greeting": f"Hi, I'm {name.split()[0]}.",
+            "routine": routine,
+            "relationships": relationships,
+            "seed_memories": memories,
+            "x": p["x"] + p["w"] // 2 + dx,
+            "y": p["y"] + p["h"] // 2,
+        }
+
+    world = {
+        "title": "Smallville Lite",
+        "seed": 214,
+        "biome": "town",
+        "width": 48,
+        "height": 34,
+        "intro_text": "It is February 14 in Smallville. Isabella is planning something at Hobbs Cafe tonight. "
+        "Walk around, talk to people, and watch the news spread.",
+        "player": {"name": "Pip"},
+        "npcs": [
+            npc(
+                "Isabella Rodriguez",
+                "hobbs_cafe",
+                "Owner of Hobbs Cafe; warm, outgoing and loves bringing people together.",
+                "Opens the cafe at 8, serves customers all day, closes at 8 in the evening.",
+                {
+                    "Maria Lopez": "a regular at the cafe and a good friend",
+                    "Tom Moreno": "sells her coffee beans",
+                },
+                [
+                    {
+                        "text": "I am hosting a Valentine's Day party at Hobbs Cafe on February 14 from 5pm to 7pm",
+                        "importance": 8,
+                    },
+                    {
+                        "text": "I want to invite as many people as I can to my party",
+                        "importance": 6,
+                    },
+                ],
+            ),
+            npc(
+                "Maria Lopez",
+                "lin_house",
+                "A physics student who streams games in the evening; curious and chatty.",
+                "Studies in the morning, has lunch at Hobbs Cafe, walks in the park in the afternoon.",
+                {
+                    "Klaus Mueller": "a classmate she has a quiet crush on",
+                    "Isabella Rodriguez": "her friend at the cafe",
+                },
+                [{"text": "I have a crush on Klaus Mueller", "importance": 6}],
+            ),
+            npc(
+                "Klaus Mueller",
+                "lin_house",
+                "A sociology student writing a paper on gentrification; thoughtful and a little shy.",
+                "Reads at home in the morning, takes notes in the park, shops at the market before dinner.",
+                {"Maria Lopez": "a friendly classmate"},
+                [{"text": "My research paper on gentrification is due next week", "importance": 5}],
+                dx = -2,
+            ),
+            npc(
+                "Tom Moreno",
+                "the_market",
+                "Runs the grocery stall at the market; grumbles about prices but helps everyone.",
+                "Sets up his stall at 7, sells until 6, then goes home to the Moreno house.",
+                {
+                    "Isabella Rodriguez": "buys his coffee beans",
+                    "Sam Moore": "an old friend he argues politics with",
+                },
+                [
+                    {
+                        "text": "Sam Moore is running for mayor and I am not sure I will vote for him",
+                        "importance": 5,
+                    }
+                ],
+            ),
+            npc(
+                "Sam Moore",
+                "moreno_house",
+                "A retired shop owner running for local mayor; friendly, talks to everyone about his plans.",
+                "Walks around town all day to talk to voters, ending at the park in the evening.",
+                {"Tom Moreno": "an old friend who doubts his campaign"},
+                [
+                    {
+                        "text": "I am running for mayor of Smallville and want to meet every resident",
+                        "importance": 7,
+                    }
+                ],
+            ),
+            npc(
+                "Ayesha Khan",
+                "johnson_park",
+                "A literature student writing a senior thesis on Shakespeare; quiet and observant.",
+                "Writes in the park in the morning, works at Hobbs Cafe in the afternoon.",
+                {"Isabella Rodriguez": "her boss at the cafe"},
+                [{"text": "I work afternoon shifts at Hobbs Cafe", "importance": 4}],
+            ),
+        ],
+        "items": [
+            {
+                "id": "chocolates",
+                "name": "Box of chocolates",
+                "description": "Perfect for a Valentine's party.",
+                "x": 38,
+                "y": 23,
+            },
+        ],
+        "quests": [
+            {
+                "id": "party_treats",
+                "title": "Treats for the party",
+                "description": "Isabella needs something sweet for the Valentine's Day party.",
+                "giver": "isabella_rodriguez",
+                "requires_item": "chocolates",
+                "reward_text": "Isabella beams and saves you the best seat.",
+            }
+        ],
+        "regions": places,
+        "vars": {"party_attendance": 0},
+        "simulation": {
+            "minutes_per_second": 2,
+            "start_minute": 480,
+            "chat_cooldown_min": 120,
+            "calls_per_minute": 4,
+        },
+    }
+    b.n("world", "world.spec", 0, 1, world = world)
+    b.n("play", "world.play", 1, 1)
+    b.e("world.world", "play.world")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        2,
+        0.2,
+        label = "Talk (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words. Talk about what you remember and plan. If you decide "
+        "to go to Isabella's party, set party_attendance to one more than its current value.",
+    )
+    b.n("plan", "world.npc_plan", 2, 1.2, label = "Daily plans (live)", model = CHAT)
+    b.n("chat", "world.npc_chat", 2, 2.2, label = "Villager chats (live)", model = CHAT)
+    b.note(
+        "about",
+        'Village life after Park et al. 2023, "Generative Agents: Interactive Simulacra of Human Behavior" '
+        "(arXiv:2304.03442). Each villager keeps a memory stream; replies, plans and chats recall what matters by "
+        "recency, importance and relevance, and record new memories in the same call.\n\n"
+        "Play: one game day is 12 real minutes. Villagers plan their day once, walk between places and chat when they "
+        "meet, at most 4 background model calls a minute; time stops while you talk. Everything runs on the local chat "
+        "model (and the local embedding model when one is loaded). Watch whether word of Isabella's party spreads.",
+        0,
+        2.2,
+        1.8,
+        1.4,
+    )
+    return b
+
+
 def comic_strip() -> B:
     b = B(
         "comic-strip",
@@ -2576,6 +2803,7 @@ BUILDERS = (
     sloth_moon,
     infinite_dungeon,
     pocket_village,
+    smallville_lite,
     comic_strip,
     podcast,
     storyboard,

@@ -326,6 +326,10 @@ class WorldNpc(_Strict):
     x: Optional[int] = None
     y: Optional[int] = None
     wander: bool = True
+    # Only read when the world has a `simulation` section.
+    routine: Optional[str] = None
+    relationships: Optional[dict[str, str]] = None
+    seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
 
 
 class WorldItem(_Strict):
@@ -358,6 +362,26 @@ class WorldRegion(_Strict):
     on_enter_text: str = ""
 
 
+class WorldPlace(_Strict):
+    id: str
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class WorldSimulation(_Strict):
+    """Generative Agents style village life: a game clock, NPC memories, daily plans and NPC to NPC chats."""
+
+    enabled: bool = True
+    minutes_per_second: float = 2.0  # game minutes per real second
+    start_minute: int = 480
+    places: list[WorldPlace] = Field(default_factory = list)
+    chat_cooldown_min: int = 120  # game minutes per NPC pair
+    calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -376,6 +400,7 @@ class WorldSpec(_Strict):
     intro_text: str = ""
     style: Optional[str] = None
     entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
+    simulation: Optional[WorldSimulation] = None
 
 
 # Run events (SSE `data:` payloads; `id:` is `seq`)

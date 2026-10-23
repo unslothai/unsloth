@@ -6,22 +6,36 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from collections import OrderedDict
+from typing import Any, Optional
 
+from core.flows import memory as mem
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
+from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed
 from core.flows.registry import FlowNodeError, NodeContext, handler
 from core.flows.story import slug
 from core.flows.world import (
     BIOME_TILES,
+    NPC_MEMORY_REPLY_SCHEMA,
     NPC_REPLY_SCHEMA,
     TILE_PROMPTS,
     WorldError,
+    chat_prompt,
+    chat_schema,
+    has_memory,
     normalize_world,
     npc_prompt,
+    plan_prompt,
+    validate_chat,
     validate_npc_reply,
     world_schema,
 )
+
+RECALL_K = 8
+# Village memories are short and repeat across calls, so vectors stay here instead of in every save and request.
+_VECTORS: "OrderedDict[str, list[float]]" = OrderedDict()
+_VECTORS_MAX = 20000
 
 WORLD_SYSTEM = """You design a tiny cozy top-down RPG world.
 Give every NPC a distinct personality, a one-line greeting and a `sprite_prompt` describing their look.
@@ -197,13 +211,73 @@ async def world_npc(ctx: NodeContext) -> dict:
     return {"npc": npc}
 
 
+async def _recall(
+    ctx: NodeContext,
+    records: Any,
+    query: str,
+    now: float,
+    k: int = RECALL_K,
+) -> list[dict]:
+    """The top memories for `query` (recency, importance, relevance); keyword relevance when no embedder answers."""
+    try:
+        stream = mem.as_stream(records)
+    except ValueError:
+        return []
+    for r in stream["records"]:
+        r.pop("embedding", None)
+    if not stream["records"]:
+        return []
+    query_vec = None
+    if ctx.params.get("relevance", "embeddings") == "embeddings":
+        texts = [r["text"] for r in stream["records"]]
+        missing = list(dict.fromkeys(t for t in texts if t not in _VECTORS))
+        vectors = await embed(ctx, [query] + missing)
+        if vectors:
+            query_vec = vectors[0]
+            for text, vec in zip(missing, vectors[1:]):
+                _VECTORS[text] = vec
+            while len(_VECTORS) > _VECTORS_MAX:
+                _VECTORS.popitem(last = False)
+            for r in stream["records"]:
+                vec = _VECTORS.get(r["text"])
+                if vec is not None and len(vec) == len(query_vec):
+                    _VECTORS.move_to_end(r["text"])
+                    r["embedding"] = vec
+                else:
+                    # Another embedding model wrote it; the next call embeds it again.
+                    _VECTORS.pop(r["text"], None)
+    picked = _retrieve(stream, query, query_vec, now, ctx.params, k, touch = False)
+    return [{"id": r["id"], "text": r["text"]} for r in picked]
+
+
+def _hours(state: dict) -> float:
+    clock = state.get("clock")
+    return (
+        float(clock) / 60.0
+        if isinstance(clock, (int, float)) and not isinstance(clock, bool)
+        else 0.0
+    )
+
+
 @handler("world.npc_reply")
 async def world_npc_reply(ctx: NodeContext) -> dict:
     state = ctx.inputs.get("state")
     if not isinstance(state, dict):
         raise FlowNodeError("NPC Reply needs the conversation state from the world player.")
+    memories: Optional[list[dict]] = None
+    if has_memory(state):
+        npc = next(
+            (
+                n
+                for n in (state.get("world") or {}).get("npcs") or []
+                if n.get("id") == state.get("npc_id")
+            ),
+            {},
+        )
+        query = f"{state.get('player_message') or ''} {npc.get('name') or ''}"
+        memories = await _recall(ctx, state["memory"], query, _hours(state))
     try:
-        system, prompt = npc_prompt(state, str(ctx.params.get("rules") or ""))
+        system, prompt = npc_prompt(state, str(ctx.params.get("rules") or ""), memories)
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
     # The reply's text is streamed to the player as it is written; items and quests follow with the full answer.
@@ -218,13 +292,97 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         model = ctx.params.get("model"),
         system = system,
         prompt = prompt,
-        schema = NPC_REPLY_SCHEMA,
+        schema = NPC_REPLY_SCHEMA if memories is None else NPC_MEMORY_REPLY_SCHEMA,
         temperature = 0.8,
-        max_tokens = int(ctx.params.get("max_tokens") or 200) + 120,
+        max_tokens = int(ctx.params.get("max_tokens") or 200) + (120 if memories is None else 200),
         seed = seed_from(ctx.seed, state.get("npc_id"), len(state.get("history") or [])),
         on_text = on_text,
     )
-    return {"reply": validate_npc_reply(raw, state)}
+    reply = validate_npc_reply(raw, state)
+    if memories is not None:
+        reply["recalled"] = [r["id"] for r in memories]
+    return {"reply": reply}
+
+
+def _sim_world(state: Any, who: str) -> dict:
+    if not isinstance(state, dict) or not isinstance(state.get("world"), dict):
+        raise FlowNodeError(f"{who} needs the village state from the world player.")
+    world = state["world"]
+    if not (world.get("simulation") or {}).get("places"):
+        raise FlowNodeError(f"{who} needs a world with a simulation section.")
+    return world
+
+
+def _npc(world: dict, npc_id: Any) -> dict:
+    npc = next((n for n in world.get("npcs") or [] if n.get("id") == npc_id), None)
+    if npc is None:
+        raise FlowNodeError(f"Unknown NPC {npc_id!r}")
+    return npc
+
+
+@handler("world.npc_plan")
+async def world_npc_plan(ctx: NodeContext) -> dict:
+    state = ctx.inputs.get("state")
+    world = _sim_world(state, "NPC Plan")
+    npc = _npc(world, state.get("npc_id"))
+    places = world["simulation"]["places"]
+    names = [p["name"] for p in places]
+    day = max(0, int(_hours(state) // 24))
+    memories = await _recall(
+        ctx, state.get("memory"), f"{npc['name']}'s plans for today", _hours(state)
+    )
+    system, prompt = plan_prompt(world, npc, memories, day)
+    raw = await ctx.llm_json(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        schema = _plan_schema(names, 6),
+        temperature = 0.7,
+        max_tokens = 600,
+        seed = seed_from(ctx.seed, npc["id"], day),
+    )
+    by_name = {p["name"]: p["id"] for p in places}
+    plan = []
+    for e in clean_plan(raw, names, 6):
+        hh, mm = (int(x) for x in e["start"].split(":"))
+        plan.append(
+            {
+                "start": day * 1440 + hh * 60 + mm,
+                "minutes": e["minutes"],
+                "activity": e["activity"][:80],
+                "place": by_name[e["place"]],
+            }
+        )
+    return {"plan": {"npc": npc["id"], "day": day, "plan": plan}}
+
+
+@handler("world.npc_chat")
+async def world_npc_chat(ctx: NodeContext) -> dict:
+    state = ctx.inputs.get("state")
+    world = _sim_world(state, "NPC Chat")
+    a, b = _npc(world, state.get("a")), _npc(world, state.get("b"))
+    if a["id"] == b["id"]:
+        raise FlowNodeError("An NPC cannot chat with themselves.")
+    now = _hours(state)
+    mem_a = await _recall(ctx, state.get("memory_a"), b["name"], now, 5)
+    mem_b = await _recall(ctx, state.get("memory_b"), a["name"], now, 5)
+    system, prompt = chat_prompt(world, a, b, mem_a, mem_b, state)
+    raw = await ctx.llm_json(
+        model = ctx.params.get("model"),
+        system = system,
+        prompt = prompt,
+        schema = chat_schema(a, b),
+        temperature = 0.8,
+        max_tokens = 700,
+        seed = seed_from(ctx.seed, a["id"], b["id"], int(state.get("clock") or 0)),
+    )
+    try:
+        chat = validate_chat(raw, a, b)
+    except WorldError as exc:
+        raise FlowNodeError(str(exc), retryable = True) from exc
+    chat["a_recalled"] = [r["id"] for r in mem_a]
+    chat["b_recalled"] = [r["id"] for r in mem_b]
+    return {"chat": chat}
 
 
 @handler("world.play")
