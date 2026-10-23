@@ -1507,7 +1507,30 @@ def calibrated_image_activation(
     )
 
 
-DISCRETE_RESERVE_CAP_MIB = 4096
+# ComfyUI's minimum_inference_memory() (comfy/model_management.py); activations are priced separately here.
+COMFY_MIN_INFERENCE_MIB = 800
+COMFY_EXTRA_RESERVED_MIB = 400
+COMFY_EXTRA_RESERVED_WINDOWS_MIB = 600
+COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB = 100
+# Placements measured on T4 / 8-16 GB cards are tuned against 2 GiB; ComfyUI's 1.2 GiB alone flips them.
+DISCRETE_RESERVE_FLOOR_MIB = 2048
+
+
+def comfy_min_inference_mib(total_mib: Optional[int] = None) -> int:
+    """ComfyUI's ``minimum_inference_memory()`` in MiB: 1200 on Linux, 1400 / 1500 (card above 15 GiB) on Windows."""
+    if sys.platform != "win32":
+        return COMFY_MIN_INFERENCE_MIB + COMFY_EXTRA_RESERVED_MIB
+    extra = COMFY_EXTRA_RESERVED_WINDOWS_MIB
+    if int(total_mib or 0) > 15 * 1024:
+        extra += COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB
+    return COMFY_MIN_INFERENCE_MIB + extra
+
+
+def discrete_reserve_mib(total_mib: Optional[int] = None) -> int:
+    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB."""
+    return max(DISCRETE_RESERVE_FLOOR_MIB, comfy_min_inference_mib(total_mib))
+
+
 _ROCM_APU_POOL = "rocm_apu_pool"
 
 
@@ -1524,11 +1547,8 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
-    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
-    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
-    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
-    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
+    # Fixed, not a share: a capped 10% kept 2.4-4 GiB idle on 24-40 GiB cards.
+    return discrete_reserve_mib(base)
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
@@ -2653,7 +2673,9 @@ def _calibrated_faster_tier(
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
-    Every check grows with the budget, so more VRAM never picks a slower tier."""
+    A flat resident-transformer pick whose measured 2048 denoise does not fit beside the weights (the flat runtime
+    headroom undercounts it) is demoted to the fastest tier that does fit, as ComfyUI offloads weights against its
+    activation estimate. Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -2732,6 +2754,24 @@ def _calibrated_faster_tier(
             ),
         ),
     )
+    # Only the 2048 denoise is checked here: it cannot tile, while an oversized decode is tiled by the generation guard.
+    denoise_fits = (
+        transformer + te + others <= room
+        if flat_rank == 0
+        else te > 0 and transformer + others <= room
+    )
+    if flat_rank <= 1 and not denoise_fits:
+        for fits, (tier_policy, stream_te, stream_tr, tile, reason) in candidates[flat_rank + 1 :]:
+            if fits:
+                return (
+                    tier_policy,
+                    stream_te,
+                    stream_tr,
+                    tile,
+                    "the measured 2048 denoise does not fit beside the flat resident pick; "
+                    + reason,
+                )
+        return None
     for rank, (fits, tier) in enumerate(candidates):
         if rank >= flat_rank:
             return None
