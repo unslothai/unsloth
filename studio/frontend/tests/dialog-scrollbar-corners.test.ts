@@ -50,7 +50,7 @@ test("dialogs and inline rounded scrollers use it", () => {
     ["features/api-monitor/api-monitor-page.tsx", "scroll-rounded rounded-lg"],
     ["features/export/components/export-run-panel.tsx", "scroll-rounded rounded-lg"],
     ["features/chat/components/research-activity-panel.tsx", "scroll-rounded rounded-xl"],
-    ["features/rag/components/knowledge-base-dialog.tsx", "scroll-rounded rounded-md border"],
+    ["features/rag/components/knowledge-base-dialog.tsx", "scroll-rounded rounded-xl border"],
     ["components/tauri/log-details.tsx", "scroll-rounded rounded-lg"],
   ] as const) {
     assert.ok(readSrc(file).includes(needle), `${file}: ${needle}`);
@@ -69,7 +69,7 @@ test("recipe dialogs scroll an inner viewport, keeping their shadow", () => {
   const shared = readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx");
   assert.match(shared, /overlayClassName="bg-transparent"/);
   assert.match(shared, /"corner-squircle flex max-h-\[[^"]*\] flex-col overflow-hidden p-0 sm:max-w-2xl shadow-border"/);
-  assert.match(shared, /"grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-4xl px-7 pt-8 pb-7"/);
+  assert.match(shared, /"grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-3xl px-7 pt-8 pb-7"/);
   for (const file of ["config-dialog", "import-dialog", "processors-dialog", "preview-dialog"]) {
     const source = readSrc(`features/recipe-studio/dialogs/${file}.tsx`);
     assert.match(source, /<RecipeDialogContent\b/, file);
@@ -84,8 +84,8 @@ test("shadowed menus scroll an inner viewport, not their rounded surface", () =>
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /aui-action-bar-more-content[^"]*flex flex-col overflow-hidden rounded-xl/);
   const preview = readSrc("features/recipe-studio/dialogs/preview-dialog.tsx");
-  assert.match(preview, /overflow-hidden rounded-2xl border border-destructive\/30 bg-destructive\/5 py-3 shadow-border">\s*<div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">/);
-  assert.doesNotMatch(preview, /scroll-rounded rounded-2xl border border-destructive/);
+  assert.match(preview, /overflow-hidden rounded-lg border border-destructive\/30 bg-destructive\/5 py-3 shadow-border">\s*<div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">/);
+  assert.doesNotMatch(preview, /scroll-rounded rounded-(lg|xl) border border-destructive/);
   const presets = readSrc("features/generation-presets/media-generation-preset-control.tsx");
   assert.match(presets, /gap-0 overflow-hidden rounded-xl border-border\/70 p-0 shadow-xl/);
   assert.match(presets, /max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2/);
