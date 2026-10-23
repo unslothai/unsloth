@@ -572,7 +572,7 @@ def run_shortcut_recorder(page) -> None:
     until(page, "el => el && !el.isConnected", arg = box.element_handle())
     state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
 
-    click_forced(page.get_by_role("button", name = "Reset all to defaults"), timeout = 15000)
+    click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)
     until(page, f"() => ({stored_js})() === null")
     state["reset"] = {
         "stored": page.evaluate(stored_js),

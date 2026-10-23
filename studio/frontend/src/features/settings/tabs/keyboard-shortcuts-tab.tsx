@@ -453,32 +453,16 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="settings-page px-4">
-      <header className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1
-            data-settings-label={t("settings.keyboardShortcuts.title")}
-            className="text-xl font-semibold font-heading"
-          >
-            {t("settings.keyboardShortcuts.title")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t("settings.keyboardShortcuts.intro")}
-          </p>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          disabled={Object.keys(overrides).length === 0}
-          onClick={() => {
-            stopRecording();
-            setJustRecorded(null);
-            resetAll();
-          }}
+      <header className="flex flex-col gap-1">
+        <h1
+          data-settings-label={t("settings.keyboardShortcuts.title")}
+          className="text-xl font-semibold font-heading"
         >
-          {t("settings.keyboardShortcuts.resetAll")}
-        </Button>
+          {t("settings.keyboardShortcuts.title")}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {t("settings.keyboardShortcuts.intro")}
+        </p>
       </header>
 
       <div className="relative">
@@ -570,6 +554,23 @@ export function KeyboardShortcutsTab() {
           </section>
         );
       })}
+
+      {/* Pinned to the pane's foot, edge to edge: -mx-10 undoes this page's px-4 and the scroller's p-6,
+          and -bottom-6 its padding, which sticky otherwise insets by. */}
+      <div className="sticky -bottom-6 z-10 -mx-10 -mb-6 mt-auto flex justify-end border-t border-border/60 bg-background px-10 py-4">
+        <Button
+          type="button"
+          variant="dark"
+          disabled={Object.keys(overrides).length === 0}
+          onClick={() => {
+            stopRecording();
+            setJustRecorded(null);
+            resetAll();
+          }}
+        >
+          {t("settings.keyboardShortcuts.resetAll")}
+        </Button>
+      </div>
     </div>
   );
 }

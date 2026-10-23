@@ -1143,7 +1143,7 @@ export const en = {
       conflictShadowed: "Another shortcut has this chord and runs instead",
       edit: "Change shortcut",
       reset: "Restore default",
-      resetAll: "Reset all to defaults",
+      resetAll: "Restore defaults",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       metaUnsupported: "The Windows key can't be used in shortcuts.",
