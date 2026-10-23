@@ -619,3 +619,18 @@ def test_primary_card_rank_uses_free_less_the_reserve(fraction, monkeypatch):
         0.80  # cuda:0 keeps 16 GiB (4 GiB left), cuda:1 keeps 3.2 GiB (10.8 GiB left)
     )
     assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]
+
+
+def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monkeypatch):
+    # Just below the default the user reserve is small and the planner's own reserve still binds: rank by
+    # the safe budget the planner admits with, not free less the user reserve alone.
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    cards = {0: (12 * GiB << 20, 40 * GiB << 20), 1: (11 * GiB << 20, 16 * GiB << 20)}
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda o: cards[o])
+    assert dd.rank_cuda_ordinals([0, 1]) == [0, 1]
+    fraction["value"] = 0.96
+    safe = {o: dm._safe_device_budget_mib(_card(f >> 20, t >> 20)) for o, (f, t) in cards.items()}
+    assert safe[1] > safe[0]
+    assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]

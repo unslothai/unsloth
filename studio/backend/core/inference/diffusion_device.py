@@ -368,19 +368,33 @@ def resolve_selected_cuda_ordinal(
     return rank_cuda_ordinals(ordinals)[0]
 
 
+def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
+    """What a card offers a primary pick: raw free MiB at the default VRAM Budget (the order is unchanged there),
+    else the safe budget the planner admits the load with (free less the larger of the card's planner reserve and the
+    user's), so a big, partly used card can rank below a small idle one."""
+    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
+
+    if _user_budget_reserve_mib(1 << 20) <= 0:
+        return int(free_mib)
+    memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free_mib), total_mib)
+    return int(_safe_device_budget_mib(memory) or 0)
+
+
 def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
     """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last). Under a
-    lowered VRAM Budget, by free VRAM less each card's reserve (a big, partly used card can hold less than a small idle
-    one); the raw order at the default."""
+    lowered VRAM Budget, by the planner's safe budget on each card (:func:`_ranking_room_mib`); the raw order at the
+    default."""
 
     def _free_vram(ordinal: int) -> int:
         try:
             import torch
 
+            free, total = torch.cuda.mem_get_info(ordinal)
             from .diffusion_memory import _user_budget_reserve_mib
 
-            free, total = torch.cuda.mem_get_info(ordinal)
-            return int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20)
+            if _user_budget_reserve_mib(1 << 20) <= 0:
+                return int(free)
+            return _ranking_room_mib(int(free) >> 20, int(total) >> 20) << 20
         except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
             return -(1 << 62)
 
@@ -475,6 +489,11 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     floor = caps.get(visible[0])
     if floor is None:
         return None
+    try:
+        from .diffusion_memory import _user_budget_reserve_mib
+        budgeted = _user_budget_reserve_mib(1 << 20) > 0
+    except Exception:  # noqa: BLE001 -- unreadable setting: the default ranking
+        budgeted = False
     free_by_ordinal: dict[int, float] = {}
     for device in devices:
         index, total, used = (
@@ -486,7 +505,16 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             continue
         if caps.get(index, (0, 0)) < floor:
             continue
-        free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
+        free_bytes = max(float(total) - float(used), 0.0) * 1024**3
+        if budgeted:
+            # Under a lowered VRAM Budget, the room the planner will admit the load with on that card.
+            try:
+                free_bytes = float(
+                    _ranking_room_mib(int(free_bytes) >> 20, int(float(total) * 1024)) << 20
+                )
+            except Exception:  # noqa: BLE001 -- never raises: keep the raw reading
+                pass
+        free_by_ordinal[visible.index(index)] = free_bytes
     if not free_by_ordinal:
         return None
     best = max(free_by_ordinal.values())

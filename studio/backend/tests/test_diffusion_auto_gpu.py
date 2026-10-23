@@ -248,3 +248,19 @@ def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
         return ordinal, real.get()
 
     assert asyncio.run(load()) == (None, None)
+
+
+def test_automatic_primary_pick_ranks_by_the_budgeted_room(monkeypatch):
+    # A 192 GiB card with 60 GiB free beats an idle 24 GiB card on raw free, but at a 50% budget the planner
+    # leaves it nothing while the small card keeps about 11 GiB.
+    from utils import vram_budget_settings
+
+    fraction = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: fraction["value"])
+    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 1.0), _dev(1, 192.0, 132.0)])
+    assert dd.resolve_auto_cuda_ordinal() == 1
+    fraction["value"] = 0.5
+    assert dd.resolve_auto_cuda_ordinal() == 0
+    # Identical idle cards still tie to card 0 (None) under a lowered budget.
+    _host(monkeypatch, [0, 1], [_dev(0, 80.0, 0.6), _dev(1, 80.0, 0.5)])
+    assert dd.resolve_auto_cuda_ordinal() is None
