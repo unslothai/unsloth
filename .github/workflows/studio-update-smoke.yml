@@ -7,6 +7,9 @@ name: Unsloth Update CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'scripts/uninstall.sh'
@@ -335,6 +338,7 @@ jobs:
           retention-days: 7
 
   idempotency-macos:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (macOS)
     runs-on: macos-15
     timeout-minutes: 75
@@ -390,6 +394,7 @@ jobs:
           retention-days: 7
 
   idempotency-windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 90

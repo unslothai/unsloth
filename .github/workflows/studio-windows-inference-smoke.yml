@@ -8,6 +8,9 @@ name: Windows Unsloth GGUF CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # studio/frontend/** stays: install.ps1 builds it and the dist cache key hashes it.
       - 'studio/backend/**'
@@ -79,6 +82,7 @@ jobs:
   # One job, three phases: sharing the ~7 min Windows install saves runner slots. Each
   # phase keeps its own cache, port, log and artifact and gates on the shared preamble.
   inference-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: GGUF inference smoke (API, tools, vision)
     runs-on: windows-latest
     # hf-download-with-retry.sh retries forever, so every blocking step has its own timeout.
@@ -1253,6 +1257,7 @@ jobs:
 
   # Folded in from studio-windows-no-vs-smoke.yml: install and run with no Visual Studio.
   no-vs-cpu:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth install + inference without Visual Studio
     runs-on: windows-latest
     timeout-minutes: 35
@@ -1546,6 +1551,7 @@ jobs:
   # One job per Windows image (the image is what is tested), to save scarce Windows slots.
   # The VC++ round-trip uninstalls the runtime, so it runs LAST in each box.
   small-checks:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false

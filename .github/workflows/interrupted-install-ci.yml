@@ -12,6 +12,9 @@ name: Interrupted install recovery
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'install.ps1'
@@ -257,7 +260,7 @@ jobs:
     # No UNSLOTH_STUDIO_HOME: the app scrubs it and install.ps1 rejects a custom root under --tauri,
     # which would force the shell-install path. The runner is ephemeral, so the default root is safe.
     needs: select
-    if: needs.select.outputs.interrupt_windows_count != '0'
+    if: (needs.select.outputs.interrupt_windows_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-latest
     timeout-minutes: 90
     strategy:

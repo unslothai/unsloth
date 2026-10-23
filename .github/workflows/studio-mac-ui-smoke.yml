@@ -8,6 +8,9 @@ name: Mac Unsloth UI + API + Update + Inference CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # Not studio/** or unsloth/**: the install is --no-torch and src-tauri is never built.
       - 'studio/backend/**'
@@ -89,6 +92,7 @@ permissions:
 
 jobs:
   ui-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Chat UI, API, Update and GGUF inference
     runs-on: macos-15
     # Phases share one install; the cap still bounds a hang holding a macOS slot.

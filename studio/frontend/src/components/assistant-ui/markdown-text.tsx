@@ -329,7 +329,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         <button
           type="button"
           title="Download image"
-          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
             // Reuse fetched bytes under the desktop CSP.
             try {
@@ -355,7 +355,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
 });
 
 const LINK_CLASS =
-  "text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer";
+  "text-foreground underline underline-offset-2 decoration-foreground/40 hover:decoration-foreground transition-colors cursor-pointer";
 
  /** A link in an answer; a file the chat's tools wrote opens the file rather than routing the app to its path. */
 function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {

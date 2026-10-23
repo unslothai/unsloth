@@ -13,6 +13,9 @@ name: Clean machine install
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'install.ps1'
@@ -149,6 +152,7 @@ jobs:
             --file "$MATRIX_FILE" --event "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
   macos:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: mac ${{ matrix.os }} / ${{ matrix.mode }} / ${{ matrix.delivery }}${{ matrix.flags && format(' {0}', matrix.flags) || '' }}
     needs: select
     runs-on: ${{ matrix.os }}
@@ -998,6 +1002,7 @@ jobs:
           if-no-files-found: warn
 
   windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: win ${{ matrix.os }} / winget=${{ matrix.winget }}
     needs: select
     runs-on: ${{ matrix.os }}
@@ -1306,7 +1311,8 @@ jobs:
   windows_container_probe:
     name: virgin win container / probe
     needs: select
-    if: needs.select.outputs.windows_container_install_count != '0'
+    # Only a gate for the install rows: skipped with them when none is selected.
+    if: (needs.select.outputs.windows_container_install_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -1380,7 +1386,7 @@ jobs:
   windows_container_install:
     name: virgin win container / overlay=${{ matrix.overlay }}
     needs: [select, windows_container_probe]
-    if: needs.select.outputs.windows_container_install_count != '0'
+    if: (needs.select.outputs.windows_container_install_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-2022
     timeout-minutes: 90
     env:

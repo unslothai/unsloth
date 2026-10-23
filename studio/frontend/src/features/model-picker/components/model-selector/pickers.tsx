@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
@@ -113,6 +114,7 @@ import {
   type ModelMemorySource,
   useModelMemory,
 } from "@/hooks/use-model-memory";
+import type { GpuInfo } from "@/hooks/use-gpu-info";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -149,7 +151,6 @@ import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -530,9 +531,9 @@ function ListLabel({
               className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
-                <ChevronRightIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
               ) : (
-                <ChevronDownIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
               )}
             </button>
           )}
@@ -870,6 +871,19 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
   );
 }
 
+/** A checkpoint (non-GGUF) row's verdict. A CPU backend chats with GGUF only, so a checkpoint
+ *  cannot run there at any size; elsewhere no GPU means nothing to judge it against. */
+function checkpointFit(
+  estGb: number,
+  gpu: Pick<GpuInfo, "available" | "backend" | "budgetKnown" | "memoryTotalGb">,
+  chat: boolean,
+): VramFitStatus | null {
+  if (chat && gpu.budgetKnown && gpu.backend === "cpu") return "exceeds";
+  return estGb > 0 && gpu.available
+    ? checkVramFit(estGb, gpu.memoryTotalGb)
+    : null;
+}
+
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
@@ -1191,9 +1205,9 @@ function ConnectedGroupHeading({
           className={HEADING_ACTION_CLASS}
         >
           {collapsed ? (
-            <ChevronRightIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
           ) : (
-            <ChevronDownIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
           )}
         </button>
       </div>
@@ -1274,6 +1288,8 @@ function ModelRow({
   className?: string;
 }) {
   const exceeds = isOverBudget(vramStatus);
+  // With no GPU every load runs from RAM: `ram` keeps its warning but is not an overage to dim.
+  const dimmed = exceeds && !(vramStatus === "ram" && !(gpuGb && gpuGb > 0));
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
@@ -1434,9 +1450,9 @@ function ModelRow({
           "flex w-full items-center",
           alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
-          exceeds &&
+          dimmed &&
             !selected &&
-            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+            "opacity-55 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-50",
         )}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
@@ -3289,6 +3305,7 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    hideEmptyUploads: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
     // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
@@ -3303,6 +3320,7 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    hideEmptyUploads: true,
     accessToken,
     enabled: online && section === "recommended",
   });
@@ -3324,6 +3342,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityDiscoveryEnabled && debouncedQuery.trim().length > 0,
   });
@@ -3333,6 +3352,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityRecommendedEnabled && debouncedQuery.trim().length === 0,
   });
@@ -4368,9 +4388,7 @@ export function HubModelPicker({
       const est = r.totalParams
         ? estimateLoadingVram(r.totalParams, "qlora")
         : 0;
-      const status =
-        est > 0 && gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
-      map.set(r.id, { meta, status, est });
+      map.set(r.id, { meta, status: checkpointFit(est, gpu, !task), est });
     }
     return map;
   }, [
@@ -5998,16 +6016,13 @@ export function HubModelPicker({
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
         const est = estimateLoadingVram(r.totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
-        map.set(r.id, { est, status, detail });
+        map.set(r.id, { est, status: checkpointFit(est, gpu, !task), detail });
       } else {
         map.set(r.id, { est: 0, status: null, detail });
       }
     }
     return map;
-  }, [results, gpu]);
+  }, [results, gpu, task]);
 
   const recommendedVramMap = useMemo(() => {
     const map = new Map<
@@ -6041,11 +6056,8 @@ export function HubModelPicker({
       }
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
         const detail = formatCompact(totalParams);
-        map.set(id, { est, status, detail });
+        map.set(id, { est, status: checkpointFit(est, gpu, !task), detail });
       }
     }
     return map;
@@ -7835,9 +7847,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>
@@ -7932,9 +7944,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>

@@ -7,6 +7,9 @@ name: Windows Unsloth API CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # studio/frontend/** stays: install.ps1 builds it and the dist cache key hashes it.
       - 'studio/backend/**'
@@ -68,6 +71,7 @@ permissions:
 
 jobs:
   api-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth API & Auth Tests
     runs-on: windows-latest
     timeout-minutes: 30

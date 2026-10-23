@@ -167,7 +167,7 @@ export function NetworkErrorState({
 
   return (
     <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
+      <div className="inline-flex size-11 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={icon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
@@ -277,7 +277,7 @@ export function DiscoverFetchMoreState({
   const hubName = useHubName();
   return (
     <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
+      <div className="inline-flex size-11 items-center justify-center rounded-md bg-muted text-muted-foreground">
         <HugeiconsIcon icon={FilterIcon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
@@ -336,7 +336,7 @@ export function DiscoverFetchMoreFooter({
   onRetry?: () => void;
 }) {
   return (
-    <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
+    <div className="relative z-10 flex flex-col items-center gap-2 rounded-lg bg-card px-4 py-4 text-center">
       {/* Only warn about hidden results when a filter is actually narrowing them. */}
       {hasActiveFilters && (
         <p className="text-ui-11p5 leading-4 text-muted-foreground">
@@ -378,7 +378,7 @@ export function InventoryErrorState({
 }) {
   return (
     <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
+      <div className="inline-flex size-11 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={CloudOffIcon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
@@ -416,7 +416,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex min-h-[calc(220px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
+      <div className="inline-flex size-11 items-center justify-center rounded-md bg-muted text-muted-foreground">
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
@@ -435,7 +435,7 @@ export function EmptyState({
 function SkeletonRow() {
   return (
     <div className="flex items-center gap-3 px-3 py-2.5">
-      <div className="size-8 shrink-0 animate-pulse rounded-[9px] bg-muted" />
+      <div className="size-8 shrink-0 animate-pulse rounded-sm bg-muted" />
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="h-[calc(13px*var(--ui-space-scale,1))] w-1/2 animate-pulse rounded-full bg-muted" />
         <div className="h-[calc(11px*var(--ui-space-scale,1))] w-3/4 animate-pulse rounded-full bg-muted/70" />
