@@ -122,7 +122,7 @@ export const ContextUsageBar: FC<
     : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
   const compactWidth =
     compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
-  const hover = "rounded-full transition-colors group-hover:bg-chat-icon-bg-hover";
+  const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
     <Tooltip>
@@ -148,7 +148,7 @@ export const ContextUsageBar: FC<
                 "calc(clamp(0px, (100% - var(--full) + 1px) * 999, var(--full)) + clamp(0px, (var(--full) - 100% - 1px) * 999, var(--compact)))",
             }}
             className={cn(
-              "group grid h-full items-center justify-self-end overflow-hidden rounded-full text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               // ring track
               "[--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]",
             )}

@@ -52,7 +52,8 @@ test("run settings uses one aligned toggle in both states", async () => {
   for (const toggle of toggles) {
     const classes = buttonClasses(toggle);
     assert.ok(classes.has("size-[30px]"));
-    assert.ok(classes.has("rounded-full"));
+    assert.ok(classes.has("rounded-[10px]"));
+    assert.ok(!classes.has("rounded-full"));
   }
   const header = RUN_SETTINGS_HEADER.exec(panel);
   assert.ok(header);
@@ -63,7 +64,7 @@ test("run settings uses one aligned toggle in both states", async () => {
   assert.ok(headerClasses.has("pr-[18px]"));
 });
 
-test("settings chrome hover shapes: round dialog close, round cog", async () => {
+test("settings chrome hover shapes: round dialog close, rounded-square cog", async () => {
   const [dialog, sidebar] = await Promise.all([
     atDefaultUiScale(readSrc("features/settings/settings-dialog.tsx")),
     atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
@@ -78,11 +79,13 @@ test("settings chrome hover shapes: round dialog close, round cog", async () => 
   );
   assert.ok(dialogClose.has("size-[30px]"));
   assert.ok(dialogClose.has("rounded-full"));
+  assert.ok(!dialogClose.has("rounded-[10px]"));
 
   const settingsCog = sidebar.slice(sidebar.indexOf("settings cog; sibling"));
   const settingsCogClasses = buttonClasses(
     buttonAtMarker(settingsCog, 'aria-label={t("shell.navigation.settings")}'),
   );
   assert.ok(settingsCogClasses.has("size-[32px]"));
-  assert.ok(settingsCogClasses.has("rounded-full"));
+  assert.ok(settingsCogClasses.has("rounded-[10px]"));
+  assert.ok(!settingsCogClasses.has("rounded-full"));
 });

@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-const RECTANGLE_RADIUS = /\brounded-md\b/;
+const RECTANGLE_RADIUS = /\brounded-lg\b/;
 const PILL_RADIUS = /\brounded-(?:full|xl)\b/;
 
 function functionBody(source: string, name: string): string {
