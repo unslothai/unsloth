@@ -1816,8 +1816,7 @@ def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatc
 
 
 def test_every_mlx_cache_clear_goes_through_the_drain():
-    """MLX does not keep a dropped output's buffer alive for the command buffer writing it, so a clear must drain
-    first. The only ``clear_cache`` call is the one inside ``release_buffer_cache``, right after its synchronize."""
+    """The only ``clear_cache`` call is inside ``release_buffer_cache``, right after its synchronize."""
     import ast
     import inspect
 

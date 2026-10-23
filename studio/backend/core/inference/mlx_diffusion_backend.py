@@ -362,9 +362,8 @@ def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> boo
 
 
 def release_buffer_cache(mx: Any) -> None:
-    """Drain queued GPU work, then return MLX's cached buffers. MLX does not keep a dropped output array's buffer alive
-    for the command buffer still writing it, so a clear with work in flight can release memory the GPU is using. mflux
-    runs on the default stream. Best effort: this runs in cleanup paths and must not replace the caller's exception."""
+    """Synchronize, then clear MLX's buffer cache (clearing with work in flight can free buffers the GPU still writes).
+    Best effort: runs in cleanup paths and must not mask the caller's exception."""
     try:
         mx.synchronize()
     except Exception as exc:  # noqa: BLE001
@@ -471,8 +470,7 @@ class MfluxRuntime:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
-            # Freed step and decode activations stay in MLX's buffer cache: on unified memory that is system RAM
-            # held idle between generations. Only unused buffers go; the weights are live arrays.
+            # Cached activations are idle system RAM on unified memory; live weights are untouched.
             release_buffer_cache(mx)
         if cancelled:
             raise MlxCancelled("cancelled")
