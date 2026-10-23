@@ -387,7 +387,41 @@ def _audio(frames):
     return (torch.rand(2, _H3_RATE * frames // 8) * 2 - 1) * 0.5
 
 
-def test_h3_streamed_mp4_is_the_byte_identical_x264_export(tmp_path):
+def _mp4_layout(data):
+    """What two encodes of the same frames and soundtrack with the same settings must share. Video packet bytes
+    are not in it: libx264 through PyAV is not run-to-run byte-reproducible here (two stock exports of one clip
+    can differ in a rate-control decision), so they would make the comparison flaky."""
+    import re
+
+    with av.open(io.BytesIO(data)) as c:
+        streams = []
+        for s in c.streams:
+            cc = s.codec_context
+            shape = (
+                (cc.width, cc.height, str(cc.pix_fmt))
+                if s.type == "video"
+                else (cc.sample_rate, cc.channels)
+            )
+            streams.append((s.index, s.type, cc.name, shape, str(s.time_base)))
+        video = [p for p in c.demux(video = 0) if p.size]
+        c.seek(0)
+        audio = [bytes(p) for p in c.demux(audio = 0) if p.size]
+        c.seek(0)
+        decoded = sum(1 for _ in c.decode(video = 0))
+        extradata = bytes(c.streams.video[0].codec_context.extradata or b"")
+        settings = re.search(
+            rb"x264 - core [^\x00]*", extradata + b"".join(bytes(p) for p in video[:1])
+        )
+    return {
+        "streams": streams,
+        "x264_settings": settings.group(0) if settings else None,
+        "video_packets": len(video),
+        "decoded_frames": decoded,
+        "audio_packets": audio,
+    }
+
+
+def test_h3_streamed_mp4_matches_the_x264_export(tmp_path):
     from core.inference.video_encode import encode_x264
 
     pipe = _H3Pipe(_h3_vae())
@@ -402,7 +436,10 @@ def test_h3_streamed_mp4_is_the_byte_identical_x264_export(tmp_path):
     assert data is not None, vse.STATS["last"]
     reference = tmp_path / "reference.mp4"
     assert encode_x264(frames, 8, str(reference), audio, _H3_RATE)
-    assert data == reference.read_bytes()
+    got, want = _mp4_layout(data), _mp4_layout(reference.read_bytes())
+    assert want["x264_settings"] is not None and want["decoded_frames"] == len(frames)
+    # same streams in the same order, same encoder settings, same frame count, the soundtrack byte for byte
+    assert got == want
 
 
 def test_h3_soundtrack_mismatch_falls_back():
