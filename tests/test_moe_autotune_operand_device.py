@@ -52,7 +52,11 @@ def ac(monkeypatch, tmp_path):
             sys.modules.pop(name, None)
 
 
-def _gpus(monkeypatch, cards, current = 0):
+def _gpus(
+    monkeypatch,
+    cards,
+    current = 0,
+):
     def index(device = None):
         if device is None:
             return current
@@ -88,7 +92,9 @@ def test_fallback_configs_fit_the_operand_card(ac, monkeypatch, which, act, weig
     _gpus(monkeypatch, [H100, L4], current = 0)
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     for n, k in ((2 * inter, hidden), (hidden, inter)):
-        configs = fn(n_dim = n, k_dim = k, dtype = act, weight_dtype = weight, device = torch.device("cuda", 1))
+        configs = fn(
+            n_dim = n, k_dim = k, dtype = act, weight_dtype = weight, device = torch.device("cuda", 1)
+        )
         assert max(_smem(ac, configs, act, weight, L4)) <= L4[1]
 
 
@@ -110,11 +116,16 @@ def _big_configs():
         KernelConfigBackward_dX,
         KernelConfigForward,
     )
-
     return (
-        KernelConfigForward(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 128, num_warps = 8, num_stages = 3),
-        KernelConfigBackward_dX(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4),
-        KernelConfigBackward_dW(BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 256, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4),
+        KernelConfigForward(
+            BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 128, num_warps = 8, num_stages = 3
+        ),
+        KernelConfigBackward_dX(
+            BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4
+        ),
+        KernelConfigBackward_dW(
+            BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 256, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4
+        ),
     )
 
 
@@ -126,7 +137,11 @@ def test_cache_lookup_and_tuning_follow_the_operand_card(ac, monkeypatch):
 
     tuned_on = []
 
-    def tune(*args, device = None, **kwargs):
+    def tune(
+        *args,
+        device = None,
+        **kwargs,
+    ):
         tuned_on.append(device)
         return ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048, dtype = BF16, device = device)
 

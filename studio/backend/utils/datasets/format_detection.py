@@ -967,21 +967,30 @@ def detect_vlm_dataset_structure(dataset):
         return 0
 
     def _probe_image_candidate(col, sample_value):
-        """Probe whether an image candidate is reachable (True unless definitely broken)."""
+        """Probe whether an image candidate is reachable (True unless definitely broken).
+        Row URLs are untrusted, so they go through the web tool's SSRF guard."""
         import os
 
         if not isinstance(sample_value, str):
             return True
 
         if not sample_value.startswith(("http://", "https://")):
-            return os.path.exists(sample_value)
+            from .remote_images import is_network_share
+            return not is_network_share(sample_value) and os.path.exists(sample_value)
 
         try:
-            import urllib.request
+            import time
 
-            req = urllib.request.Request(sample_value, method = "HEAD")
-            resp = urllib.request.urlopen(req, timeout = 3)
-            return resp.status < 400
+            from core.inference.tools import _fetch_url_raw
+
+            error, _, _ = _fetch_url_raw(
+                sample_value,
+                timeout = 3,
+                deadline = time.monotonic() + 3,
+                method = "HEAD",
+                raw_bytes_max = 0,
+            )
+            return error is None
         except Exception:
             return False
 
