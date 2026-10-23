@@ -7,7 +7,20 @@ import os
 import socket
 import tempfile
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import types
+
+    pytest = types.ModuleType("pytest")
+    pytest.importorskip = lambda name: __import__(name)
+
+    class _Mark:
+        @staticmethod
+        def parametrize(*args, **kwargs):
+            return lambda fn: fn
+
+    pytest.mark = _Mark()
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -39,6 +52,14 @@ P = _load_parallel()
 
 def _tiny_model():
     from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    if hasattr(modeling_qwen3_5.torch_chunk_gated_delta_rule, "__wrapped__"):
+        modeling_qwen3_5.torch_chunk_gated_delta_rule = (
+            modeling_qwen3_5.torch_chunk_gated_delta_rule.__wrapped__
+        )
+    if hasattr(modeling_qwen3_5.causal_conv1d_fn, "__wrapped__"):
+        modeling_qwen3_5.causal_conv1d_fn = modeling_qwen3_5.causal_conv1d_fn.__wrapped__
 
     config = Qwen3_5TextConfig(
         vocab_size = 128,
@@ -57,6 +78,10 @@ def _tiny_model():
     torch.manual_seed(3407)
     model = Qwen3_5ForCausalLM(config).float()
     model.config.use_cache = False
+    for mod in model.modules():
+        fn = getattr(mod, "chunk_gated_delta_rule", None)
+        if fn is not None and hasattr(fn, "__wrapped__"):
+            mod.chunk_gated_delta_rule = fn.__wrapped__
     return model
 
 
@@ -136,3 +161,138 @@ def test_packed_and_padded_masks():
     out[:, 4:].sum().backward()
     assert v.grad[:, :4].abs().max().item() == 0
     assert v.grad[:, 4:].abs().max().item() > 0
+
+
+def _tiny_deepseek_v2():
+    from transformers import DeepseekV2Config, DeepseekV2ForCausalLM
+
+    config = DeepseekV2Config(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 128,
+        moe_intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        kv_lora_rank = 16,
+        q_lora_rank = 24,
+        qk_rope_head_dim = 8,
+        v_head_dim = 16,
+        qk_nope_head_dim = 16,
+        n_routed_experts = 4,
+        n_shared_experts = 1,
+        num_experts_per_tok = 2,
+        first_k_dense_replace = 1,
+        rope_parameters = {
+            "rope_type": "yarn",
+            "rope_theta": 10000.0,
+            "factor": 4.0,
+            "beta_fast": 32,
+            "beta_slow": 1,
+            "mscale": 0.707,
+            "mscale_all_dim": 0.707,
+            "original_max_position_embeddings": 64,
+        },
+    )
+    torch.manual_seed(3407)
+    model = DeepseekV2ForCausalLM(config).float()
+    model.config.use_cache = False
+    return model
+
+
+def _tiny_deepseek_v4():
+    from transformers.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+
+    config = DeepseekV4Config(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 128,
+        moe_intermediate_size = 32,
+        num_hidden_layers = 3,
+        num_attention_heads = 4,
+        num_key_value_heads = 1,
+        head_dim = 32,
+        rope_head_dim = 16,
+        q_lora_rank = 32,
+        o_lora_rank = 32,
+        o_groups = 2,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        sliding_window = 8,
+        index_n_heads = 2,
+        index_head_dim = 16,
+        index_topk = 2,
+        layer_types = [
+            "sliding_attention",
+            "compressed_sparse_attention",
+            "heavily_compressed_attention",
+        ],
+        mlp_layer_types = ["hash_moe", "moe", "moe"],
+        compress_rates = {
+            "compressed_sparse_attention": 4,
+            "heavily_compressed_attention": 8,
+        },
+    )
+    torch.manual_seed(3407)
+    model = DeepseekV4ForCausalLM(config).float()
+    with torch.no_grad():
+        g = torch.Generator().manual_seed(3407)
+        for mod in model.modules():
+            if hasattr(mod, "sinks"):
+                mod.sinks.copy_(torch.randn(mod.sinks.shape, generator = g) * 0.1)
+            if hasattr(mod, "position_bias"):
+                mod.position_bias.copy_(torch.randn(mod.position_bias.shape, generator = g) * 0.05)
+            if hasattr(mod, "tid2eid"):
+                tok_ids = torch.arange(config.vocab_size)
+                mod.tid2eid[:, 0] = tok_ids % config.num_local_experts
+                mod.tid2eid[:, 1] = (tok_ids + 1) % config.num_local_experts
+    model.config.use_cache = False
+    return model
+
+
+def _generic_worker(rank, world, port, seq, out, builder):
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, init_method = f"tcp://127.0.0.1:{port}"
+    )
+    try:
+        model = builder()
+        P.apply_cp(model, dist.group.WORLD)
+        ids, labels = _batch(seq)
+        loss = P.sft_loss(model, ids, labels, dist.group.WORLD)
+        loss.backward()
+        P.sync_replicated_grads(model, dist.group.WORLD)
+        if rank == 0:
+            torch.save({"loss": loss.detach(), "grads": _grads(model)}, out)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("builder", [_tiny_deepseek_v2, _tiny_deepseek_v4])
+def test_deepseek_cp_matches_single_process(builder):
+    seq = 16
+    model = builder()
+    ids, labels = _batch(seq)
+    ref = P.sft_loss(model, ids, labels, None)
+    ref.backward()
+    ref_grads = _grads(model)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "cp.pt")
+        mp.spawn(_generic_worker, args = (2, _free_port(), seq, out, builder), nprocs = 2, join = True)
+        got = torch.load(out)
+
+    torch.testing.assert_close(got["loss"], ref.detach(), rtol = 1e-4, atol = 1e-5)
+    assert got["grads"].keys() == ref_grads.keys()
+    for name, grad in ref_grads.items():
+        torch.testing.assert_close(got["grads"][name], grad, rtol = 1e-4, atol = 1e-5, msg = name)
+
+
+if __name__ == "__main__":
+    test_packed_and_padded_masks()
+    print("test_packed_and_padded_masks: PASS")
+    for s in (32, 33):
+        test_cp_matches_single_process(s)
+        print(f"test_cp_matches_single_process(seq={s}): PASS")
+    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4):
+        test_deepseek_cp_matches_single_process(b)
+        print(f"test_deepseek_cp_matches_single_process({b.__name__}): PASS")

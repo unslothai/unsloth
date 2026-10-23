@@ -1904,6 +1904,25 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        elif any(x in model_types_all for x in ("deepseek_v2", "deepseek_v3", "deepseek_v4")):
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            if "deepseek_v4" in model_types_all:
+                try:
+                    from transformers.models.deepseek_v4 import modeling_deepseek_v4
+
+                    def _dsv4_rmsnorm_forward(self, hidden_states):
+                        input_dtype = hidden_states.dtype
+                        hidden_states = hidden_states.to(torch.float32)
+                        variance = hidden_states.pow(2).mean(-1, keepdim = True)
+                        hidden_states = hidden_states * torch.rsqrt(
+                            variance + self.variance_epsilon
+                        )
+                        return (self.weight * hidden_states).to(input_dtype)
+
+                    modeling_deepseek_v4.DeepseekV4RMSNorm.forward = _dsv4_rmsnorm_forward
+                except Exception:
+                    pass
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:

@@ -60,13 +60,17 @@ def _local_conv(mod, rank: int, cp: int):
     return weight, bias
 
 
-def _kernels(mod):
+def _kernels(mod, device = None):
     # Dense and MoE Qwen3.5 live in different modules. transformers <= 5.5 binds
     # the kernels on the instance and leaves causal_conv1d_fn None without the
     # causal-conv1d package; newer builds wrap module-level torch fallbacks.
     module = sys.modules[type(mod).__module__]
     conv = getattr(mod, "causal_conv1d_fn", None) or getattr(module, "causal_conv1d_fn", None)
     chunk = getattr(mod, "chunk_gated_delta_rule", None) or module.torch_chunk_gated_delta_rule
+    if device is not None and getattr(device, "type", None) == "cpu":
+        conv = None
+        if hasattr(chunk, "__wrapped__"):
+            chunk = chunk.__wrapped__
     return module.apply_mask_to_padding_states, conv, chunk
 
 
@@ -83,7 +87,9 @@ def gdn_forward_with_cp(
     attention_mask = None,
     **kwargs,
 ):
-    apply_mask_to_padding_states, causal_conv1d_fn, chunk_gated_delta_rule = _kernels(self)
+    apply_mask_to_padding_states, causal_conv1d_fn, chunk_gated_delta_rule = _kernels(
+        self, hidden_states.device
+    )
 
     group = self._cp_group
     cp = dist.get_world_size(group)

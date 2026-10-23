@@ -59,7 +59,14 @@ def _batch_positions(position_ids, batch: int, seq_len: int):
     return pos
 
 
-def _blocked_key_mask(attention_mask, position_ids, batch: int, seq_len: int, device):
+def _blocked_key_mask(
+    attention_mask,
+    position_ids,
+    batch: int,
+    seq_len: int,
+    device,
+    sliding_window: int | None = None,
+):
     """Bool mask [batch, 1, seq, seq], True where a query may attend.
 
     Dense monotonic sequences return None so SDPA keeps the is_causal kernel.
@@ -70,6 +77,7 @@ def _blocked_key_mask(attention_mask, position_ids, batch: int, seq_len: int, de
     if pos is not None:
         pos = pos.to(device)
     packed = pos is not None and seq_len > 1 and bool((pos[:, 1:] <= pos[:, :-1]).any())
+    has_window = sliding_window is not None and int(sliding_window) < seq_len
     pad = None
     if (
         torch.is_tensor(attention_mask)
@@ -81,11 +89,13 @@ def _blocked_key_mask(attention_mask, position_ids, batch: int, seq_len: int, de
             pad = pad.expand(batch, -1)
         if int((pad == 0).sum()) == 0:
             pad = None
-    if not packed and pad is None:
+    if not packed and pad is None and not has_window:
         return None
 
     index = torch.arange(seq_len, device = device)
     keep = index[None, :] <= index[:, None]
+    if has_window:
+        keep = keep & ((index[:, None] - index[None, :]) < int(sliding_window))
     keep = keep.view(1, 1, seq_len, seq_len).expand(batch, 1, seq_len, seq_len).clone()
     if packed:
         reset = torch.zeros(batch, seq_len, dtype = torch.bool, device = device)
@@ -110,17 +120,59 @@ def sdpa_flash_fn(
     **kwargs,
 ):
     """Inner attention for Ulysses. Layout in and out is [batch, seq, heads, dim]."""
-    del query_length, dropout
+    del query_length
     query = query_states.transpose(1, 2)
     key = key_states.transpose(1, 2)
     value = value_states.transpose(1, 2)
+    q_dim = query.shape[-1]
+
+    sliding_window = kwargs.get("sliding_window")
+    softcap = kwargs.get("softcap")
+    s_aux = kwargs.get("s_aux")
     keep = _blocked_key_mask(
         attention_mask,
         kwargs.get("position_ids"),
         query.shape[0],
         query.shape[2],
         query.device,
+        sliding_window = sliding_window,
     )
+    if softcap is not None or s_aux is not None:
+        scale = (q_dim ** -0.5) if softmax_scale is None else softmax_scale
+        if query.shape[1] != key.shape[1]:
+            repeat = query.shape[1] // key.shape[1]
+            key_exp = key.repeat_interleave(repeat, dim = 1)
+            val_exp = value.repeat_interleave(repeat, dim = 1)
+        else:
+            key_exp, val_exp = key, value
+        scores = torch.matmul(query, key_exp.transpose(2, 3)) * scale
+        if softcap is not None:
+            scores = torch.tanh(scores / float(softcap)) * float(softcap)
+        if keep is None and is_causal:
+            idx = torch.arange(query.shape[2], device = query.device)
+            causal_keep = idx[None, :] <= idx[:, None]
+            if sliding_window is not None and int(sliding_window) < query.shape[2]:
+                causal_keep = causal_keep & ((idx[:, None] - idx[None, :]) < int(sliding_window))
+            scores = scores.masked_fill(
+                ~causal_keep.view(1, 1, query.shape[2], query.shape[2]),
+                torch.finfo(scores.dtype).min,
+            )
+        elif keep is not None:
+            scores = scores.masked_fill(~keep, torch.finfo(scores.dtype).min)
+        if s_aux is not None:
+            sinks = s_aux.to(scores.dtype).reshape(1, -1, 1, 1).expand(
+                query.shape[0], -1, query.shape[2], -1
+            )
+            combined = torch.cat([scores, sinks], dim = -1)
+            combined = combined - combined.max(dim = -1, keepdim = True).values
+            probs = F.softmax(combined, dim = -1, dtype = torch.float32)[..., :-1].to(val_exp.dtype)
+        else:
+            probs = F.softmax(scores, dim = -1, dtype = torch.float32).to(val_exp.dtype)
+        if dropout:
+            probs = F.dropout(probs, p = dropout, training = True)
+        out = torch.matmul(probs, val_exp)
+        return out.transpose(1, 2).contiguous()
+
     attn_mask = None
     causal = is_causal
     if keep is not None:
@@ -149,19 +201,25 @@ def text_model(model):
 
 
 def apply_cp(model, cp_group) -> int:
+    from .deepseek_cp import apply_deepseek_cp
     from .gdn_cp import apply_gdn_cp
     from .ulysses import apply_ulysses_attention
 
     cp = dist.get_world_size(cp_group)
     apply_ulysses_attention(model, cp, cp_group, attn_fn = sdpa_flash_fn)
     n_gdn = apply_gdn_cp(model, cp_group)
+    n_ds = apply_deepseek_cp(model, cp_group)
     for module in model.modules():
         config = getattr(module, "config", None)
         if config is not None and hasattr(config, "_attn_implementation"):
+            if getattr(config, "model_type", None) == "deepseek_v4":
+                continue
+            if getattr(module, "_supports_flash_attn", True) is False:
+                continue
             config._attn_implementation = "flash_attention_2"
     if hasattr(model, "config"):
         model.config.use_cache = False
-    return n_gdn
+    return n_gdn + n_ds
 
 
 def _layer_classes(model) -> set[type]:
