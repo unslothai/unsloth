@@ -1365,6 +1365,209 @@ def sticker_pack() -> B:
     return b
 
 
+KREA = {"repo": "krea/Krea-2-Turbo", "variant": None}
+FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev", "variant": None}
+
+
+def _image_model(b: B, ref: str, choice: dict, note: str) -> None:
+    b.doc["requirements"]["models"].append(
+        {"ref": ref, "kind": "image", "note": note, "optional": False, **choice}
+    )
+
+
+def lora_style() -> B:
+    b = B(
+        "lora-style",
+        "LoRA Style Compare",
+        "pipeline",
+        "Draw one prompt with and without a style LoRA, side by side with labels.",
+        tags = ["image", "lora", "compare"],
+        seed = 31,
+    )
+    _image_model(b, "krea", KREA, "Krea 2 Turbo; its curated style LoRAs download on first use.")
+    b.n("what", "input.text", 0, 1, value = "a lighthouse on a cliff at dawn, gulls overhead")
+    b.n("plain", "image.generate", 1, 0.5, label = "No LoRA", model = KREA, size = "1024x1024", seed = 5)
+    b.n(
+        "styled",
+        "image.generate",
+        1,
+        1.6,
+        label = "With LoRA",
+        model = KREA,
+        size = "1024x1024",
+        seed = 5,
+        loras = [{"id": "krea/Krea-2-LoRA-softwatercolor", "weight": 1.0}],
+    )
+    b.e("what.text", "plain.prompt")
+    b.e("what.text", "styled.prompt")
+    b.n("both", "logic.collect", 2, 1.1)
+    b.e("plain.image", "both.items")
+    b.e("styled.image", "both.items")
+    b.n(
+        "sheet",
+        "image.grid",
+        3,
+        1.1,
+        columns = 2,
+        caption_style = "none",
+        cell_size = 512,
+        column_labels = ["No LoRA", "Soft Watercolor LoRA"],
+    )
+    b.e("both.list", "sheet.images")
+    b.n("show", "output.preview", 4, 1.1)
+    b.e("sheet.image", "show.value")
+    return b
+
+
+def hires_fix() -> B:
+    b = B(
+        "hires-fix",
+        "Hires Fix",
+        "pipeline",
+        "Render small, upscale 2x and refine the details in the same request (A1111 / Forge hires fix).",
+        tags = ["image", "hires", "upscale"],
+        seed = 32,
+    ).need("image")
+    b.n(
+        "what",
+        "input.text",
+        0,
+        1,
+        value = "a cozy reading nook with plants and warm lamplight, detailed",
+    )
+    b.n(
+        "draw",
+        "image.generate",
+        1,
+        1,
+        model = IMAGE,
+        size = "768x768",
+        hires_scale = 2.0,
+        hires_denoise = 0.35,
+        seed = 9,
+    )
+    b.e("what.text", "draw.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("draw.image", "show.value")
+    return b
+
+
+def face_fix() -> B:
+    b = B(
+        "face-fix",
+        "Face Fix",
+        "pipeline",
+        "Find the face with a text mask, then repaint only that area at full resolution (a FaceDetailer "
+        "built from two blocks).",
+        tags = ["image", "mask", "inpaint"],
+        seed = 33,
+    ).need("image")
+    b.n(
+        "what",
+        "input.text",
+        0,
+        1,
+        value = "full body photo of a hiker on a mountain trail, small in frame",
+    )
+    b.n("draw", "image.generate", 1, 1, label = "Picture", model = IMAGE, size = "1024x1024", seed = 4)
+    b.e("what.text", "draw.prompt")
+    b.n("face", "image.segment", 2, 0.4, subject = "the face", grow = 12)
+    b.e("draw.image", "face.image")
+    b.n(
+        "fix",
+        "image.generate",
+        3,
+        1,
+        label = "Repaint face",
+        model = IMAGE,
+        prompt = "a detailed natural face, sharp eyes, soft light",
+        strength = 0.5,
+        only_masked = True,
+        inpaint_padding = 32,
+        seed = 4,
+    )
+    b.e("draw.image", "fix.init_image")
+    b.e("face.mask", "fix.mask")
+    b.n("both", "logic.collect", 4, 0.4)
+    b.e("draw.image", "both.items")
+    b.e("fix.image", "both.items")
+    b.n(
+        "sheet",
+        "image.grid",
+        5,
+        1,
+        columns = 2,
+        caption_style = "none",
+        cell_size = 512,
+        column_labels = ["Before", "After"],
+    )
+    b.e("both.list", "sheet.images")
+    b.n("show", "output.preview", 6, 1)
+    b.e("sheet.image", "show.value")
+    return b
+
+
+def outpaint() -> B:
+    b = B(
+        "outpaint",
+        "Outpaint",
+        "pipeline",
+        "Turn a square picture into a wide one: extend the canvas and let the model paint the new sides.",
+        tags = ["image", "mask", "outpaint"],
+        seed = 34,
+    ).need("image")
+    b.n("what", "input.text", 0, 1, value = "a quiet harbour town at sunset, boats on calm water")
+    b.n("draw", "image.generate", 1, 1, label = "Square", model = IMAGE, size = "768x768", seed = 2)
+    b.e("what.text", "draw.prompt")
+    # 768 + 2 x 192 keeps the canvas under 1 MP, which FLUX.2 inpaints without rescaling.
+    b.n("wide", "image.pad", 2, 1, left = 192, right = 192, top = 0, bottom = 0, feather = 24)
+    b.e("draw.image", "wide.image")
+    b.n("fill", "image.generate", 3, 1, label = "Paint the sides", model = IMAGE, strength = 1.0, seed = 2)
+    b.e("what.text", "fill.prompt")
+    b.e("wide.image", "fill.init_image")
+    b.e("wide.mask", "fill.mask")
+    b.n("show", "output.preview", 4, 1)
+    b.e("fill.image", "show.value")
+    return b
+
+
+def controlnet_canny() -> B:
+    b = B(
+        "controlnet-canny",
+        "ControlNet Sketch to Picture",
+        "pipeline",
+        "Keep the outlines of your photo or sketch (canny edges) and draw something new inside them.",
+        tags = ["image", "controlnet"],
+        seed = 35,
+    )
+    _image_model(
+        b, "flux1", FLUX1, "FLUX.1 dev; the FLUX.1 Union Pro ControlNet downloads on first use."
+    )
+    b.n("photo", "input.image", 0, 0.5, label = "Your photo or sketch")
+    b.n("what", "input.text", 0, 1.6, value = "a watercolor painting of the same scene in autumn")
+    b.n(
+        "draw",
+        "image.generate",
+        1,
+        1,
+        model = FLUX1,
+        size = "1024x1024",
+        controlnet = "flux-union-pro",
+        control_type = "canny",
+        control_strength = 0.7,
+        control_end = 0.8,
+        seed = 8,
+    )
+    b.e("photo.image", "draw.control_image")
+    b.e("what.text", "draw.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("draw.image", "show.value")
+    b.note(
+        "tip", "Upload a photo or a line drawing in the first block, then Run.", 0, 2.6, 1.6, 0.6
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1579,11 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    lora_style,
+    hires_fix,
+    face_fix,
+    outpaint,
+    controlnet_canny,
 )
 
 

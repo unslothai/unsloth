@@ -112,6 +112,9 @@ def port_compatible(src: dict, dst: dict) -> bool:
         return True
     if d == "json" and s in JSON_LIKE:
         return True
+    # A mask is a grayscale image, so the two connect either way.
+    if {s, d} == {"image", "mask"}:
+        return True
     # One value into a list port arrives as a one-item list.
     if d == "list" and dst.get("item") in (None, "any", s):
         return True

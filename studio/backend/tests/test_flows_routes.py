@@ -242,7 +242,7 @@ def test_examples_list_and_copy(client, monkeypatch):
 
 def test_bundled_examples_are_listed_and_copy(client):
     listed = client.get("/api/flows/examples").json()["examples"]
-    assert len(listed) == 10 and "lantern-picnic" in {e["id"] for e in listed}
+    assert len(listed) == 15 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
 

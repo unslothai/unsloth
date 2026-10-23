@@ -576,10 +576,15 @@ async def generate_image(
     workflow: Optional[str] = None,
     count: int = 1,
     upscale: Optional[float] = None,
+    mask: Optional[dict] = None,
+    control: Optional[dict] = None,
+    options: Optional[dict] = None,
 ) -> list[dict]:
     await ensure_model(ctx, "image", model)
     if not (prompt or "").strip():
         raise FlowNodeError("The image prompt is empty")
+    if mask is not None and init_image is None:
+        raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
     body: dict[str, Any] = {"prompt": prompt, "width": int(width), "height": int(height)}
     if negative_prompt:
         body["negative_prompt"] = negative_prompt
@@ -606,6 +611,19 @@ async def generate_image(
         body["workflow"] = workflow
     if upscale:
         body["upscale"] = float(upscale)
+    if mask is not None:
+        body["mask_image"] = await _mask_data_url(ctx, mask, init_image)
+    if control is not None:
+        body["controlnet"] = {
+            "id": control["id"],
+            "image": await data_url(ctx, control["image"]),
+            "control_type": control.get("control_type") or "passthrough",
+            "strength": float(control.get("strength", 1.0)),
+            "guidance_start": float(control.get("guidance_start", 0.0)),
+            "guidance_end": float(control.get("guidance_end", 1.0)),
+        }
+    # Only what was set is sent, so a node without these settings posts the same body as before.
+    body.update(route_options(options))
 
     async def cancel() -> None:
         await ctx.call("POST", "/api/inference/images/generate/cancel")
@@ -653,6 +671,104 @@ async def generate_image(
         for row in rows
         if isinstance(row, dict) and row.get("id")
     ]
+
+
+SAMPLERS = ("default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde")
+SCHEDULES = ("automatic", "uniform", "karras", "exponential")
+
+
+def route_options(options: Optional[dict]) -> dict:
+    """The image route's sampling, LoRA and hires fields from a node's settings; unset ones are left out."""
+    o = options or {}
+    body: dict[str, Any] = {}
+    loras = []
+    for item in o.get("loras") or []:
+        if isinstance(item, dict) and str(item.get("id") or "").strip():
+            weight = item.get("weight")
+            weight = 1.0 if weight is None else max(0.0, min(float(weight), 2.0))
+            loras.append({"id": str(item["id"]).strip(), "weight": weight})
+    if loras:
+        body["loras"] = loras[:8]
+    if o.get("sampler") in SAMPLERS[1:]:
+        body["sampler"] = o["sampler"]
+    if o.get("schedule_type") in SCHEDULES[1:]:
+        body["schedule_type"] = o["schedule_type"]
+    for key, low, high in (("clip_skip", 1, 12), ("cfg_rescale", 0.0, 1.0), ("shift", 0.01, 100.0)):
+        if o.get(key) is not None:
+            value = max(low, min(o[key], high))
+            body[key] = int(value) if key == "clip_skip" else float(value)
+    if o.get("mask_blur") is not None:
+        body["mask_blur"] = max(0, min(int(o["mask_blur"]), 64))
+    if o.get("only_masked"):
+        body["inpaint_only_masked"] = True
+    if o.get("inpaint_padding") is not None:
+        body["inpaint_padding"] = max(0, min(int(o["inpaint_padding"]), 256))
+    if o.get("hires_scale") is not None:
+        denoise = o.get("hires_denoise")
+        hires: dict[str, Any] = {
+            "scale": max(1.0, min(float(o["hires_scale"]), 4.0)),
+            "denoise": max(0.0, min(float(0.5 if denoise is None else denoise), 1.0)),
+        }
+        if o.get("hires_steps"):
+            hires["steps"] = max(1, min(int(o["hires_steps"]), 100))
+        if str(o.get("hires_upscaler") or "").strip():
+            hires["upscaler"] = str(o["hires_upscaler"]).strip()
+        body["hires"] = hires
+    if str(o.get("upscale_model") or "").strip():
+        body["upscale_model"] = str(o["upscale_model"]).strip()
+    return body
+
+
+def _fit_mask(mask: bytes, size: tuple[int, int]) -> tuple[bytes, Optional[tuple[int, int]]]:
+    """The mask as a grayscale PNG at ``size``; the second value is its original size when it had to be resized."""
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(mask))
+    im.load()
+    original = im.size
+    im = im.convert("L")
+    if im.size != size:
+        im = im.resize(size, Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue(), (original if original != size else None)
+
+
+async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
+    from PIL import Image
+
+    mask_bytes, _ = await media_bytes(ctx, mask)
+    init_bytes, _ = await media_bytes(ctx, init_image)
+    size = await asyncio.to_thread(lambda: Image.open(io.BytesIO(init_bytes)).size)
+    fitted, original = await asyncio.to_thread(_fit_mask, mask_bytes, size)
+    if original is not None:
+        ctx.log(
+            f"The mask is {original[0]}x{original[1]} but the image is {size[0]}x{size[1]}; "
+            "it was resized to match",
+            "warning",
+        )
+    return f"data:image/png;base64,{base64.b64encode(fitted).decode()}"
+
+
+async def segment(ctx: Any, image: dict, subject: str) -> bytes:
+    """A grayscale mask PNG (white = the subject) at the image's size, from Studio's SAM 3 segmenter."""
+    from PIL import Image
+
+    data, mime = await media_bytes(ctx, image)
+    answer = await ctx.call(
+        "POST",
+        "/api/inference/images/segment",
+        json = {
+            "image": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+            "prompt": subject or "subject",
+        },
+    )
+    mask_value = answer.get("mask") if isinstance(answer, dict) else None
+    if not isinstance(mask_value, str):
+        raise FlowNodeError("The segmenter returned no mask")
+    size = await asyncio.to_thread(lambda: Image.open(io.BytesIO(data)).size)
+    fitted, _ = await asyncio.to_thread(_fit_mask, _decode_data_url(mask_value), size)
+    return fitted
 
 
 def _decode_data_url(value: str) -> bytes:

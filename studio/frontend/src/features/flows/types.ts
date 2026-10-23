@@ -15,6 +15,7 @@ export type PortType =
   | "json"
   | "list"
   | "image"
+  | "mask"
   | "audio"
   | "video"
   | "dataset"
@@ -130,7 +131,8 @@ export type ParamKind =
   | "asset"
   | "story"
   | "world"
-  | "schema";
+  | "schema"
+  | "lora_list";
 
 export interface ParamSpec {
   id: string;
@@ -148,6 +150,8 @@ export interface ParamSpec {
   options_path?: string;
   /** The param also takes a connection (its `param:<id>` input). */
   bindable?: boolean;
+  /** Shown under a collapsed "Advanced" heading in the inspector. */
+  advanced?: boolean;
 }
 
 export interface PortSpec {

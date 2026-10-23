@@ -89,6 +89,9 @@ export function typesCompatible(source: PortSpec, target: PortSpec): boolean {
     return true;
   }
   if (t === "json" && JSON_LIKE.has(s)) return true;
+  // A mask is a grayscale image, so the two connect either way.
+  if ((s === "image" && t === "mask") || (s === "mask" && t === "image"))
+    return true;
   // One value into a list port arrives as a one-item list.
   return (
     t === "list" && (!target.item || target.item === "any" || target.item === s)
