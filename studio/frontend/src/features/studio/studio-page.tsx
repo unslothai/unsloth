@@ -189,12 +189,10 @@ export function StudioPage(): ReactElement {
         <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
           <header className="font-heading flex flex-col gap-5">
             <div className="flex flex-col gap-0.5">
-              <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+              <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
                 {t("studio.routeTitle")}
               </h1>
-              <p className="page-title-halo text-sm text-muted-foreground">
-                {subtitle}
-              </p>
+              <p className="text-sm text-muted-foreground">{subtitle}</p>
             </div>
             {!showTrainingHydrating && (
               <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">

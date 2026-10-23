@@ -401,7 +401,7 @@ const SELECT_WITH_META =
 // zoom or UI scale instead of rounding differently per row.
 // DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
 // cue's border again above it.
-const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']`;
+const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-foreground before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
 const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
@@ -410,7 +410,7 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 const DROP_CUE_IN_FOLDER = "before:left-[calc(39px*var(--ui-space-scale,1))]";
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
-const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 // "Move to": the whole submenu stays inside the window, and each group's list scrolls past about
 // seven rows, the next one half showing, so a long list of projects keeps the Sections group, and
 // each group's Remove, in reach. No scrollbar: it would take its width out of the rows' right
@@ -424,7 +424,7 @@ const MOVE_TO_LIST =
 // Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
 const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
-const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 /** Reports while it is mounted, so a folder row ProgressiveRows has not drawn reads nothing. */
 function MountedFolder({
   id,
@@ -470,7 +470,7 @@ function landedOrder(
 
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
-  "rounded-full bg-primary/8 outline-solid outline-[length:1.5px] outline-primary -outline-offset-[1.5px]";
+  "rounded-full bg-wash-8 outline-solid outline-[length:1.5px] outline-foreground -outline-offset-[1.5px]";
 
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.

@@ -1842,7 +1842,7 @@ export function DiffusionTrainPanel({
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
-              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+              dropActive && "outline-2 outline-dashed outline-offset-4 outline-wash-60",
             )}
             onDragOver={(e) => {
               // tauri consumes os drags before the webview, as the chat composer notes.
@@ -2312,7 +2312,7 @@ export function DiffusionTrainPanel({
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         {r.saved && (
-                          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-ui-10 text-primary">
+                          <span className="rounded-full bg-wash-15 px-2 py-0.5 text-ui-10 text-foreground">
                             adapter saved
                           </span>
                         )}

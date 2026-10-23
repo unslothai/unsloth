@@ -2030,8 +2030,8 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            // An answer link's colour, underlined on hover only.
-            "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+            // Styled like an answer link.
+            "cursor-pointer rounded-sm text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
@@ -2554,7 +2554,7 @@ const GeneratedImageViewportOverlay: FC<{
               </p>
             ) : null}
             {hideComposer ? null : (
-              <p className="mx-auto mt-2 inline-flex rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+              <p className="mx-auto mt-2 inline-flex rounded-full bg-wash-10 px-3 py-1 text-xs font-medium text-foreground">
                 Type edits below, then send
               </p>
             )}
@@ -6892,7 +6892,7 @@ const ToolStatusDisplay: FC = () => {
     >
       <div
         className={cn(
-          "flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary",
+          "flex items-center gap-2 rounded-full border border-wash-20 bg-wash-5 px-3 py-1.5 text-xs text-foreground",
           // The spinner is its own motion cue; pulsing too just fades it mid-spin.
           !isNudging && "animate-pulse",
         )}
@@ -8373,8 +8373,8 @@ const DiffusionCanvas: FC = () => {
   const stepLabel =
     canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
   return (
-    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
-      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-ui-11 font-medium text-primary/80">
+    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-wash-20 bg-wash-3">
+      <div className="flex items-center gap-2 border-b border-wash-10 px-3 py-1.5 text-ui-11 font-medium text-foreground/80">
         <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
         <span>Denoising</span>
         <span className="opacity-60">
@@ -8632,7 +8632,7 @@ const ForkCountBadge: FC = () => {
   if (count <= 0) return null;
   return (
     <span
-      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
+      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-wash-10 px-1.5 py-0.5 text-ui-10 font-medium text-foreground"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
       <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-3" />

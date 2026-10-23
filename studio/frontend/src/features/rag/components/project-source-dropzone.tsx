@@ -364,7 +364,7 @@ export function ProjectSourceDropzone({
         }}
         className={cn(
           "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
-          dragging && "border-primary/60 bg-primary/5",
+          dragging && "border-wash-60 bg-wash-5",
           disabled && "opacity-60",
         )}
       >

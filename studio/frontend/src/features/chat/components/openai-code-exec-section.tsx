@@ -467,7 +467,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-ring-strong bg-primary/5"
+                      ? "border-ring-strong bg-wash-5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"
@@ -505,7 +505,7 @@ export function OpenAICodeExecSection({
                           Creating
                         </span>
                       ) : isActive ? (
-                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-primary">
+                        <span className="shrink-0 rounded-sm bg-wash-15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-foreground">
                           Active
                         </span>
                       ) : statusLabel ? (

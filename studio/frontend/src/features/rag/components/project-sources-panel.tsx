@@ -196,7 +196,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         <div
           className={cn(
             "flex flex-col items-center justify-center gap-3 rounded-[26px] border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            dragging && "border-wash-60 bg-wash-5",
           )}
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -235,7 +235,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         <div
           className={cn(
             "flex flex-col gap-4 rounded-[26px] border border-transparent bg-muted/30 px-6 py-5 transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            dragging && "border-wash-60 bg-wash-5",
           )}
         >
           <div className="flex items-center justify-between gap-3">

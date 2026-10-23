@@ -178,7 +178,7 @@ export function ReferenceMediaPicker({
         "flex w-full items-center justify-center gap-1.5 rounded-[10px] border border-dashed text-ui-11 transition-colors",
         compact ? "h-8" : "h-11",
         dragging
-          ? "border-primary/60 bg-primary/5 text-foreground"
+          ? "border-wash-60 bg-wash-5 text-foreground"
           : "border-border text-muted-foreground hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
       )}
     >

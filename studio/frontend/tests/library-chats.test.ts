@@ -423,8 +423,8 @@ test("chat, project and section cards are a little shorter than square, dated bo
 
 test("chat, project and section tiles share one box and hover tint", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
-  assert.match(items, /const TILE =\s*"[^"]*bg-muted[^"]*group-hover\/chat:bg-primary\/10 group-hover\/chat:text-primary"/);
-  assert.equal(items.split("group-hover/chat:bg-primary/10").length - 1, 1, "one tile style");
+  assert.match(items, /const TILE =\s*"[^"]*bg-muted[^"]*group-hover\/chat:bg-wash-10 group-hover\/chat:text-foreground"/);
+  assert.equal(items.split("group-hover/chat:bg-wash-10").length - 1, 1, "one tile style");
   assert.match(items, /<div className=\{cn\(TILE, className\)\}>/);
   assert.match(items, /<span className=\{TILE\}>/);
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);

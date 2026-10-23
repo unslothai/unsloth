@@ -685,7 +685,7 @@ export function AnnotateLayer({
       {shownHover ? (
         <div
           className={cn(
-            "absolute rounded-md border-[1.5px] border-primary/70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
+            "absolute rounded-md border-[1.5px] border-wash-70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
             hoverBox && !area ? "opacity-100" : "opacity-0",
           )}
           style={shownHover}
@@ -693,7 +693,7 @@ export function AnnotateLayer({
       ) : null}
       {area ? (
         <div
-          className="absolute rounded-md border-[1.5px] border-dashed border-primary/70 bg-primary/5"
+          className="absolute rounded-md border-[1.5px] border-dashed border-wash-70 bg-wash-5"
           style={area}
         />
       ) : null}
@@ -755,7 +755,7 @@ function Mark({
   return (
     <>
       <div
-        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-primary/60 bg-primary/5 fade-in-0 duration-150"
+        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-wash-60 bg-wash-5 fade-in-0 duration-150"
         style={box}
       />
       <button

@@ -799,7 +799,7 @@ export function ProjectsPage() {
                   onClick={() => openProject(project.id)}
                   className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-wash-10 group-hover/project-row:text-foreground">
                     <HugeiconsIcon
                       icon={Folder02Icon}
                       strokeWidth={1.75}

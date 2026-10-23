@@ -1434,7 +1434,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
       className={cn(
         ANNOTATE_BUTTON,
         annotating &&
-          "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+          "bg-wash-12 text-foreground hover:bg-wash-18 hover:text-foreground dark:bg-wash-20 dark:hover:bg-wash-25",
       )}
     >
       <HugeiconsIcon icon={SquareDashedMousePointerIcon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
@@ -1666,7 +1666,7 @@ function BrowserFileToolbar({
           className={cn(
             ANNOTATE_BUTTON,
             annotating &&
-              "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+              "bg-wash-12 text-foreground hover:bg-wash-18 hover:text-foreground dark:bg-wash-20 dark:hover:bg-wash-25",
           )}
         >
           <HugeiconsIcon

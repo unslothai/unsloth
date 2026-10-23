@@ -569,7 +569,7 @@ function ChatMenu({
 }
 
 const TILE =
-  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-wash-10 group-hover/chat:text-foreground";
 const TILE_ICON = "size-5";
 
 function ChatTile({

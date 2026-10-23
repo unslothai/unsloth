@@ -249,7 +249,7 @@ export function UnstructuredDropZone({
         // through to the window instead of saying the block is busy.
         className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-ring-strong bg-primary/5"
+            ? "border-ring-strong bg-wash-5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
         ref={dropRef}

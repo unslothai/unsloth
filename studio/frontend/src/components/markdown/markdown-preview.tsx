@@ -36,7 +36,7 @@ const MARKDOWN_COMPONENTS = {
     <a
       href={href}
       rel="noopener noreferrer"
-      className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:decoration-primary"
+      className="cursor-pointer text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
       onClick={(event) => {
         if (href && openLink(href)) {
           event.preventDefault();

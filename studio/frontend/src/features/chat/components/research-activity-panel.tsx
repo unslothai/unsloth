@@ -367,7 +367,7 @@ const ActivityRow = memo(function ActivityRow({
           className={cn(
             "line-clamp-3 break-words rounded-xl bg-muted/45 px-3 py-2 text-foreground/80",
             activity.kind === "step" &&
-              "bg-primary/[0.045] ring-1 ring-primary/10",
+              "bg-wash-5 ring-1 ring-wash-10",
           )}
         >
           {activity.input}
@@ -380,7 +380,7 @@ const ActivityRow = memo(function ActivityRow({
               key={`${activity.id}-preview-${index}`}
               className="flex gap-2 leading-relaxed"
             >
-              <span aria-hidden className="text-primary/70">
+              <span aria-hidden className="text-foreground/70">
                 ·
               </span>
               <span className="min-w-0 break-words text-foreground/80">
@@ -427,7 +427,7 @@ const ActivityRow = memo(function ActivityRow({
           className={cn(
             activity.kind === "step" &&
               activity.state !== "failed" &&
-              "font-medium text-primary/75",
+              "font-medium text-foreground/75",
           )}
         >
           {activity.detail}
@@ -489,7 +489,7 @@ const ActivityRow = memo(function ActivityRow({
       <div
         className={cn(
           "relative pl-7 before:absolute before:left-[calc(7px*var(--ui-space-scale,1))] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
-          activity.kind === "step" && "before:bg-primary/20",
+          activity.kind === "step" && "before:bg-wash-20",
         )}
       >
         <CollapsibleTrigger
@@ -501,7 +501,7 @@ const ActivityRow = memo(function ActivityRow({
               "absolute -left-7 top-1/2 flex size-[calc(15px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
-                "bg-primary/10 text-primary",
+                "bg-wash-10 text-foreground",
               activity.state === "failed" && "text-destructive",
             )}
           >
@@ -584,7 +584,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
 
   return (
     <>
-      <section className="mx-4 mt-3 rounded-2xl border border-primary/20 bg-primary/[0.045] p-3">
+      <section className="mx-4 mt-3 rounded-2xl border border-wash-20 bg-wash-5 p-3">
         <p className="font-heading text-sm font-medium">Research plan ready</p>
         <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
           {run.plan.title}
@@ -739,7 +739,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     key={`${index}-${step.query}`}
                     className="flex gap-3 border-b border-border/60 py-3 first:pt-0 last:border-b-0 last:pb-0"
                   >
-                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-wash-10 text-xs font-medium text-foreground">
                       {index + 1}
                     </span>
                     <span className="min-w-0">
@@ -905,7 +905,7 @@ export function ResearchActivityPanel({
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-wash-10 text-foreground">
             <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">
@@ -930,7 +930,7 @@ export function ResearchActivityPanel({
             </p>
             {websiteLimitLabel ? (
               <p
-                className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
+                className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-foreground/75"
                 title={websiteLimitTitle}
               >
                 <InternetGlyph className="size-3" />

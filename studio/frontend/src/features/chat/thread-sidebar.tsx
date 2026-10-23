@@ -278,7 +278,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-sm bg-wash-10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-foreground"
                         title="Forked from another chat"
                       >
                         fork
@@ -340,7 +340,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/studio/chat"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-foreground bg-wash-10 transition-colors hover:bg-wash-20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
           <span>Learn more in docs</span>

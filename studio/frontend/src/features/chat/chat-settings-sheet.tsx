@@ -1287,7 +1287,7 @@ export function ChatSettingsPanel({
                       className={cn(
                         "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
                         presetSaveState.isSaveReady &&
-                          "placeholder:text-primary/50",
+                          "placeholder:text-foreground/50",
                       )}
                       aria-label="Inference preset name"
                     />
