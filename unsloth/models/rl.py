@@ -3221,7 +3221,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    except ImportError:\n"
             "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
+            "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
+            "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
+            "        _unsloth_replay_model = getattr(self, 'model', None)\n"
+            "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
+            "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
             "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
+            "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
         )
 

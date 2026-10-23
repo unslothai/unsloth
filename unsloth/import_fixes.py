@@ -9543,6 +9543,29 @@ def patch_peft_float8_adapter_upcast():
     tu.cast_adapter_dtype = cast_adapter_dtype
 
 
+def patch_peft_shared_active_adapter():
+    """Compiled layers guard on peft's shared active-adapter str; TRL DPO's ref switch broke Gemma 4 E2B recompute."""
+    try:
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    layer_cls = getattr(tu, "BaseTunerLayer", None)
+    original = getattr(layer_cls, "set_adapter", None)
+    if original is None or getattr(original, "_unsloth_shared_active_adapter", False):
+        return
+
+    @functools.wraps(original)
+    def set_adapter(self, adapter_names, *args, **kwargs):
+        out = original(self, adapter_names, *args, **kwargs)
+        active = self.__dict__.get("_active_adapter")
+        if type(active) is list and len(active) == 1 and type(active[0]) is str:
+            self._active_adapter = sys.intern(active[0])
+        return out
+
+    set_adapter._unsloth_shared_active_adapter = True
+    layer_cls.set_adapter = set_adapter
+
+
 def patch_peft_weight_converter_compatibility():
     """Allow PEFT converter rebuilds on legacy converter constructors."""
     try:
