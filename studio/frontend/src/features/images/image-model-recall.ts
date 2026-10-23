@@ -105,7 +105,7 @@ export function rememberImageModel(model: RememberedImageModel): void {
 export type ImageModelKey = Pick<RememberedImageModel, "repoId" | "kind" | "filename">;
 export type ImageComponentFiles = Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
-// The encoder / VAE paths each model last loaded with, most recent last, so a pick can refill the Advanced fields.
+// Encoder / VAE paths each model last loaded with, most recent last.
 const COMPONENTS_KEY = "unsloth:images:component-files";
 const COMPONENTS_CAP = 50;
 
@@ -155,10 +155,7 @@ const sameEncoders = (a: ImageComponentFiles, b: ImageComponentFiles): boolean =
 const sameVae = (a: ImageComponentFiles, b: ImageComponentFiles): boolean =>
   cleanComponentFiles(a).vaeFile === cleanComponentFiles(b).vaeFile;
 
-/** What a load of `model` sends from the Advanced fields, the encoder and VAE field each on its own: a field still
- *  holding `owner`'s value (what was filled in or loaded last) is not the user's edit, so it gives way to the model's
- *  own saved file, and no entry sends none. `owner` is the new owner (an edited field keeps its old one, so it stays an
- *  edit until a load takes it); `replaceEncoders` / `replaceVae` say which fields to refill. */
+/** Advanced-field files a load of `model` sends: a field still holding `owner`'s value is not a user edit, so the model's saved file replaces it. */
 export function componentFilesForModel(
   typed: ImageComponentFiles,
   owner: ImageComponentFiles,
@@ -178,14 +175,12 @@ export function componentFilesForModel(
   };
 }
 
-/** The files a recalled model loads with: its per-model entry (which keeps what a native load strips from the
- *  request), else the last-model slot's, which an older build or an evicted entry leaves as the only record. */
+/** A recalled model's files: its per-model entry, else the last-model slot's. */
 export function recalledComponentFiles(model: RememberedImageModel): ImageComponentFiles {
   return readImageComponents(model) ?? cleanComponentFiles(model);
 }
 
-/** The remembered model's files on page open, copying the last-model slot's into the map when it has no entry (an
- *  older build kept them only there), so a pick of that model with the fields untouched keeps them. */
+/** Seed the remembered model's files on page open, migrating the last-model slot into the map. */
 export function seedImageComponents(model: RememberedImageModel): ImageComponentFiles {
   const saved = readImageComponents(model);
   if (saved) return saved;
@@ -194,9 +189,7 @@ export function seedImageComponents(model: RememberedImageModel): ImageComponent
   return slot;
 }
 
-/** Forget a model's saved files when its resident build (status ``component_files``, basenames) uses others, e.g. a
- *  reload by another client without them, so a later recall or pick does not bring back what no longer engages. A
- *  native (sd_cpp) build never takes supplied files, so there the entry records the request and stays. */
+/** Forget a model's saved files when its resident build uses others; native (sd_cpp) builds keep the entry. */
 export function forgetStaleImageComponents(
   model: ImageModelKey,
   status: { engine?: string | null; component_files?: Record<string, string> | null },
@@ -207,8 +200,7 @@ export function forgetStaleImageComponents(
     rememberImageComponents(model, engagedComponentFiles(saved, status.component_files));
 }
 
-/** The part of `files` the resident build (status ``component_files``, basenames) still engages: the encoders and the
- *  VAE each on their own, so a reload that changed only one override keeps the other's full path. */
+/** The part of `files` the resident build still engages, encoders and VAE judged separately. */
 function engagedComponentFiles(
   files: ImageComponentFiles,
   componentFiles: Record<string, string> | null | undefined,
@@ -223,11 +215,7 @@ function engagedComponentFiles(
   });
 }
 
-/** Forget the resident model's own saved files when its build does not use them, on every settled loaded status: the
- *  page may remember another model, or the resident build may change after the first status, and a pick or Reapply of
- *  the resident model would otherwise send paths the status shows it no longer loads. The last-model slot loses them
- *  too when it names the resident model, since recall falls back to it: returns that slot without its files when it
- *  dropped them, else null. */
+/** Forget the resident model's saved files (and the slot's, if it names that model) when its build does not use them. */
 export function forgetStaleResidentComponents(status: {
   loaded: boolean;
   repo_id?: string | null;
@@ -255,10 +243,7 @@ export function forgetStaleResidentComponents(status: {
   return next;
 }
 
-/** On the first loaded status: forget the remembered model's saved files when that same model is resident on a
- *  build that does not use them (another client reloaded it without them), so the page does not reload them as
- *  untouched fields. The last-model slot loses them too, since seed and recall fall back to it. Returns the model
- *  with only the files the build still engages when any were dropped, else null. */
+/** First loaded status: drop the remembered model's files its resident build no longer uses; returns the trimmed model or null. */
 export function reconcileRememberedComponents<T extends ImageModelKey & ImageComponentFiles>(
   model: T,
   status: {
@@ -285,9 +270,7 @@ export function reconcileRememberedComponents<T extends ImageModelKey & ImageCom
   return { ...rest, ...kept };
 }
 
-/** Record a finished load's files: a load this page started stores what it asked for (`fieldFiles`, which a native
- *  load strips from the request), and returns them. A load it only resumed (re-entered mid-load, so `lastLoad` is the
- *  resident descriptor) carries no request, so the saved entry is kept if the build engages it and forgotten if not. */
+/** Record a finished load's files: a page-started load stores its request; a resumed one keeps or forgets the entry by the build. */
 export function rememberLoadedImageComponents(
   load: ImageModelKey & { fieldFiles?: ImageComponentFiles },
   status: { engine?: string | null; component_files?: Record<string, string> | null },
@@ -300,9 +283,7 @@ export function rememberLoadedImageComponents(
   return load.fieldFiles;
 }
 
-/** Who owns the fields after a load finished, field by field: that load, only while the field shows its file. A load that never touched
- *  them (an adapter deploy, a recalled generation) leaves them with the model that filled them, and so does a load of
- *  a `kind` that ignores the fields (a pipeline), whose empty request would otherwise match a field the user cleared. */
+/** Per-field owner after a load: that load only while the field shows its file; field-ignoring loads (pipelines) leave ownership. */
 export function componentFieldsOwnerAfterLoad(
   shown: ImageComponentFiles,
   loaded: ImageComponentFiles,
@@ -316,8 +297,7 @@ export function componentFieldsOwnerAfterLoad(
   });
 }
 
-/** The Advanced fields after a load recovered on reopen (its pending descriptor): a field still showing what it was
- *  filled with (`owner`) is not the user's edit, so it takes the recovered file; an edited one stays. */
+/** Fields after a load recovered on reopen: untouched fields take the recovered files, edits stay. */
 export function recoveredComponentFields(
   shown: ImageComponentFiles,
   owner: ImageComponentFiles,
@@ -384,8 +364,7 @@ export function componentFilesMatch(
   );
 }
 
-// The load this page last started, with the paths it asked for, until that load ends: the backend load outlives a page
-// reload, and status names only basenames, so a resumed load can still record the paths when it finishes.
+// The pending load and its requested paths: the backend load outlives a page reload and status gives only basenames.
 const PENDING_KEY = "unsloth:images:pending-load";
 
 export type PendingImageLoad = RememberedImageModel & { displayRepoId?: string; baseRepo?: string; fieldFiles?: ImageComponentFiles };
@@ -417,10 +396,7 @@ function readPendingImageLoad(): PendingImageLoad | null {
   }
 }
 
-/** The descriptor a finished load reconciles with, consuming the pending one: the page's own load when it carries its
- *  request, else (a load resumed after a reload) the pending load when the now-resident build is that model with its
- *  files. A build of the same model on other files (another client reloaded it) is not that load, so the descriptor
- *  is dropped and the saved entry is left to the reconcilers; a native (sd_cpp) build reports none of them. */
+/** The descriptor a finished load reconciles with, consuming the pending one if the resident build is that load. */
 export function finishedLoadTarget<T extends ImageModelKey & { fieldFiles?: ImageComponentFiles }>(
   current: T | null,
   status: Parameters<typeof matchesRememberedModel>[1] & Parameters<typeof forgetStaleImageComponents>[1],

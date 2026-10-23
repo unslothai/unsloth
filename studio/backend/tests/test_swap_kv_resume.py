@@ -498,8 +498,6 @@ def test_load_progress_is_unchanged_without_a_save(client, env, monkeypatch, cas
 def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
     env, monkeypatch, saved, raises
 ):
-    # Chat's eviction and the VRAM wait run between the save and begin_load: a page resumed during the
-    # save must keep reading a load in flight there, not a null progress it would take for a cancel.
     if not saved:
         monkeypatch.setattr(env, "save_slots_for_resume", lambda should_abort: None)
     seen = []
@@ -516,7 +514,6 @@ def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
     except arb.GpuBusyForAnotherAccountError:
         assert raises
     assert seen == [{"phase": cs.SAVING_CHAT_CONTEXT}] * 2
-    # Released once the acquire is done, whether it registered the load or failed.
     assert cs.saving_progress("image") is None and cs._saving == {}
 
 
@@ -526,8 +523,6 @@ def test_load_progress_reads_in_flight_through_the_load_preflight(
     monkeypatch,
     healthy_diffusers,  # noqa: F811
 ):
-    # Before begin_load, the engine's progress describes the previous model ("ready" here): a page
-    # reopened during the evidence fetch must read a load still starting, not one that finished.
     import core.inference.diffusion_hub_evidence as evidence
 
     _cuda(monkeypatch)
@@ -555,7 +550,6 @@ def test_load_progress_reads_in_flight_through_the_load_preflight(
     poster.join(10)
     assert during["phase"] in ("downloading", "finalizing", "saving_chat_context")
     assert answer["resp"].status_code == 200
-    # Released with the POST: the engine's own phase answers again.
     assert getattr(cs, "_preparing", {}) == {}
     assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
 
@@ -568,8 +562,6 @@ def test_an_unload_during_the_preflight_cancels_the_load(
     healthy_diffusers,
     phase,  # noqa: F811
 ):
-    # A page reopened during the preflight reads "downloading" and offers Cancel, which sends this
-    # unload. The POST must then stop: no engine load, and chat neither evicted nor its save kept.
     import core.inference.diffusion_hub_evidence as evidence
 
     _cuda(monkeypatch)
@@ -602,7 +594,6 @@ def test_an_unload_during_the_preflight_cancels_the_load(
     assert not poster.is_alive()
     assert during == ("downloading" if phase == "evidence" else cs.SAVING_CHAT_CONTEXT)
     assert stopped.status_code == 200
-    # The cancelled preflight no longer reads as a load in flight.
     assert after not in ("downloading", "finalizing")
     resp = answer["resp"]
     assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
@@ -613,8 +604,6 @@ def test_an_unload_during_the_preflight_cancels_the_load(
 
 
 def test_a_cancelled_preflight_stops_before_the_native_video_unload():
-    # The native video model sharing the sd.cpp tree is torn down before the engine switch, so a load
-    # cancelled during its preflight must exit before that unload, not after it.
     import inspect
 
     import routes.inference as routes
@@ -628,8 +617,6 @@ def test_a_cancelled_preflight_stops_before_the_native_video_unload():
 def test_an_unload_while_the_acquire_waits_never_evicts_chat(
     client, env, monkeypatch, healthy_diffusers
 ):
-    # The load passed its own cancel checks and waits for the arbiter (training admission, a busy
-    # lock). A Cancel then must stop it at admission, before chat is evicted for it.
     _cuda(monkeypatch)
     base, body = _LOADS["image"]
     monkeypatch.setattr(cs, "_preparing", {})

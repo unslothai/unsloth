@@ -54,8 +54,6 @@ def test_parse_local_absolute_relative_and_bare(tmp_path):
 
 
 def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tmp_path):
-    # An HF cache snapshot file is a symlink to blobs/<hash>: status must name the file the caller supplied (what
-    # the frontend compares its saved paths against), not the resolved blob hash.
     blob = _save(tmp_path / "blobs" / "0123abcdef", {"x": torch.zeros(1)})
     snap = tmp_path / "snapshots" / "rev" / "ae.safetensors"
     snap.parent.mkdir(parents = True)

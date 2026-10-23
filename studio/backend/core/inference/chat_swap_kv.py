@@ -68,15 +68,12 @@ def _leave_saving(key: tuple[str, Optional[str]]) -> None:
 
 
 class PreparingLoad:
-    """One load POST still before its engine registers the load. ``/<media>/unload`` cancels it,
-    and the POST checks it before every step that acts (engine activation, chat's eviction, the
-    acquire, begin_load), so a Cancel sent during the preflight really stops the load."""
+    """One load POST still before its engine registers the load; ``/<media>/unload`` cancels it."""
 
     def __init__(self, media: str):
         self.media = media
         self._cancelled = threading.Event()
-        # Held across a check and the step it guards (begin_load's registration), so a cancel lands
-        # either before the check or after the load is registered, where the engine unload stops it.
+        # Held from the check through begin_load's registration, so a cancel lands before or after it.
         self.lock = threading.RLock()
 
     @property
@@ -88,7 +85,6 @@ class PreparingLoad:
             self._cancelled.set()
 
 
-# (media, account id) -> the caller's load POSTs still before their engine registers the load.
 _preparing: dict[tuple[str, Optional[str]], list[PreparingLoad]] = {}
 _current_preparing: contextvars.ContextVar[Optional[PreparingLoad]] = contextvars.ContextVar(
     "chat_swap_kv_preparing_load", default = None
@@ -107,8 +103,7 @@ def cancel_preparing_loads(
     *,
     any_account: bool = False,
 ) -> int:
-    """Cancel the ``media`` load POSTs still in their preflight: ``account``'s own, or every
-    account's when the unload is not account scoped (as the engine unload then stops any load)."""
+    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped."""
     with _lock:
         tokens = [
             t
@@ -117,8 +112,8 @@ def cancel_preparing_loads(
             for t in held
             if not t.cancelled
         ]
+    # Outside _lock: this waits for a registration in flight under the token's own lock.
     for token in tokens:
-        # Outside _lock: this waits for a registration in flight under the token's own lock.
         token.cancel()
     return len(tokens)
 
@@ -137,9 +132,7 @@ def raise_if_load_cancelled(message: str) -> None:
 
 @contextlib.contextmanager
 def preparing_load(media: str):
-    """Held around a load POST: until begin_load registers the load, load-progress still
-    describes the previous model, and a page reopened then must not read its "ready" or null
-    as this load having ended. Yields the token an unload cancels."""
+    """Held around a load POST until begin_load registers it, so load-progress reads it as starting; yields the token an unload cancels."""
     key = (media, _account_id())
     token = PreparingLoad(media)
     with _lock:
@@ -207,9 +200,6 @@ class SwapSave:
         self._manifest = manifest
         # Off logs the eviction here; When they fit's residency code already logs it as "evicted".
         self._log_swap = log_swap
-        # The save's progress marker, held through the acquire: chat's eviction and the VRAM wait run
-        # before begin_load registers the load, and a page resumed during the save must not read that
-        # gap as a load that ended.
         self._saving = saving
 
     def close(self) -> None:
@@ -412,7 +402,6 @@ async def save_chat_kv_before_swap(
     except BaseException:
         _leave_saving(saving)
         raise
-    # From here the returned handle owns the marker, released by close() once the acquire is done.
     if not manifest:
         return SwapSave(saving = saving)
     entry = {"identity": identity, "origin": "swap", **manifest}

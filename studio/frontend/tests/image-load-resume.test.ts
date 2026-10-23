@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A diffusion load survives a page reload. The reopened page must treat every nonterminal load phase as in flight, and
-// the requested component paths (status names only basenames) must survive the reload so the finished load records them.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -47,21 +45,17 @@ test("every nonterminal backend load phase counts as in flight on page open", ()
 
 test("a load resumed after a page reload records the paths it was started with", () => {
   store.clear();
-  // The page started the load and stored its request, then reloaded: lastLoad is gone (or the replaced build's).
   rememberPendingImageLoad({ ...zImage, ...zFiles, fieldFiles: zFiles });
   const resident = { repoId: "org/old", kind: "pipeline" } as const;
   const target = finishedLoadTarget<typeof resident>(resident, ready);
   assert.deepEqual(target, { ...zImage, ...zFiles, fieldFiles: zFiles });
   assert.deepEqual(rememberLoadedImageComponents(target!, ready), zFiles);
   assert.deepEqual(readImageComponents(zImage), zFiles);
-  // Consumed: a later finish does not reuse it.
   assert.equal(finishedLoadTarget(null, ready), null);
 
-  // First load on a fresh page: no resident descriptor at all.
   rememberPendingImageLoad({ ...zImage, fieldFiles: zFiles });
   assert.deepEqual(finishedLoadTarget(null, ready)?.fieldFiles, zFiles);
 
-  // A build that is another model ignores it, and the page's own load keeps its own request.
   rememberPendingImageLoad({ ...zImage, fieldFiles: zFiles });
   assert.equal(finishedLoadTarget(null, { ...ready, gguf_filename: "other.gguf" }), null);
   const own = { ...zImage, fieldFiles: { vaeFile: "mine.safetensors" } };
@@ -75,9 +69,7 @@ test("a load resumed after a page reload records the paths it was started with",
 test("the page stores the pending load at start and clears it on every way a load ends", () => {
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /lastLoad\.current = \{[\s\S]*?fieldFiles: \{[^}]*\},\s*\};[\s\S]{0,200}rememberPendingImageLoad\(lastLoad\.current\);/);
-  // Success consumes it before the descriptor is checked against the status.
   assert.match(source, /const started = lastLoad\.current;\s*lastLoad\.current = finishedLoadTarget\(started, loaded\);\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded, lastLoad\.current !== started\);/);
-  // Failed after starting, cancelled or evicted, refused at start, cancelled or ejected by the page, nothing to resume.
   assert.match(source, /if \(p\.phase === "error"\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /if \(p\.phase === null\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /\} catch \(err\) \{\s*pendingEvicted\.current = \[\];\s*clearPendingImageLoad\(\);/);
@@ -90,20 +82,16 @@ test("a load that finished while the page was closed records its paths before th
   const source = readSrc("features/images/images-page.tsx");
   const mount = source.slice(source.indexOf("inFlight = isLoadInFlightPhase(p.phase);"));
   const probe = mount.slice(0, mount.indexOf("if (!inFlight) clearPendingImageLoad();"));
-  // The mount probe reads "ready": the poll that records finished loads never starts, so the mount reconciles the
-  // pending request with the resident build itself, the same way the poll does.
   assert.match(
     probe,
     /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded, true\);/,
   );
-  // The shared recorder saves the model and its component files only for the build that is resident.
   const recorder = source.slice(source.indexOf("const rememberFinishedLoad = useCallback"));
   const body = recorder.slice(0, recorder.indexOf("}, []);"));
   assert.match(body, /if \(!matchesRememberedModel\(target, loaded\)\) return;/);
   assert.match(body, /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);/);
   assert.match(body, /rememberLoadedImageComponents\(target, loaded\)/);
 
-  // What the mount path then does with the store: the full typed paths survive into the per-model entry.
   store.clear();
   rememberPendingImageLoad({ ...zImage, fieldFiles: zFiles });
   const resumed = finishedLoadTarget(null, ready);
@@ -116,15 +104,11 @@ test("the mount probe publishes the finished build's status before the reconcile
   const source = readSrc("features/images/images-page.tsx");
   const mount = source.slice(source.indexOf("inFlight = isLoadInFlightPhase(p.phase);"));
   const probe = mount.slice(0, mount.indexOf('setInitialLoadProbe(inFlight ? "loading" : "idle");'));
-  // The first refreshStatus may have read the build being replaced. Releasing the probe gate reconciles the saved
-  // files against the page's status, so the ready branch must publish its fresh read, under a ticket taken before
-  // the await so a newer status read still wins.
   assert.match(
     probe,
     /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const ticket = \+\+statusTicket\.current;\s*const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);/,
   );
 
-  // Why: reconciling the just-saved files against the replaced build forgets them from both saved locations.
   const newFiles = { vaeFile: "/models/new-vae.safetensors" };
   const oldBuild = { ...ready, component_files: { vae: "old-vae.safetensors" } };
   const newBuild = { ...ready, component_files: { vae: "new-vae.safetensors" } };
@@ -141,8 +125,6 @@ test("the mount probe publishes the finished build's status before the reconcile
 });
 
 test("a pending load whose files the resident build does not use keeps the saved entry", () => {
-  // Saved: the VAE the resident build uses. Pending: a load of the same checkpoint on another VAE, left when the page
-  // closed; another client then reloaded the checkpoint on the saved VAE.
   const working = { vaeFile: "/models/working-ae.safetensors" };
   const other = { vaeFile: "/models/other-ae.safetensors" };
   const resident = { ...ready, component_files: { vae: "working-ae.safetensors" } };
@@ -155,14 +137,12 @@ test("a pending load whose files the resident build does not use keeps the saved
   forgetStaleResidentComponents(resident);
   assert.deepEqual(readImageComponents(zImage), working);
 
-  // The poll path with a resumed descriptor (no request) keeps that descriptor, which reconciles without overwriting.
   const own = { ...zImage };
   rememberPendingImageLoad({ ...zImage, fieldFiles: other });
   assert.equal(finishedLoadTarget(own, resident), own);
   assert.equal(rememberLoadedImageComponents(own, resident), null);
   assert.deepEqual(readImageComponents(zImage), working);
 
-  // Matching files (status basenames vs full paths) still resume, and a native build, which reports none, does too.
   rememberPendingImageLoad({ ...zImage, fieldFiles: working });
   assert.deepEqual(finishedLoadTarget(null, resident)?.fieldFiles, working);
   const native = { ...ready, engine: "sd_cpp", component_files: {} };

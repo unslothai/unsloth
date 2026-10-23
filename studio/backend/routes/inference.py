@@ -51653,8 +51653,6 @@ def _assert_native_precision_unset(
     )
 
 
-# The engine's own answer for a load an unload cancelled (DiffusionBackend._raise_if_load_cancelled),
-# raised as the same RuntimeError so the route answers it with the same 409.
 _DIFFUSION_LOAD_CANCELLED = "Diffusion load was cancelled."
 
 
@@ -51982,8 +51980,6 @@ async def load_diffusion_model_gated(
         require_no_foreign_generations()
         from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
 
-        # An unload sent while this POST was still in its preflight (a page reopened then offers
-        # Cancel) stops it here, before it unloads a native video model, switches engine, evicts chat or acquires.
         raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
             await asyncio.to_thread(
@@ -52142,8 +52138,7 @@ async def load_diffusion_model_gated(
 
             if preflight is None:
                 return _register()
-            # Check and register under the token's lock: an unload's cancel then lands either
-            # before the check, or after the load is registered, where its engine unload stops it.
+            # A cancel lands before this check or after registration, where the engine unload stops it.
             with preflight.lock:
                 raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
                 return _register()
@@ -52158,14 +52153,10 @@ async def load_diffusion_model_gated(
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
-                # Before the acquire evicts chat for a load nobody wants any more.
                 raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
                 admitted = []
 
                 def _admit():
-                    # Under the arbiter lock, before any eviction. The token's lock is then held
-                    # through the registration, so a cancel lands before this check (chat stays
-                    # loaded) or after the load is registered (the engine unload stops it).
                     if preflight is None:
                         return
                     preflight.lock.acquire()
@@ -52192,7 +52183,6 @@ async def load_diffusion_model_gated(
 
             swap = await save_chat_kv_before_swap(DIFFUSION, "image", **fit_kwargs)
             try:
-                # Cancelled during the chat save: chat stays loaded, and close() drops the save.
                 raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
             except BaseException:
                 swap.close()
@@ -53747,9 +53737,6 @@ async def unload_diffusion_model(
         )
     from core.inference.chat_swap_kv import cancel_preparing_loads
 
-    # A load POST still in its preflight has no engine load to stop yet: cancel its token, with the
-    # engine unload's scope (the caller's own under account scope, any otherwise). Before the engine
-    # unload, so a load that registers meanwhile is registered by the time that unload runs.
     await asyncio.to_thread(
         cancel_preparing_loads,
         "image",
