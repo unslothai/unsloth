@@ -969,7 +969,7 @@ def test_family_head_dims_narrow_the_mps_answer(device, version, head_dims, math
     config = {"attention_head_dim": sorted(head_dims or ())}
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(config = config))
     att._configure_native_attention(pipe, target, logger)
-    assert bool(records) is math_only
+    assert any("math_only" in record[0] for record in records) is math_only
     from core.inference.diffusion import _quadratic_attention
 
     assert _quadratic_attention(target, None, pipe) is math_only
