@@ -465,6 +465,32 @@ def test_cancel_during_the_fallback_load_stops_it(rig):
     assert ("diffusers", "unload") in rig.log
 
 
+def test_a_stopped_generation_ticket_stops_the_fallback_load(rig):
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    rig.diffusers.hang_load = True
+    ticket = GenerationTicket()
+    errors = []
+
+    def _run():
+        with generation_ticket(ticket):
+            try:
+                _img2img(rig.engine)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    deadline = time.time() + 5
+    while rig.engine._fallback_cancel is None and time.time() < deadline:
+        time.sleep(0.01)
+    ticket.stop()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert errors == [DIFFUSION_CANCELLED_MSG]
+    assert ("diffusers", "unload") in rig.log
+
+
 def test_cancel_during_the_fallback_load_checks_the_owner(rig):
     rig.engine._fallback_cancel = threading.Event()
     rig.engine._active_generate_account = "owner"

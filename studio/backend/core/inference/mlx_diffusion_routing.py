@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.inference.generation_ticket import bind_generation_cancel
 from loggers import get_logger
 from utils.account_context import current_account_id
 
@@ -501,6 +502,8 @@ class RoutedMlxEngine:
             self._fallback_cancel = cancel
             self._fallback_done = done
             self._active_generate_account = current_account_id()
+        # A stopped tool ticket must reach the load too; the engine binds its own event only once generation starts.
+        bind_generation_cancel(cancel)
         dropped = False
         started = time.perf_counter()
         try:
