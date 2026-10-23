@@ -1971,10 +1971,15 @@ export function ImagesPage({
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Every settled loaded status, after the first-status reconcile (which needs the entry this may drop): the resident
   // model's own entry, which that check never reaches when the page remembers another model or the build changes
-  // later. Not mid-load: that load's finish records or forgets its files against the new build.
+  // later. Not mid-load: that load's finish records or forgets its files against the new build. Once per status
+  // response: a rerun on a callback change alone (a field edit) would hold another tab's newer saved files against
+  // this tab's cached status.
+  const residentReconciledFor = useRef<DiffusionStatus | null>(null);
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (initialLoadProbe === "pending" || busy === "loading") return;
+      if (residentReconciledFor.current === loaded) return;
+      residentReconciledFor.current = loaded;
       const bare = forgetStaleResidentComponents(loaded);
       if (bare) setRememberedModel(bare);
     },

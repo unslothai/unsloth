@@ -98,7 +98,11 @@ class ComponentFileRef:
 
     @property
     def name(self) -> str:
-        return os.path.basename(self.local_path or self.filename or self.spec)
+        # A local file is named as supplied: ``local_path`` is resolved, so an HF cache snapshot symlink would
+        # otherwise report its blob hash, and status (compared against saved paths) must name the caller's file.
+        if self.local_path:
+            return re.split(r"[\\/]", self.spec)[-1] or os.path.basename(self.local_path)
+        return os.path.basename(self.filename or self.spec)
 
     @property
     def is_hub(self) -> bool:

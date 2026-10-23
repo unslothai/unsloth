@@ -603,7 +603,14 @@ test("every settled loaded status forgets the resident model's stale files, not 
   const run = (initialLoadProbe: string, busy: string | null) => {
     rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
     const setRememberedModel = (m: unknown) => (remembered = m);
-    const scope = { useCallback: (fn: unknown) => fn, initialLoadProbe, busy, forgetStaleResidentComponents, setRememberedModel };
+    const scope = {
+      useCallback: (fn: unknown) => fn,
+      residentReconciledFor: { current: null },
+      initialLoadProbe,
+      busy,
+      forgetStaleResidentComponents,
+      setRememberedModel,
+    };
     new Function(...Object.keys(scope), outputText)(...Object.values(scope))(fluxResident);
     return readImageComponents(flux);
   };
@@ -620,4 +627,92 @@ test("every settled loaded status forgets the resident model's stale files, not 
   assert.deepEqual(run("pending", null), { vaeFile: "../vae/flux_ae.safetensors" });
   assert.deepEqual(run("idle", "loading"), { vaeFile: "../vae/flux_ae.safetensors" });
   assert.equal(remembered, undefined);
+});
+
+test("a field edit reruns no resident cleanup against a cached status, so another tab's newer files survive", () => {
+  // Run the page's own callbacks, ref and effect across renders, memoized by their dependency lists like React.
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(["pickComponentFiles", "reconcileInitialComponents", "residentReconciledFor", "reconcileResidentComponents"]);
+  const declarations: string[] = [];
+  let effect = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && names.has(node.name.getText(tree))) declarations.push(`const ${node.getText(tree)};`);
+    if (ts.isExpressionStatement(node) && /^useEffect\(/.test(node.getText(tree)) && node.getText(tree).includes("reconcileResidentComponents(status)"))
+      effect = node.getText(tree);
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declarations.length >= 3 && effect);
+  const { outputText } = ts.transpileModule([...declarations, effect].join("\n"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  store.clear();
+  const old = { vaeFile: "/files/old-ae.safetensors" };
+  rememberImageModel({ ...zImage, ...old });
+  rememberImageComponents(zImage, old);
+  const statusFor = (component_files: Record<string, string>) => ({
+    loaded: true,
+    repo_id: zImage.repoId,
+    model_kind: zImage.kind,
+    gguf_filename: zImage.filename,
+    engine: "diffusers",
+    component_files,
+  });
+  const hooks: { value: unknown; deps?: unknown[] }[] = [];
+  let hook = 0;
+  let effectDeps: unknown[] | undefined;
+  const same = (a: unknown[] | undefined, b: unknown[]) => !!a && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  const scope = {
+    useRef: (value: unknown) => {
+      const i = hook++;
+      hooks[i] ??= { value: { current: value } };
+      return hooks[i].value;
+    },
+    useCallback: (fn: unknown, deps: unknown[]) => {
+      const i = hook++;
+      if (!same(hooks[i]?.deps, deps)) hooks[i] = { value: fn, deps };
+      return hooks[i].value;
+    },
+    useEffect: (fn: () => void, deps: unknown[]) => {
+      if (same(effectDeps, deps)) return;
+      effectDeps = deps;
+      fn();
+    },
+    textEncoderFiles: "",
+    vaeFile: old.vaeFile,
+    componentFieldsOwner: { current: old },
+    splitComponentFileList,
+    componentFilesForModel,
+    setTextEncoderFiles: () => {},
+    setVaeFile: () => {},
+    componentsReconciled: { current: false },
+    initialLoadProbe: "idle",
+    busy: null,
+    rememberedModel: { ...zImage, ...old },
+    setRememberedModel: () => {},
+    reconcileRememberedComponents,
+    forgetStaleResidentComponents,
+    status: statusFor({ vae: "old-ae.safetensors" }) as object,
+  };
+  const render = () => {
+    hook = 0;
+    new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+  };
+  render();
+  assert.deepEqual(readImageComponents(zImage), old);
+  // Another tab reloads the same model with a new VAE and saves it to the shared storage.
+  const newer = { vaeFile: "/files/new-ae.safetensors" };
+  rememberImageModel({ ...zImage, ...newer });
+  rememberLoadedImageComponents({ ...zImage, fieldFiles: newer }, statusFor({ vae: "new-ae.safetensors" }));
+  // Editing a field here, with no fresh status, keeps them.
+  scope.textEncoderFiles = "/files/encoder.safetensors";
+  render();
+  assert.deepEqual(readImageComponents(zImage), newer);
+  assert.equal(readImageModel()?.vaeFile, newer.vaeFile);
+  // A fresh status naming another build still cleans up.
+  scope.status = statusFor({ vae: "other-ae.safetensors" });
+  render();
+  assert.equal(readImageComponents(zImage), null);
+  assert.equal(readImageModel()?.vaeFile, undefined);
 });
