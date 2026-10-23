@@ -152,6 +152,7 @@ def get_mtp_head(
             "is still written into merged / GGUF exports."
         )
     head._unsloth_mtp_info = info
+    _record_training_adapters(model, head)
     # Not a submodule: keeps the head out of model.state_dict(), PEFT and the target's optimizer.
     object.__setattr__(model, "_unsloth_mtp_head", head)
     _wrap_save_pretrained(model)
@@ -193,6 +194,41 @@ def _active_adapters(model):
     if isinstance(names, str):
         names = [names]
     return set(names) if names else None
+
+
+def _record_training_adapters(model, head):
+    """Remember which adapters were active while the head produced gradients: the save binds the
+    head to them, not to whichever adapter is active when save_pretrained runs."""
+    import weakref
+
+    import torch
+
+    model_ref = weakref.ref(model)
+
+    def _pre_hook(module, inputs):
+        owner = model_ref()
+        if owner is None or not torch.is_grad_enabled():
+            return
+        if not any(p.requires_grad for p in module.parameters()):
+            return
+        active = _active_adapters(owner) if getattr(owner, "peft_config", None) else None
+        if active:
+            module._unsloth_trained_adapters = (
+                getattr(module, "_unsloth_trained_adapters", frozenset()) | frozenset(active)
+            )
+
+    head.register_forward_pre_hook(_pre_hook)
+
+
+def _head_adapters(model):
+    """Adapters the head trained against (all ever active during its training), else the active ones."""
+    from ..save import _attached_mtp_head
+
+    head = _attached_mtp_head(model)
+    trained = getattr(head, "_unsloth_trained_adapters", None)
+    if trained:
+        return set(trained)
+    return _active_adapters(model) if getattr(model, "peft_config", None) else None
 
 
 def _is_transformers_native_peft(model):
@@ -290,13 +326,18 @@ def _wrap_save_pretrained(model):
         adapter_dirs = _fresh_adapter_dirs(model, save_directory, started, selected)
         if adapter_dirs:
             files = []
-            # The head trained against the active adapter; an inactive one must not inherit it.
-            active = _active_adapters(model) if getattr(model, "peft_config", None) else None
+            # The head belongs to the adapter(s) active while it trained; another must not inherit it.
+            active = _head_adapters(model)
             combined = active is not None and len(active) > 1
             if combined:
                 print(
-                    f"Unsloth: adapters {sorted(active)} are active together, so the trained MTP head "
-                    "belongs to their combination and is not saved beside any single adapter."
+                    f"Unsloth: adapters {sorted(active)} were active together while the MTP head trained, "
+                    "so it belongs to their combination and is not saved beside any single adapter."
+                )
+            elif active is not None and not any(name in active for name, _ in adapter_dirs):
+                print(
+                    f"Unsloth: the MTP head trained with adapter {sorted(active)[0]!r}, which this "
+                    "save does not write, so no head is saved beside the saved adapter(s)."
                 )
             for name, folder in adapter_dirs:
                 if combined or (active is not None and name not in active):

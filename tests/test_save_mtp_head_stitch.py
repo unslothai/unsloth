@@ -762,6 +762,33 @@ def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
     assert not list(out.rglob("mtp_head.safetensors"))
 
 
+def test_head_stays_bound_to_the_adapter_it_trained_with(save_module, tmp_path):
+    """Trained while `task` was active, then `default` activated before saving: the head is not
+    written beside `default`, and a stale head there is removed."""
+    import torch
+    import unsloth.models.speculative as speculative
+
+    model = _two_adapter_model(torch, active = "task")
+    head = save_module._attached_mtp_head(model)
+    head.forward = lambda x: head.fc(x)
+    # get_mtp_head installs this hook; the fake head here is attached by hand.
+    getattr(speculative, "_record_training_adapters", lambda m, h: None)(model, head)
+    with torch.no_grad():
+        head(torch.randn(2, 16))  # an eval / inference forward does not bind the head
+    assert not hasattr(head, "_unsloth_trained_adapters")
+    head(torch.randn(2, 16)).sum().backward()
+    object.__setattr__(model, "active_adapter", "default")
+
+    (tmp_path / "mtp_head.safetensors").write_bytes(b"stale")
+    model.save_pretrained(str(tmp_path), selected_adapters = ["default"])
+    assert (tmp_path / "adapter_config.json").is_file()
+    assert not list(tmp_path.rglob("mtp_head.safetensors"))
+    # Saving every adapter puts the head beside `task` only.
+    model.save_pretrained(str(tmp_path))
+    assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+
+
 @pytest.mark.parametrize("adapter_name", ["default", "task"])
 def test_transformers_native_adapter_head_goes_to_the_root(
     save_module, tmp_path, monkeypatch, adapter_name
