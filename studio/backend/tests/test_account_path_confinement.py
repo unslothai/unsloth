@@ -252,6 +252,35 @@ def test_links_that_do_not_change_where_dotdot_lands_still_pass(tmp_path):
 
 
 @symlinks
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"model.safetensors.index.json": {"weight_map": {"w": "alias/../model.safetensors"}}},
+        {"config.json": {"transformers_weights": "alias/../model.safetensors"}},
+        {"modules.json": [{"idx": 0, "name": "0", "path": "alias/../more"}]},
+    ],
+    ids = ["index", "transformers_weights", "module_path"],
+)
+def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files):
+    """``alias`` points deeper into the same model, so ``alias/../x`` opens ``actual/x``: not
+    where the text says, but still inside the model folder."""
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(tmp_path / "m", files)
+    (folder / "actual" / "nested").mkdir(parents = True)
+    (folder / "actual" / "more").mkdir()
+    (folder / "actual" / "model.safetensors").write_text("w")
+    (folder / "alias").symlink_to(folder / "actual" / "nested", target_is_directory = True)
+    assert escaping_weight_references(folder) == []
+    # The same layout with the link pointing out of the folder is still flagged.
+    victim = tmp_path / "victim"
+    (victim / "nested").mkdir(parents = True)
+    (folder / "alias").unlink()
+    (folder / "alias").symlink_to(victim / "nested", target_is_directory = True)
+    assert escaping_weight_references(folder)
+
+
+@symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
     """Snapshot files are links into ../../blobs; a ``..`` through a real snapshot subfolder still
     lands in the snapshot."""

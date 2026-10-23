@@ -75,22 +75,44 @@ def _escapes_folder(name: str) -> bool:
     return normalized == ".." or normalized.startswith("../")
 
 
+def _confinement_roots(folder: Path) -> list:
+    """Real folders a weight name may land in: the model folder, plus for a Hub cache snapshot its
+    ``models--org--repo`` cache folder (as ``_hf_cache_snapshot_ref`` reads the layout), since
+    snapshot files are links into that repo's ``blobs``."""
+    root = os.path.realpath(folder)
+    roots = [root]
+    ref = _hf_cache_snapshot_ref(root)
+    if ref is not None:
+        roots.append(os.path.realpath(ref[2].parent.parent))
+    return roots
+
+
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
 def _climbs_through_link(folder: Path, name: str) -> bool:
-    """True when a ``..`` in ``name`` climbs out of a linked directory. The kernel follows the link
-    first and then applies ``..`` (POSIX), so ``link/../x`` opens ``x`` beside the link's target,
-    not beside the link, and the lexical check above reads the wrong place. Compares where the
-    part up to the last ``..`` lands on disk with where its text says. Windows collapses ``..``
-    before the filesystem sees it, and ``realpath`` does the same there, so both sides agree."""
+    """True when a ``..`` in ``name`` lands outside the model folder on disk. The kernel follows a
+    link first and then applies ``..`` (POSIX), so ``link/../x`` opens ``x`` beside the link's
+    target, not beside the link, and the lexical check above reads the wrong place. Resolves the
+    part up to the last ``..`` and flags it only when that leaves the confinement roots, so a link
+    to a deeper folder of the same model still passes. The rest of the name has no ``..`` and is
+    judged by its text, like any other name. Windows collapses ``..`` before the filesystem sees
+    it, and ``realpath`` does the same there."""
     parts = name.replace("\\", "/").split("/")
     if ".." not in parts:
         return False
     head = "/".join(parts[: len(parts) - parts[::-1].index("..")])
     try:
-        on_disk = os.path.realpath(os.path.join(folder, head))
-        as_written = os.path.realpath(os.path.join(folder, posixpath.normpath(head)))
+        landing = os.path.realpath(os.path.join(folder, head))
+        roots = _confinement_roots(folder)
     except (OSError, ValueError):
         return True
-    return os.path.normcase(on_disk) != os.path.normcase(as_written)
+    return not any(_within(landing, root) for root in roots)
 
 
 def _escapes(folder: Path, name: str) -> bool:
