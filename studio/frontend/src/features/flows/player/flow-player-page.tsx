@@ -24,6 +24,8 @@ import type {
   StoryManifest,
   WorldSpec,
 } from "../types";
+import { ChatPlayer } from "./chat/chat-player";
+import { type ChatEntry, chatEntry } from "./chat/chat-state";
 import { type PlayerApi, clearMediaUrls, playerApi } from "./player-api";
 import { StoryPlayer, storySeed } from "./story/story-player";
 import type { WorldGameHandle } from "./world/phaser-game";
@@ -36,6 +38,7 @@ const WorldPlayer = lazy(() =>
 type Loaded =
   | { kind: "story"; manifest: StoryManifest }
   | { kind: "world"; spec: WorldSpec }
+  | { kind: "chat"; entry: ChatEntry }
   | { kind: "pipeline" };
 
 const GENERATORS: Record<string, string> = {
@@ -95,7 +98,8 @@ export function FlowPlayerPage({
           const spec = await api.world(flowId);
           if (live) setLoaded({ kind: "world", spec });
         } else if (live) {
-          setLoaded({ kind: "pipeline" });
+          const entry = chatEntry(info.doc);
+          setLoaded(entry ? { kind: "chat", entry } : { kind: "pipeline" });
         }
       } catch (e) {
         if (live) setError(e instanceof Error ? e.message : String(e));
@@ -191,6 +195,15 @@ export function FlowPlayerPage({
               onExit={exit}
             />
           </Suspense>
+        ) : loaded.kind === "chat" ? (
+          <ChatPlayer
+            key={version}
+            flowId={flowId}
+            api={api}
+            entry={loaded.entry}
+            title={name || "Chat"}
+            onExit={exit}
+          />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-4 text-white">
             <p className="text-lg">This flow is a pipeline, not a game.</p>
