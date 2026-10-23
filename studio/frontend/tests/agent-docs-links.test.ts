@@ -71,7 +71,7 @@ test("every API example section has a platform toggle that follows the user's ma
   );
 });
 
-test("Request and Image or video are toggles in the Language row; Audio keeps its grouped Example dropdown", () => {
+test("Request and Image or video are toggles above the code box; Audio keeps its grouped Example dropdown", () => {
   const usage = readSrc("features/settings/components/usage-examples.tsx");
   const media = readSrc("features/settings/components/media-api-examples.tsx");
   const audio = readSrc("features/settings/components/audio-api-examples.tsx");
@@ -79,11 +79,17 @@ test("Request and Image or video are toggles in the Language row; Audio keeps it
     [usage, "exampleRequest"],
     [media, "exampleKind"],
   ]) {
+    const toggle = src.search(
+      new RegExp(
+        `<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}\\s*variant="toggle"`,
+      ),
+    );
+    assert.ok(toggle > 0, key);
+    assert.ok(toggle < src.indexOf("<ExampleCodeBox"), key);
+    // the box header holds only the Language pills (and its own Platform pills)
     assert.match(
       src,
-      new RegExp(
-        `pills=\\{\\s*<>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}\\s*variant="toggle"[\\s\\S]*?/>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.exampleLanguage"`,
-      ),
+      /pills=\{\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}[^/]*\/>\s*\}/,
       key,
     );
   }

@@ -895,6 +895,16 @@ export function UsageExamples({
           </button>
         </div>
       ) : null}
+      <ExampleToggle
+        label={t("settings.apiKeys.exampleRequest")}
+        variant="toggle"
+        value={variant}
+        options={VARIANTS.map((option) => ({
+          id: option.id,
+          label: t(option.labelKey),
+        }))}
+        onChange={(next) => pickExample(exampleType(language, next))}
+      />
       {model ? null : (
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.usageNoModel")}
@@ -906,24 +916,12 @@ export function UsageExamples({
         label={t("settings.apiKeys.usageExamples")}
         redactFromReload={Boolean(apiKey)}
         pills={
-          <>
-            <ExampleToggle
-              label={t("settings.apiKeys.exampleRequest")}
-              variant="toggle"
-              value={variant}
-              options={VARIANTS.map((option) => ({
-                id: option.id,
-                label: t(option.labelKey),
-              }))}
-              onChange={(next) => pickExample(exampleType(language, next))}
-            />
-            <ExampleToggle
-              label={t("settings.apiKeys.exampleLanguage")}
-              value={language}
-              options={LANGUAGES}
-              onChange={(next) => pickExample(exampleType(next, variant))}
-            />
-          </>
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleLanguage")}
+            value={language}
+            options={LANGUAGES}
+            onChange={(next) => pickExample(exampleType(next, variant))}
+          />
         }
         os={os}
         onOsChange={setOs}
