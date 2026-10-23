@@ -98,7 +98,10 @@ class CreateApiKeyRequest(BaseModel):
 
     name: str = Field(..., description = "Human-readable label for this key")
     expires_in_days: Optional[int] = Field(
-        None, description = "Number of days until the key expires (None = never)"
+        None,
+        ge = 1,
+        le = 36500,
+        description = "Number of days until the key expires (None = never)",
     )
 
 
