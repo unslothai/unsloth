@@ -351,7 +351,6 @@ NODE_SPECS: list[dict] = [
                 options_from = "/api/rag/knowledge-bases",
                 options_path = "knowledgeBases[].id",
             ),
-            P("mcp", "bool", False, "Use my MCP servers"),
             P("max_tool_calls", "int", 8, "Max tool calls", min = 1, max = 50),
             P("temperature", "number", 0.6, "Temperature", min = 0, max = 2, step = 0.05),
             P("max_tokens", "int", 2048, "Max tokens", min = 1, max = 32768),

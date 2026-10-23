@@ -51,7 +51,6 @@ def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) 
     kb = str(ctx.params.get("knowledge_base") or "").strip()
     if kb:
         tools.append("search_knowledge_base")
-    mcp = bool(ctx.params.get("mcp"))
     body: dict[str, Any] = {
         "model": "default",
         "messages": messages,
@@ -64,9 +63,10 @@ def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) 
         # An omitted enabled_tools means every built-in, python and terminal included: always name the list.
         "enable_tools": bool(tools),
         "enabled_tools": [t for t in tools if t in AGENT_TOOLS],
-        "mcp_enabled": mcp,
+        # MCP tools can write or run commands and this request has no approval prompt, so flows never send them.
+        "mcp_enabled": False,
     }
-    if tools or mcp:
+    if tools:
         body["max_tool_calls_per_message"] = int(ctx.params.get("max_tool_calls") or 8)
     if kb:
         body["rag_scope"] = {"kb_id": kb}
@@ -88,14 +88,11 @@ async def agent(ctx: NodeContext) -> dict:
     ctx.check_cancelled()
     payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     text = strip_think(_message_text(payload))
-    message = {}
-    if isinstance(payload, dict):
-        choices = payload.get("choices") or [{}]
-        message = (choices[0] or {}).get("message") or {}
+    # The tool loop runs inside the route and the non-streaming answer carries no trace of its calls, so steps says
+    # which tools were offered, not which ran.
     steps = {
-        "tools": body["enabled_tools"] + (["mcp"] if body["mcp_enabled"] else []),
+        "tools": body["enabled_tools"],
         "knowledge_base": (body.get("rag_scope") or {}).get("kb_id"),
-        "tool_calls": message.get("tool_calls") or [],
         "usage": payload.get("usage") if isinstance(payload, dict) else None,
     }
     return {"text": text, "steps": steps}
@@ -134,10 +131,11 @@ async def classify(ctx: NodeContext) -> dict:
     )
     label = value.get("label") if isinstance(value, dict) else None
     if label not in labels:
-        # A model without structured output can answer in another case or with extra words.
+        # A model without structured output can answer in another case or with extra words: an exact match in any
+        # case wins over a category that merely appears inside the answer.
         lowered = str(label or "").strip().lower()
-        label = next(
-            (c for c in labels if c.lower() == lowered or c.lower() in lowered), labels[-1]
+        label = next((c for c in labels if c.lower() == lowered), None) or next(
+            (c for c in labels if c.lower() in lowered), labels[-1]
         )
     try:
         confidence = max(0.0, min(1.0, float(value.get("confidence", 0))))
@@ -162,7 +160,8 @@ async def extract(ctx: NodeContext) -> dict:
         raise FlowNodeError("Describe the fields to extract with a JSON schema")
     extra = str(ctx.params.get("instructions") or "").strip()
     system = (
-        "Extract the requested fields from the text. Use null for anything the text does not say."
+        "Extract the requested fields from the text. Never invent a value: for anything the text does not say, "
+        "use null where the schema allows it, otherwise an empty string, 0 or false."
     )
     if extra:
         system = f"{system}\n{extra}"

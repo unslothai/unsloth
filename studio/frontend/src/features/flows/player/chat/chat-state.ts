@@ -44,8 +44,18 @@ export function turnParams(
   return { message, history: turns.slice(-HISTORY_SENT) };
 }
 
+/** Turns kept in a save: far more than the model sees, and well under the session size limit. */
+export const SAVED_TURNS = 200;
+const SAVED_TURN_CHARS = 20000;
+
 export function serializeChat(turns: ChatTurn[]): unknown {
-  return { v: SAVE_VERSION, turns };
+  return {
+    v: SAVE_VERSION,
+    turns: turns.slice(-SAVED_TURNS).map((t) => ({
+      role: t.role,
+      content: t.content.slice(0, SAVED_TURN_CHARS),
+    })),
+  };
 }
 
 /** A saved conversation, or an empty one when the save is from another version or malformed. */

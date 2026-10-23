@@ -60,3 +60,15 @@ test("a re-roll never runs the chat entry point", () => {
   const d = doc([node("out", "chat.output"), node("w", "world.generator")]);
   assert.deepEqual(rerollTargets(d), ["w"]);
 });
+
+test("a saved chat keeps a bounded tail of the conversation", () => {
+  const turns = Array.from({ length: C.SAVED_TURNS + 50 }, (_, i) => ({
+    role: (i % 2 ? "assistant" : "user") as "user" | "assistant",
+    content: i === C.SAVED_TURNS + 49 ? "x".repeat(50000) : `t${i}`,
+  }));
+  const saved = C.serializeChat(turns) as { turns: { content: string }[] };
+  assert.equal(saved.turns.length, C.SAVED_TURNS);
+  assert.equal(saved.turns[0].content, "t50");
+  assert.ok(saved.turns[saved.turns.length - 1].content.length <= 20000);
+  assert.equal(C.restoreChat(saved).length, C.SAVED_TURNS);
+});

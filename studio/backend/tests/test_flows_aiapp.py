@@ -76,12 +76,13 @@ def test_agent_asks_only_for_the_search_tools(monkeypatch):
     assert body["enable_tools"] is True
     assert body["enabled_tools"] == ["web_search", "search_knowledge_base"]
     assert body["rag_scope"] == {"kb_id": "kb1"}
-    assert body["mcp_enabled"] is True and body["max_tool_calls_per_message"] == 3
+    # A stale mcp param from an older save is ignored: flows never send MCP tools.
+    assert body["mcp_enabled"] is False and body["max_tool_calls_per_message"] == 3
     # Never left unset: an omitted enabled_tools means every built-in, python and terminal included.
     assert "python" not in body["enabled_tools"] and "terminal" not in body["enabled_tools"]
     assert "permission_mode" not in body and "confirm_tool_calls" not in body
     assert out["text"] == "Paris."
-    assert out["steps"]["tools"] == ["web_search", "search_knowledge_base", "mcp"]
+    assert out["steps"]["tools"] == ["web_search", "search_knowledge_base"]
 
 
 def test_agent_without_tools_names_an_empty_tool_list(monkeypatch):
@@ -132,6 +133,15 @@ def test_classify_returns_one_of_the_categories():
     ]
     with pytest.raises(FlowNodeError):
         asyncio.run(chat.classify(Ctx(params = {"categories": ["only"]}, inputs = {"text": "x"})))
+
+
+def test_classify_prefers_an_exact_label_over_a_substring():
+    ctx = Ctx(
+        params = {"categories": ["report", "bug report"]},
+        inputs = {"text": "It crashes"},
+        answer = {"label": "BUG REPORT", "confidence": 0.9},
+    )
+    assert asyncio.run(chat.classify(ctx))["label"] == "bug report"
 
 
 def test_extract_passes_the_schema():

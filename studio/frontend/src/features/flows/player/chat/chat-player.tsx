@@ -32,7 +32,12 @@ export function ChatPlayer({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
+  // Sending before the saved conversation arrives would drop it from the model's history and overwrite the save.
+  const [loaded, setLoaded] = useState(false);
   const generation = useRef(0);
+  const inflight = useRef<AbortController | null>(null);
+  const saves = useRef<Promise<unknown>>(Promise.resolve());
+  const saveWarned = useRef(false);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -42,31 +47,50 @@ export function ChatPlayer({
       .then((saved) => {
         if (live && saved) setTurns(restoreChat(saved.state));
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (live) setLoaded(true);
+      });
     return () => {
       live = false;
+      inflight.current?.abort();
     };
   }, [api, flowId]);
 
+  // One save at a time, in order, so an earlier reply's save can never land after New chat cleared the slot.
+  const persist = (next: ChatTurn[]) => {
+    saves.current = saves.current
+      .catch(() => undefined)
+      .then(() => api.saveSession(flowId, SLOT, serializeChat(next)))
+      .catch(() => {
+        if (saveWarned.current) return;
+        saveWarned.current = true;
+        toast("This conversation could not be saved");
+      });
+  };
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest turn whenever the conversation changes
   useEffect(() => {
     bottom.current?.scrollIntoView?.({ block: "end" });
   }, [turns, thinking]);
 
   const send = async () => {
     const message = draft.trim();
-    if (!message || thinking) return;
+    if (!message || thinking || !loaded) return;
     const before = turns;
     const asked: ChatTurn[] = [...before, { role: "user", content: message }];
     setTurns(asked);
     setDraft("");
     setThinking(true);
     const mine = ++generation.current;
+    const controller = new AbortController();
+    inflight.current = controller;
     try {
       const res = await api.invoke(
         flowId,
         entry.output,
         {},
-        { params: turnParams(before, message) },
+        { params: turnParams(before, message), signal: controller.signal },
       );
       if (mine !== generation.current) return;
       const reply = res.outputs.reply;
@@ -77,26 +101,26 @@ export function ChatPlayer({
         { role: "assistant", content: reply },
       ];
       setTurns(next);
-      void api
-        .saveSession(flowId, SLOT, serializeChat(next))
-        .catch(() => undefined);
+      persist(next);
     } catch (e) {
       if (mine !== generation.current) return;
       setTurns(before);
       setDraft(message);
       toast(e instanceof Error ? e.message : String(e));
     } finally {
+      if (inflight.current === controller) inflight.current = null;
       if (mine === generation.current) setThinking(false);
     }
   };
 
   const reset = () => {
     generation.current += 1;
+    // Stop the abandoned reply so the next message does not queue behind it on the GPU.
+    inflight.current?.abort();
+    inflight.current = null;
     setTurns([]);
     setThinking(false);
-    void api
-      .saveSession(flowId, SLOT, serializeChat([]))
-      .catch(() => undefined);
+    persist([]);
   };
 
   return (
@@ -154,7 +178,8 @@ export function ChatPlayer({
         </div>
       </div>
       <form
-        className="border-white/10 border-t px-4 py-3"
+        // The right gutter keeps Send clear of the player's fullscreen button on narrow screens.
+        className="border-white/10 border-t py-3 pr-14 pl-4"
         onSubmit={(e) => {
           e.preventDefault();
           void send();
@@ -165,19 +190,26 @@ export function ChatPlayer({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              // Enter also confirms an IME composition (Chinese, Japanese, Korean input): that is not a send.
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 void send();
               }
             }}
             rows={1}
-            placeholder="Type a message"
+            placeholder={
+              loaded ? "Type a message" : "Loading the conversation..."
+            }
             className="max-h-40 min-h-10 flex-1 resize-none rounded-xl border border-white/15 bg-white/5 px-3 py-2 outline-none focus:border-teal-400/60"
             data-testid="chat-say"
           />
           <button
             type="submit"
-            disabled={thinking || !draft.trim()}
+            disabled={thinking || !loaded || !draft.trim()}
             aria-label="Send"
             className="rounded-xl bg-teal-500 p-2.5 text-black disabled:opacity-40"
           >
