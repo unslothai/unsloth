@@ -63,12 +63,11 @@ test("every API example section has a platform toggle that follows the user's ma
     parts,
     /<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1\.5">\s*\{pills\}\s*<div className="ml-auto">\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>\s*<\/div>\s*<\/div>/,
   );
-  // copy rides in the scroller on the first line: it scrolls up with the code, not sideways
+  // copy stays put over the code area, on its first line
   assert.match(
     parts,
-    /overlay=\{[\s\S]*?<span className="sticky left-0 z-10 block h-0">\s*<button\s*type="button"\s*onClick=\{handleCopy\}/,
+    /<button\s*type="button"\s*onClick=\{handleCopy\}\s*className="absolute top-2\.5 right-3 [^"]*"[\s\S]*?<\/button>\s*<HighlightedCode/,
   );
-  assert.match(parts, /\{overlay\}\s*<Streamdown/);
   // code scrolling up fades out under the header row
   assert.match(
     parts,
@@ -128,7 +127,7 @@ test("the example code box starts short, drags taller, and its copy button is ic
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);

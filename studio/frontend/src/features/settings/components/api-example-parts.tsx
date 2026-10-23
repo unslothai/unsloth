@@ -180,13 +180,11 @@ export function HighlightedCode({
   language,
   label,
   redactFromReload,
-  overlay,
 }: {
   code: string;
   language: string;
   label: string;
   redactFromReload: boolean;
-  overlay?: ReactNode;
 }) {
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
@@ -202,7 +200,6 @@ export function HighlightedCode({
       className="max-h-96 max-w-full hover-scrollbar overflow-auto [mask-image:linear-gradient(to_bottom,transparent,#000_0.75rem)] p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre [&_pre]:!break-normal [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!min-w-max [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
       data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
     >
-      {overlay}
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -290,38 +287,34 @@ export function ExampleCodeBox({
             : ({ "--example-h": `${height}px` } as CSSProperties)
         }
         className={cn(
-          "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
+          "relative [&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
           height === null
             ? tall && "[&>section]:h-46"
             : "[&>section]:h-(--example-h)",
         )}
       >
+        {/* On the first code line, clear of the vertical scrollbar. */}
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="absolute top-2.5 right-3 z-10 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={
+            copied
+              ? t("settings.apiKeys.copied")
+              : t("settings.apiKeys.copySnippet")
+          }
+        >
+          <HugeiconsIcon
+            icon={copied ? Tick02Icon : Copy01Icon}
+            className={cn("size-3.5", copied && "text-control-accent")}
+          />
+        </button>
         <HighlightedCode
           key={code}
           code={code}
           language={language}
           label={label}
           redactFromReload={redactFromReload}
-          overlay={
-            // Scrolls away with the code's first line but stays at the right edge sideways.
-            <span className="sticky left-0 z-10 block h-0">
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="absolute -top-0.5 -right-5 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={
-                  copied
-                    ? t("settings.apiKeys.copied")
-                    : t("settings.apiKeys.copySnippet")
-                }
-              >
-                <HugeiconsIcon
-                  icon={copied ? Tick02Icon : Copy01Icon}
-                  className={cn("size-3.5", copied && "text-control-accent")}
-                />
-              </button>
-            </span>
-          }
         />
       </div>
       {/* Our own handle, not CSS resize: the native grabber can't be hidden without custom
