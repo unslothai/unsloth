@@ -402,9 +402,10 @@ export const BUDGET = {
   // transfer (6,879,345 -> 6,879,830 B raw, 2,071,823 -> 2,072,005 B transfer against 4ff4c6689a, one machine and
   // build, Node 24, 97 chunks): the default-device total and pick live in use-gpu-info and gpu-vram, which the
   // startup chunks already load. Raised by that growth.
-  // Re-applied on top of main at merge: +485 B raw / +182 B transfer.
-  transferBytes: 2_086_172,
-  rawBytes: 6_925_615,
+  // Re-applied on top of main at merge: +485 B raw / +182 B transfer, then set to the CI build at f101df3076
+  // (6,763.6 KB raw / 2,037.5 KB transfer) plus about 300 B raw / 100 B transfer.
+  transferBytes: 2_086_500,
+  rawBytes: 6_926_230,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
