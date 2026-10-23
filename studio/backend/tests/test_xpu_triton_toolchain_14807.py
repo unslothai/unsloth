@@ -78,6 +78,26 @@ def test_a_gnu_driver_in_cxx_is_left_alone_with_a_warning(xpu_windows, monkeypat
     assert "/LIBPATH:" in caplog.text
 
 
+@pytest.mark.parametrize("where", ["LEVEL_ZERO_V1_SDK_PATH", "ZE_PATH", "INCLUDE", None])
+def test_a_missing_level_zero_sdk_is_named(xpu_windows, monkeypatch, caplog, tmp_path, where):
+    for var in ("LEVEL_ZERO_V1_SDK_PATH", "ZE_PATH", "INCLUDE"):
+        monkeypatch.delenv(var, raising = False)
+    (tmp_path / "include" / "level_zero").mkdir(parents = True)
+    (tmp_path / "include" / "level_zero" / "ze_api.h").write_text("")
+    if where == "INCLUDE":
+        monkeypatch.setenv("INCLUDE", str(tmp_path / "include"))
+    elif where:
+        monkeypatch.setenv(where, str(tmp_path))
+    monkeypatch.setattr(toolchain.shutil, "which", _which({"cl": CL}))
+    monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: True)
+
+    with caplog.at_level(logging.WARNING):
+        toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert os.environ["CXX"] == toolchain._triton_cl_spelling(CL)
+    assert ("LEVEL_ZERO_V1_SDK_PATH" in caplog.text) is (where is None)
+
+
 def test_icpx_on_path_is_left_to_triton(xpu_windows, monkeypatch):
     monkeypatch.setattr(toolchain.shutil, "which", _which({"icpx": "icpx.exe"}))
     monkeypatch.setattr(toolchain, "_load_msvc_environment", lambda: pytest.fail("not wanted"))

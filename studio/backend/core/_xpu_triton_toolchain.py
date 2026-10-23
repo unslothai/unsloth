@@ -57,6 +57,15 @@ def _msvc_environment_loaded() -> bool:
     return bool(shutil.which("cl")) and _have_crt_headers() and bool(os.environ.get("LIB"))
 
 
+def _level_zero_sdk_found() -> bool:
+    """Triton's helpers include `level_zero/ze_api.h` and link `ze_loader.lib`, which the GPU driver and
+    the pip wheels do not ship. Triton looks under LEVEL_ZERO_V1_SDK_PATH, else ZE_PATH; cl also reads INCLUDE."""
+    root = os.environ.get("LEVEL_ZERO_V1_SDK_PATH") or os.environ.get("ZE_PATH")
+    dirs = [os.path.join(root, "include")] if root else []
+    dirs += os.environ.get("INCLUDE", "").split(os.pathsep)
+    return any(d and os.path.isfile(os.path.join(d, "level_zero", "ze_api.h")) for d in dirs)
+
+
 def _vcvars_path() -> str | None:
     """vcvars64.bat of the newest Visual Studio with the x64 C++ tools, found the way setup.ps1 does."""
     root = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
@@ -156,3 +165,9 @@ def _prepare(log: logging.Logger) -> None:
         )
         return
     os.environ["CXX"] = _triton_cl_spelling(cl)
+    if not _level_zero_sdk_found():
+        log.warning(
+            "Intel XPU Triton on Windows also needs the Level Zero SDK, which the GPU driver does not "
+            "include: unzip level-zero-win-sdk-*.zip from https://github.com/oneapi-src/level-zero/releases "
+            "and set LEVEL_ZERO_V1_SDK_PATH to that folder, then restart Unsloth."
+        )
