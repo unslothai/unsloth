@@ -1365,6 +1365,79 @@ def sticker_pack() -> B:
     return b
 
 
+def ask_documents() -> B:
+    b = B(
+        "ask-documents",
+        "Ask My Documents",
+        "pipeline",
+        "A chat assistant that answers from one of your knowledge bases and the web, with sources. Open it in the "
+        "player to chat; pick the knowledge base in the Agent block.",
+        tags = ["chat", "agent", "knowledge base"],
+        seed = 41,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
+    b.e("in.history", "memory.history")
+    b.n(
+        "agent",
+        "llm.agent",
+        2,
+        1,
+        model = CHAT,
+        system = "Answer from the knowledge base first, then the web. Say which source you used. If neither has "
+        "the answer, say so.",
+        web_search = True,
+    )
+    b.e("in.message", "agent.prompt")
+    b.e("memory.history", "agent.history")
+    b.n("out", "chat.output", 3, 1)
+    b.e("agent.text", "out.reply")
+    b.note(
+        "tip",
+        "Pick a knowledge base in the Agent block, then press Play to chat.",
+        0,
+        2.4,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def support_bot() -> B:
+    b = B(
+        "support-bot",
+        "Support Bot",
+        "pipeline",
+        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
+        "player to chat.",
+        tags = ["chat", "classify"],
+        seed = 42,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
+    b.e("in.message", "kind.text")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
+    b.e("in.history", "memory.history")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.5,
+        system = "You are a friendly support agent for a software product. The context gives the message's "
+        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
+        "ask for steps to reproduce. Keep it short.",
+        prompt = "New message: {{prompt}}",
+    )
+    b.e("kind.label", "reply.context")
+    b.e("memory.text", "reply.context")
+    b.e("in.message", "reply.prompt")
+    b.n("out", "chat.output", 3, 1)
+    b.e("reply.text", "out.reply")
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1449,8 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    ask_documents,
+    support_bot,
 )
 
 

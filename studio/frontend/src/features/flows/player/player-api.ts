@@ -18,6 +18,7 @@ const PLAYER_ENTRYPOINTS = new Set([
   "story.next_scene",
   "story.scene_art",
   "world.npc_reply",
+  "chat.output",
 ]);
 
 /** Only what the story or world is built from: a side branch (Fine-tune, Export, Save to Library) must not run. */
@@ -56,7 +57,13 @@ export interface PlayerApi {
     flowId: string,
     entry: string,
     inputs: Record<string, unknown>,
-    opts?: { sessionId?: string; rev?: number; signal?: AbortSignal },
+    opts?: {
+      sessionId?: string;
+      rev?: number;
+      signal?: AbortSignal;
+      /** Run params for the call, e.g. the chat player's message and history. */
+      params?: Record<string, unknown>;
+    },
   ): Promise<InvokeResult>;
   listSessions(flowId: string): Promise<SessionRecord[]>;
   loadSession(flowId: string, slot: string): Promise<SessionRecord | null>;
@@ -145,6 +152,7 @@ export const playerApi: PlayerApi = {
         body: JSON.stringify({
           entry,
           inputs,
+          ...(opts?.params ? { params: opts.params } : {}),
           session_id: opts?.sessionId,
           rev: opts?.rev,
         }),
