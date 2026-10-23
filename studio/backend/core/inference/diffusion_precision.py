@@ -699,6 +699,10 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         if tied_name:
             skip += (rf"^{re.escape(tied_name)}$",)
 
+    # (3) Qwen3.5 / Qwen3-Next gated-delta layers read ``linear_attn.conv1d.weight`` directly into the causal-conv
+    # kernel (causal-conv1d / fla installed) and never call the module, so the upcast hook would not run. Tiny tensor.
+    skip += (r"(^|\.)linear_attn\.conv1d$",)
+
     apply_layerwise_casting(
         encoder,
         storage_dtype = torch.float8_e4m3fn,

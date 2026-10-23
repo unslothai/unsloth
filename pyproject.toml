@@ -42,6 +42,9 @@ dependencies = [
     # unsloth_cli/__init__.py reaches click via commands/start.py, so every
     # command needs it. typer supplied it until 0.27 dropped the dependency.
     "click>=8.0",
+    # CA trust store floor: 2026.10.19 removes the distrusted emSign ECC Root CA - G3, and an
+    # existing older certifi is upgraded in place by pip install unsloth.
+    "certifi>=2026.10.19",
 ]
 
 [project.scripts]
