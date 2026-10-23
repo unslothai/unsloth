@@ -8,7 +8,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(
-  new URL("../src/features/studio/wizard/run-preview-card.tsx", import.meta.url),
+  new URL(
+    "../src/features/studio/wizard/run-preview-card.tsx",
+    import.meta.url,
+  ),
   "utf8",
 );
 
@@ -28,4 +31,16 @@ test("VRAM has its own rounded row with the exact value on hover, iGPU left out"
   const row = metaRow("studio.preview.vram");
   assert.match(row, /Math\.round\(gpu\.defaultMemoryTotalGb\)\} GiB/);
   assert.match(row, /title=\{`\$\{gpu\.defaultMemoryTotalGb\} GiB`\}/);
+});
+
+test("Train model picker sizes fit badges by the default GPUs, iGPU left out", () => {
+  const picker = readFileSync(
+    new URL(
+      "../src/features/train-model-picker/components/train-model-selector.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(picker, /memoryTotalGb: gpuInfo\.defaultMemoryTotalGb/);
+  assert.doesNotMatch(picker, /gpuInfo\.memoryTotalGb/);
 });

@@ -59,12 +59,8 @@ import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import { buildModelVramMap } from "@/lib/vram";
 import type { ModelType, TrainingMethod } from "@/types/training";
-import {
-  ChipIcon,
-} from "@hugeicons/core-free-icons";
-import {
-  ChevronDownIcon,
-} from "lucide-react";
+import { ChipIcon } from "@hugeicons/core-free-icons";
+import { ChevronDownIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -294,7 +290,15 @@ export function TrainModelSelector({
   requiredModelType?: ModelType;
 }) {
   const t = useT();
-  const gpu = useGpuInfo();
+  const gpuInfo = useGpuInfo();
+  // Size fit badges against the GPUs a run gets by default, as the Run preview does: no iGPU beside a discrete card.
+  const gpu = useMemo(
+    () => ({
+      available: gpuInfo.available,
+      memoryTotalGb: gpuInfo.defaultMemoryTotalGb,
+    }),
+    [gpuInfo.available, gpuInfo.defaultMemoryTotalGb],
+  );
   const {
     selectedModel,
     modelKnownCached,
