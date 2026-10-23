@@ -431,11 +431,28 @@ def test_rocm_flash_probe_room_charges_the_reserve(fraction, card):
 def test_segmenter_card_room_charges_the_reserve(fraction, card):
     from core.inference import diffusion_segment as seg
 
-    assert seg._cuda_free_mib(0) == (20 * 1024, 24 * 1024)
+    # driver free plus the 1 GiB reusable allocator cache, less the reserve
+    assert seg._cuda_free_mib(0) == (21 * 1024, 24 * 1024)
     fraction["value"] = 0.50
-    assert seg._cuda_free_mib(0) == (8 * 1024, 24 * 1024)
+    assert seg._cuda_free_mib(0) == (9 * 1024, 24 * 1024)
     card["free"] = 4 * GIB
     assert seg._cuda_free_mib(0) == (0, 24 * 1024)
+
+
+def test_untiled_encode_shortfall_charges_the_reserve(fraction, card, monkeypatch):
+    from core.inference import diffusion as D
+    from core.inference import diffusion_vae_tiling as vt
+
+    monkeypatch.setattr(vt, "_geometry", lambda vae: (8,))
+    monkeypatch.setattr(vt, "_fused", lambda vae: False)
+    monkeypatch.setattr(vt, "encode_mib_per_latent", lambda *a, **k: 1.0)
+    param = types.SimpleNamespace(element_size = lambda: 2)
+    vae = types.SimpleNamespace(encoder = types.SimpleNamespace(parameters = lambda: iter([param])))
+    x = _cuda_z(1, 3, 64, 64)
+    base = D._untiled_encode_shortfall_mib(vae, x)
+    assert base is not None
+    fraction["value"] = 0.50
+    assert D._untiled_encode_shortfall_mib(vae, x) == base + 12 * 1024
 
 
 def test_vae_prebuild_child_keeps_the_reserve_free(fraction, card, monkeypatch):
