@@ -322,3 +322,15 @@ def test_a_bare_record_list_gets_ids_the_other_blocks_can_use():
 def test_keyword_fallback_matches_other_scripts():
     assert mem.keyword_relevance("Москва", "Я живу в Москва") > 0
     assert mem.keyword_relevance("東京", "東京で走る") > 0
+
+
+def test_reflect_takes_a_bare_question_and_a_single_insight_object():
+    s = stream_of(("ran hills, knee hurts", 8, 0.0))
+    s["since_reflection"] = 200.0
+    ctx = Ctx("memory.reflect", {"memory": s, "now": 1.0})
+    ctx.answers = [
+        {"questions": "How is the knee?"},
+        {"insights": {"text": "The knee is hurt", "cites": [], "importance": 7}},
+    ]
+    out = run(nodes.reflect(ctx))
+    assert out["insights"] == ["The knee is hurt"]
