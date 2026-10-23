@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Windows: read safetensors shards with ``pread`` instead of a copy-on-write mmap on transformers 5.0 - 5.16.
+"""Windows, transformers 5.0 - 5.16: read safetensors shards with ``pread`` instead of a copy-on-write mmap.
 
-transformers 5.x opens every shard of a checkpoint before materialising any weight, and safetensors maps each one
-copy-on-write. Windows charges the whole view to the commit limit (RAM + pagefile) for as long as the shard is open,
-so a 16 GB bf16 checkpoint costs 16 GB of commit on top of the loaded weights: a dtype-converting load (fp16 GPUs)
-needs ~2x the model, a 4-bit load the full bf16 size, and exhausting commit is "The paging file is too small for
-this operation to complete" (os error 1455) or an access violation inside torch. ``pread`` reads each tensor into
-its own buffer instead. transformers 5.17 made the same switch upstream (huggingface/transformers#48341); this
-backports it. llama.cpp and ComfyUI avoid the charge by mapping read-only.
-
-Windows only, transformers >= 5.0 and < 5.17, safetensors >= 0.8 (the ``backend`` keyword). Opt out with
-``UNSLOTH_SAFETENSORS_PREAD=0``.
+transformers 5.x keeps every shard open for the whole load, and Windows charges each copy-on-write view to the commit
+limit in full, so a dtype-converting load needs ~2x the model in commit (os error 1455 / access violation). Backports
+huggingface/transformers#48341 (5.17). Opt out with ``UNSLOTH_SAFETENSORS_PREAD=0``.
 """
 
 import functools
@@ -22,7 +15,7 @@ import sys
 __all__ = ["patch_windows_safetensors_pread"]
 
 PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
-# private keyword a caller passes to keep one shard on mmap (Studio's small-host route keeps an encoder paged)
+# private keyword: keep this shard on mmap (Studio's small-host route keeps an encoder paged from disk)
 KEEP_MMAP_KWARG = "_unsloth_keep_mmap"
 
 
@@ -57,8 +50,7 @@ def _supports_backend() -> bool:
 
 
 def patch_windows_safetensors_pread() -> bool:
-    """Wrap ``transformers.modeling_utils.safe_open`` so CPU shard opens default to ``backend="pread"``. Idempotent;
-    returns whether the wrapper is installed."""
+    """Default CPU shard opens to ``backend="pread"``; idempotent, returns whether the wrapper is installed."""
     if not _wanted():
         return False
     try:
