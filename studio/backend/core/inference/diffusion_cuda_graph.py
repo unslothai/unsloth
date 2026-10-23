@@ -1195,6 +1195,13 @@ class GraphedForward:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
+        if (
+            getattr(self, "fallback", None) is None
+            and getattr(self, "fallback_handle", None) is None
+        ):
+            # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
+            # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
+            _retire_stable_placement(self.placement)
         # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
         # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
         # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
@@ -1218,6 +1225,7 @@ class GraphedForward:
         self.uninstall()
         if self.placement is not None:
             self.placement.release_slots()
+        _retire_stable_placement(getattr(self, "placement", None))
         self.enabled = False
         _LIVE_WRAPPERS.discard(self)
         return self
@@ -1296,6 +1304,13 @@ class GraphedForward:
                         if other != key:
                             self.cache.pop(other, None)
                             self._dropped.add(other)
+                    if (
+                        getattr(self, "fallback", None) is None
+                        and getattr(self, "fallback_handle", None) is None
+                    ):
+                        _retire_stable_placement(
+                            placement
+                        )  # no per-block graphs either: nothing records again
                 self._slower = reason
                 self._dropped.add(key)
                 if self.logger is not None:
@@ -1402,6 +1417,10 @@ class GraphedForward:
         args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
 
+    def _placement_declined(self) -> bool:
+        # A declined placement refuses every later recording for the load (a merely dropped key does not).
+        return getattr(getattr(self, "placement", None), "_declined", None) is not None
+
     def _engage_fallback(self) -> None:
         """Arm the per-block graphs once this whole-step graph dropped a key or failed: the calls it now leaves eager
         run through them. Between forwards' blocks (the step has not started), so the slot ring can change."""
@@ -1411,6 +1430,8 @@ class GraphedForward:
         except Exception as exc:  # noqa: BLE001
             _warn(self.logger, "per-block fallback", exc)
             self.fallback_handle = None
+        if self.fallback_handle is None and (self.poisoned or self._placement_declined()):
+            _retire_stable_placement(self.placement)  # nothing left that records over the placement
         if self.fallback_handle is not None and self.logger is not None:
             self.logger.info(
                 "diffusion.cuda_graph: %s records per block for the steps its whole-step graph leaves eager",
@@ -1915,7 +1936,8 @@ class OffloadPlacement:
     replaces the module's hooked forward, so ONE graph records the whole step: the copy-stream copies of every
     streamed group from its pinned host tensor into the graph pool, the compute stream waiting on each copy's event,
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
-    prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
+    prefetch ring. Recorded again when a residency change or a host-copy swap moves an address. A prompt encode's
+    release / restore does not: once armed, the re-pin lands in each group's stable range (diffusion_stable_arena).
 
     ``model``: whole-module CPU offload (accelerate). By default only over the stable device range
     (``diffusion_stable_arena``: every onload lands at the same addresses, so render 1's recording replays on every
@@ -2268,6 +2290,21 @@ def _detach_stable_range(module: Any) -> None:
         pass
 
 
+def _retire_stable_placement(placement: Any) -> None:
+    """No graph of this placement can replay again (a poisoned or freed handle): stop paying for stable addresses. A
+    re-arm attaches afresh."""
+    if placement is None:
+        return
+    if placement.mode == "model":
+        _detach_stable_range(placement.module)
+        return
+    try:
+        from .diffusion_stable_arena import drop_stable_repin
+        drop_stable_repin(placement.module)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _stable_range_failure(module: Any) -> Optional[str]:
     """Why ``module``'s stable range stopped placing its onloads, else None."""
     try:
@@ -2393,6 +2430,10 @@ def arm_after_placement(
                 )
                 stable = placement.mode == "model" and _stable_range(module)
                 modes.append("model_stable" if stable else placement.mode)
+                if placement.mode == "group":
+                    # Encode re-pins now land at the addresses this step records (diffusion_stable_arena.GroupRange).
+                    from .diffusion_stable_arena import want_stable_repin
+                    want_stable_repin(module)
         except Exception as exc:  # noqa: BLE001
             if placement is not None and placement.mode == "model":
                 _detach_stable_range(module)
@@ -2691,6 +2732,11 @@ def stats(handles: Any) -> dict:
                 arena = arena_of(placement.module)
                 if arena is not None:
                     out["stable_range"] = arena.describe()
+            if placement is not None and placement.mode == "group":
+                from .diffusion_stable_arena import repin_stats
+                repin = repin_stats(placement.module)
+                if repin is not None:
+                    out["stable_repin"] = repin
             if handle.poisoned:
                 out["poisoned"] = True
             error = handle.capture_error

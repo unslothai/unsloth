@@ -214,7 +214,6 @@ def _fresh_adapter_dirs(
 
 def _drop_stale_head(folder):
     from ..save import _is_main_rank
-
     stale = os.path.join(folder, "mtp_head.safetensors")
     if _is_main_rank() and os.path.isfile(stale):
         os.remove(stale)
