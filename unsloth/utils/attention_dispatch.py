@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import functools
+import operator
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -265,8 +266,31 @@ def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal,
     return backends[0], choice
 
 
-if hasattr(torch.compiler, "assume_constant_result"):
-    _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
+def _constant_probe(fn):
+    """torch.compiler.assume_constant_result for a shape probe. Dynamo can only hand it Python
+    constants, and dynamic=True makes head counts / head_dim SymInts, so those are specialised
+    (operator.index guards them) first: they are fixed per model, batch and length stay dynamic.
+    Plain ints pass through unchanged, so eager and static-shape answers are the same."""
+    if not hasattr(torch.compiler, "assume_constant_result"):
+        return fn
+    # Marks fn itself, so no functools.wraps: copying its __dict__ would mark the wrapper too.
+    constant = torch.compiler.assume_constant_result(fn)
+
+    def probe(*args, **kwargs):
+        concrete = []
+        for arg in args:
+            # Dynamo reports a SymInt as an int; index() on a plain int is the identity.
+            if isinstance(arg, (int, torch.SymInt)) and not isinstance(arg, bool):
+                arg = operator.index(arg)
+            concrete.append(arg)
+        return constant(*concrete, **kwargs)
+
+    probe.__name__, probe.__qualname__, probe.__doc__ = fn.__name__, fn.__qualname__, fn.__doc__
+    probe.__wrapped__ = fn
+    return probe
+
+
+_sdpa_backend_state = _constant_probe(_sdpa_backend_state)
 
 
 @functools.lru_cache(maxsize = 128)
@@ -378,8 +402,7 @@ def _sdpa_gqa_state(
     return not (gqa == math and mha not in (math, -1))
 
 
-if hasattr(torch.compiler, "assume_constant_result"):
-    _sdpa_gqa_state = torch.compiler.assume_constant_result(_sdpa_gqa_state)
+_sdpa_gqa_state = _constant_probe(_sdpa_gqa_state)
 
 
 def _sdpa_takes_gqa(
@@ -398,6 +421,11 @@ def _sdpa_takes_gqa(
     needs_grad = torch.is_grad_enabled() and any(
         t is not None and t.requires_grad for t in (Q, K, V)
     )
+    # Branch, not bool(): assume_constant_result cannot take a dynamic SymBool.
+    single_query = True if Q.shape[-2] == 1 else False
+    single_key = True if K.shape[-2] == 1 else False
+    is_causal = True if is_causal else False
+    has_mask = True if has_mask else False
     return _sdpa_gqa_state(
         str(Q.device),
         Q.dtype,
@@ -408,8 +436,8 @@ def _sdpa_takes_gqa(
         bool(has_mask),
         bool(needs_grad),
         float(dropout_p or 0.0),
-        Q.shape[-2] == 1,
-        K.shape[-2] == 1,
+        single_query,
+        single_key,
     )
 
 
@@ -906,6 +934,24 @@ def _run_attention(
                 )
                 backend = SDPA
 
+    # Traced xformers bias objects break the graph per layer: plain causal calls take SDPA.
+    xformers_rerouted = False
+    if (
+        backend == XFORMERS
+        and torch.compiler.is_compiling()
+        and context.seq_info is None
+        and context.attention_mask is None
+        and context.is_causal
+        and context.q_len == context.kv_seq_len
+        and (
+            context.causal_mask is None
+            or type(context.causal_mask).__name__ == "LowerTriangularMask"
+        )
+        and not config.xformers_kwargs
+        and _configured_softcap(config) is None
+    ):
+        backend = SDPA
+        xformers_rerouted = True
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -939,7 +985,7 @@ def _run_attention(
     cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
-        or (backend == XFORMERS and xformers_fp32_unsupported)
+        or ((backend == XFORMERS or xformers_rerouted) and xformers_fp32_unsupported)
         or ring
     ) and torch.float32 in (
         Q.dtype,
@@ -1166,7 +1212,9 @@ def _run_attention(
                 )
 
             is_causal_local = (
-                context.is_causal and local_mask is None and q_len_local == k_len_local
+                True
+                if context.is_causal and local_mask is None and q_len_local == k_len_local
+                else False
             )
 
         kwargs = dict(sdpa_kwargs)

@@ -9,7 +9,7 @@ import {
   chatLocalModelOptions,
   isExternalModelId,
   readLastLocalModelLoad,
-  useChatModelRuntime,
+  type useChatModelRuntime,
   useChatRuntimeStore,
   wantsDownloadManagerStaging,
 } from "@/features/chat";
@@ -32,11 +32,12 @@ import {
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { ReloadIcon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
+  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -207,25 +208,37 @@ function toModelOptions(
 }
 
 export function ApiModelLoadControls({
+  runtime,
   activeModel,
+  residencyKey,
   onSettled,
   onUnloadActive,
   unloading,
   configRequest = null,
   onConfigRequestAdopted,
-  onOpenSettings,
+  onEjectAll,
+  children,
 }: {
+  runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
+  // Not active_model: a kept-model unload or a side load leaves that unchanged.
+  residencyKey: string;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
-  onOpenSettings?: () => void;
+  onEjectAll?: () => void;
+  children?: ReactNode;
 }): ReactElement {
-  const { selectModel, loadNpuModel, refresh, ejectModel } =
-    useChatModelRuntime();
+  const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -273,6 +286,7 @@ export function ApiModelLoadControls({
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: residencyKey is the trigger, not an input
   useEffect(() => {
     if (activeModel === undefined) {
       return;
@@ -281,7 +295,7 @@ export function ApiModelLoadControls({
     if (!useChatRuntimeStore.getState().modelLoading) {
       refresh({ includeLoras: false });
     }
-  }, [activeModel, refresh, refreshLastLoadLabel]);
+  }, [activeModel, residencyKey, refresh, refreshLastLoadLabel]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -443,6 +457,9 @@ export function ApiModelLoadControls({
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
         onEject={busy ? undefined : handleEject}
+        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
+        loadedCount={loadedModels.length}
+        loadedNames={loadedNames}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -456,59 +473,33 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="h-9 max-w-full rounded-full"
+        className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
-      <ToolbarTooltip
-        label={
-          activeModel
-            ? "Model run settings"
-            : "Load a model to change its run settings"
-        }
-      >
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-label="Model settings"
-          aria-haspopup="dialog"
-          aria-expanded={selectorOpen && !unloading}
-          onClick={onOpenSettings}
-          disabled={busy || reloading || !onOpenSettings}
-          className="h-9 gap-1.5 rounded-full"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-          Settings
-        </Button>
-      </ToolbarTooltip>
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
         <Button
           type="button"
           variant="outline"
-          size="sm"
+          size="icon"
+          aria-label={reloading ? "Reloading" : "Reload"}
           onClick={() => {
             handleReload();
           }}
           disabled={reloadDisabled}
-          className="h-9 gap-1.5 rounded-full"
+          className="rounded-full"
         >
           <HugeiconsIcon
             icon={ReloadIcon}
             strokeWidth={1.75}
             className={cn("size-4", reloading && "animate-spin")}
           />
-          {reloading ? "Reloading" : "Reload"}
         </Button>
       </ToolbarTooltip>
+      {children}
       {actionError ? (
         <span
           role="alert"
-          className="max-w-64 truncate text-ui-11 text-red-600 dark:text-red-400"
-          title={actionError}
+          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>

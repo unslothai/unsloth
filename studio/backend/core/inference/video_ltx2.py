@@ -1120,6 +1120,29 @@ def _recompile_limit_hit(exc: BaseException) -> bool:
     return isinstance(kind, type) and isinstance(exc, kind)
 
 
+def _stg_adapted(inner: Any, guard: Any, transformer: Any, torch: Any) -> Any:
+    def adapted(*args: Any, **kwargs: Any) -> Any:
+        flag = kwargs.get("all_perturbed")
+        if isinstance(flag, torch.Tensor):
+            kwargs["all_perturbed"] = bool(flag)
+        try:
+            return inner(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
+            if guard is None or guard.error is not None or not _recompile_limit_hit(exc):
+                raise
+            # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
+            guard.fail(exc, transformer)
+            exc.__traceback__ = None
+            return inner(*args, **kwargs)
+
+    adapted._unsloth_stg_adapter = True
+    if guard is not None:
+        adapted._unsloth_compile_guard = guard
+    # A compile moved below an offload hook rebuilds the block's callable: re-apply the adapter around it.
+    adapted._unsloth_rewrap = lambda new_inner: _stg_adapted(new_inner, guard, transformer, torch)
+    return adapted
+
+
 def install_stg_compile_adapter(transformer: Any) -> int:
     """Convert the STG pass's 0-d ``all_perturbed`` tensor to a bool before the compiled block (LTX2Attention branches
     on it, which fails fullgraph and drops the DiT to eager). Keeps the guard's marker so ``guard_compiled_blocks``
@@ -1135,32 +1158,9 @@ def install_stg_compile_adapter(transformer: Any) -> int:
         inner = getattr(module, "_compiled_call_impl", None)
         if inner is None or getattr(inner, "_unsloth_stg_adapter", False):
             continue
-
-        guard = getattr(inner, "_unsloth_compile_guard", None)
-
-        def adapted(
-            *args: Any,
-            _inner: Any = inner,
-            _guard: Any = guard,
-            **kwargs: Any,
-        ) -> Any:
-            flag = kwargs.get("all_perturbed")
-            if isinstance(flag, torch.Tensor):
-                kwargs["all_perturbed"] = bool(flag)
-            try:
-                return _inner(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
-                if _guard is None or _guard.error is not None or not _recompile_limit_hit(exc):
-                    raise
-                # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
-                _guard.fail(exc, transformer)
-                exc.__traceback__ = None
-                return _inner(*args, **kwargs)
-
-        adapted._unsloth_stg_adapter = True
-        if guard is not None:
-            adapted._unsloth_compile_guard = guard
-        module._compiled_call_impl = adapted
+        module._compiled_call_impl = _stg_adapted(
+            inner, getattr(inner, "_unsloth_compile_guard", None), transformer, torch
+        )
         count += 1
     return count
 
@@ -1248,6 +1248,7 @@ def load_ltx23_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    fp8_storage: Optional[bool] = None,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -1275,6 +1276,7 @@ def load_ltx23_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        fp8_storage = fp8_storage,
         family = family,
         target = target,
         logger = logger,

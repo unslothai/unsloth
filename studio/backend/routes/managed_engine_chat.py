@@ -204,7 +204,7 @@ async def managed_tool_chat(
         else []
     )
     if tools and api._wants_multiple_choices(payload):
-        raise reject("Multiple choices are unavailable when Studio executes tools.")
+        raise reject("Multiple choices are unavailable when Unsloth executes tools.")
     if tools:
         api._reject_confirm_gate_without_channel(
             payload, ui_events, monitor_id, api._catalog_names(tools)

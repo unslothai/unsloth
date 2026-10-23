@@ -73,6 +73,9 @@ function useSidebar() {
   return context
 }
 
+const OPEN_DIALOG_SELECTOR =
+  '[data-slot="dialog-content"][data-state="open"], [data-slot="alert-dialog-content"][data-state="open"]'
+
 function SidebarProvider({
   defaultOpen = true,
   open: openProp,
@@ -146,8 +149,11 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
-  useShortcut("toggleSidebar", toggleSidebar)
+  // Not behind an open dialog (Settings leaves the app un-hidden); the mobile drawer is itself one.
+  useShortcut("toggleSidebar", toggleSidebar, {
+    claims: () =>
+      (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,
+  })
 
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop
@@ -778,6 +784,7 @@ function SidebarMenuButton({
   size = "default",
   tooltip,
   alwaysTooltip = false,
+  interactiveTooltip = false,
   className,
   ...props
 }: React.ComponentProps<"button"> & {
@@ -786,6 +793,8 @@ function SidebarMenuButton({
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
   /** Show the tooltip while expanded and enabled, not only on the collapsed rail. */
   alwaysTooltip?: boolean
+  /** The tooltip holds a control, so the pointer must be able to move onto it. */
+  interactiveTooltip?: boolean
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
@@ -825,7 +834,7 @@ function SidebarMenuButton({
   )
 
   return (
-    <Tooltip>
+    <Tooltip disableHoverableContent={interactiveTooltip ? false : undefined}>
       <TooltipTrigger asChild>{trigger}</TooltipTrigger>
       <TooltipContent
         side="right"

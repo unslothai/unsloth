@@ -26,3 +26,4 @@ export {
   type StagedFolder,
 } from "./components/link-staged-folders";
 export { ProjectFolderPicker } from "./components/project-folder-picker";
+export { RagDocumentTrigger } from "./components/rag-document-trigger";

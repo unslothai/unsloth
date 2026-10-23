@@ -26,6 +26,7 @@ from core.inference.providers import answers_decisions_only, provider_runs_local
 from models.providers import MAX_JSON_SAFE_INTEGER
 from state import run_subscribers, unattended_runs
 from state.tool_policy import get_tool_policy
+from hub.services.models import account_access
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -144,6 +145,13 @@ def _require_run(run_id: str) -> dict:
     if run is None:
         raise HTTPException(status_code = 404, detail = "Research run not found")
     return run
+
+
+def _require_tools_enabled() -> None:
+    """A run searches the web and the knowledge base from the supervisor's task, outside this
+    request, so the caller's server-side tool policy is applied before a run is set going."""
+    if get_tool_policy() is False:
+        raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
 
 
 def _sync_assistant(run: dict, text: str | None = None) -> None:
@@ -351,6 +359,7 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
+        account_access.require_connection_model_allowed(provider, external_model)
         # The saved row is the source of truth for routing, so validate against it rather than the type the client
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
@@ -510,6 +519,7 @@ def create_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     thread = get_chat_thread(payload.threadId)
     if thread is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -606,6 +616,7 @@ def approve_research_plan(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
@@ -643,6 +654,7 @@ def retry_research_run(
     current_subject: str = Depends(get_current_subject),
     payload: RetryResearchRun | None = None,
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     model_timeout = None
     website_policy = None

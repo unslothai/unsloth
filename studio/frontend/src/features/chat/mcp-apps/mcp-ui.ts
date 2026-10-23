@@ -85,6 +85,37 @@ export function toolApprovalScope(
   return threadId ? `${session}:${threadId}` : session;
 }
 
+export const MAX_REVIEW_ARGS_CHARS = 20_000;
+
+// Every default-ignorable code point (bidi controls, tags, variation selectors, fillers), plus line separators.
+const HIDDEN_CHARS = /[\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu;
+
+/** Bidi and invisible characters as `\uXXXX`, so what a card shows can't read reordered or hide text. */
+export function forReview(text: string): string {
+  // Per UTF-16 unit, so an astral character becomes a surrogate pair JSON.parse still reads.
+  return text.replace(HIDDEN_CHARS, (c) =>
+    Array.from(
+      { length: c.length },
+      (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`,
+    ).join(""),
+  );
+}
+
+/** A widget call's arguments as they will be sent; a very long one is cut with a note saying so. */
+export function toolArgsForReview(args: Record<string, unknown>): string {
+  if (Object.keys(args).length === 0) return "";
+  let text: string;
+  try {
+    // Escaped inside JSON strings, so the shown text still parses to the sent arguments.
+    text = forReview(JSON.stringify(args, null, 2));
+  } catch {
+    return "(the arguments cannot be shown)";
+  }
+  if (text.length <= MAX_REVIEW_ARGS_CHARS) return text;
+  const hidden = text.length - MAX_REVIEW_ARGS_CHARS;
+  return `${text.slice(0, MAX_REVIEW_ARGS_CHARS)}\n… ${hidden.toLocaleString()} more characters are sent but not shown`;
+}
+
 /** The tool-result seed: server blocks, image bytes put back from the images envelope in order. */
 export function toolResultParams(
   ui: McpUiEnvelope,

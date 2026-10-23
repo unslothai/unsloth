@@ -22,7 +22,9 @@ import torch
 
 # Spawned gloo ranks re-import this module: keep them on the CPU (deterministic on GPU hosts; CUDA
 # reads the mask at its lazy first use, after this).
-if __import__("multiprocessing").parent_process() is not None:
+if __import__("multiprocessing").parent_process() is not None or getattr(
+    __import__("multiprocessing").current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 _ROOT = Path(__file__).resolve().parents[1]

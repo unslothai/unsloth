@@ -13,7 +13,6 @@ function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
 }
 
-// The section reaches the hub and auth barrels, which cannot be imported here, so this asserts on source.
 const SECTION = read(
   "../src/features/settings/components/decision-api-section.tsx",
 );

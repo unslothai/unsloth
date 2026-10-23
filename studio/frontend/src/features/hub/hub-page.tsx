@@ -129,7 +129,10 @@ import {
   type DatasetModality,
   matchesDatasetFilters,
 } from "./lib/dataset-filters";
-import type { HubCapabilityFilter } from "./lib/model-capabilities";
+import {
+  detectCapabilities,
+  type HubCapabilityFilter,
+} from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
@@ -140,6 +143,7 @@ import {
   matchesHubCapability,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
@@ -167,17 +171,30 @@ const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
+// Image and video models skip Recommended's likes rules: new diffusion uploads rarely clear them.
+function isDiffusionResult(result: HfModelResult): boolean {
+  return detectCapabilities(result.tags, result.pipelineTag, result.id).some(
+    (c) => c.key === "diffusion",
+  );
+}
+
+function isDiffusionRow(row: DiscoverRow): boolean {
+  return row.capabilities.some((c) => c.key === "diffusion");
+}
+
 // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to well-liked
 // checkpoints; a typed search and every other format show all matches.
 function matchesDiscoverFormat(
   result: HfModelResult,
   format: ModelFormatFilter,
   browsing: boolean,
+  diffusion: boolean,
   quantFormats: readonly string[],
 ): boolean {
   if (format !== "recommended") {
     return matchesFormat(detectResultFormat(result), format);
   }
+  if (diffusion) return matchesRecommendedDiffusion(result, quantFormats);
   return (
     (!browsing ||
       ((resolveOwnerProviderLogo(ownerOf(result.id), repoOf(result.id)) !==
@@ -978,6 +995,7 @@ export function ModelsPage() {
         result,
         effectiveDiscoverFormat,
         searchBrowsing,
+        isDiffusionResult(result),
         quantFormats,
       );
   }, [effectiveDiscoverFormat, searchBrowsing, quantFormatsKey]);
@@ -1145,9 +1163,8 @@ export function ModelsPage() {
           row.result,
           effectiveDiscoverFormat,
           !hasQuery,
-          row.capabilities.some((c) => c.key === "diffusion")
-            ? diffusionQuantFormats
-            : checkpointQuantFormats,
+          isDiffusionRow(row),
+          isDiffusionRow(row) ? diffusionQuantFormats : checkpointQuantFormats,
         ) &&
         (deferredCapabilityFilters.length === 0 ||
           deferredCapabilityFilters.some(
@@ -1200,7 +1217,9 @@ export function ModelsPage() {
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
         // Catches low-like safetensors repos cross-tagged "gguf" for a stray .gguf export.
-        .filter((row) => hasRecommendedCheckpointLikes(row.result))
+        .filter(
+          (row) => isDiffusionRow(row) || hasRecommendedCheckpointLikes(row.result),
+        )
         // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>
@@ -2257,7 +2276,6 @@ export function ModelsPage() {
       <OnDeviceFoldersDialog
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
-        onInventoryChange={refreshInventory}
       />
       <FreeUpSpaceDialog
         open={freeUpSpaceOpen}

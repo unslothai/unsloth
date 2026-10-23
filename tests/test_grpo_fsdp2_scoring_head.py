@@ -142,8 +142,11 @@ def _worker(rank, port, separate_head, setup_source, loop_source, errors):
     try:
         os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port))
         dist.init_process_group("gloo", rank = rank, world_size = 2)
+        from torch.distributed.device_mesh import init_device_mesh
         from torch.distributed.fsdp import fully_shard
 
+        # Default mesh follows CUDA when visible, moving the model off the CPU inputs.
+        mesh = init_device_mesh("cpu", (2,))
         torch.manual_seed(0)
         model = TinyCausalLM()
         reference_model = copy.deepcopy(model)
@@ -151,9 +154,9 @@ def _worker(rank, port, separate_head, setup_source, loop_source, errors):
             0, VOCAB, (BATCH, SEQ), generator = torch.Generator().manual_seed(1)
         )
         if separate_head:
-            fully_shard(model.block)
-            fully_shard(model.lm_head)
-        fully_shard(model)
+            fully_shard(model.block, mesh = mesh)
+            fully_shard(model.lm_head, mesh = mesh)
+        fully_shard(model, mesh = mesh)
         if separate_head:
             # Mirrors unsloth/models/fsdp2.py: the root gathers units whose weights are read directly.
             model.register_forward_pre_hook(lambda module, args: model.lm_head.unshard())

@@ -14,7 +14,7 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { mermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   type ComponentProps,
   type ReactElement,

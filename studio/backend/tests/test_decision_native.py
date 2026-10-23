@@ -1237,7 +1237,7 @@ def test_a_build_without_decisions_is_a_clear_error_for_a_gguf_entry(home, clien
         assert response.status_code == 503
         assert response.json()["detail"]["message"] == (
             "julia-1 needs llama.cpp: This llama.cpp build cannot serve decision models; "
-            "update llama.cpp in Studio."
+            "update llama.cpp in Unsloth."
         )
     assert len(stub.records("start")) == 1 and home.torch_agents == []
 

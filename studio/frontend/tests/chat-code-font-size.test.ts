@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat code defaults to 12px, matching the Code font size setting's default.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -14,7 +12,6 @@ test("chat code is 12px at any width, and the body's text-sm does not override i
     css,
     /\.aui-thread-root \[data-streamdown="code-block"\] \{\s*font-size: calc\(0\.75rem \* var\(--ui-font-scale, 1\)\);/,
   );
-  // FenceShell and StreamingFenceBlock put text-sm on the body.
   assert.match(readSrc("components/assistant-ui/code-fence-defer.tsx"), /p-4 text-sm/);
   assert.match(
     css,

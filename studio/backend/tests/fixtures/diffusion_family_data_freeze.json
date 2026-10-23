@@ -64,6 +64,10 @@
     "steps": 30
    }
   },
+  "moss-image": {
+   "OpenMOSS-Team/MOSS-Image-Base": null,
+   "OpenMOSS-Team/MOSS-Image-SFT": null
+  },
   "qwen-image": {
    "Qwen/Qwen-Image": {
     "default": 2,
@@ -203,6 +207,10 @@
     1.0
    ]
   },
+  "moss-image": [
+   50,
+   3.0
+  ],
   "qwen-image": [
    20,
    4.0
@@ -284,11 +292,15 @@
     [
      12,
      0
+    ],
+    [
+     10,
+     0
     ]
    ]
   },
   "flux.1-kontext": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -302,18 +314,27 @@
     [
      12,
      0
+    ],
+    [
+     10,
+     0
     ]
    ]
   },
   "flux.2-dev": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
   },
   "flux.2-klein": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
-   "filter_reduction_configs_archs": []
+   "filter_reduction_configs_archs": [
+    [
+     10,
+     0
+    ]
+   ]
   },
   "flux.3-klein": {
    "cudnn_benchmark": true,
@@ -375,6 +396,11 @@
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": []
   },
+  "moss-image": {
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": []
+  },
   "qwen-image": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
@@ -390,6 +416,10 @@
     [
      12,
      0
+    ],
+    [
+     10,
+     0
     ]
    ]
   },
@@ -399,7 +429,7 @@
    "filter_reduction_configs_archs": []
   },
   "qwen-image-edit": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -412,12 +442,16 @@
     ],
     [
      12,
+     0
+    ],
+    [
+     10,
      0
     ]
    ]
   },
   "qwen-image-layered": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -430,6 +464,10 @@
     ],
     [
      12,
+     0
+    ],
+    [
+     10,
      0
     ]
    ]
@@ -473,6 +511,10 @@
     ],
     [
      12,
+     0
+    ],
+    [
+     10,
      0
     ]
    ]
@@ -1097,7 +1139,7 @@
     "pad": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1191,7 +1233,7 @@
     "pad": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1314,7 +1356,7 @@
     "pad": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -2330,6 +2372,126 @@
    "preview_key": null,
    "te_int8_effective": "fp8"
   },
+  "moss-image": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "convrot_default_on": true,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/MOSS-Image-SFT-FP8",
+    "convrot_spec": [
+     256,
+     [
+      "proj.q",
+      "proj.k",
+      "proj.v",
+      "proj.o",
+      "proj.ffn_up_gate",
+      "proj.ffn_down"
+     ]
+    ],
+    "convrot_variant_repos": [
+     "unsloth/MOSS-Image-Base-FP8"
+    ],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed",
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
+    "pad": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": "flux2",
+   "te_int8_effective": "fp8"
+  },
   "qwen-image": {
    "auto": {
     "convrot_filename": null,
@@ -3253,7 +3415,7 @@
     "pad": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -3394,8 +3556,14 @@
    "wan2.2-ti2v-5b"
   ],
   "family_auto_bf16_when_resident": {
+   "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+   "moss-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "moss-image-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "z-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)"
   },
   "family_auto_prefer": {
    "flux.1": {
@@ -3450,7 +3618,7 @@
      10,
      0
     ],
-    "gated": false,
+    "gated": true,
     "schemes": [
      "nvfp4",
      "int8",
@@ -3481,6 +3649,18 @@
    "flux.3-klein-base": [
     "nvfp4"
    ],
+   "hunyuanvideo-1.5": [
+    "nvfp4"
+   ],
+   "hunyuanvideo-1.5-720p": [
+    "nvfp4"
+   ],
+   "moss-image": [
+    "nvfp4"
+   ],
+   "moss-image-base": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"
@@ -3491,6 +3671,9 @@
    ],
    "qwen-image-layered": [
     "mxfp8",
+    "nvfp4"
+   ],
+   "wan2.2-ti2v-5b": [
     "nvfp4"
    ]
   },
@@ -3517,6 +3700,28 @@
    "time_embed"
   ],
   "int8_family_convrot": {
+   "moss-image": [
+    256,
+    [
+     "proj.q",
+     "proj.k",
+     "proj.v",
+     "proj.o",
+     "proj.ffn_up_gate",
+     "proj.ffn_down"
+    ]
+   ],
+   "moss-image-base": [
+    256,
+    [
+     "proj.q",
+     "proj.k",
+     "proj.v",
+     "proj.o",
+     "proj.ffn_up_gate",
+     "proj.ffn_down"
+    ]
+   ],
    "qwen-image-2.1": [
     256,
     [
@@ -3545,20 +3750,32 @@
   },
   "int8_family_convrot_default_on": [
    "ltx-2.5",
+   "moss-image",
+   "moss-image-base",
    "qwen-image-2.1",
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+   "moss-image-base": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "moss-image": "unsloth/MOSS-Image-SFT-FP8",
+   "moss-image-base": "unsloth/MOSS-Image-SFT-FP8",
    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
    "z-image": "unsloth/Z-Image-Turbo-FP8"
   },
   "int8_family_convrot_variant_repos": {
    "ltx-2.5": [
     "unsloth/LTX-2.5-FP8"
+   ],
+   "moss-image": [
+    "unsloth/MOSS-Image-Base-FP8"
+   ],
+   "moss-image-base": [
+    "unsloth/MOSS-Image-Base-FP8"
    ],
    "qwen-image-2.1": [
     "unsloth/Qwen-Image-2.1-Turbo-FP8"
@@ -3656,6 +3873,7 @@
    "hunyuanvideo-1.5-720p": "hv15",
    "ltx-2": "ltx2",
    "ltx-2.5": "ltx2",
+   "moss-image": "flux2",
    "qwen-image": "qwen_image",
    "qwen-image-2.1": "qwen_image_21",
    "qwen-image-edit": "qwen_image",
@@ -3690,6 +3908,7 @@
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
    "minimax-h3": "MiniMax-H3",
+   "moss-image": "MOSS-Image",
    "qwen-image": "Qwen-Image",
    "sdxl": "SDXL",
    "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
@@ -3722,6 +3941,8 @@
    "ideogram-ai/ideogram-4-nf4-diffusers",
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
+   "openmoss-team/moss-image-base",
+   "openmoss-team/moss-image-sft",
    "qwen/qwen-image",
    "qwen/qwen-image-2.1",
    "qwen/qwen-image-2.1-turbo",

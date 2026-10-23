@@ -14,7 +14,9 @@ import time
 import pytest
 import torch
 
-if __import__("multiprocessing").parent_process() is not None:
+if __import__("multiprocessing").parent_process() is not None or getattr(
+    __import__("multiprocessing").current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

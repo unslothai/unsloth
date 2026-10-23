@@ -26,6 +26,7 @@ export interface ModelConfigHandoffRequest {
   meta: ModelSelectorChangeMeta;
   /** Section or field the Run settings page opens on. */
   focus?: ModelConfigFocus;
+  standalone?: boolean;
 }
 
 export type ModelConfigFocus = "advanced" | "parallelSlots";
