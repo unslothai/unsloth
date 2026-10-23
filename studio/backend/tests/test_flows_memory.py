@@ -144,6 +144,20 @@ def test_remember_rates_importance_in_one_call_and_embeds_in_one_call():
     assert out["memory"]["since_reflection"] == 12.0 and out["memory"]["next_id"] == 2
 
 
+def test_remember_rates_a_bulk_import_in_bounded_batches():
+    texts = [f"note {i}" for i in range(70)]
+    ctx = Ctx("memory.add", {"items": texts, "now": 1.0})
+    ctx.answers = [{"ratings": [8] * 32}, {"ratings": [6] * 32}, {"ratings": [9] * 6}]
+    out = run(nodes.add(ctx))
+    assert len(ctx.prompts) == 3
+    assert (
+        "33. " not in ctx.prompts[0]
+        and "note 32" in ctx.prompts[1]
+        and "1. note 64" in ctx.prompts[2]
+    )
+    assert [r["importance"] for r in out["added"]] == [8] * 32 + [6] * 32 + [9] * 6
+
+
 def test_remember_with_fixed_importance_makes_no_model_call():
     ctx = Ctx(
         "memory.add",

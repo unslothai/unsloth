@@ -133,8 +133,19 @@ async def _embed_missing(
     return vectors[: len(queries)]
 
 
+RATE_BATCH = 32
+
+
 async def rate_importance(ctx: NodeContext, texts: list[str]) -> list[int]:
-    """The paper's poignancy prompt, all texts in one structured call."""
+    """The paper's poignancy prompt, up to RATE_BATCH texts per structured call so a bulk import fits a
+    local model's context."""
+    out: list[int] = []
+    for start in range(0, len(texts), RATE_BATCH):
+        out += await _rate_batch(ctx, texts[start : start + RATE_BATCH])
+    return out
+
+
+async def _rate_batch(ctx: NodeContext, texts: list[str]) -> list[int]:
     listing = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
