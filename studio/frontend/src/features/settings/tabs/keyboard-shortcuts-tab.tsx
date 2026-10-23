@@ -463,7 +463,7 @@ export function KeyboardShortcutsTab() {
         >
           {t("settings.keyboardShortcuts.title")}
         </h1>
-        <p className="text-ui-13p5 text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("settings.keyboardShortcuts.intro")}
         </p>
       </header>
