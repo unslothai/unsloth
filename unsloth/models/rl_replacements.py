@@ -2564,7 +2564,9 @@ def _unsloth_vllm_shared_targets(model):
 
 
 def _unsloth_vllm_block_swapped(model):
-    return any(getattr(module, "_unsloth_block_swap", None) is not None for module in model.modules())
+    return any(
+        getattr(module, "_unsloth_block_swap", None) is not None for module in model.modules()
+    )
 
 
 def _unsloth_vllm_peft_unsupported(model):
@@ -2709,7 +2711,9 @@ def _unsloth_vllm_sync_kind(trainer):
         deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
     )
     problems = _unsloth_vllm_peft_unsupported(model)
-    problems.extend(f"one base weight adapted at {names}" for names in _unsloth_vllm_shared_targets(model))
+    problems.extend(
+        f"one base weight adapted at {names}" for names in _unsloth_vllm_shared_targets(model)
+    )
     # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
     # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
     # of the gathered copy on exit, so its merge / unmerge cannot drift the stored base either.

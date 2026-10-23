@@ -576,7 +576,10 @@ def test_bf16_non_plain_peft_never_drifts_frozen_base(kind):
         assert method(trainer) is None
         pushed = dict(rec.tensors[before:])
         assert pushed["model.layers.0.self_attn.q_proj.weight"].dtype == torch.bfloat16
-        for name in ("model.layers.0.self_attn.q_proj.weight", "model.layers.1.self_attn.v_proj.weight"):
+        for name in (
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.1.self_attn.v_proj.weight",
+        ):
             assert torch.equal(pushed[name], expected[name]), name
     drift = max(
         (p.detach().float() - frozen[n].float()).abs().max().item()
@@ -619,7 +622,11 @@ def test_bf16_target_parameters_never_drifts_frozen_base():
     assert torch.equal(gate_up, before)
 
 
-def _sharded(trainer, fsdp = False, zero3 = False):
+def _sharded(
+    trainer,
+    fsdp = False,
+    zero3 = False,
+):
     trainer.is_fsdp_enabled = fsdp
     if zero3:
         trainer.accelerator.state.deepspeed_plugin = types.SimpleNamespace(zero_stage = 3)
