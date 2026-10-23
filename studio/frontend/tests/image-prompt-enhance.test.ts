@@ -26,6 +26,7 @@ import {
   WARM_RETRY_OUTCOMES,
   upsamplerDownloadFraction,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   upsamplerVariantFor,
   withEnhanceChoice,
 } from "../src/features/images/lib/prompt-enhance.ts";
@@ -167,8 +168,31 @@ test("status parsing tolerates missing and malformed fields", () => {
   const noProjector = { ...full, downloaded: true };
   assert.equal(upsamplerNeedsDownload(noProjector), true);
   assert.equal(upsamplerDownloadBytes(noProjector), 900_000_000);
-  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true }), false);
+  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true, current_downloaded: true }), false);
   assert.equal(upsamplerNeedsDownload({ ...full, supported: false }), false);
+
+  // An earlier quant serving (model + projector present, the current default not downloaded) keeps the control
+  // offered and sizes it at the current default; an older backend without the field reads as fully downloaded.
+  const earlier = parsePromptUpsamplerStatus({
+    supported: true,
+    downloaded: true,
+    mmproj_downloaded: true,
+    filename: "upsampler-Q4_K_M.gguf",
+    size_bytes: 5_600_000_000,
+    mmproj_size_bytes: 900_000_000,
+    current_downloaded: false,
+    current_missing_bytes: 5_900_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(earlier), true);
+  assert.equal(upsamplerNeedsDownload(earlier), true);
+  assert.equal(upsamplerDownloadBytes(earlier), 5_900_000_000);
+  assert.equal(upsamplerNeedsDownload({ ...earlier, override: true }), false);
+  const current = parsePromptUpsamplerStatus({ ...earlier, current_downloaded: true, current_missing_bytes: 0 });
+  assert.equal(upsamplerNeedsDownload(current), false);
+  assert.equal(upsamplerServesEarlierQuant(current), false);
+  const olderBackend = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(olderBackend.current_downloaded, true);
+  assert.equal(upsamplerNeedsDownload(olderBackend), false);
 
   const empty = parsePromptUpsamplerStatus(null);
   assert.deepEqual(

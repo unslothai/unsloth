@@ -11,6 +11,7 @@ import hashlib
 import io
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1470,6 +1471,43 @@ def test_the_default_quant_wins_once_it_is_downloaded(offline_upsampler_cache):
         new,
         new.replace(pup.UPSAMPLER_MODEL_FILE, pup.UPSAMPLER_MMPROJ_FILE),
     )
+
+
+def test_a_complete_earlier_pair_beats_a_default_model_with_no_projector(offline_upsampler_cache):
+    """An interrupted default download (model, no projector) must not hide a complete earlier quant + projector:
+    edits would otherwise drop their reference images."""
+    put, old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])  # refs/main back on the complete revision
+    assert pup.model_path() == old
+    assert pup.mmproj_path() == old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    # The default is still not complete at one revision, so the control stays offered; both blobs are on disk.
+    assert status["current_downloaded"] is False and status["current_missing_bytes"] == 0
+
+
+def test_a_default_model_alone_still_runs_text_only(offline_upsampler_cache):
+    """No complete pair anywhere: the default model (no projector) still wins over an earlier model alone."""
+    put, old = offline_upsampler_cache
+    Path(old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)).unlink()
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new and pup.mmproj_path() is None
+
+
+def test_an_earlier_quant_serving_still_offers_the_default_download(offline_upsampler_cache):
+    """Run availability (downloaded / mmproj_downloaded) is not download completion: the current default stays
+    offered while an earlier quant serves."""
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is False
+    assert status["current_filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert status["current_missing_bytes"] == pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    status = pup.status()
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
 
 
 def test_nothing_downloaded_is_still_unavailable(monkeypatch, tmp_path):

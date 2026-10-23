@@ -734,11 +734,12 @@ def _cached_pair(
     hub_cache: Optional[Path] = None, model_files: tuple = (UPSAMPLER_MODEL_FILE,)
 ) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both. ``model_files`` in preference order: the first
-    one cached at any revision is the model."""
+    with no projector at its revision when no revision holds both. ``model_files`` in preference order: a complete
+    pair of any of them beats a model alone (an interrupted default download must not cost edits their reference
+    images), and among models alone the first cached one wins."""
     revisions = _candidate_revisions(hub_cache)
+    model_only = None
     for model_file in model_files:
-        model_only = None
         for revision in revisions:
             model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
             if model is None:
@@ -747,9 +748,7 @@ def _cached_pair(
             if mmproj is not None:
                 return model, mmproj
             model_only = model_only or model
-        if model_only is not None:
-            return model_only, None
-    return None, None
+    return model_only, None
 
 
 def _cached_download_paths(
@@ -846,6 +845,12 @@ def status() -> dict:
     if model:
         with suppress(OSError):
             size = os.path.getsize(model)
+    overridden = _overridden()
+    current_downloaded = overridden or _cached_download_paths(UPSAMPLER_ID) is not None
+    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
+    missing = [] if current_downloaded else [
+        name for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE) if _cached_at_any_revision(name) is None
+    ]
     return {
         "supported": find_llama_server_binary() is not None,
         "downloaded": model is not None,
@@ -856,8 +861,13 @@ def status() -> dict:
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
+        # Download completion, apart from what can run: an earlier quant serving leaves the current default (what
+        # the Download control fetches) still to download.
+        "current_filename": UPSAMPLER_MODEL_FILE,
+        "current_downloaded": current_downloaded,
+        "current_missing_bytes": sum(UPSAMPLER_FILE_SIZES.get(name, 0) for name in missing),
         # Local files from the env overrides: the repo download is not offered beside them.
-        "override": _overridden(),
+        "override": overridden,
         "download": download_status(),
     }
 

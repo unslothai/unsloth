@@ -43,6 +43,11 @@ export interface PromptUpsamplerStatus {
   size_bytes: number;
   mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
+  // The current default pair is downloaded. False while an earlier quant serves (downloaded above), so the
+  // Download control stays offered; an older backend without the field reads it as downloaded && mmproj_downloaded.
+  current_downloaded: boolean;
+  // Bytes the Download control still fetches for the current default, when an earlier quant serves.
+  current_missing_bytes: number;
   // Local files from the env overrides: no repo download is offered beside them.
   override: boolean;
   download: PromptUpsamplerDownload;
@@ -92,18 +97,34 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
     size_bytes: num(body.size_bytes) ?? 0,
     mmproj_size_bytes: num(body.mmproj_size_bytes) ?? 0,
     mmproj_downloaded: body.mmproj_downloaded === true,
+    current_downloaded:
+      typeof body.current_downloaded === "boolean"
+        ? body.current_downloaded
+        : body.downloaded === true && body.mmproj_downloaded === true,
+    current_missing_bytes: num(body.current_missing_bytes) ?? 0,
     override: body.override === true,
     download,
   };
 }
 
-/** The model or its vision projector (edits) is missing, so the Download control stays offered. */
+/** The model or its vision projector (edits) is missing, or an earlier quant serves in place of the current
+ * default, so the Download control stays offered. */
 export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
-  return status.supported && !status.override && (!status.downloaded || !status.mmproj_downloaded);
+  return (
+    status.supported &&
+    !status.override &&
+    (!status.downloaded || !status.mmproj_downloaded || !status.current_downloaded)
+  );
+}
+
+/** Enhancing already runs from an earlier quant; the Download control fetches the current default. */
+export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
+  return status.downloaded && status.mmproj_downloaded && !status.current_downloaded;
 }
 
 /** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
 export function upsamplerDownloadBytes(status: PromptUpsamplerStatus): number {
+  if (upsamplerServesEarlierQuant(status)) return status.current_missing_bytes;
   return (
     (status.downloaded ? 0 : status.size_bytes) +
     (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes)
