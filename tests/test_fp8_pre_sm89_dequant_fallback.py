@@ -124,8 +124,7 @@ def test_rocm_routes_on_gfx_arch_not_capability(
 ):
     # get_device_capability is gfx-derived on ROCm (gfx1151 reports 11.5, above any sm89 cut), so
     # the guard keys on the arch: archs AMD triton cannot compile fp8e4nv for take the torch path.
-    # This is the fp8e4nv gate alone, so the ROCm byte decoder is switched off (its routes are in
-    # test_fp8_pre_sm89_byte_dequant.py).
+    # fp8e4nv gate alone: ROCm byte decoder off.
     from unsloth.kernels import fp8
 
     monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", False)
