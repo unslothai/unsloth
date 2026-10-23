@@ -437,3 +437,58 @@ def test_decode_streams_lent_encoders_only_when_free_memory_is_short(monkeypatch
     assert dm.decode_need_mib(pipe._unsloth_decode_lend, width = 2048, height = 2048) == 6785 * 4
     # no lend, no check
     assert dm.release_for_decode(types.SimpleNamespace(), width = 1024, height = 1024) is None
+
+
+def test_edit_only_family_records_under_the_load_key(store, monkeypatch):
+    # an edit-only family runs nothing but edits: its renders keep teaching the key its next load places from
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(diffusion, "_attention_scaling_known", lambda target, engaged = None: True)
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = (KEY["family"], KEY["quant"], "default"))
+    family = types.SimpleNamespace(edit = True)
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default", family = family)
+
+    class _Probe:
+        device = "cuda:0"
+        failed_captures = 0
+        window_pad = 0
+        phase_peaks = {}
+
+        def finish(self):
+            return 7800
+
+    diffusion._record_peak_probe(
+        state, _Probe(), width = 1024, height = 1024, batch_size = 1, workflow = "edit"
+    )
+    assert mp.lookup(**KEY) == 7800
+    assert mp.lookup(**dict(KEY, quant = KEY["quant"] + "|wf:edit")) is None
+    assert diffusion._peak_workflow(family, "edit") is None
+    assert diffusion._peak_workflow(types.SimpleNamespace(unified_edit = True), "edit") == "edit"
+
+
+def test_cfg_off_edit_request_reads_its_cfg_off_workflow_key(qwen_pipe):
+    plan = _qwen_flat_plan()
+    _record(**B200)
+    later = _refine(qwen_pipe, plan)
+    qwen_pipe._unsloth_peak_expects_cfg = True
+    qwen_pipe._unsloth_peak_identity = (KEY["family"], KEY["quant"], "default")
+    qwen_pipe._unsloth_measured_reserve = (
+        later.estimates["measured_runtime_headroom_mib"],
+        "qwen-image-2.1",
+        "default",
+        None,
+        None,
+        later.estimates["measured_learned_peak_mib"],
+        later.estimates["measured_learned_peak_pixels"],
+        False,
+        True,
+        False,
+    )
+    kw = dict(width = 1024, height = 1024, batch_size = 1, workflow = "edit")
+    # what the recorder writes for a guidance-off edit on a CFG-capable family
+    _record(7800, quant = KEY["quant"] + "|cfg:off|wf:edit")
+    assert dm.measured_request_extra_mib(qwen_pipe, **kw, cfg = False) == 9216 - 7168
+    # a CFG request is not covered by the guidance-off sample
+    assert dm.measured_request_extra_mib(qwen_pipe, **kw, cfg = True) == 0

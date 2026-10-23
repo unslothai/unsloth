@@ -4525,7 +4525,17 @@ def measured_request_extra_mib(
     if isinstance(identity, tuple) and len(identity) == 3:
         keyed = with_workflow(identity[1], workflow)
         if keyed != identity[1]:
-            own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
+            own = None
+            if (
+                cfg is False
+                and getattr(pipe, "_unsloth_peak_expects_cfg", False)
+                and cfg_off_peaks_enabled()
+            ):
+                # a guidance-off render on a CFG-capable family records ``|cfg:off`` before the workflow part
+                off = with_workflow(f"{without_cfg_off(identity[1])}|{CFG_OFF_PART}", workflow)
+                own = measured_image_runtime_mib(family, speed_mode, quant = off, **sized)
+            if own is None:
+                own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
             if own is not None:
                 need = own if need is None else max(need, own)
     if need is None:

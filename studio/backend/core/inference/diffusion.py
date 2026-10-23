@@ -2983,7 +2983,7 @@ def _record_peak_probe(
                 # what an all-resident load holds
                 PHASE_UNPADDED: max(pre, dec),
             }
-        quant = with_workflow(quant, workflow)
+        quant = with_workflow(quant, _peak_workflow(getattr(state, "family", None), workflow))
         held: list = []
         raised = record(
             family = family,
@@ -13223,7 +13223,7 @@ class DiffusionBackend:
                         condition_pixels = guard_condition_pixels,
                         cfg = guard_cfg,
                         unpriced_references = guard_unpriced_refs,
-                        workflow = workflow,
+                        workflow = _peak_workflow(fam, workflow),
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -14219,6 +14219,17 @@ def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
         else None,
         "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
     }
+
+
+def _peak_workflow(fam: Any, workflow: Optional[str]) -> Optional[str]:
+    """``workflow`` for the learned-peak key, None when it is the family's only workflow (an edit-only family): those
+    renders are what its loads place from, so they stay on the load key."""
+    try:
+        if fam is not None and _family_workflows(fam) == [str(workflow or "").strip().lower()]:
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    return workflow
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:
