@@ -505,7 +505,7 @@ export function OpenAICodeExecSection({
                           Creating
                         </span>
                       ) : isActive ? (
-                        <span className="shrink-0 rounded-sm bg-wash-15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-foreground">
+                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
                       ) : statusLabel ? (

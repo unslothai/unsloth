@@ -550,7 +550,7 @@ export function DebuggingTab() {
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="min-w-0 truncate">{source.label}</span>
                         {source.isCurrent ? (
-                          <span className="shrink-0 rounded-full bg-wash-10 px-1.5 py-px font-sans text-ui-10 font-medium text-foreground">
+                          <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
                             {t("settings.debugging.currentSession")}
                           </span>
                         ) : null}
@@ -659,7 +659,7 @@ export function DebuggingTab() {
                     ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                     : mode === "manual"
                       ? "bg-muted text-muted-foreground"
-                      : "bg-wash-10 text-foreground",
+                      : "bg-primary/10 text-primary",
                 )}
               >
                 <span

@@ -504,7 +504,8 @@ function KnowledgeBaseDocuments({
         <div
           className={cn(
             "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
-            dragging && "border-wash-60 bg-wash-5 text-foreground",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground",
           )}
         >
           No documents yet. Upload or drop documents, spreadsheets, slides,
@@ -514,7 +515,8 @@ function KnowledgeBaseDocuments({
         <div
           className={cn(
             "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
-            dragging && "bg-wash-5 ring-1 ring-wash-60",
+            dragging &&
+              "bg-wash-3 ring-1 ring-wash-30 dark:bg-wash-5 dark:ring-wash-60",
           )}
         >
           {documents.map((doc) => (

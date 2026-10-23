@@ -43,4 +43,4 @@ export const RECIPE_STUDIO_ONBOARDING_SURFACE_TONE =
   "border-wash-20 bg-wash-5";
 
 export const RECIPE_STUDIO_ONBOARDING_ICON_TONE =
-  "bg-wash-10 text-foreground";
+  "bg-primary/10 text-primary";

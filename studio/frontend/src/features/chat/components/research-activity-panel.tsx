@@ -501,7 +501,7 @@ const ActivityRow = memo(function ActivityRow({
               "absolute -left-7 top-1/2 flex size-[calc(15px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
-                "bg-wash-10 text-foreground",
+                "bg-primary/10 text-primary",
               activity.state === "failed" && "text-destructive",
             )}
           >
@@ -739,7 +739,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     key={`${index}-${step.query}`}
                     className="flex gap-3 border-b border-border/60 py-3 first:pt-0 last:border-b-0 last:pb-0"
                   >
-                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-wash-10 text-xs font-medium text-foreground">
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
                       {index + 1}
                     </span>
                     <span className="min-w-0">
@@ -905,7 +905,7 @@ export function ResearchActivityPanel({
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-wash-10 text-foreground">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
             <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">

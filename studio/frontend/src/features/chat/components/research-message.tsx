@@ -109,7 +109,7 @@ export function ResearchMessage(): ReactElement | null {
           onClick={() => openResearchRun(run)}
           className="mb-3 flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className="flex size-5 items-center justify-center rounded-full bg-wash-10 text-foreground">
+          <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
             {failed ? (
               <TriangleAlert className="size-3" />
             ) : (
@@ -154,7 +154,7 @@ export function ResearchMessage(): ReactElement | null {
       <div className="flex items-start gap-3">
         <span
           className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[12px] bg-wash-10 text-foreground",
+            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[12px] bg-primary/10 text-primary",
             failed && "bg-destructive/10 text-destructive",
           )}
         >

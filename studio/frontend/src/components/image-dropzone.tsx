@@ -257,7 +257,7 @@ export function ImageDropzone({
       className={cn(
         "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
         dragging
-          ? "border-wash-60 bg-wash-5 text-foreground"
+          ? "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground"
           : "border-border text-muted-foreground hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
         className,
       )}
