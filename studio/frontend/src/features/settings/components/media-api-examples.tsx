@@ -18,7 +18,7 @@ import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store
 import {
   ExampleCodeBox,
   ExampleToggle,
-  PlatformToggle,
+  PillDivider,
   useExampleOs,
 } from "./api-example-parts";
 import {
@@ -179,7 +179,7 @@ export function MediaApiExamples({
         language={shikiLang}
         label={t("settings.apiKeys.mediaApi.title")}
         redactFromReload={Boolean(apiKey)}
-        toolbar={
+        pills={
           <>
             <ExampleToggle
               label={t("settings.apiKeys.exampleKind")}
@@ -194,15 +194,17 @@ export function MediaApiExamples({
               }))}
               onChange={setKind}
             />
+            <PillDivider />
             <ExampleToggle
               label={t("settings.apiKeys.exampleLanguage")}
               value={lang}
               options={LANGS}
               onChange={pickLang}
             />
-            <PlatformToggle value={os} onChange={setOs} />
           </>
         }
+        os={os}
+        onOsChange={setOs}
       />
     </section>
   );

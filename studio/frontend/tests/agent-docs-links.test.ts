@@ -43,17 +43,13 @@ test("every API example section has a platform toggle that follows the user's ma
   ]) {
     const src = readSrc(`features/settings/components/${name}.tsx`);
     assert.match(src, /const \[os, setOs\] = useExampleOs\(base\);/, name);
-    assert.match(
-      src,
-      /<PlatformToggle value=\{os\} onChange=\{setOs\} \/>/,
-      name,
-    );
+    // the code box draws the Platform row, under the Language pills
+    assert.match(src, /os=\{os\}\s*onOsChange=\{setOs\}/, name);
     // no section hides the toggle behind its curl pick any more
     assert.doesNotMatch(src, /lang === "curl" \? \(\s*<div/, name);
-    // Language and Platform toggle from the code box's own header
     assert.match(
       src,
-      /toolbar=\{\s*<>[\s\S]*?<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}[^/]*\/>\s*<PlatformToggle value=\{os\} onChange=\{setOs\} \/>\s*<\/>\s*\}/,
+      /pills=\{[\s\S]*?<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}/,
       name,
     );
     assert.equal(
@@ -62,24 +58,34 @@ test("every API example section has a platform toggle that follows the user's ma
       name,
     );
   }
+  // the header rows are the old usage-example pill rows: Language row with copy, then Platform
+  assert.match(
+    parts,
+    /<div className=\{HEADER_ROW\}>\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>/,
+  );
+  assert.match(
+    parts,
+    /"relative whitespace-nowrap rounded-full px-2\.5 py-1 text-ui-11 font-medium/,
+  );
+  assert.doesNotMatch(parts, /hub-tab-toggle/);
 });
 
-test("Request and Image or video toggle from the code box too; Audio keeps its grouped Example dropdown", () => {
+test("Request and Image or video share the Language row; Audio keeps its grouped Example dropdown", () => {
   const usage = readSrc("features/settings/components/usage-examples.tsx");
   const media = readSrc("features/settings/components/media-api-examples.tsx");
   const audio = readSrc("features/settings/components/audio-api-examples.tsx");
-  assert.match(
-    usage,
-    /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleRequest"\)\}/,
-  );
-  assert.match(
-    media,
-    /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleKind"\)\}/,
-  );
-  assert.doesNotMatch(
-    readSrc("features/settings/components/api-example-parts.tsx"),
-    /size === "sm"|h-7/,
-  );
+  for (const [src, key] of [
+    [usage, "exampleRequest"],
+    [media, "exampleKind"],
+  ]) {
+    assert.match(
+      src,
+      new RegExp(
+        `pills=\\{\\s*<>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}[\\s\\S]*?<PillDivider />\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.exampleLanguage"`,
+      ),
+      key,
+    );
+  }
   assert.doesNotMatch(media, /@\/components\/ui\/select/);
   assert.match(
     audio,

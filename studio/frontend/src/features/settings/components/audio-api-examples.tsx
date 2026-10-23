@@ -50,7 +50,6 @@ import {
   ExampleCodeBox,
   ExampleField,
   ExampleToggle,
-  PlatformToggle,
   useExampleOs,
 } from "./api-example-parts";
 
@@ -303,17 +302,16 @@ export function AudioApiExamples({
         language={shikiLang}
         label={t("settings.apiKeys.audioApi.title")}
         redactFromReload={Boolean(apiKey)}
-        toolbar={
-          <>
-            <ExampleToggle
-              label={t("settings.apiKeys.exampleLanguage")}
-              value={lang}
-              options={LANGS}
-              onChange={pickLang}
-            />
-            <PlatformToggle value={os} onChange={setOs} />
-          </>
+        pills={
+          <ExampleToggle
+            label={t("settings.apiKeys.exampleLanguage")}
+            value={lang}
+            options={LANGS}
+            onChange={pickLang}
+          />
         }
+        os={os}
+        onOsChange={setOs}
       />
     </section>
   );

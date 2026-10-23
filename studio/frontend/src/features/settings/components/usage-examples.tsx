@@ -71,7 +71,7 @@ import {
   ExampleCodeBox,
   ExampleToggle,
   type ExampleOs,
-  PlatformToggle,
+  PillDivider,
   isLoopbackUrl,
   useExampleOs,
 } from "./api-example-parts";
@@ -906,7 +906,7 @@ export function UsageExamples({
         language={shikiLang}
         label={t("settings.apiKeys.usageExamples")}
         redactFromReload={Boolean(apiKey)}
-        toolbar={
+        pills={
           <>
             <ExampleToggle
               label={t("settings.apiKeys.exampleRequest")}
@@ -917,15 +917,17 @@ export function UsageExamples({
               }))}
               onChange={(next) => pickExample(exampleType(language, next))}
             />
+            <PillDivider />
             <ExampleToggle
               label={t("settings.apiKeys.exampleLanguage")}
               value={language}
               options={LANGUAGES}
               onChange={(next) => pickExample(exampleType(next, variant))}
             />
-            <PlatformToggle value={os} onChange={setOs} />
           </>
         }
+        os={os}
+        onOsChange={setOs}
       />
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">

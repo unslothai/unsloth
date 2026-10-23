@@ -99,7 +99,7 @@ export function ExampleField({
   );
 }
 
-/** A segmented toggle in the Agents tab's style, for a code box's header. */
+/** A row of pills for a code box's header, as the usage examples' pills were. */
 export function ExampleToggle<T extends string>({
   label,
   value,
@@ -115,7 +115,7 @@ export function ExampleToggle<T extends string>({
   return (
     <fieldset className="flex min-w-0">
       <legend className="sr-only">{label}</legend>
-      <div className="hub-tab-toggle flex h-9 w-fit max-w-full min-w-0 items-center rounded-full">
+      <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
         {options.map((option) => (
           <button
             key={option.id}
@@ -123,7 +123,7 @@ export function ExampleToggle<T extends string>({
             onClick={() => onChange(option.id)}
             aria-pressed={value === option.id}
             className={cn(
-              "relative inline-flex h-9 min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative whitespace-nowrap rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               value === option.id
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -198,20 +198,32 @@ export function HighlightedCode({
   );
 }
 
-/** An example's code under a header of its toggles and an icon copy, with no language label
- *  (the Language toggle says it); starts about eight lines tall and drags taller from its grip. */
+const HEADER_ROW =
+  "flex min-w-0 items-start gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5";
+
+/** Divides two pill groups sharing a header row. */
+export function PillDivider() {
+  return <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" />;
+}
+
+/** An example's code under its pills (beside an icon copy) and a Platform row, with no
+ *  language label (the Language pills say it); starts about eight lines tall and drags taller. */
 export function ExampleCodeBox({
   code,
   language,
   label,
   redactFromReload,
-  toolbar,
+  pills,
+  os,
+  onOsChange,
 }: {
   code: string;
   language: string;
   label: string;
   redactFromReload: boolean;
-  toolbar?: ReactNode;
+  pills: ReactNode;
+  os: ExampleOs;
+  onOsChange: (os: ExampleOs) => void;
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -252,13 +264,15 @@ export function ExampleCodeBox({
 
   return (
     <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
-      {/* Copy stays on the first row when the toggles wrap. */}
-      <div className="flex min-w-0 items-start gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
-        <div className="flex min-w-0 flex-1 flex-wrap gap-2">{toolbar}</div>
+      {/* Copy stays on the first line when the pills wrap. */}
+      <div className={HEADER_ROW}>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+          {pills}
+        </div>
         <button
           type="button"
           onClick={handleCopy}
-          className="my-1.5 ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={
             copied
               ? t("settings.apiKeys.copied")
@@ -270,6 +284,9 @@ export function ExampleCodeBox({
             className={cn("size-3.5", copied && "text-control-accent")}
           />
         </button>
+      </div>
+      <div className={HEADER_ROW}>
+        <PlatformToggle value={os} onChange={onOsChange} />
       </div>
       {/* HighlightedCode's max-h-96 is lifted so a drag can grow the box past it. */}
       <div
@@ -302,7 +319,7 @@ export function ExampleCodeBox({
         onPointerDown={startResize}
         className="absolute right-1 bottom-1 flex size-5 cursor-ns-resize touch-none items-center justify-center text-muted-foreground/60 transition-colors hover:text-muted-foreground"
       >
-        <svg viewBox="0 0 10 10" className="size-2.5">
+        <svg aria-hidden="true" viewBox="0 0 10 10" className="size-2.5">
           <path
             d="M9 3 3 9M9 6.5 6.5 9"
             stroke="currentColor"
