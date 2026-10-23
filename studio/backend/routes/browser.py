@@ -97,7 +97,7 @@ _HIDDEN_RESPONSE_HEADERS = frozenset(
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
 _BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
-_META_TAG_RE = re.compile(r"<meta\b" + _TAG_BODY, re.IGNORECASE)
+_BASE_OR_META_TAG_RE = re.compile(r"<(?:base|meta)\b" + _TAG_BODY, re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(
     r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]{1,4096}))""", re.IGNORECASE
@@ -1670,10 +1670,17 @@ def _join(base: str, href: str) -> Optional[str]:
 def _live_tags(page: str) -> Callable[["re.Match[str]"], bool]:
     """Whether a tag match is markup the parser acts on, not text inside a comment, script,
     textarea, noscript or template (``_inert_spans``), where a browser leaves it inert."""
-    spans = _inert_spans(page, tags = False)
-    starts = [begin for begin, _ in spans]
+    spans: list[tuple[int, int]] = []
+    starts: list[int] = []
+    scanned = False
 
     def live(match: "re.Match[str]") -> bool:
+        nonlocal scanned
+        # Scanned on first use: most pages have no <base> and no refresh or CSP meta to check.
+        if not scanned:
+            spans.extend(_inert_spans(page, tags = False))
+            starts.extend(begin for begin, _ in spans)
+            scanned = True
         at = bisect.bisect_right(starts, match.start()) - 1
         return at < 0 or match.start() >= spans[at][1]
 
@@ -1693,21 +1700,20 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
         if href is not None:
             base_url = _join(url, href) or url
             break
-    page = _BASE_TAG_RE.sub(lambda match: "" if live(match) else match.group(0), page)
-    # Again: the removals moved every offset.
-    live = _live_tags(page)
-
     refresh = None
 
-    def strip_meta(match: "re.Match[str]") -> str:
+    # One pass over the original page for both tags, so the inert spans are scanned once.
+    def strip(match: "re.Match[str]") -> str:
         nonlocal refresh
         tag = match.group(0)
-        if not live(match):
-            return tag
+        if tag[1:5].lower() == "base":
+            return "" if live(match) else tag
         equiv = _HTTP_EQUIV_RE.search(tag)
         if not equiv:
             return tag
         name = equiv.group(1).lower()
+        if name in ("content-security-policy", "refresh") and not live(match):
+            return tag
         # The page's CSP doesn't fit the sandbox; a refresh would navigate the frame.
         if name == "content-security-policy":
             return ""
@@ -1721,7 +1727,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
             return ""
         return tag
 
-    return _META_TAG_RE.sub(strip_meta, page), base_url, refresh
+    return _BASE_OR_META_TAG_RE.sub(strip, page), base_url, refresh
 
 
 # unsloth.ai's Cloudflare skips its bot challenge for requests carrying this. Only its own hosts get

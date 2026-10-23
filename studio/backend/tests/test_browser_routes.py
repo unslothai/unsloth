@@ -359,6 +359,23 @@ def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
     assert html == '<textarea><base href="https://evil.example/"></textarea><p>y</p>'
 
 
+def test_prepare_page_scans_for_inert_text_only_when_a_tag_needs_it(monkeypatch):
+    calls = []
+    scan = browser_mod._inert_spans
+    monkeypatch.setattr(
+        browser_mod,
+        "_inert_spans",
+        lambda *args, **kwargs: calls.append(1) or scan(*args, **kwargs),
+    )
+    page = '<meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><p>x</p>'
+    assert browser_mod._prepare_page(page, "https://example.com/")[0] == page
+    assert calls == []
+    page = '<base href="/d/"><meta http-equiv="refresh" content="1; url=n"><p>x</p>'
+    _, base, refresh = browser_mod._prepare_page(page, "https://example.com/")
+    assert base == "https://example.com/d/" and refresh["url"] == "https://example.com/d/n"
+    assert calls == [1]
+
+
 def test_custom_elements_named_like_raw_text_ones_are_not_inert():
     page = (
         "<title-bar>x</title-bar><template-card></template-card><script-loader></script-loader>"
