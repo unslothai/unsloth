@@ -140,7 +140,7 @@ export function RlDatasetRoles({
         ? config.uploadedFile
         : null;
 
-  const { datasetSubset, datasetSplit, mapping, setMapping } = config;
+  const { datasetSubset, datasetSplit, mapping } = config;
   // Same cache choice as the store's dataset check, so a cached snapshot shows its own columns.
   const preferLocalCache =
     config.datasetSource === "huggingface" && config.datasetKnownCached;
@@ -220,9 +220,10 @@ export function RlDatasetRoles({
     }
     const next = syncRlMapping(objective, columns, mapping);
     if (JSON.stringify(next) !== JSON.stringify(mapping)) {
-      setMapping(next);
+      // Derived, not a user edit: a start in flight must not read it as "setup changed".
+      useTrainingConfigStore.setState({ rlRoleMapping: next });
     }
-  }, [columns, objective, mapping, setMapping]);
+  }, [columns, objective, mapping]);
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
