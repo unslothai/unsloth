@@ -7,6 +7,7 @@ import time
 
 import pytest
 from fastapi.responses import JSONResponse, Response
+from fastmcp.exceptions import ToolError
 
 from studio_mcp import loading
 
@@ -908,7 +909,8 @@ def _registering_video_studio(registered, seen_at_unload):
             ("POST", "/api/inference/video/download-plan"): {"entries": []},
             ("POST", "/api/inference/video/load"): load,
             ("GET", "/api/inference/video/load-progress"): READY,
-            VIDEO_STATUS: UNLOADED,
+            # Once its POST is back the stopped load is what status names.
+            VIDEO_STATUS: lambda request, body: LTX_LOADED if registered else UNLOADED,
             IMAGE_STATUS: UNLOADED,
             ("POST", "/api/inference/video/unload"): unload_route,
         }
@@ -950,6 +952,8 @@ def test_a_cancelled_media_unload_still_unloads_the_load_it_stopped(monkeypatch,
                 return UNLOADED
             if path.endswith("/load-progress"):
                 return READY if registered else {"phase": "loading"}
+            if path == "/api/inference/video/status" and registered:
+                return LTX_LOADED
             return UNLOADED
 
         async def nothing(*_a, **_k):
@@ -993,6 +997,187 @@ def test_a_late_media_unload_leaves_a_newer_load_alone(monkeypatch, fast_polls):
         call("load_model", {"model": LTX, "kind": "video", "wait_s": 0})
         time.sleep(1.5)
     assert seen_at_unload == [False]
+
+
+def _late_unload_scenario(monkeypatch, *, post_s, unload_s = 0.0, plans = None):
+    """A fake video backend for the late-unload races: each load POST takes the next of ``post_s``
+    seconds and registers LTX; ``plans`` stand in for each load's download plan, in order."""
+    from studio_mcp import placement as place
+
+    state = {"registered": 0, "unloads": [], "loading": 0}
+    delays, plans = list(post_s), list(plans or [])
+
+    async def route_json(method, path, caller = None, json_body = None, params = None, **_kw):
+        if path == "/api/inference/video/load":
+            state["loading"] += 1
+            await asyncio.to_thread(time.sleep, delays.pop(0))
+            state["loading"] -= 1
+            state["registered"] += 1
+            return LTX_LOADED
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["registered"])
+            if unload_s:
+                await asyncio.to_thread(time.sleep, unload_s)
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            return READY if state["registered"] else {"phase": "loading"}
+        if path == "/api/inference/video/status" and state["registered"]:
+            return LTX_LOADED
+        return UNLOADED
+
+    async def plan(*_a, **_k):
+        step = plans.pop(0) if plans else None
+        return await step() if step else {}
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+    monkeypatch.setattr(place, "post_plan", plan)
+    monkeypatch.setattr(loading, "MAX_WAIT_S", 0.05)
+    return state
+
+
+async def _load_ltx(caller):
+    return await loading.load_media(
+        caller,
+        None,
+        kind = "video",
+        model = LTX,
+        variant = None,
+        hf_token = None,
+        deadline = time.monotonic() + 0.02,
+    )
+
+
+async def _late_unloads_done():
+    while loading._LATE_UNLOADS:
+        await asyncio.wait(set(loading._LATE_UNLOADS))
+
+
+def test_a_late_media_unload_leaves_a_replacement_that_finished_first_alone(
+    monkeypatch, fast_polls
+):
+    # The retry's POST registers and its job completes before the stopped POST is back, so no
+    # running job shows it: the late unload must still not unload the replacement.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        retry = await loading.load_media(
+            caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+        )
+        assert retry.loaded is True
+        assert not loading.LOADS.running(caller.account_id)
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0]
+
+
+def test_a_stopped_post_that_returns_while_the_unload_runs_is_unloaded_after(
+    monkeypatch, fast_polls
+):
+    # The POST is still out when the unload goes out and registers while that unload is still
+    # answering: done by the time the unload returns, it must still get a late unload.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.2,), unload_s = 0.4)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        result = await loading.unload_media(caller, "video")
+        assert result.unloaded is False
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0, 1]
+
+
+def test_a_newer_load_that_fails_before_posting_does_not_strand_the_stopped_one(
+    monkeypatch, fast_polls
+):
+    # A newer load is still validating when the stopped POST returns, then fails: nothing replaces
+    # the stopped load, so the late unload waits for that outcome and still unloads it.
+    gate = {}
+
+    async def failing_plan():
+        await gate["release"].wait()
+        raise ToolError("incompatible")
+
+    state = _late_unload_scenario(monkeypatch, post_s = (0.3,), plans = [None, failing_plan])
+
+    async def scenario():
+        gate["release"] = asyncio.Event()
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        newer = asyncio.ensure_future(
+            loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+        )
+        await asyncio.sleep(0.5)
+        # The stopped POST is back and the newer load has not posted: no unload yet.
+        assert state["unloads"] == [0]
+        gate["release"].set()
+        with pytest.raises(ToolError):
+            await newer
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0, 1]
+
+
+def test_a_late_media_unload_defers_to_a_newer_load_that_registers(monkeypatch, fast_polls):
+    # The same race, but the newer load posts and registers: that one is left resident.
+    gate = {}
+
+    async def slow_plan():
+        await gate["release"].wait()
+        return {}
+
+    state = _late_unload_scenario(monkeypatch, post_s = (0.3, 0.05), plans = [None, slow_plan])
+
+    async def scenario():
+        gate["release"] = asyncio.Event()
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        newer = asyncio.ensure_future(
+            loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+        )
+        await asyncio.sleep(0.5)
+        gate["release"].set()
+        assert (await newer).loaded is True
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0]
 
 
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
