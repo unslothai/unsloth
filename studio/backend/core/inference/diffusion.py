@@ -5194,10 +5194,11 @@ class DiffusionBackend:
             # sat unreproducible for want of the frames this logs.
             logger.error("diffusion.load_failed: %s", exc, exc_info = True)
             if self._state is not None:
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata(DIFFUSION)
             try:
                 clear_gpu_cache()
