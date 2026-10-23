@@ -404,7 +404,7 @@ def test_a_cache_only_prefetch_never_touches_the_hub(hub_cache, monkeypatch):
 def test_the_load_route_passes_user_initiated_to_the_prefetch():
     import ast
 
-    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     route = next(
         n
@@ -575,7 +575,7 @@ def test_the_load_passes_the_repo_to_the_pipeline_marker_check():
 
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     calls = [
         c
         for c in ast.walk(ast.parse(source))
@@ -661,7 +661,7 @@ def test_the_load_hands_the_uncollapsed_token_to_the_marker_probe():
 
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     methods = {
         n.name: n
