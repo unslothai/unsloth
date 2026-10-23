@@ -2078,3 +2078,60 @@ def test_a_late_media_unload_does_not_wait_on_a_newer_load_stalled_before_its_po
 def test_resident_media_names_keep_a_local_paths_case(model, resident, same):
     status = {"loaded": True, "repo_id": resident}
     assert loading._resident_matches(status, model) is same
+
+
+def test_a_ready_media_load_retires_other_accounts_superseded_registrations(
+    monkeypatch, fast_polls
+):
+    # Managed multi-user install: the video slot holds one model for the whole backend, so
+    # account B's ready load supersedes account A's older one. A's records are dropped too.
+    _late_unload_scenario(monkeypatch, post_s = (0.01, 0.01))
+
+    async def scenario():
+        for account in ("retire_a", "retire_b"):
+            result = await loading.load_media(
+                make_caller(account_id = account),
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+            assert result.loaded is True
+
+    asyncio.run(scenario())
+    latest = loading._MEDIA_GENERATIONS["video"]
+    assert ("retire_a", "video") not in loading._MEDIA_REGISTERED
+    assert ("retire_a", "video") not in loading._MEDIA_READY
+    assert list(loading._MEDIA_REGISTERED[("retire_b", "video")]) == [latest]
+    assert loading._MEDIA_READY[("retire_b", "video")] == {latest}
+
+
+def test_a_late_media_unload_leaves_another_accounts_newer_load_of_the_same_model_alone(
+    monkeypatch, fast_polls
+):
+    # Account A's stopped POST is still out when account B loads the same model and it is shown
+    # ready first. B's load is the newer one the slot holds: A's late unload must not cancel it.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+
+    async def scenario():
+        owner = make_caller(account_id = "same_a")
+        await _load_ltx(owner)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(owner, "video")
+        newer = await loading.load_media(
+            make_caller(account_id = "same_b"),
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert newer.loaded is True
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0]

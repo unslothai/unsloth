@@ -925,13 +925,20 @@ def _media_key(caller: Caller, kind: str) -> tuple[str, str]:
 
 
 def _media_shown_ready(key: tuple[str, str], generation: int) -> None:
-    # The slot holds one model: an older request's load is superseded, so drop it (bounded maps).
-    registered = _MEDIA_REGISTERED.get(key, {})
-    for older in [g for g in registered if g < generation]:
-        del registered[older]
-    ready = _MEDIA_READY.setdefault(key, set())
-    ready.intersection_update({g for g in ready if g > generation})
-    ready.add(generation)
+    # The slot holds one model for the whole backend: an older request's load, of any account, is
+    # superseded, so drop it and any account left with none (bounded maps). Only older ones: an
+    # unload still ends just its own account's registrations.
+    for account in [k for k in {*_MEDIA_REGISTERED, *_MEDIA_READY} if k[1] == key[1]]:
+        registered = _MEDIA_REGISTERED.get(account, {})
+        for older in [g for g in registered if g < generation]:
+            del registered[older]
+        ready = _MEDIA_READY.get(account, set())
+        ready.difference_update({g for g in ready if g <= generation})
+        if not registered and account != key:
+            _MEDIA_REGISTERED.pop(account, None)
+        if not ready:
+            _MEDIA_READY.pop(account, None)
+    _MEDIA_READY.setdefault(key, set()).add(generation)
 
 
 def _posted_ok(post: Optional[asyncio.Future]) -> bool:
@@ -948,10 +955,18 @@ def _mark_media_unloaded(kind: tuple[str, str], ended: int) -> None:
     _MEDIA_READY.get(kind, set()).difference_update(range(ended + 1))
 
 
-def _newer_media_registered(kind: str, generation: int) -> list[int]:
-    """Requests newer than ``generation`` that registered a load no unload of this process ended since."""
-    unloaded = _MEDIA_UNLOADED.get(kind, 0)
-    return [g for g in _MEDIA_REGISTERED.get(kind, {}) if g > generation and g > unloaded]
+def _newer_media_registered(
+    key: tuple[str, str], generation: int
+) -> list[tuple[tuple[str, str], int]]:
+    """(account key, request) newer than ``generation`` of the slot, from any account, that
+    registered a load no unload of that account ended since: the slot is one for every account."""
+    return [
+        (account, g)
+        for account, registered in _MEDIA_REGISTERED.items()
+        if account[1] == key[1]
+        for g in registered
+        if g > generation and g > _MEDIA_UNLOADED.get(account, 0)
+    ]
 
 
 def _take_media_generation(key: tuple[str, str], job: LoadJob) -> asyncio.Future:
@@ -1058,20 +1073,22 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
                 continue
             phase = opt_text(progress.get("phase"))
             in_flight = phase not in (None, "ready", "error")
-            registered = _MEDIA_REGISTERED.get(key, {})
-            ready = _MEDIA_READY.get(key, set())
             replacements = _newer_media_registered(key, job.generation)
             if replacements:
                 # Only a newer load never shown ready may be the one in flight; else it is this job's.
-                if (in_flight and any(g not in ready for g in replacements)) or any(
-                    _resident_matches(status, *registered[g]) for g in replacements
+                if (
+                    in_flight
+                    and any(g not in _MEDIA_READY.get(a, ()) for a, g in replacements)
+                ) or any(
+                    _resident_matches(status, *_MEDIA_REGISTERED[a][g]) for a, g in replacements
                 ):
                     return  # A newer load is (or may be) what is resident: what the caller wants now.
                 # Evicted outside this process's unload (another load, Studio's own unload route):
                 # those registrations are stale and no longer defer this unload.
-                for g in replacements:
-                    registered.pop(g, None)
-                    ready.discard(g)
+                for a, g in replacements:
+                    _MEDIA_REGISTERED.get(a, {}).pop(g, None)
+                    _MEDIA_READY.get(a, set()).discard(g)
+            registered = _MEDIA_REGISTERED.get(key, {})
             # Another variant of the same repo is another model, not the load this job stopped.
             if not in_flight and not _resident_matches(status, job.model, job.body):
                 return  # Gone or replaced: not a load this job can be shown to own.
