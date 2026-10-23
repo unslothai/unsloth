@@ -79,7 +79,7 @@ async def story_generator(ctx: NodeContext) -> dict:
         model = p.get("model"),
         system = GENERATOR_SYSTEM,
         prompt = prompt,
-        schema = story_schema(scenes, chars),
+        schema = story_schema(scenes, chars, expressions = _expression_names(p.get("expressions"))),
         temperature = 0.9,
         max_tokens = min(1200 + 700 * scenes, 16000),
         seed = ctx.seed,
@@ -113,6 +113,87 @@ def _with_style(
     return ", ".join(x for x in parts if x)
 
 
+def _expression_names(value: Any) -> list[str]:
+    names = value if isinstance(value, list) else str(value or "").split(",")
+    out = []
+    for n in names:
+        n = str(n).strip().lower()[:30]
+        if n and n != "neutral" and n not in out:
+            out.append(n)
+    return out[:8]
+
+
+async def _expression_portraits(
+    ctx: NodeContext,
+    portrait: dict,
+    *,
+    name: str,
+    look: str,
+    style: str,
+    expressions: list[str],
+    seed: int,
+    size: tuple[int, int],
+    cut_out: bool,
+    progress: Any = None,
+) -> dict[str, dict]:
+    """One portrait per expression from the uncut base portrait: reference workflow, same seed, so the face holds."""
+    out: dict[str, dict] = {}
+    for i, expr in enumerate(expressions):
+        ctx.check_cancelled()
+        if progress:
+            progress(i, expr)
+        prompt = _with_style(
+            f"the same character {name}, {look}, {expr} expression",
+            style,
+            "same outfit, same pose, upper body, facing the viewer, centered, plain light grey studio background",
+        )
+        imgs = await ctx.generate_image(
+            model = ctx.params.get("model"),
+            prompt = prompt,
+            width = size[0],
+            height = size[1],
+            seed = seed,
+            init_image = portrait,
+            workflow = "reference",
+        )
+        if not imgs:
+            raise FlowNodeError(f"No {expr} portrait came back for {name}")
+        img = imgs[0]
+        if cut_out:
+            try:
+                img, _mask = await ctx.remove_background(img, f"the character {name}", trim = True)
+            except FlowNodeError as exc:
+                ctx.log(f"Kept the background of {name} ({expr}): {exc}", "warning")
+        out[expr] = img
+    return out
+
+
+@handler("story.expressions")
+async def story_expressions(ctx: NodeContext) -> dict:
+    p = ctx.params
+    portrait = ctx.inputs.get("portrait")
+    if not isinstance(portrait, dict):
+        raise FlowNodeError("Connect the character's base portrait (before cut-out works best).")
+    names = _expression_names(p.get("expressions"))
+    if not names:
+        raise FlowNodeError("List at least one expression, like happy or sad.")
+    total = len(names)
+    result = await _expression_portraits(
+        ctx,
+        portrait,
+        name = str(p.get("name") or "the character"),
+        look = str(p.get("look") or ""),
+        style = str(p.get("style") or ""),
+        expressions = names,
+        seed = ctx.seed,
+        size = _size(p.get("size"), (768, 1024)),
+        cut_out = bool(p.get("remove_bg", True)),
+        progress = lambda i, e: ctx.progress(i / total, phase = e, step = i, total = total),
+    )
+    ctx.progress(1.0, phase = "done", step = total, total = total)
+    return {"expressions": result}
+
+
 @handler("story.illustrate")
 async def story_illustrate(ctx: NodeContext) -> dict:
     p = ctx.params
@@ -130,7 +211,13 @@ async def story_illustrate(ctx: NodeContext) -> dict:
         if p.get("portraits", True)
         else []
     )
-    total = max(1, len(todo_bg) + len(todo_pt))
+    exprs = _expression_names(p.get("expressions"))
+    todo_ex = {
+        c["id"]: [e for e in exprs if e not in (c.get("expressions") or {})]
+        for c in story["characters"]
+        if p.get("portraits", True)
+    }
+    total = max(1, len(todo_bg) + len(todo_pt) + sum(len(v) for v in todo_ex.values()))
     done = 0
     # Scenes that share a prompt share one painting.
     painted: dict[str, dict] = {}
@@ -160,6 +247,7 @@ async def story_illustrate(ctx: NodeContext) -> dict:
             painted[prompt] = imgs[0]
         s["background"] = painted[prompt]
         done += 1
+    uncut: dict[str, dict] = {}
     for c in todo_pt:
         ctx.check_cancelled()
         ctx.progress(done / total, phase = f"portrait: {c['name']}", step = done, total = total)
@@ -177,7 +265,7 @@ async def story_illustrate(ctx: NodeContext) -> dict:
         )
         if not imgs:
             raise FlowNodeError(f"No portrait came back for {c['name']}")
-        portrait = imgs[0]
+        portrait = uncut[c["id"]] = imgs[0]
         if p.get("remove_bg", True):
             try:
                 portrait, _mask = await ctx.remove_background(
@@ -187,6 +275,32 @@ async def story_illustrate(ctx: NodeContext) -> dict:
                 ctx.log(f"Kept {c['name']}'s background: {exc}", "warning")
         c["portrait"] = portrait
         done += 1
+    for c in story["characters"]:
+        base = uncut.get(c["id"]) or c.get("portrait")
+        if not todo_ex.get(c["id"]) or not base:
+            continue
+
+        def tick(
+            i: int,
+            e: str,
+            c = c,
+        ) -> None:
+            ctx.progress((done + i) / total, phase = f"{c['name']}: {e}", step = done + i, total = total)
+
+        made = await _expression_portraits(
+            ctx,
+            base,
+            name = c["name"],
+            look = c.get("look") or "",
+            style = style,
+            expressions = todo_ex[c["id"]],
+            seed = seed_from(ctx.seed, "char", c["id"]),
+            size = (pw, ph),
+            cut_out = bool(p.get("remove_bg", True)),
+            progress = tick,
+        )
+        c["expressions"] = {**(c.get("expressions") or {}), **made}
+        done += len(made)
     ctx.progress(1.0, phase = "done", step = total, total = total)
     return {"story": finalize(story, [])}
 
@@ -257,7 +371,10 @@ async def story_next_scene(ctx: NodeContext) -> dict:
         model = ctx.params.get("model"),
         system = NEXT_SCENE_SYSTEM.replace("{choices}", str(choices)),
         prompt = prompt,
-        schema = scene_schema(choices),
+        schema = scene_schema(
+            choices,
+            sorted({e for c in story.get("characters") or [] for e in c.get("expressions") or {}}),
+        ),
         temperature = 0.9,
         max_tokens = 1500,
         seed = seed_from(ctx.seed, len(history), state.get("choice")),

@@ -32,11 +32,22 @@ import type {
   MediaValue,
   StoryCharacter,
   StoryManifest,
+  StoryPosition,
   StoryScene,
+  StoryTransition,
 } from "../../types";
-import type { PlayerApi, SessionRecord } from "../player-api";
+import {
+  type PlayerApi,
+  type SessionRecord,
+  mediaObjectUrl,
+} from "../player-api";
 import { useMediaUrl } from "../use-media-url";
-import { BackgroundStage, PlayerKeyframes } from "./backdrop";
+import {
+  BackgroundStage,
+  PlayerKeyframes,
+  spriteAnimation,
+  useReducedMotion,
+} from "./backdrop";
 import {
   CHOICE_SPEAKER,
   type StoryAction,
@@ -46,9 +57,11 @@ import {
   initialState,
   interpolate,
   nextSceneIds,
+  pauseOf,
   reduce,
   saveFits,
   sceneOf,
+  stageAt,
   visibleChoices,
 } from "./reducer";
 
@@ -131,18 +144,34 @@ const Typewriter = memo(function Typewriter({
   return <span ref={ref} />;
 });
 
+const AT: Record<StoryPosition, string> = {
+  left: "22%",
+  twoleft: "33%",
+  center: "50%",
+  tworight: "67%",
+  right: "78%",
+};
+
 const Portrait = memo(function Portrait({
   api,
   character,
   speaking,
   expression,
   slot,
+  at,
+  enter,
+  exit,
+  instant,
 }: {
   api: PlayerApi;
   character: StoryCharacter;
   speaking: boolean;
   expression: string | null;
   slot: number;
+  at: StoryPosition | null;
+  enter: StoryTransition | null;
+  exit?: StoryTransition | null;
+  instant: boolean;
 }) {
   const media =
     (expression && character.expressions?.[expression]) ||
@@ -150,40 +179,58 @@ const Portrait = memo(function Portrait({
     null;
   const url = useMediaUrl(api, media);
   const side = character.side ?? "left";
-  const offset =
-    side === "center"
+  const offset = at
+    ? AT[at]
+    : side === "center"
       ? "50%"
       : side === "left"
         ? `${14 + slot * 13}%`
         : `${86 - slot * 13}%`;
+  const motion = instant
+    ? undefined
+    : exit
+      ? spriteAnimation(exit, true)
+      : enter
+        ? spriteAnimation(enter, false)
+        : undefined;
   return (
     <div
-      className="absolute bottom-0 flex items-end justify-center transition-all duration-300 ease-out"
+      className={cn(
+        "absolute bottom-0 flex items-end justify-center ease-out",
+        !instant && "transition-all duration-300",
+      )}
       style={{
         left: offset,
         transform: `translateX(-50%) translateY(${speaking ? "0" : "6px"}) scale(${speaking ? 1.02 : 0.97})`,
         filter: speaking ? "none" : "brightness(0.55) saturate(0.8)",
         height: "78%",
         zIndex: speaking ? 3 : 2,
+        pointerEvents: exit ? "none" : undefined,
       }}
     >
-      {url ? (
-        <img
-          src={url}
-          alt={character.name}
-          draggable={false}
-          className="h-full w-auto max-w-[38vw] object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.55)]"
-        />
-      ) : (
-        <div
-          className="mb-[16vh] flex aspect-[3/4] h-[42%] min-h-40 items-center justify-center rounded-[2rem] text-6xl font-bold text-white/90 shadow-2xl ring-1 ring-white/20"
-          style={{
-            background: `linear-gradient(160deg, ${character.color ?? "#a78bfa"} 0%, rgba(20,20,30,0.85) 100%)`,
-          }}
-        >
-          {character.name.slice(0, 1)}
-        </div>
-      )}
+      <div className="flex h-full items-end" style={{ animation: motion }}>
+        {url ? (
+          <img
+            key={url}
+            src={url}
+            alt={character.name}
+            draggable={false}
+            className="h-full w-auto max-w-[38vw] object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.55)]"
+            style={
+              instant ? undefined : { animation: "flows-swap 200ms ease-out" }
+            }
+          />
+        ) : (
+          <div
+            className="mb-[16vh] flex aspect-[3/4] h-[42%] min-h-40 items-center justify-center rounded-[2rem] text-6xl font-bold text-white/90 shadow-2xl ring-1 ring-white/20"
+            style={{
+              background: `linear-gradient(160deg, ${character.color ?? "#a78bfa"} 0%, rgba(20,20,30,0.85) 100%)`,
+            }}
+          >
+            {character.name.slice(0, 1)}
+          </div>
+        )}
+      </div>
     </div>
   );
 });
@@ -531,18 +578,55 @@ export function StoryPlayer({
   }, [voiceUrl, started]);
   const musicUrl = useMediaUrl(api, scene?.music ?? null);
 
+  const stage = useMemo(() => stageAt(manifest, state), [manifest, state]);
+  const reduced = useReducedMotion();
+  const instant = reduced || skip;
+  const pause = state.status === "reading" ? pauseOf(line) : null;
+
+  // Sound cues play once per stop; re-renders and loading a save never replay them.
+  const cued = useRef("");
+  const quietCue = useRef(false);
+  useEffect(() => {
+    if (!started) return;
+    const key = `${state.rev}:${state.sceneId}:${state.line}:${state.status}`;
+    if (cued.current === key) return;
+    cued.current = key;
+    if (quietCue.current) {
+      quietCue.current = false;
+      return;
+    }
+    if (skip) return;
+    for (const name of stage.sounds) {
+      const media = manifest.sounds?.[name];
+      if (!media) continue;
+      void mediaObjectUrl(api, media)
+        .then((url) => new Audio(url).play())
+        .catch(() => undefined);
+    }
+  }, [api, manifest.sounds, stage, started, skip, state]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: two pauses in a row restart the timer
+  useEffect(() => {
+    if (pause === null || !started || panel || skip) return;
+    const t = window.setTimeout(
+      () => dispatch({ type: "advance" }),
+      pause * 1000,
+    );
+    return () => window.clearTimeout(t);
+  }, [pause, started, panel, skip, state.sceneId, state.line, state.rev]);
+
   const advance = useCallback(() => {
     if (panel) return;
     if (!started) {
       setStarted(true);
       return;
     }
-    if (handle.current?.typing()) {
+    if (pause === null && handle.current?.typing()) {
       handle.current.complete();
       return;
     }
     if (stateRef.current.status === "reading") dispatch({ type: "advance" });
-  }, [panel, started]);
+  }, [panel, started, pause]);
 
   const choose = useCallback((id: string) => {
     setSkip(false);
@@ -554,7 +638,14 @@ export function StoryPlayer({
   }, [text, state.line, state.sceneId]);
 
   useEffect(() => {
-    if (!auto || typing || state.status !== "reading" || panel) return;
+    if (
+      !auto ||
+      typing ||
+      pause !== null ||
+      state.status !== "reading" ||
+      panel
+    )
+      return;
     const t = window.setTimeout(
       () => dispatch({ type: "advance" }),
       900 + text.length * 28,
@@ -563,6 +654,7 @@ export function StoryPlayer({
   }, [
     auto,
     typing,
+    pause,
     state.status,
     state.line,
     state.sceneId,
@@ -645,6 +737,7 @@ export function StoryPlayer({
         showToast("That save is from an earlier version of this story");
         return;
       }
+      quietCue.current = true;
       dispatch({ type: "load", state: rec.state as StoryState });
       setStarted(true);
       setPanel(null);
@@ -661,14 +754,16 @@ export function StoryPlayer({
     setStarted(true);
   };
 
-  const onStage = (scene?.on_stage ?? [])
-    .map((id) => chars.get(id))
-    .filter(Boolean) as StoryCharacter[];
   const slots = { left: 0, right: 0, center: 0 };
-  const placed = onStage.map((c) => {
-    const side = c.side ?? "left";
-    const slot = slots[side]++;
-    return { c, slot };
+  const placed = stage.cast.flatMap((st) => {
+    const c = chars.get(st.id);
+    if (!c) return [];
+    const slot = st.at ? 0 : slots[c.side ?? "left"]++;
+    return [{ c, slot, st }];
+  });
+  const leaving = stage.leaving.flatMap((st) => {
+    const c = chars.get(st.id);
+    return c && st.exit && st.exit !== "none" && !instant ? [{ c, st }] : [];
   });
   const generating = state.status === "generating";
   const nameColor = speaker?.color ?? "#e5e7eb";
@@ -686,21 +781,40 @@ export function StoryPlayer({
         seedKey={state.sceneId}
         url={bgUrl}
         painting={painting.has(state.sceneId)}
+        transition={instant ? "none" : (scene?.transition ?? "dissolve")}
       />
       {musicUrl ? <audio src={musicUrl} autoPlay={true} loop={true} /> : null}
 
       {started && state.status !== "ended" ? (
         <div className="absolute inset-0">
-          {placed.map(({ c, slot }) => (
+          {placed.map(({ c, slot, st }) => (
             <Portrait
               key={c.id}
               api={api}
               character={c}
               slot={slot}
+              at={st.at}
+              enter={st.enter}
+              instant={instant}
               speaking={speaker?.id === c.id}
               expression={
-                speaker?.id === c.id ? (line?.expression ?? null) : null
+                (speaker?.id === c.id ? line?.expression : null) ??
+                st.expression
               }
+            />
+          ))}
+          {leaving.map(({ c, st }) => (
+            <Portrait
+              key={c.id}
+              api={api}
+              character={c}
+              slot={0}
+              at={st.at}
+              enter={null}
+              exit={st.exit}
+              instant={false}
+              speaking={false}
+              expression={st.expression}
             />
           ))}
         </div>
@@ -831,7 +945,7 @@ export function StoryPlayer({
       ) : null}
 
       {/* dialogue */}
-      {started && line && state.status !== "ended" ? (
+      {started && line && pause === null && state.status !== "ended" ? (
         <div
           className="absolute inset-x-0 bottom-0 z-10 p-4 md:p-8"
           data-testid="story-dialogue"
