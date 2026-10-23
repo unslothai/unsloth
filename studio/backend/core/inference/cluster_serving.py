@@ -669,6 +669,8 @@ def _placement_owner(request: Any, flags: Sequence[str]) -> Optional[str]:
 
 
 def _caller_placement(args: Sequence[str]) -> Optional[str]:
+    from core.inference.llama_cpp import _LLAMA_ARG_TRUE_VALUES, _is_positive_int
+
     tokens = [str(a) for a in args]
     for i, token in enumerate(tokens):
         name, sep, inline = token.partition("=")
@@ -679,8 +681,10 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
             continue
         if name == "--moe-cache-mib" and value.strip() in ("", "0"):
             continue
+        # Like the env twins and the loader, a CPU-MoE / CPU-FFN count places nothing unless positive.
+        if name in _CPU_COUNT_FLAGS and not _is_positive_int(value):
+            continue
         return name
-    from core.inference.llama_cpp import _LLAMA_ARG_TRUE_VALUES, _is_positive_int
 
     for key in _PLACEMENT_ENV:
         value = (os.environ.get(key) or "").strip().lower()
@@ -697,6 +701,7 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
 
 
 _GPU_LAYER_FLAGS = frozenset({"--gpu-layers", "--n-gpu-layers", "-ngl"})
+_CPU_COUNT_FLAGS = frozenset({"--n-cpu-moe", "-ncmoe", "--n-cpu-ffn", "-ncffn"})
 
 
 # Linux CUDA bundles link libcudart / libcublas from the venv's nvidia wheels; ssh workers need the same dirs.

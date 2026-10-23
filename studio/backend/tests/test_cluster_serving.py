@@ -1679,6 +1679,23 @@ def test_cpu_ffn_offload_is_caller_placement(monkeypatch, extra):
     assert "placement is theirs" in ss.status()["reason"]
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--n-cpu-moe", "0"],
+        ["-ncmoe=0"],
+        ["--n-cpu-ffn", "0"],
+        ["-ncffn", "-2"],
+        ["--n-cpu-moe", "x"],
+    ],
+)
+def test_a_zero_cpu_offload_count_is_not_caller_placement(monkeypatch, extra):
+    # The loader only offloads for a positive count; zero must not bypass cluster planning.
+    seen = _cluster_env(monkeypatch)
+    run(ss.before_load(_request(llama_extra_args = extra), 4))
+    assert ss.status()["topology"] == "layer_split" and seen
+
+
 def test_a_vocoder_keeps_the_load_local(monkeypatch):
     seen = _cluster_env(monkeypatch)
     request = _request(llama_extra_args = ["-mv", "/models/vocoder.gguf"])
