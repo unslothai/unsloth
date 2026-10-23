@@ -3370,9 +3370,10 @@ _setup_find_installed_uv() {
 
 USE_UV=false
 # A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). One that hangs or fails the probe counts as old; a staged run never downloads.
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the OS trust store.
 _SETUP_UV_PATH_OLD=""
-if command -v uv &>/dev/null && [ -z "$STAGE_ROOT" ] && command -v mktemp >/dev/null 2>&1; then
+if command -v uv &>/dev/null && command -v mktemp >/dev/null 2>&1; then
     _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
     _spu_ver=""
     if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
@@ -3380,6 +3381,7 @@ if command -v uv &>/dev/null && [ -z "$STAGE_ROOT" ] && command -v mktemp >/dev/
         case "$_spu_ver" in
             "uv "*) _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
                         || _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+            *) _SETUP_UV_PATH_OLD=$(command -v uv) ;;
         esac
     elif [ -n "$_spu_file" ]; then
         _SETUP_UV_PATH_OLD=$(command -v uv)
@@ -3404,7 +3406,7 @@ elif _setup_find_installed_uv; then
     USE_UV=true
     unset _setup_uv_dir
 elif [ -n "$STAGE_ROOT" ]; then
-    step "uv" "using pip inside the staged environment"
+    [ -n "$_SETUP_UV_PATH_OLD" ] || step "uv" "using pip inside the staged environment"
 elif {
     [ -n "${_SETUP_UV_TOO_OLD:-}" ] || _SETUP_UV_TOO_OLD="$_SETUP_UV_PATH_OLD"
     if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
@@ -3431,7 +3433,7 @@ fi
 [ -z "$_SETUP_UV_PATH_OLD" ] || [ "$USE_UV" = true ] || ! command -v uv &>/dev/null || USE_UV=true
 # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the OS store
 # decides instead, where there is one. A download that failed while online lands here too.
-if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}" ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
+if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
    && command -v mktemp >/dev/null 2>&1; then
     _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
     _spu_ver=""

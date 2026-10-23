@@ -8066,16 +8066,16 @@ function Get-InstalledUvVerdict {
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 # A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). One that hangs or fails the probe counts as old; a staged run never downloads.
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the Windows trust store.
 function Get-SetupPathUvTooOld {
-    if ($StageRoot) { return $null }
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
     # Timed: a uv that hangs on --version must not stall every setup before the pinned one installs.
     $verdict = @(Get-SetupUvExecutableVerdict -Path $pathUv.Source)[-1]
     if ($verdict -ne "ok") { return $pathUv.Source }
     $line = $script:SetupUvVersionLine
-    if ("$line" -match '^\s*uv\s' -and
+    if ("$line" -notmatch '^\s*uv\s' -or
         -not (Test-SetupUvVersionAtLeast -VersionLine "$line" -Minimum $SetupUvMinVersion)) {
         return $pathUv.Source
     }
@@ -8154,6 +8154,11 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
             }
         }
     }
+} elseif ($pathUvOld) {
+    # Staged runs never download: the old uv on PATH still beats pip, behind the Windows store.
+    $UseUv = $true
+    if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+    if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
 }
 # Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
 # back sits inside a catch that swallows everything -- including a dot-source that died after
