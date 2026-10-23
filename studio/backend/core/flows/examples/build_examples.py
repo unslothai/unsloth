@@ -1471,6 +1471,110 @@ def ask_documents() -> B:
     return b
 
 
+def contact_cleanup() -> B:
+    b = B(
+        "contact-cleanup",
+        "Clean Up a Contact List",
+        "pipeline",
+        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
+        "without an email, remove duplicates, tidy the fields and sort by name.",
+        tags = ["data", "json", "transform"],
+        seed = 13,
+    ).need("chat")
+    b.n(
+        "pasted",
+        "input.text",
+        0,
+        1,
+        label = "Pasted list",
+        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
+        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
+    )
+    b.n(
+        "rows",
+        "llm.generate",
+        1,
+        1,
+        label = "Read the rows",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 2048,
+        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
+        "field. Do not fix, merge or drop anything.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "company": {"type": "string"},
+                        },
+                        "required": ["name", "email", "company"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("pasted.text", "rows.prompt")
+    b.n("list", "json.get", 2, 1, path = "rows")
+    b.e("rows.json", "list.json")
+    b.n(
+        "has_email",
+        "list.filter",
+        3,
+        1,
+        label = "Has an email",
+        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
+    )
+    b.e("list.value", "has_email.items")
+    b.n(
+        "tidy",
+        "json.set",
+        4,
+        1,
+        label = "Tidy fields",
+        fields = {
+            "email": {"op": "lower", "args": [{"var": "item.email"}]},
+            "company": {
+                "op": "if",
+                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
+            },
+        },
+    )
+    b.e("has_email.items", "tidy.value")
+    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
+    b.e("tidy.value", "unique.items")
+    b.n(
+        "sorted",
+        "list.sort",
+        6,
+        1,
+        label = "Sort by name",
+        key = {"op": "lower", "args": [{"var": "item.name"}]},
+    )
+    b.e("unique.items", "sorted.items")
+    b.n("clean", "output.result", 7, 1, name = "contacts")
+    b.e("sorted.items", "clean.value")
+    b.n("dropped", "output.preview", 4, 2)
+    b.e("has_email.dropped", "dropped.value")
+    b.note(
+        "tip",
+        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
+        "and re-run in a blink.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1484,6 +1588,7 @@ BUILDERS = (
     sticker_pack,
     summarise_pdf,
     ask_documents,
+    contact_cleanup,
 )
 
 

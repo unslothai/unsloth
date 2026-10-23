@@ -8,10 +8,13 @@ import pytest
 
 from core.flows import compiler
 from core.flows.examples.build_examples import build
+from core.flows.nodes import transform
 from core.flows.schema import FlowDocument
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import compile_story_report, walk_check
 from core.flows.world import normalize_world, resolve_world_report
+
+from .flows_player_fakes import FakeCtx, run
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -21,8 +24,8 @@ def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
 
 
-def test_there_are_twelve_examples():
-    assert len(BUILT) == 12
+def test_there_are_thirteen_examples():
+    assert len(BUILT) == 13
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -96,3 +99,38 @@ def test_frontend_story_fixtures_are_fresh(name):
     assert (
         json.loads(fixture.read_text(encoding = "utf-8")) == compile_story(doc, {})
     ), 'refresh the fixture: json.dumps(compile_story(example), separators=(",", ":")) -> studio/frontend/tests/fixtures'
+
+
+def test_contact_cleanup_list_blocks_clean_the_rows():
+    params = {n["id"]: n["params"] for n in _example("contact-cleanup")["nodes"]}
+    rows = [
+        {"name": "Ana Lima", "email": "ANA@example.com", "company": "Acme"},
+        {"name": "ben ortiz", "email": "ben@example.org", "company": ""},
+        {"name": "Ana Lima", "email": "ana@example.com", "company": "Acme Inc"},
+        {"name": "Chris Wu", "email": "", "company": "Globex"},
+    ]
+    kept = run(
+        transform.filter_list(
+            FakeCtx("list.filter", params = params["has_email"], inputs = {"items": rows})
+        )
+    )
+    assert [r["name"] for r in kept["dropped"]] == ["Chris Wu"]
+    tidy = run(
+        transform.edit_fields(
+            FakeCtx("json.set", params = params["tidy"], inputs = {"value": kept["items"]})
+        )
+    )
+    unique = run(
+        transform.dedupe_list(
+            FakeCtx("list.dedupe", params = params["unique"], inputs = {"items": tidy["value"]})
+        )
+    )
+    out = run(
+        transform.sort_list(
+            FakeCtx("list.sort", params = params["sorted"], inputs = {"items": unique["items"]})
+        )
+    )
+    assert [(r["name"], r["email"], r["company"]) for r in out["items"]] == [
+        ("Ana Lima", "ana@example.com", "Acme"),
+        ("ben ortiz", "ben@example.org", "unknown"),
+    ]
