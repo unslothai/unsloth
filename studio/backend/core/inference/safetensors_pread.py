@@ -105,7 +105,6 @@ def _with_pread(safe_open: Any) -> Any:
     def pread_safe_open(filename: Any, *args: Any, **kwargs: Any) -> Any:
         # transformers 5.13 - 5.16 pass backend="mmap" explicitly; 5.17 already picks pread on Windows (#48341).
         if not _active_rules():
-            # outside any media scope: the caller's default stands
             return safe_open(filename, *args, **kwargs)
         choice = _backend_for(filename)
         if choice == "pread" and kwargs.get("backend") in (None, "mmap"):

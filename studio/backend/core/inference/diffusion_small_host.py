@@ -255,8 +255,8 @@ def decide_small_host(
     )
     reserve = host_reserve_mib(host_total_mib)
     # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
-    # converted copy (measured 2.06x dense, Qwen-Image encoder). A component read through ``pread``
-    # (``pread_libraries``) holds no view. Linux / macOS do not enforce commit.
+    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
+    # enforce commit.
     dense_commit = dense + int(
         sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
     )
