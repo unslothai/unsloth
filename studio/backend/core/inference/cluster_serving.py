@@ -1848,8 +1848,11 @@ class ClusterServing:
                 self.reason += "; speculative decoding off so its NextN / MTP layers stay unloaded"
                 return ss.SparkServing._request_with(request, {"speculative_type": "off"})
             return request
-        # RPC<k> counts over the probed --rpc list, so every endpoint that exposed a device stays in it.
-        used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
+        # An endpoint with no weighted device is left out of --rpc, so the load never depends on it;
+        # RPC<k> counts over the emitted list, so every device of a kept endpoint is renumbered.
+        used = [e for e in endpoints if any(d.endpoint == e for d in plan.devices)]
+        for k, d in enumerate(d for e in used for d in devices if d.endpoint == e):
+            d.name = f"RPC{k}"
         self.block = split_extra_args(used, plan)
         if emit_groups > 1:
             self.block += [ss.PIPELINE_GROUPS_FLAG, str(emit_groups)]

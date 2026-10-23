@@ -445,6 +445,20 @@ def test_an_endpoint_with_no_device_is_reported(monkeypatch):
     assert out.llama_extra_args[1] == "10.0.0.2:50052"
 
 
+def test_an_endpoint_with_no_usable_memory_is_left_out_of_the_rpc_list(monkeypatch):
+    listing = LISTING.replace("65536 MiB, 60000 MiB free", "65536 MiB, 1000 MiB free")
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 150 * GIB)
+    out = run(ss.before_load(_request(), 4))
+    args = out.llama_extra_args
+    assert ss.status()["topology"] == "layer_split"
+    assert args[args.index("--rpc") + 1] == "10.0.0.2:50052,10.0.0.4:50052"
+    assert args[args.index("--device") + 1] == "RPC0,RPC1,CUDA0"
+    assert [d["endpoint"] for d in ss.status()["plan"]["devices"]][:2] == [
+        "10.0.0.2:50052",
+        "10.0.0.4:50052",
+    ]
+
+
 def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_path):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
