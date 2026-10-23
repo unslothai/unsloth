@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, readImageComponents, rememberImageComponents, sameComponentFiles, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1587,7 +1587,10 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
 type Busy = "loading" | "unloading" | "generating" | null;
 // baseRepo: only a reload of a resident model the page did not load sends one, to rebuild the same companions.
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string; baseRepo?: string };
-type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
+// fieldFiles: the encoder / VAE paths asked for, which the native engine drops from the load itself.
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile"> & {
+  fieldFiles?: ImageComponentFiles;
+};
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1888,8 +1891,32 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [textEncoderFiles, setTextEncoderFiles] = useState("");
-  const [vaeFile, setVaeFile] = useState("");
+  // The fields start on the remembered model's files, and componentFieldsOwner holds what was filled in or loaded
+  // last: fields that still match it are not the user's edit, so a pick may replace them.
+  const [initialComponents] = useState<ImageComponentFiles>(() =>
+    rememberedModel
+      ? (readImageComponents(rememberedModel) ?? {
+          textEncoderFiles: rememberedModel.textEncoderFiles,
+          vaeFile: rememberedModel.vaeFile,
+        })
+      : {},
+  );
+  const componentFieldsOwner = useRef(initialComponents);
+  const [textEncoderFiles, setTextEncoderFiles] = useState((initialComponents.textEncoderFiles ?? []).join("\n"));
+  const [vaeFile, setVaeFile] = useState(initialComponents.vaeFile ?? "");
+  const pickComponentFiles = useCallback(
+    (model: ImageModelKey): ImageComponentFiles => {
+      const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+      if (!sameComponentFiles(typed, componentFieldsOwner.current)) return typed;
+      // Another model's files must not ride along: no entry clears the fields.
+      const saved = readImageComponents(model) ?? {};
+      componentFieldsOwner.current = saved;
+      setTextEncoderFiles((saved.textEncoderFiles ?? []).join("\n"));
+      setVaeFile(saved.vaeFile ?? "");
+      return saved;
+    },
+    [textEncoderFiles, vaeFile],
+  );
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -3398,6 +3425,9 @@ export function ImagesPage({
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);
           setRememberedModel(remembered);
+          const files = lastLoad.current.fieldFiles ?? lastLoad.current;
+          rememberImageComponents(lastLoad.current, files);
+          componentFieldsOwner.current = files;
         }
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
@@ -3819,6 +3849,7 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const fieldFiles = componentFileFields(opts.kind, picked.text_encoder_file, picked.vae_file);
       // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
       // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
       const redirected = redirectRetiredImagePick({
@@ -3839,6 +3870,7 @@ export function ImagesPage({
         baseRepo: opts.baseRepo,
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
+        fieldFiles: { textEncoderFiles: fieldFiles.text_encoder_file, vaeFile: fieldFiles.vae_file },
       };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
@@ -4242,8 +4274,18 @@ export function ImagesPage({
         pickToast.dismissAll();
         if (!owns()) return true;
       }
+      // A load pick takes the encoder / VAE files this model last loaded with, read before the redirect below.
+      const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
+      const withPicked = (a: LoadAdvanced): LoadAdvanced =>
+        picked
+          ? {
+              ...a,
+              text_encoder_file: picked.textEncoderFiles?.length ? picked.textEncoderFiles : undefined,
+              vae_file: picked.vaeFile || undefined,
+            }
+          : a;
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
       // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
       // checkpoint is the one the load opens (the backend redirects the same picks).
       const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
@@ -4256,7 +4298,7 @@ export function ImagesPage({
       if (redirected.repoId !== repoId) {
         repoId = redirected.repoId;
         opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
-        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
@@ -4369,7 +4411,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
+    [stage, currentLoadAdvanced, pickComponentFiles, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
   const loadOrStageRef = useRef(loadOrStage);
   useEffect(() => {

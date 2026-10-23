@@ -102,6 +102,67 @@ export function rememberImageModel(model: RememberedImageModel): void {
   }
 }
 
+export type ImageModelKey = Pick<RememberedImageModel, "repoId" | "kind" | "filename">;
+export type ImageComponentFiles = Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
+
+// The encoder / VAE paths each model last loaded with, most recent last, so a pick can refill the Advanced fields.
+const COMPONENTS_KEY = "unsloth:images:component-files";
+const COMPONENTS_CAP = 50;
+
+type ComponentEntry = ImageComponentFiles & { key: string };
+
+const componentsKey = ({ repoId, kind, filename }: ImageModelKey): string =>
+  [repoId, kind, kind === "pipeline" ? "" : (filename ?? "")].join("\n");
+
+function cleanComponentFiles(value: unknown): ImageComponentFiles {
+  const raw = (value ?? {}) as { textEncoderFiles?: unknown; vaeFile?: unknown };
+  const encoders = Array.isArray(raw.textEncoderFiles)
+    ? raw.textEncoderFiles.filter((f): f is string => typeof f === "string" && f.trim().length > 0)
+    : [];
+  const vae = typeof raw.vaeFile === "string" ? raw.vaeFile.trim() : "";
+  return {
+    ...(encoders.length > 0 ? { textEncoderFiles: encoders } : {}),
+    ...(vae ? { vaeFile: vae } : {}),
+  };
+}
+
+function readComponentEntries(): ComponentEntry[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(COMPONENTS_KEY) ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((e): e is ComponentEntry => Boolean(e) && typeof e.key === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function sameComponentFiles(a: ImageComponentFiles, b: ImageComponentFiles): boolean {
+  const x = cleanComponentFiles(a);
+  const y = cleanComponentFiles(b);
+  return (x.textEncoderFiles ?? []).join("\n") === (y.textEncoderFiles ?? []).join("\n") && x.vaeFile === y.vaeFile;
+}
+
+export function readImageComponents(model: ImageModelKey): ImageComponentFiles | null {
+  const key = componentsKey(model);
+  const entry = readComponentEntries().find((e) => e.key === key);
+  const files = cleanComponentFiles(entry);
+  return files.textEncoderFiles || files.vaeFile ? files : null;
+}
+
+/** Store the paths a load succeeded with; a load with none forgets the model's entry. */
+export function rememberImageComponents(model: ImageModelKey, files: ImageComponentFiles): void {
+  const key = componentsKey(model);
+  const clean = cleanComponentFiles(files);
+  const entries = readComponentEntries().filter((e) => e.key !== key);
+  if (clean.textEncoderFiles || clean.vaeFile) entries.push({ key, ...clean });
+  try {
+    localStorage.setItem(COMPONENTS_KEY, JSON.stringify(entries.slice(-COMPONENTS_CAP)));
+  } catch {
+    // storage can be unavailable in private browsing
+  }
+}
+
 export function matchesRememberedModel(
   model: RememberedImageModel,
   status: {
