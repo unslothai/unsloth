@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   DEFAULT_ENGINE_LAUNCH_FIELDS,
   engineLaunchFieldsFrom,
@@ -107,7 +108,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -3333,7 +3333,7 @@ export function SharedComposer({
                             : "Thinking"}
                         </span>
                       ) : null}
-                      <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+                      <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                     </button>
                   )}
                 >
@@ -3564,7 +3564,7 @@ export function SharedComposer({
             ) : busy ? (
               <Button
                 type="button"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel ml-1.5 size-9 rounded-full"
                 aria-label="Stop generating"
@@ -3579,7 +3579,7 @@ export function SharedComposer({
                   t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
                 }
                 side="bottom"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-send ml-1.5 size-9 rounded-full"
                 onClick={send}

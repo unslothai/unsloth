@@ -1104,7 +1104,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
               onClick={bulkChat}
-              className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+              className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               {t("library.selection.startChat")}

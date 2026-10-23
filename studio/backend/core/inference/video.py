@@ -55,6 +55,7 @@ from .diffusion_attention import (
     attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    _dit_head_dims,
     begin_attention_run,
     report_attention_run,
     select_attention_backend,
@@ -103,8 +104,8 @@ from .diffusion_device import (
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
     force_float32_rope,
-    install_decoder_sync,
     install_rocm_vae_bf16_decode,
+    install_vae_sync,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     auto_cuda_ordinal_for_load,
@@ -295,6 +296,8 @@ from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
 from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
+
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -3886,7 +3889,9 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         if (
             _is_out_of_memory(exc)
             and request_shape.get("attention_backend") is None
-            and sdpa_math_only(_probe_target(request_shape))
+            and sdpa_math_only(
+                _probe_target(request_shape), request_shape.get("attention_head_dims")
+            )
         ):
             logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
     except Exception:  # noqa: BLE001 - diagnostics never mask the real failure
@@ -3919,7 +3924,9 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
             if (
                 request_shape is not None
                 and request_shape.get("attention_backend") is None
-                and sdpa_math_only(_probe_target(request_shape))
+                and sdpa_math_only(
+                    _probe_target(request_shape), request_shape.get("attention_head_dims")
+                )
             ):
                 return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
             return (
@@ -4384,6 +4391,7 @@ class VideoBackend:
 
     # ── background load + progress ───────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -9585,7 +9593,7 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
-            install_decoder_sync(pipe, target, logger = logger)
+            install_vae_sync(pipe, target, logger = logger)
             if _video_denoiser_hooked(pipe):
                 # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
@@ -11598,6 +11606,7 @@ class VideoBackend:
                     video_id = (video or {}).get("id"),
                 )
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -12025,6 +12034,7 @@ class VideoBackend:
                     "dtype": state.dtype,
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
+                    "attention_head_dims": sorted(_dit_head_dims(state.pipe)),
                 }
                 self._last_request_shape = request_shape
 

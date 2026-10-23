@@ -1286,6 +1286,45 @@ def _host_ram_capacity_mib() -> Optional[int]:
     return host_memory.usable_mib(_system_memory_mib()[0], _cgroup_memory_limit_mib())
 
 
+def _windows_commit_headroom_mib() -> Optional[int]:
+    """(CommitLimit - CommitTotal) in MiB on Windows via ``K32GetPerformanceInfo``; 0 when exhausted, None when
+    unreadable or not Windows. The diffusion guards' failure mode is commit exhaustion (#13432), which a
+    physical `available` reading does not see."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _PERFORMANCE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("CommitTotal", ctypes.c_size_t),
+                ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t),
+                ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t),
+                ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t),
+                ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t),
+                ("PageSize", ctypes.c_size_t),
+                ("HandleCount", ctypes.c_ulong),
+                ("ProcessCount", ctypes.c_ulong),
+                ("ThreadCount", ctypes.c_ulong),
+            ]
+
+        info = _PERFORMANCE_INFORMATION()
+        info.cb = ctypes.sizeof(_PERFORMANCE_INFORMATION)
+        # kernel32 exports the K32-prefixed name only; the unprefixed one lives in psapi
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        if not kernel32.K32GetPerformanceInfo(ctypes.byref(info), info.cb):
+            return None
+        headroom = (int(info.CommitLimit) - int(info.CommitTotal)) * int(info.PageSize)
+        return max(0, headroom // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
@@ -1449,6 +1488,10 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
     # unmeasured and keeps the flat estimate.
     "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
+    # FLUX.3 Klein base, B200 bf16: per column the larger of Klein and base (same DiT / VAE, one Flux2 formula in ComfyUI).
+    "flux.3-klein-base": ((301, 901, 2_512, 2_512, 3_359), (301, 901, 2_512, 2_512, 3_359)),
+    # MOSS-Image SFT, B200 bf16 measurements; both tiers take the eager worst.
+    "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
@@ -2479,6 +2522,11 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+    if calibrated_activation is not None and "calibrated_headroom_mib" not in estimates:
+        from .diffusion_multigpu import current_selection
+        if current_selection() is not None:
+            # Untiled: a layer split keeps the VAE resident on the primary.
+            estimates["calibrated_split_headroom_mib"] = calibrated_activation.headroom(False)
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,

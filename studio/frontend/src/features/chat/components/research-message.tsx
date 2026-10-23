@@ -189,7 +189,7 @@ export function ResearchMessage(): ReactElement | null {
           </p>
           <Button
             size="sm"
-            variant={needsApproval ? "default" : "outline"}
+            variant={needsApproval ? "dark" : "outline"}
             className="mt-3"
             onClick={() => openResearchRun(run)}
           >

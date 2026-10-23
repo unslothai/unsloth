@@ -473,7 +473,7 @@ export function LanAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices on your Wi-Fi or wired
+              Use Unsloth and its APIs from devices on your Wi-Fi or wired
               network.
             </p>
           </div>
@@ -481,8 +481,8 @@ export function LanAccessSection() {
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          className="shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -500,7 +500,7 @@ export function LanAccessSection() {
         {status?.portConfigurationSupported ? (
           <SettingsRow
             label="Port"
-            description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
+            description="Automatic tries 8888, then 8889–8908. Custom uses only that port. Stop LAN access to change it."
             // Always mounted, even when empty: a live region has to exist before its
             // text changes for the change to be announced.
             below={
@@ -529,7 +529,7 @@ export function LanAccessSection() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-28"
+                  className="w-32"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -576,7 +576,7 @@ export function LanAccessSection() {
           <>
             <SettingsRow
               label="Addresses"
-              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it, and save before starting."
+              description="Automatic uses every address this machine has, public ones included. Choose limits it to the ones you tick, like a Tailscale address. Stop LAN access to change it; save before starting."
               below={
                 <span
                   id={addressErrorId}
@@ -607,7 +607,7 @@ export function LanAccessSection() {
                 >
                   <SelectTrigger
                     size="sm"
-                    className="w-28"
+                    className="w-32"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />
@@ -693,7 +693,7 @@ export function LanAccessSection() {
         </SettingsRow>
         <SettingsRow
           label="Start automatically"
-          description="Put Unsloth on the network each time it starts. Stopping LAN access now won’t turn this off."
+          description="Put Unsloth on the network each time it starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}

@@ -2562,6 +2562,7 @@ function ProjectLanding({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={() => {
                 const target = confirmingDelete;
                 const deleteFiles = deleteFilesOnDelete;
@@ -2622,7 +2623,7 @@ function ProjectLanding({
           />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void commitProjectDelete()}>
+            <AlertDialogAction variant="destructive" onClick={() => void commitProjectDelete()}>
               {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
