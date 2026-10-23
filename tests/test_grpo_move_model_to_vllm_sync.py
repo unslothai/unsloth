@@ -211,7 +211,9 @@ class _WeightRecorder(_Recorder):
 def _lora_model(dtype, **kwargs):
     peft = pytest.importorskip("peft")
     torch.manual_seed(1)
-    base = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False), torch.nn.Linear(64, 8)).to(dtype)
+    base = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False), torch.nn.Linear(64, 8)).to(
+        dtype
+    )
     config = peft.LoraConfig(
         r = 4, lora_alpha = 8, target_modules = ["0"], init_lora_weights = False, **kwargs
     )
@@ -365,7 +367,6 @@ def _perturb_trainable(model):
 
 def _merged_state(model):
     import copy
-
     return {k: v.clone() for k, v in copy.deepcopy(model).merge_and_unload().state_dict().items()}
 
 
@@ -439,7 +440,9 @@ def test_target_parameters_param_wrapper_syncs_merged_experts():
     base = torch.nn.Sequential(torch.nn.Linear(16, 16, bias = False))
     base.add_module("experts", _Experts())
     config = peft.LoraConfig(
-        r = 2, target_modules = ["0"], target_parameters = ["experts.gate_up_proj"],
+        r = 2,
+        target_modules = ["0"],
+        target_parameters = ["experts.gate_up_proj"],
         init_lora_weights = False,
     )
     model = peft.get_peft_model(base, config)
@@ -490,9 +493,7 @@ def test_trainable_token_indices_raises(monkeypatch):
     monkeypatch.delenv(_STALE_ENV, raising = False)
     torch.manual_seed(1)
     base = torch.nn.Sequential(torch.nn.Embedding(32, 16), torch.nn.Linear(16, 16))
-    config = peft.LoraConfig(
-        r = 2, target_modules = ["1"], trainable_token_indices = {"0": [1, 3]}
-    )
+    config = peft.LoraConfig(r = 2, target_modules = ["1"], trainable_token_indices = {"0": [1, 3]})
     model = peft.get_peft_model(base, config)
     trainer, rec = _peft_trainer(model)
     with pytest.raises(RuntimeError, match = "trainable"):

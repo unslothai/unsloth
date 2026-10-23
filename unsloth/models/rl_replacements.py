@@ -2540,7 +2540,9 @@ def _unsloth_vllm_peft_unsupported(model):
     """PEFT setups neither TRL's PEFT branch nor the out-of-place merge can sync: names of the culprits."""
     problems = []
     for name, config in (getattr(model, "peft_config", None) or {}).items():
-        if getattr(config, "is_prompt_learning", False) or getattr(config, "is_adaption_prompt", False):
+        if getattr(config, "is_prompt_learning", False) or getattr(
+            config, "is_adaption_prompt", False
+        ):
             problems.append(f"prompt learning adapter '{name}' ({_unsloth_vllm_peft_type(config)})")
         if getattr(config, "trainable_token_indices", None):
             problems.append(f"trainable_token_indices on adapter '{name}'")
@@ -2655,7 +2657,9 @@ def _unsloth_vllm_sync_kind(trainer):
             return "skip"
         raise RuntimeError(
             "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync this PEFT model "
-            "into TRL's own vLLM engine: " + "; ".join(problems) + ". These cannot be merged into the "
+            "into TRL's own vLLM engine: "
+            + "; ".join(problems)
+            + ". These cannot be merged into the "
             "base weights under vLLM's parameter names, so every rollout would come from the initial "
             "weights while the policy trains.\n"
             "Use a plain LoRA adapter, or set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
