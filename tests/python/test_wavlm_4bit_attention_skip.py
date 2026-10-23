@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 VISION_PATH = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "vision.py"
-ATTENTION = {"q_proj", "k_proj", "v_proj", "out_proj"}
+ATTENTION = {"attention.q_proj", "attention.k_proj", "attention.v_proj", "attention.out_proj"}
 
 
 def _architecture_skip_modules():
@@ -54,8 +54,22 @@ def test_only_attention_projections_match_the_transformers_skip_matcher():
         model = transformers.WavLMForCTC(config)
     skip = _architecture_skip_modules()(["wavlm"])
     kept = {
-        n.rsplit(".", 1)[-1]
+        ".".join(n.split(".")[-2:])
         for n, m in model.named_modules()
         if isinstance(m, torch.nn.Linear) and not should_convert(n, skip)
     }
     assert kept == ATTENTION
+
+
+def test_a_bart_style_decoder_is_still_quantized():
+    utils = pytest.importorskip("transformers.quantizers.quantizers_utils")
+    should_convert = getattr(utils, "should_convert_module", None)
+    if should_convert is None:
+        pytest.skip("transformers < 5 matches skip keys per path component")
+    skip = _architecture_skip_modules()(["speech-encoder-decoder", "wavlm", "bart"])
+    for name in (
+        "decoder.model.decoder.layers.0.self_attn.q_proj",
+        "decoder.model.decoder.layers.0.encoder_attn.out_proj",
+    ):
+        assert should_convert(name, skip), name
+    assert not should_convert("encoder.encoder.layers.0.attention.q_proj", skip)

@@ -2741,7 +2741,10 @@ def _architecture_skip_modules(model_types):
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
     # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
     if any(mt == "wavlm" for mt in model_types):
-        skip.extend(("q_proj", "k_proj", "v_proj", "out_proj"))
+        # Qualified by the module name so a composite's decoder (SpeechEncoderDecoderModel) stays quantized.
+        skip.extend(
+            ("attention.q_proj", "attention.k_proj", "attention.v_proj", "attention.out_proj")
+        )
     if any(mt.startswith("gemma3n") for mt in model_types):
         skip.extend(("correction_coefs", "prediction_coefs"))
         for name in ("altup_projections", "altup_unembed_projections"):
