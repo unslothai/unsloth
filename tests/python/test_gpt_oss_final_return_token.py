@@ -77,3 +77,10 @@ def test_earlier_answer_with_thinking_stays_on_the_final_channel(thinking):
     assert text == _render(
         [USER, REPLY, {"role": "user", "content": "Bye"}], add_generation_prompt = True
     )
+
+
+def test_earlier_turn_with_only_thinking_keeps_its_analysis():
+    # Matches unsloth/gpt-oss-20b: a previous turn with reasoning but no answer stays on analysis.
+    earlier = {"role": "assistant", "thinking": "Let me think."}
+    text = _render([USER, earlier, {"role": "user", "content": "Bye"}], add_generation_prompt = True)
+    assert "<|start|>assistant<|channel|>analysis<|message|>Let me think.<|end|>" in text
