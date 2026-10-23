@@ -1213,7 +1213,7 @@ export function ChatMcpServersDialog({
                 {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing}>
+              <Button variant="secondary" size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>

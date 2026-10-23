@@ -398,14 +398,17 @@ export const BUDGET = {
   // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
   // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
   // about 100 B over a local one).
+  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
+  // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
+  // was already over the line above. Set to the merged build plus about 200 B.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at 85ee7d903 the build measures 6,927,839 B raw / 2,086,988 B transfer (Node 24).
+  // Merged with main at 00b97e087 the build measures 6,926,391 B raw / 2,086,517 B transfer (Node 24).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
-  transferBytes: 2_087_188,
-  rawBytes: 6_928_339,
+  transferBytes: 2_086_717,
+  rawBytes: 6_926_891,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

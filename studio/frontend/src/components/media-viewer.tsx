@@ -259,7 +259,7 @@ export function MediaViewer({
                   "flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-full px-4 text-sm font-medium text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50",
                   FLOATING,
                 )
-              : "mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              : "mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full bg-action px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           }
         >
           <HugeiconsIcon icon={actions.primary.icon} strokeWidth={1.75} className="size-4" />

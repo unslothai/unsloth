@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -8,10 +9,6 @@ import {
   Cancel01Icon,
   CheckmarkCircle01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -367,7 +364,7 @@ export function GuidedTour({
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
-                          <ChevronLeftIcon className="size-4" />
+                          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
                           Back
                         </Button>
                         {isLast ? (
@@ -386,7 +383,7 @@ export function GuidedTour({
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
-                            <ChevronRightIcon className="size-4" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
                           </Button>
                         )}
                       </div>

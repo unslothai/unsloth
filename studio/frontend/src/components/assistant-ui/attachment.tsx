@@ -4,6 +4,7 @@
 "use client";
 
 // Avatar removed — caused circular crop on image thumbnails
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   AttachmentCardPreview,
   attachmentPreview,
@@ -60,7 +61,7 @@ import {
   TextAlignLeft01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
+import { PlusIcon, XIcon } from "lucide-react";
 import {
   createContext,
   type FC,
@@ -432,7 +433,7 @@ const PastedTextAttachmentUI: FC<{
               {canInline ? (
                 <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
                   Show in text field
-                  <ChevronRightIcon className="size-3" />
+                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                 </span>
               ) : null}
             </span>

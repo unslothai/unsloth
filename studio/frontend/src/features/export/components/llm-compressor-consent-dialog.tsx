@@ -82,7 +82,7 @@ export function LlmCompressorConsentDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           {!blocked ? (
-            <AlertDialogAction onClick={() => resolve(true)}>
+            <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
               Install and continue
             </AlertDialogAction>
           ) : null}

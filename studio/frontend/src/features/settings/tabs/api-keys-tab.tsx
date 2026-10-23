@@ -30,9 +30,9 @@ import { KeylessApiAccessSection } from "../components/keyless-api-access-sectio
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteLanSummary } from "../components/remote-lan-summary";
 import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
+import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function ApiKeysTab() {
@@ -47,6 +47,8 @@ export function ApiKeysTab() {
   const [revealed, setRevealed] = useState<string | null>(null);
   const setNewApiKey = useSettingsDialogStore((s) => s.setNewApiKey);
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
+  // Owner-only routes, as the Remote & LAN tab is.
+  usePublishAccessUrls(isOwner);
   const [keyless, setKeyless] = useState<{
     scope: KeylessApiAccessScope;
     tools: boolean;
@@ -224,8 +226,6 @@ export function ApiKeysTab() {
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-          <RemoteLanSummary />
-
           <ModelAutoSwitchSection />
 
           <ModelAliasesSection />
@@ -272,7 +272,7 @@ export function ApiKeysTab() {
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {revoking
                 ? t("settings.apiKeys.revoking")

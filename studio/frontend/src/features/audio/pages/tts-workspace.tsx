@@ -391,7 +391,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "dark"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -636,7 +636,7 @@ export function TtsOutput({
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
           <div
-            className="flex w-full flex-col gap-2"
+            className="flex w-full max-w-xl flex-col gap-2"
             onErrorCapture={(event) => {
               // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
               const media = event.target;

@@ -4,12 +4,13 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import {
   Add01Icon,
-  Search01Icon,
   Copy01Icon,
   CubeIcon,
   Delete02Icon,
   Key01Icon,
   MoreHorizontalIcon,
+  PlusSignIcon,
+  Search01Icon,
   UserBlock01Icon,
   UserCheck01Icon,
 } from "@hugeicons/core-free-icons";
@@ -584,6 +585,7 @@ function OwnerAccountsTab() {
                   variant="dark"
                   disabled={busy || !username.trim()}
                 >
+                  {!busy && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
                   {busy && <Spinner label={t("common.loading")} />}
                   {t("settings.accounts.create")}
                 </Button>

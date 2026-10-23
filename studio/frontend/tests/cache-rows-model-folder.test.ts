@@ -274,8 +274,9 @@ test("a clear waits for the measurement that is replacing the rows", async () =>
   const confirm = [...walk(reloading)].filter(
     (element) =>
       element.type === "Button" &&
-      typeof element.props?.className === "string" &&
-      element.props.className.includes("bg-destructive"),
+      // The dialog's confirm: the row triggers are size="sm".
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
   );
   assert.equal(confirm.length, 1);
   assert.equal(confirm[0].props?.disabled, true);
@@ -309,8 +310,8 @@ test("a measurement that failed leaves the clears disabled", async () => {
   const destructive = [...walk(failed)].filter(
     (element) =>
       element.type === "Button" &&
-      typeof element.props?.className === "string" &&
-      element.props.className.includes("bg-destructive"),
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
   );
   assert.equal(destructive[0].props?.disabled, true);
 });

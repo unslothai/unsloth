@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,9 +16,6 @@ import { useT } from "@/i18n";
 import {
   DocumentAttachmentIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 
@@ -85,7 +83,7 @@ export function DocumentUploadRedirectDialog({
           </Button>
           <Button type="button" onClick={onOpenLearningRecipes}>
             {t("studio.dataset.documentRedirect.openAction")}
-            <ChevronRightIcon className="size-4" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
           </Button>
         </DialogFooter>
       </DialogContent>

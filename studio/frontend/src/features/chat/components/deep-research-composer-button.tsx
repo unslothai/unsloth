@@ -313,7 +313,7 @@ export function DeepResearchComposerButton({
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
-        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-primary/70"
+        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-foreground/70"
       />
     </button>
   );
