@@ -190,6 +190,23 @@ test("status parsing tolerates missing and malformed fields", () => {
   const current = parsePromptUpsamplerStatus({ ...earlier, current_downloaded: true, current_missing_bytes: 0 });
   assert.equal(upsamplerNeedsDownload(current), false);
   assert.equal(upsamplerServesEarlierQuant(current), false);
+  // A model-only fallback (earlier quant, no projector): the Download fetches the current default AND the projector,
+  // so it is sized at current_missing_bytes and named as an earlier quant, not as a missing projector alone.
+  const modelOnly = parsePromptUpsamplerStatus({
+    ...earlier,
+    mmproj_downloaded: false,
+    current_filename: "upsampler-UD-Q4_K_XL.gguf",
+    current_missing_bytes: 6_888_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(modelOnly), true);
+  assert.equal(upsamplerNeedsDownload(modelOnly), true);
+  assert.equal(upsamplerDownloadBytes(modelOnly), 6_888_000_000);
+  // The current default itself with its projector missing is the projector-only case.
+  const currentNoProjector = { ...modelOnly, filename: "upsampler-UD-Q4_K_XL.gguf", current_missing_bytes: 900_000_000 };
+  assert.equal(upsamplerServesEarlierQuant(currentNoProjector), false);
+  assert.equal(upsamplerDownloadBytes(currentNoProjector), 900_000_000);
+  // Without current_filename (not reported) a model with no projector stays the projector-only case.
+  assert.equal(upsamplerServesEarlierQuant({ ...modelOnly, current_filename: "" }), false);
   const olderBackend = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
   assert.equal(olderBackend.current_downloaded, true);
   assert.equal(upsamplerNeedsDownload(olderBackend), false);

@@ -154,7 +154,7 @@ function UpsamplerDownloadNotice({
         <>
           <span className="text-muted-foreground">
             {upsamplerServesEarlierQuant(status)
-              ? `Prompts are enhanced with an earlier upsampler quant (${status.filename}). Download the current one${size ? ` (${size})` : ""} for better captions.`
+              ? `Prompts are enhanced with an earlier upsampler quant (${status.filename})${status.mmproj_downloaded ? "" : ", edits from the text alone"}. Download the current one${size ? ` (${size})` : ""} for better captions.`
               : status.downloaded
               ? `The prompt upsampler's vision projector${size ? ` (${size})` : ""} is not downloaded. Until it is, edits are enhanced from the text alone.`
               : `The prompt upsampler${size ? ` (${size})` : ""} is not downloaded. Until it is, prompts run as typed.`}

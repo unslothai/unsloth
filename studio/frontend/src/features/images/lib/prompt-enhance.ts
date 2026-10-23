@@ -48,6 +48,9 @@ export interface PromptUpsamplerStatus {
   current_downloaded: boolean;
   // Bytes the Download control still fetches for the current default, when an earlier quant serves.
   current_missing_bytes: number;
+  // The current default model file ("" from a backend that does not report it): ``filename`` differs while an
+  // earlier quant serves.
+  current_filename: string;
   // Local files from the env overrides: no repo download is offered beside them.
   override: boolean;
   download: PromptUpsamplerDownload;
@@ -102,6 +105,7 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
         ? body.current_downloaded
         : body.downloaded === true && body.mmproj_downloaded === true,
     current_missing_bytes: num(body.current_missing_bytes) ?? 0,
+    current_filename: str(body.current_filename) ?? "",
     override: body.override === true,
     download,
   };
@@ -117,9 +121,15 @@ export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
   );
 }
 
-/** Enhancing already runs from an earlier quant; the Download control fetches the current default. */
+/** Enhancing already runs from an earlier quant; the Download control fetches the current default (and the vision
+ * projector, when that is missing too). A model with no projector is an earlier quant when it is not the current
+ * default file: the Download then fetches both, not the projector alone. */
 export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
-  return status.downloaded && status.mmproj_downloaded && !status.current_downloaded;
+  if (!status.downloaded || status.current_downloaded) return false;
+  return (
+    status.mmproj_downloaded ||
+    (status.current_filename !== "" && status.filename !== "" && status.filename !== status.current_filename)
+  );
 }
 
 /** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
