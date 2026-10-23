@@ -2439,6 +2439,19 @@ def test_probe_sees_an_in_place_edit_of_an_inference_tensor():
     assert mg.weights_probe(_Dit()) is None
 
 
+def test_probe_stays_inside_inference_weights_past_two_to_the_24_bytes():
+    # 3072 x 3072 bf16 = 18,874,368 bytes: a float32 linspace puts its last sample at n, one past the end
+    with torch.inference_mode():
+        dit = torch.nn.Linear(3072, 3072, bias = False, dtype = torch.bfloat16)
+        dit.weight.fill_(1.0)
+        dit.weight.view(-1)[-1] = 2.0
+    probe = mg.weights_probe(dit)
+    assert probe is not None and len(probe) == mg._PROBE_SAMPLES
+    with torch.inference_mode():
+        dit.weight.view(-1)[-1] = -2.0  # flips the high (last) byte of the last element
+    assert mg.weights_probe(dit) != probe  # the last byte is sampled
+
+
 def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica_on_the_next_render():
     with torch.inference_mode():
         dit = _ScaleDit()

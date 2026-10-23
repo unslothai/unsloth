@@ -1189,6 +1189,7 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       searchPlaceholder: "Sök genvägar …",
       keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
@@ -1196,25 +1197,25 @@ export const sv = {
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
       metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
       altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
       desktopOnly: "Endast i skrivbordsappen",
-      builtInKey: "Inbyggt: {key}",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1404,6 +1405,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",
@@ -1431,10 +1436,6 @@ export const sv = {
         decreaseReasoningEffort: {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
-        },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
         },
         renameChat: {
           label: "Byt namn på chatt",

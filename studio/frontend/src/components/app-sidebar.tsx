@@ -368,6 +368,7 @@ type NavRowDef = {
   pendingTooltip?: string;
   // Greyed out but clickable: Train on an upgradable Chat only install opens the full install dialog.
   dimmed?: boolean;
+  tooltipAction?: { label: string; onClick: () => void };
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -649,6 +650,7 @@ function NavItem({
   spinner,
   waiting,
   tooltip,
+  tooltipAction,
   alwaysTooltip,
   onIntent,
   badge,
@@ -673,6 +675,7 @@ function NavItem({
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
+  tooltipAction?: { label: string; onClick: () => void };
   // Show that tooltip on the expanded row too, not just the collapsed rail where it
   // stands in for the hidden label.
   alwaysTooltip?: boolean;
@@ -682,10 +685,25 @@ function NavItem({
   // Wraps the row in a hover flyout that names it, so the label tooltip is dropped.
   flyout?: (row: ReactNode) => ReactNode;
 }) {
+  const rowTooltip =
+    tooltip && tooltipAction
+      ? {
+          className: "tooltip-compact",
+          children: (
+            <div className="flex flex-col items-start gap-1.5">
+              <span>{tooltip}</span>
+              <Button size="xs" onClick={tooltipAction.onClick}>
+                {tooltipAction.label}
+              </Button>
+            </div>
+          ),
+        }
+      : (tooltip ?? label);
   const row = (
     <div className="relative">
       <SidebarMenuButton
-        tooltip={flyout ? undefined : (tooltip ?? label)}
+        tooltip={flyout ? undefined : rowTooltip}
+        interactiveTooltip={Boolean(tooltip && tooltipAction)}
         alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
         disabled={disabled}
         onClick={onClick}
@@ -3473,8 +3491,11 @@ export function AppSidebar() {
       disabled: chatOnlyMeasured && !fullInstall,
       dimmed: chatOnlyMeasured && fullInstall !== null,
       tooltip: fullInstall
-        ? "Training is not installed. Click to install it (at least 5 GB of disk space)."
+        ? "Training is not installed. It needs at least 5 GB of disk space."
         : trainDisabledHint,
+      tooltipAction: fullInstall
+        ? { label: "Install Training", onClick: () => setFullInstallOpen(true) }
+        : undefined,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
@@ -6250,6 +6271,7 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
+                    tooltipAction={rowState.pending ? undefined : row.tooltipAction}
                     alwaysTooltip={rowState.pending || Boolean(row.dimmed)}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
@@ -6447,7 +6469,12 @@ export function AppSidebar() {
                             active={row.active}
                             disabled={rowState.disabled}
                             dimmed={row.dimmed}
-                            tooltip={rowState.tooltip}
+                            // A menu item holds no button, but selecting it runs the same action.
+                            tooltip={
+                              row.tooltipAction && !rowState.pending
+                                ? `${rowState.tooltip} Click to install it.`
+                                : rowState.tooltip
+                            }
                             spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}

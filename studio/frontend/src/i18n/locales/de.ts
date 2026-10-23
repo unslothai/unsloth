@@ -1078,6 +1078,7 @@ export const de = {
     },
     keyboardShortcuts: {
       title: "Tastenkürzel",
+      intro: "Zum Ändern eines Kürzels die Tastenkombination auswählen und dann die neuen Tasten drücken",
       searchPlaceholder: "Kürzel suchen…",
       keystrokePlaceholder: "Kürzel drücken, um zu suchen",
       searchByKeystrokes: "Nach Tastendruck suchen",
@@ -1085,22 +1086,23 @@ export const de = {
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
-      recordingHint: "Neue Tastenkombination drücken oder Esc zum Abbrechen.",
       needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
       conflict: "Wird auch von einem anderen Kürzel verwendet",
       conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",
       edit: "Kürzel ändern",
-      clear: "Kürzel entfernen",
       reset: "Standard wiederherstellen",
       resetAll: "Alle auf Standard zurücksetzen",
-      primarySlot: "Kürzel",
-      alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
       altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
       desktopOnly: "Nur in der Desktop-App",
-      builtInKey: "Integriert: {key}",
+      groups: {
+        composer: "Eingabefeld",
+        chat: "Chat",
+        navigation: "Navigation",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1290,6 +1292,10 @@ export const de = {
           label: "Fotos und Dateien anhängen",
           description: "Einen Anhang zum Eingabefeld hinzufügen",
         },
+        openComposerMenu: {
+          label: "+-Menü öffnen",
+          description: "Das +-Menü des Eingabefelds mit Werkzeugen und Anhängen öffnen",
+        },
         sendMessage: {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
@@ -1317,10 +1323,6 @@ export const de = {
         decreaseReasoningEffort: {
           label: "Denkaufwand verringern",
           description: "Den Denkaufwand um eine Stufe senken",
-        },
-        toggleFastMode: {
-          label: "Fast-Modus umschalten",
-          description: "Den Fast-Modus ein- oder ausschalten",
         },
         renameChat: {
           label: "Chat umbenennen",
