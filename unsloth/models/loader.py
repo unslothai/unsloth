@@ -1303,6 +1303,11 @@ class FastLanguageModel(FastLlamaModel):
                 "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
                 "their base weights frozen, so there is no fp8 training step to take."
             )
+        if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
+            )
         if not full_finetuning:
             kwargs.pop("float8_training", None)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
@@ -2217,6 +2222,11 @@ class FastModel(FastBaseModel):
             raise ValueError(
                 "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
                 "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if float8_training is not None and qat_scheme is not None:
+            raise ValueError(
+                "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
+                "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
             )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:

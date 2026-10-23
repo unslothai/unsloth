@@ -247,6 +247,28 @@ def test_loader_rejects_float8_training_for_lora():
             )
 
 
+@pytest.mark.parametrize("qat_scheme", ["int8-int4", "fp8-fp8", "phone-deployment"])
+def test_loader_rejects_float8_training_with_qat(monkeypatch, qat_scheme):
+    # QAT replaces nn.Linear with FakeQuantizedLinear before float8 conversion, which then matches nothing.
+    from unsloth import FastLanguageModel, FastModel
+
+    converted = []
+    monkeypatch.setattr(
+        "unsloth.models.loader.convert_model_to_float8_training",
+        lambda *a, **k: converted.append(1) or [],
+    )
+    for loader in (FastLanguageModel, FastModel):
+        with pytest.raises(ValueError, match = "cannot be combined"):
+            loader.from_pretrained(
+                "trl-internal-testing/tiny-Qwen3ForCausalLM",
+                full_finetuning = True,
+                load_in_4bit = False,
+                float8_training = True,
+                qat_scheme = qat_scheme,
+            )
+    assert converted == []
+
+
 def _cuda_like(monkeypatch, cap, name):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
