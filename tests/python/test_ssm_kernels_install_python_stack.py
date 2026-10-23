@@ -242,34 +242,32 @@ def _real_probe(extension, path):
     )
 
 
-def test_the_probe_passes_an_extension_free_mamba_ssm_only(tmp_path):
-    pytest.importorskip("torch")
-    import importlib.util
+# Stand-ins for selective_scan_cuda / causal_conv1d_cuda, so a real CUDA build on the host cannot
+# change the answer.
+_FAKE_SCAN, _FAKE_CONV = "unsloth_test_selective_scan_ext", "unsloth_test_causal_conv1d_ext"
 
-    if any(importlib.util.find_spec(e) for e in ("selective_scan_cuda", "causal_conv1d_cuda")):
-        pytest.skip("a CUDA mamba_ssm / causal_conv1d is installed here")
+
+def test_the_probe_passes_an_extension_free_mamba_ssm_only(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN})
     # The extension-free mamba_ssm wheel ships no selective_scan_cuda at all: kept.
-    assert _real_probe("selective_scan_cuda", tmp_path).returncode == 0
+    assert _real_probe(_FAKE_SCAN, tmp_path).returncode == 0
     # causal_conv1d has no extension-free wheel: a missing causal_conv1d_cuda is still broken.
-    missing = _real_probe("causal_conv1d_cuda", tmp_path)
+    missing = _real_probe(_FAKE_CONV, tmp_path)
     assert missing.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, missing.stderr
     # A build for another torch: the module is there but does not load.
-    (tmp_path / "selective_scan_cuda.py").write_text(
-        "raise ImportError('undefined symbol: _ZN3c10')\n"
-    )
-    broken = _real_probe("selective_scan_cuda", tmp_path)
+    (tmp_path / f"{_FAKE_SCAN}.py").write_text("raise ImportError('undefined symbol: _ZN3c10')\n")
+    broken = _real_probe(_FAKE_SCAN, tmp_path)
     assert broken.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, broken.stderr
-    assert "selective_scan_cuda" in broken.stderr
+    assert _FAKE_SCAN in broken.stderr
 
 
 def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):
     # Studio's Triton route installs mamba_ssm without selective_scan_cuda; setup must not
     # uninstall it as stale on every update (offline, the next Mamba-2 load would lose it).
     pytest.importorskip("torch")
-    import importlib.util
-
-    if importlib.util.find_spec("selective_scan_cuda") is not None:
-        pytest.skip("a CUDA mamba_ssm is installed here")
+    monkeypatch.setattr(ips, "_SSM_KERNEL_EXTENSIONS", {"mamba_ssm": _FAKE_SCAN})
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN}, raising = False)
     monkeypatch.setattr(ips, "NO_TORCH", False)
     monkeypatch.setattr(ips, "IS_MACOS", False)
     monkeypatch.setattr(
