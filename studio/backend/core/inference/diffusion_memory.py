@@ -1464,15 +1464,12 @@ def calibrated_image_activation(
     )
 
 
-# ComfyUI's minimum_inference_memory() (comfy/model_management.py): 0.8 GiB + EXTRA_RESERVED_VRAM, 400 MiB on Linux,
-# 600 MiB on Windows plus 100 MiB on a card above 15 GiB. ComfyUI loads weights against free memory minus
-# max(that, the model's activation estimate + EXTRA_RESERVED_VRAM); the planner prices activations separately.
+# ComfyUI's minimum_inference_memory() (comfy/model_management.py); activations are priced separately here.
 COMFY_MIN_INFERENCE_MIB = 800
 COMFY_EXTRA_RESERVED_MIB = 400
 COMFY_EXTRA_RESERVED_WINDOWS_MIB = 600
 COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB = 100
-# The fixed floor every 8-20 GB card already ran with: the placements measured on T4 / 8-16 GB consumer cards (Q21
-# int8 on 8 GB, Wan on 2x T4, the reported 16 GB card) are tuned against it, and ComfyUI's 1.2 GiB alone flips them.
+# Placements measured on T4 / 8-16 GB cards are tuned against 2 GiB; ComfyUI's 1.2 GiB alone flips them.
 DISCRETE_RESERVE_FLOOR_MIB = 2048
 
 
@@ -1487,7 +1484,7 @@ def comfy_min_inference_mib(total_mib: Optional[int] = None) -> int:
 
 
 def discrete_reserve_mib(total_mib: Optional[int] = None) -> int:
-    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB. The same on every card size."""
+    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB."""
     return max(DISCRETE_RESERVE_FLOOR_MIB, comfy_min_inference_mib(total_mib))
 
 
@@ -1507,8 +1504,7 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # Fixed, not a share of the card: activations and base overhead are priced separately (10% capped at 4 GiB kept
-    # 2.4-4 GiB idle on 24-40 GiB cards).
+    # Fixed, not a share: a capped 10% kept 2.4-4 GiB idle on 24-40 GiB cards.
     return discrete_reserve_mib(base)
 
 

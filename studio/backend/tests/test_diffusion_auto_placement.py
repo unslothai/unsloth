@@ -480,8 +480,7 @@ def test_partly_used_big_cards_get_the_companion_split(monkeypatch):
 
 
 def test_partly_used_big_card_places_the_companion_split_with_the_fixed_reserve(monkeypatch):
-    # 2x B200 with 20 / 12 GiB free, a 12 GiB denoiser and a 9 GiB encoder: the 4 GiB capped reserve left the primary
-    # short and the load offloaded on one card; the fixed 2 GiB reserve puts the encoder on cuda:1.
+    # 2x B200, 20 / 12 GiB free: the old 4 GiB reserve offloaded; 2 GiB puts the encoder on cuda:1.
     b200 = 182272
     host = Host(
         [

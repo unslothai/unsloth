@@ -240,8 +240,7 @@ def test_resident_proof_uses_the_budget_fast_was_placed_with(monkeypatch):
     import core.inference.diffusion_memory as dm
     from core.inference.diffusion import _plan_proves_resident
 
-    # The discrete reserve is a flat 2 GiB, the same as fast's floor, so widen it to 8 GiB (fast keeps half) to put
-    # free memory between the auto and the fast budget.
+    # Widen the 2 GiB reserve to 8 GiB (fast keeps half) so auto and fast budgets differ.
     monkeypatch.setattr(dm, "_reserve_mib", lambda kind, base: 8192)
     fast = _plan(81_500, LTX23_DIT_MIB)
     assert fast.offload_policy == OFFLOAD_NONE
