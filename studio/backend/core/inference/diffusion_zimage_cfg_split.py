@@ -18,10 +18,8 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Group offload counts as resident while every one of the denoiser's offload groups is pinned on the card (the
-measured placement keeps the whole int8 / fp8 Z-Image transformer resident at a 12 GiB budget, and only the prompt
-encode streams some of it, re-pinned before step 0); it is checked per call, so a render whose groups stream keeps the
-batched call. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
+recompile. Group offload counts as resident (checked per call) while every offload group is pinned (int8 / fp8 Z-Image
+at 12 GiB: all resident, only the prompt encode streams some, re-pinned before step 0). Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
 Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 
 Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
@@ -43,7 +41,6 @@ from typing import Any, Optional
 ZIMAGE_CFG_SPLIT_ENV = "UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT"
 _TRANSFORMER_CLASS = "ZImageTransformer2DModel"
 _STREAMED_POLICIES = ("streaming", "sequential")
-# Group offload streams blocks only when some of the denoiser's offload groups are not pinned resident.
 _GROUP_POLICY = "group"
 # Instance attributes: armed at load, images per guidance-off call during a render, per-load counters.
 _ARMED_ATTR = "_unsloth_zimage_cfg_split"
@@ -86,7 +83,7 @@ def _skip_keys_calls_apart(skip: Any) -> bool:
 
 
 def _groups_stream(slots: dict) -> bool:
-    """Under group offload: whether any of the denoiser's offload groups streams now (unknown counts as streaming)."""
+    """Whether any offload group streams now (unknown = streaming)."""
     state = slots.get(_STREAM_STATE_ATTR)
     if not isinstance(state, dict):
         return True
@@ -417,11 +414,8 @@ def install_zimage_cfg_split(
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
-    """Whether a guided render of this load would run its transformer calls at the guidance-off batch (the split is
-    armed and nothing declines it now), so it needs no more activation memory than a guidance-off render. The request
-    guard sizes the render from this: priced as a doubled batch it released resident offload groups, which then
-    declined the split and compiled the batched call after all. A ``compiled_only`` load whose denoiser runs eager
-    keeps the batched guided call, so it is priced doubled. False when unknown."""
+    """Whether a guided render runs at the guidance-off batch (split armed, nothing declines it), so the request guard
+    must not price it doubled: doing so released resident groups, declined the split and recompiled. False if unknown."""
     denoiser = getattr(pipe, "transformer", None)
     slots = getattr(denoiser, "__dict__", None)
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():

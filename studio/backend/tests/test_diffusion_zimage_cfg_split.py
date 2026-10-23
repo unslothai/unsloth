@@ -160,9 +160,7 @@ def test_streamed_denoiser_is_not_armed(policy):
 
 
 def test_group_offload_with_every_group_resident_splits():
-    """Studio's 12 GiB plan for Z-Image-Turbo int8 / fp8 is group offload with all 37 offload groups pinned resident
-    (only the prompt encode streams some, re-pinned before step 0). The split used to decline every 'group' load as
-    "streamed", so the first guided render compiled the three block kinds again at batch 2 (3 recompiles)."""
+    """12 GiB Z-Image-Turbo int8 / fp8 = group offload, all 37 groups resident; declining it cost 3 recompiles."""
     torch._dynamo.reset()
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
@@ -185,8 +183,7 @@ def test_group_offload_with_every_group_resident_splits():
 
 @pytest.mark.parametrize("state", [None, {"streamed": 3}, {"streamed": "?"}])
 def test_group_offload_while_groups_stream_keeps_the_batched_call(state):
-    """A group-offloaded denoiser whose groups stream (partial residency, an oversized request's release, or no
-    residency record at all) would upload its weights twice per guided step: it keeps the batched call."""
+    """Streaming groups (partial, released, or no record) keep the batched call."""
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
     assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
@@ -501,10 +498,7 @@ def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
 
 
 def test_request_guard_sizes_a_split_guided_render_as_guidance_off():
-    """The generate-time request guard priced a guided render as a doubled denoiser batch ("placed from a peak recorded
-    without CFG"), released 5 GiB of the resident groups for it, and the now-streamed denoiser declined the split: the
-    first guided render compiled the batched call after all. Where the split will run, the render is a guidance-off one
-    twice over and needs no extra memory."""
+    """Pricing a split render doubled released 5 GiB of resident groups, declining the split; it needs no extra memory."""
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
     assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # not armed
@@ -524,8 +518,7 @@ def test_request_guard_sizes_a_split_guided_render_as_guidance_off():
 
 
 def test_request_guard_prices_an_eager_compiled_only_load_as_doubled():
-    """compiled_only: an eager denoiser keeps the batched guided call, so the guard sizes it doubled even with every
-    offload group resident; once compiled the split runs and the guidance-off price applies."""
+    """compiled_only: eager keeps the doubled price, compiled gets the guidance-off one."""
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
     assert zs.install_zimage_cfg_split(pipe, offload_policy = "group", compiled_only = True) is None

@@ -13076,8 +13076,7 @@ class DiffusionBackend:
                         and workflow in ("txt2img", "img2img", "inpaint")
                         and guided_runs_at_guidance_off_batch(state.pipe)
                     ):
-                        # Z-Image's CFG split runs each guided step as two guidance-off calls: no doubled batch.
-                        # Only the plain pipelines: a control call carries kwargs the split leaves batched.
+                        # CFG split = two guidance-off calls; control calls stay batched, so plain pipelines only
                         guard_cfg = False
                     # a reference family's source image joins the denoiser's sequence, and only FLUX.3 and the
                     # ``reference_resolutions`` families price it in guard_condition_pixels
