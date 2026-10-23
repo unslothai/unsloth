@@ -2593,7 +2593,11 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
 
 
 def _bnb_local_shards_available(cpu_shards = False):
-    from .fsdp2_bnb_optim import bnb_local_shards_enabled, bnb_steps_cpu_tensors, supports_local_shards
+    from .fsdp2_bnb_optim import (
+        bnb_local_shards_enabled,
+        bnb_steps_cpu_tensors,
+        supports_local_shards,
+    )
 
     if not bnb_local_shards_enabled():
         return False

@@ -458,5 +458,10 @@ def test_q_galore_is_refused_not_localized():
     with pytest.raises(ValueError, match = "cannot"):
         native._refuse_bnb_optimizer_cls((QGaLoreAdamW8bit, {"lr": 1e-3}))
     # bitsandbytes' own Adam classes still step local shards.
-    for cls in (bnb.optim.AdamW8bit, bnb.optim.Adam8bit, bnb.optim.PagedAdamW8bit, bnb.optim.PagedAdamW32bit):
+    for cls in (
+        bnb.optim.AdamW8bit,
+        bnb.optim.Adam8bit,
+        bnb.optim.PagedAdamW8bit,
+        bnb.optim.PagedAdamW32bit,
+    ):
         assert supports_local_shards(cls([torch.nn.Parameter(torch.zeros(4))])), cls

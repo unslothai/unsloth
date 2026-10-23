@@ -94,6 +94,7 @@ def _plain_bnb_class(cls, base):
     comes from bitsandbytes and none replaces step / init_state / update_step. A subclass elsewhere
     (Unsloth's QGaLoreAdamW8bit: optimizer_name 'adam', its own step() projecting whole 2-D weights)
     cannot be stepped shard by shard."""
+
     def unwrapped(fn):
         while hasattr(fn, "__wrapped__"):
             fn = fn.__wrapped__
@@ -108,7 +109,9 @@ def _plain_bnb_class(cls, base):
         for name in ("step", "init_state", "update_step"):
             # torch.optim.Optimizer.__init__ rewraps the class's inherited step for profiling
             # (`step.hooked`), so compare the unwrapped function with the base's.
-            if name in vars(klass) and unwrapped(vars(klass)[name]) is not unwrapped(getattr(base, name)):
+            if name in vars(klass) and unwrapped(vars(klass)[name]) is not unwrapped(
+                getattr(base, name)
+            ):
                 return False
     return False
 
@@ -119,7 +122,6 @@ def bnb_steps_cpu_tensors():
     releases require GPU inputs). Probed once with one step on a tiny CPU parameter of each."""
     try:
         import bitsandbytes as bnb
-
         for kwargs in ({"optim_bits": 8, "min_8bit_size": 0}, {"optim_bits": 32}):
             p = torch.nn.Parameter(torch.zeros(256))
             p.grad = torch.ones(256)
