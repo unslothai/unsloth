@@ -233,6 +233,16 @@ export function createChatModelHistoryReader(
       updateSeen = true;
       emit(chatModelSwitchTargetFromThread(thread));
     },
+    // A change this reader was not handed (another tab's): report no model until a fresh read
+    // lands, and let no opening read still in flight answer for it.
+    invalidate(): void {
+      if (disposed) {
+        return;
+      }
+      updateSeen = true;
+      emitted = undefined;
+      onModel(null);
+    },
     dispose(): void {
       disposed = true;
     },

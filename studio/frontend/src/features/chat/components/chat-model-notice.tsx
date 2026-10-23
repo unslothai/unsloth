@@ -66,6 +66,7 @@ export function useChatCreatedModel(
       // Another tab's change is re-raised as a plain Event with no thread. This tab's own
       // thread-less events (streamed chunks) are CustomEvents and move no model.
       if (event instanceof CustomEvent) return;
+      reader.invalidate();
       const generation = ++readGeneration;
       void getStoredChatThread(threadId)
         .then((thread) => {
