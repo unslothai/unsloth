@@ -71,6 +71,7 @@ import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   ChevronDownStandardIcon,
+  ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
@@ -85,9 +86,6 @@ import {
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -672,7 +670,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -745,7 +743,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -773,7 +771,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -1150,7 +1148,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
                   disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
@@ -1265,9 +1263,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={handleClear}
               disabled={clearing}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {clearing
                 ? t("settings.chat.clearingAction")

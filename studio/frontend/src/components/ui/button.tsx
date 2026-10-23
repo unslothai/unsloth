@@ -14,7 +14,8 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        // Neutral grey; the one key action on a surface uses `dark` instead.
+        default: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         dark: "bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background",
         // Filled, not bordered: a border is reserved for fields and value pickers (`picker`).
         outline:
@@ -31,7 +32,7 @@ export const buttonVariants = cva(
         muted: "bg-muted text-foreground hover:bg-muted/80",
         destructive:
           "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30",
-        link: "text-primary underline-offset-4 hover:underline",
+        link: "text-foreground underline-offset-4 hover:underline",
       },
       size: {
         default:

@@ -4619,6 +4619,7 @@ function VideoGenerator({
             ) : (
               <>
                 <Button
+                  variant="dark"
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}

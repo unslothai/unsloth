@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -438,7 +439,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
   HeadphonesIcon,
@@ -6511,7 +6511,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         )}
       >
@@ -7740,7 +7740,7 @@ const ComposerRightControls: FC<{
             }
             side="bottom"
             type="submit"
-            variant="default"
+            variant="dark"
             size="icon"
             // Stay clickable while docs index so a click can queue the send;
             // disabled only once a send is parked.
@@ -7764,7 +7764,7 @@ const ComposerRightControls: FC<{
               tooltip="Resume queue"
               side="bottom"
               type="button"
-              variant="default"
+              variant="dark"
               size="icon"
               onClick={onResumeClick}
               className="aui-composer-send ml-1.5 size-9 rounded-full"
@@ -7776,7 +7776,7 @@ const ComposerRightControls: FC<{
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
               type="button"
-              variant="default"
+              variant="dark"
               size="icon"
               className="aui-composer-cancel ml-1.5 size-9 rounded-full"
               aria-label="Stop queued message"
@@ -7789,7 +7789,7 @@ const ComposerRightControls: FC<{
               tooltip={followUpTooltip}
               side="bottom"
               type="button"
-              variant="default"
+              variant="dark"
               size="icon"
               disabled={disabled || queueDisabled}
               onClick={onQueueClick}
@@ -7804,7 +7804,7 @@ const ComposerRightControls: FC<{
       {isResearchActive ? (
         <Button
           type="button"
-          variant="default"
+          variant="dark"
           size="icon"
           className="aui-composer-cancel ml-1.5 size-9 rounded-full"
           aria-label={researchStopping ? "Stopping research" : "Stop research"}
@@ -7825,7 +7825,7 @@ const ComposerRightControls: FC<{
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
-                variant="default"
+                variant="dark"
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
@@ -7841,7 +7841,7 @@ const ComposerRightControls: FC<{
                 tooltip={followUpTooltip}
                 side="bottom"
                 type="button"
-                variant="default"
+                variant="dark"
                 size="icon"
                 onClick={onQueueClick}
                 className="aui-composer-send size-9 rounded-full"

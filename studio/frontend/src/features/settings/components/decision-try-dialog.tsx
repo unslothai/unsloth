@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,7 +33,6 @@ import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   AlertCircleIcon,
-  ArrowDown01Icon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
@@ -1195,7 +1195,7 @@ export function DecisionTryDialog({
                     />
                     {t("decisions.examples")}
                     <HugeiconsIcon
-                      icon={ArrowDown01Icon}
+                      icon={ChevronDownStandardIcon}
                       strokeWidth={1.75}
                       className="size-3.5"
                     />
@@ -1219,6 +1219,7 @@ export function DecisionTryDialog({
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button
+                variant="dark"
                 type="button"
                 onClick={() => void run()}
                 aria-busy={running}

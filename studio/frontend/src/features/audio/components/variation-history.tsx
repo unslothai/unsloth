@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { AudioGalleryClip } from "../api";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
@@ -32,7 +32,7 @@ export function VariationGroupRow({
       )}
     >
       <HugeiconsIcon
-        icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+        icon={open ? ChevronDownStandardIcon : ChevronRightStandardIcon}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{first.prompt}</span>

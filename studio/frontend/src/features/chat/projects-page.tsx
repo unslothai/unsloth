@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
@@ -78,7 +79,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -825,7 +826,7 @@ export function ProjectsPage() {
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
-                  <ChevronDownIcon
+                  <HugeiconsIcon icon={ChevronDownStandardIcon}
                     strokeWidth={1.75}
                     className={cn(
                       "size-4 transition-transform",

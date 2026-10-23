@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
@@ -19,9 +21,6 @@ import { MediaPageLink } from "@/components/media-page-link";
 import {
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
@@ -204,7 +203,7 @@ export function StudioPage(): ReactElement {
                     onClick={clearHistorySelection}
                     aria-label={t("studio.backToHistory")}
                   >
-                    <ChevronLeftIcon className="size-4" />
+                    <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
                   </Button>
                 )}
                 <TrainSubNav

@@ -4,8 +4,9 @@
 import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon, HomeWifiIcon } from "@hugeicons/core-free-icons";
+import { HomeWifiIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import {
@@ -154,7 +155,7 @@ export function RemoteLanSummary() {
           }
         >
           Manage
-          <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
+          <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
         </Button>
       </div>
       <div className="flex flex-col py-1">

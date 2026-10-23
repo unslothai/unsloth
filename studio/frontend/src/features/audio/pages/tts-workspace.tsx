@@ -391,7 +391,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "dark"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={

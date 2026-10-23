@@ -885,7 +885,7 @@ function CommentForm({
           type="submit"
           aria-label={t("browser.annotate.save")}
           title={t("browser.annotate.save")}
-          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
+          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-foreground text-background transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
         >
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4.5" />
         </button>
@@ -997,7 +997,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-foreground px-4 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>

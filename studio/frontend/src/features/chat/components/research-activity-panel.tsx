@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -39,7 +40,6 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  ChevronDown,
   ExternalLink,
   Pencil,
   Plus,
@@ -517,7 +517,7 @@ const ActivityRow = memo(function ActivityRow({
             })}
           </time>
           {hasDetails ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
           ) : null}
         </CollapsibleTrigger>
         {hasDetails ? <CollapsibleContent>{content}</CollapsibleContent> : null}
@@ -767,6 +767,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                 Review later
               </Button>
               <Button
+                variant="dark"
                 disabled={
                   pending ||
                   !draft.title.trim() ||

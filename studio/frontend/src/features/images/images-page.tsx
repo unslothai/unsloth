@@ -182,7 +182,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown, Recycle } from "lucide-react";
+import { Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -7171,7 +7171,7 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button
+                <Button variant="dark"
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}

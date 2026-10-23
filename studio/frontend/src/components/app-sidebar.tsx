@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
   SidebarContent,
@@ -151,7 +152,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Copy, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, Copy, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -836,7 +837,8 @@ function MediaNavDisclosure({
       )}
     >
       <span className="sidebar-row-action-glyph">
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           className={cn(
             "size-3.5 transition-transform duration-200",
             !expanded && "-rotate-90",
@@ -4684,7 +4686,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               Pinned
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* Pinning is the grouping, so no organize half and no "+". */}
             {renderSidebarHeaderMenu({
@@ -4822,7 +4824,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               <span className="min-w-0 truncate">{section.name}</span>
-              <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* As Recents has, a chat started here is filed here. */}
             <button
@@ -4944,7 +4946,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               {t("shell.navigation.projects")}
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -6465,7 +6467,7 @@ export function AppSidebar() {
               >
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
                 {/* Starts a chat outside any project, whatever page is open. */}
                 <button
@@ -6543,7 +6545,7 @@ export function AppSidebar() {
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", headerInset, scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>

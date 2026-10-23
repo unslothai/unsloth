@@ -12,9 +12,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Slider } from "@/components/ui/slider";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   Download01Icon,
   HeadphonesIcon,
   PauseIcon,
@@ -182,7 +182,7 @@ export function StemMixer({
                 />
                 Send to
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.75}
                   data-icon="inline-end"
                 />

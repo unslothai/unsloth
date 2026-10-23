@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, ChevronRightIcon, UploadIcon } from "lucide-react";
+import { UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -362,7 +363,8 @@ export function KnowledgeBaseDialog({
                           {kb.description ? ` · ${kb.description}` : ""}
                         </span>
                       </span>
-                      <ChevronRightIcon
+                      <HugeiconsIcon
+                        icon={ChevronRightStandardIcon}
                         strokeWidth={1.5}
                         className="size-3.5 shrink-0 text-muted-foreground"
                       />
@@ -477,7 +479,7 @@ function KnowledgeBaseDocuments({
     >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
-          <ChevronLeftIcon className="size-4" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
           All knowledge bases
         </Button>
         <Button size="sm" onClick={() => fileInputRef.current?.click()}>

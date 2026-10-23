@@ -261,7 +261,7 @@ export function ApiKeysTab() {
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {revoking
                 ? t("settings.apiKeys.revoking")

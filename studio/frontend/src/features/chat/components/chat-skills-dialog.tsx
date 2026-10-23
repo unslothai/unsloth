@@ -656,7 +656,7 @@ export function ChatSkillsDialog({
                   <>
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="destructive"
                       disabled={pending !== null}
                       onClick={() => setConfirmingDelete(selected)}
                       aria-label={t("skills.delete", { name: selected.name })}

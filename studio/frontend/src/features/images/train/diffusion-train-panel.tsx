@@ -2148,6 +2148,7 @@ export function DiffusionTrainPanel({
           className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8"
         >
           <Button
+            variant="dark"
             type="button"
             className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             onClick={onStart}
@@ -2400,6 +2401,7 @@ export function DiffusionTrainPanel({
                   <div className="flex flex-wrap gap-2">
                     {liveRunSummary?.can_resume && status.job_id && (
                       <Button
+                        variant="dark"
                         type="button"
                         className="flex-1"
                         onClick={() => void onResume(status.job_id as string)}
