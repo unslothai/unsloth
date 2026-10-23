@@ -1161,6 +1161,7 @@ export const he = {
     },
     keyboardShortcuts: {
       title: "קיצורי מקשים",
+      intro: "כדי לשנות קיצור דרך, בחר את צירוף המקשים ואז הקש את המקשים החדשים",
       searchPlaceholder: "חיפוש קיצורי דרך…",
       keystrokePlaceholder: "הקש קיצור כדי לחפש",
       searchByKeystrokes: "חיפוש לפי הקשות",
@@ -1168,22 +1169,23 @@ export const he = {
       noResults: "לא נמצאו קיצורי דרך תואמים.",
       unassigned: "לא הוקצה",
       recording: "הקש על מקשים…",
-      recordingHint: "הקש על צירוף המקשים החדש, או Esc לביטול.",
       needsModifier: "הוסף ⌘, Ctrl או Alt. מקש בודד יחסום הקלדה רגילה.",
       conflict: "בשימוש גם בקיצור דרך אחר",
       conflictShadowed: "קיצור דרך אחר משתמש בצירוף זה ויופעל במקומו",
       edit: "שנה קיצור דרך",
-      clear: "הסר קיצור דרך",
       reset: "שחזר ברירת מחדל",
       resetAll: "אפס הכל לברירות מחדל",
-      primarySlot: "קיצור דרך",
-      alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
       metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
       altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
       desktopOnly: "באפליקציית שולחן העבודה בלבד",
-      builtInKey: "מובנה: {key}",
+      groups: {
+        composer: "תיבת הכתיבה",
+        chat: "צ'אט",
+        navigation: "ניווט",
+        app: "אפליקציה",
+      },
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1374,6 +1376,10 @@ export const he = {
           label: "צרף תמונות וקבצים",
           description: "הוסף קובץ מצורף לתיבת ההודעה",
         },
+        openComposerMenu: {
+          label: "פתיחת תפריט +",
+          description: "פתיחת תפריט + של תיבת הכתיבה עם כלים וקבצים מצורפים",
+        },
         sendMessage: {
           label: "שלח הודעה",
           description: "שלח את תוכן תיבת ההודעה",
@@ -1401,10 +1407,6 @@ export const he = {
         decreaseReasoningEffort: {
           label: "הפחת מאמץ חשיבה",
           description: "הורד את רמת מאמץ החשיבה בדרגה אחת",
-        },
-        toggleFastMode: {
-          label: "הפעל/השבת מצב מהיר",
-          description: "הפעל או כבה את המצב המהיר",
         },
         renameChat: {
           label: "שינוי שם צ'אט",

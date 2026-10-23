@@ -1075,6 +1075,7 @@ export const ru = {
     },
     keyboardShortcuts: {
       title: "Сочетания клавиш",
+      intro: "Чтобы изменить сочетание клавиш, выберите его и нажмите новые клавиши",
       searchPlaceholder: "Поиск сочетаний…",
       keystrokePlaceholder: "Нажмите сочетание для поиска",
       searchByKeystrokes: "Поиск по нажатию",
@@ -1082,22 +1083,23 @@ export const ru = {
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",
-      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
       needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
       conflict: "Используется также другим сочетанием",
       conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
       edit: "Изменить сочетание",
-      clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      primarySlot: "Сочетание",
-      alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
       altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
       desktopOnly: "Только в настольном приложении",
-      builtInKey: "Встроено: {key}",
+      groups: {
+        composer: "Поле ввода",
+        chat: "Чат",
+        navigation: "Навигация",
+        app: "Приложение",
+      },
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1287,6 +1289,10 @@ export const ru = {
           label: "Прикрепить фото и файлы",
           description: "Добавить вложение в поле ввода",
         },
+        openComposerMenu: {
+          label: "Открыть меню +",
+          description: "Открыть меню + поля ввода с инструментами и вложениями",
+        },
         sendMessage: {
           label: "Отправить сообщение",
           description: "Отправить содержимое поля ввода",
@@ -1314,10 +1320,6 @@ export const ru = {
         decreaseReasoningEffort: {
           label: "Уменьшить усилие рассуждения",
           description: "Снизить усилие рассуждения на один уровень",
-        },
-        toggleFastMode: {
-          label: "Переключить режим Fast",
-          description: "Включить или выключить режим Fast",
         },
         renameChat: {
           label: "Переименовать чат",

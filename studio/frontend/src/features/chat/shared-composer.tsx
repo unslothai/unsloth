@@ -2557,6 +2557,21 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
   useShortcut("stopGeneration", stop, {
     enabled: chatActive && busy,
     claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
@@ -2936,15 +2951,12 @@ export function SharedComposer({
             />
             {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
                 inputs and tools. */}
-            <DropdownMenu
-              onOpenChange={(open) => {
-                if (open) void refreshRecentPrompts();
-              }}
-            >
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
               <DropdownMenuTrigger asChild={true}>
                 <button
                   type="button"
                   aria-label="Tools and attachments"
+                  data-pill-label="Add files and more"
                   className="unsloth-composer-plus"
                 >
                   <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />

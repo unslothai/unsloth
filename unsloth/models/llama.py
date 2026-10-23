@@ -2894,6 +2894,19 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
     return True
 
 
+def _lora_variant_note(model, adapter) -> str:
+    """Summary note when the adapter is a PEFT LoRA variant: its layers run PEFT's forward at runtime."""
+    for module in model.modules():
+        variants = module.__dict__.get("lora_variant")
+        if variants and adapter in variants:
+            name = type(variants[adapter]).__name__
+            return (
+                f" The adapter is a PEFT LoRA variant ({name}), so its layers run PEFT's own forward "
+                "instead of the fused LoRA kernels."
+            )
+    return ""
+
+
 def _fused_lora_skip_reason(
     lora_dropout,
     bias,
@@ -5215,7 +5228,7 @@ class FastLlamaModel:
 
         unfused_reason = _fused_lora_skip_reason(
             lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
-        )
+        ) + _lora_variant_note(model, active_adapter)
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
