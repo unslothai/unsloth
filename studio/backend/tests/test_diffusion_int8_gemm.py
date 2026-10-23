@@ -6,6 +6,8 @@ need NVIDIA CUDA, Triton and torchao (they force the lever on, so an arch outsid
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from core.inference import diffusion_convrot_quant as cq
@@ -1283,6 +1285,7 @@ def test_hooked_linear_is_not_shared():
     lin = torch.nn.Linear(8, 8)
     lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
     lin.__dict__[g8._MARK] = True
+    lin.forward = types.MethodType(g8._linear_forward, lin)
     assert g8._swapped_rec(lin) is not None
     noop = lambda *a, **k: None  # noqa: E731
     for register in (
@@ -1298,6 +1301,25 @@ def test_hooked_linear_is_not_shared():
         finally:
             handle.remove()
         assert g8._swapped_rec(lin) is not None
+
+
+def test_replaced_linear_forward_is_not_shared():
+    """An instance ``forward`` assigned over the installed ``_linear_forward`` (adapter / instrumentation code) is
+    what a module call runs, so the shared paths, which skip the call, decline it; restoring it re-enables them."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    installed = types.MethodType(g8._linear_forward, lin)
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
+    lin.forward = lambda t: t
+    assert g8._swapped_rec(lin) is None
+    lin.forward = types.MethodType(lambda self, t: t, lin)
+    assert g8._swapped_rec(lin) is None
+    del lin.forward
+    assert g8._swapped_rec(lin) is None
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
 
 
 def test_hooked_activation_declines_the_swiglu_fusion(monkeypatch):
