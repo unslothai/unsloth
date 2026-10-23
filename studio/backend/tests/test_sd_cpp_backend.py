@@ -2907,7 +2907,12 @@ def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, 
     assert not bk._accelerator_runtime_failures
 
 
-def _repeated_device_loss_backend(monkeypatch, *, losses, gpu_explicit = False):
+def _repeated_device_loss_backend(
+    monkeypatch,
+    *,
+    losses,
+    gpu_explicit = False,
+):
     """A CPU-torch Vulkan load whose first ``losses`` jobs lose the device, on whichever server runs them."""
     events: list = []
     remaining = {"losses": losses}
@@ -2942,8 +2947,12 @@ def _repeated_device_loss_backend(monkeypatch, *, losses, gpu_explicit = False):
     monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server-vulkan")
     monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: True)
-    monkeypatch.setattr(bk, "fallback_accelerator_for", lambda acc: "cpu" if acc == "vulkan" else None)
-    monkeypatch.setattr(bk, "_persist_accelerator_runtime_failures", lambda records: persisted.append(records))
+    monkeypatch.setattr(
+        bk, "fallback_accelerator_for", lambda acc: "cpu" if acc == "vulkan" else None
+    )
+    monkeypatch.setattr(
+        bk, "_persist_accelerator_runtime_failures", lambda records: persisted.append(records)
+    )
     monkeypatch.setattr(bk, "_stored_accelerator_runtime_failures", lambda: {})
     bk._accelerator_runtime_failures.clear()
     return b, events, persisted
@@ -3011,7 +3020,9 @@ def test_a_repeated_vulkan_device_loss_without_a_cpu_rung_errors_with_a_hint(mon
 
 
 @pytest.mark.parametrize("losses, device", [(1, "vulkan"), (2, "cpu")])
-def test_a_device_loss_replacement_restages_the_hires_upscaler(monkeypatch, tmp_path, losses, device):
+def test_a_device_loss_replacement_restages_the_hires_upscaler(
+    monkeypatch, tmp_path, losses, device
+):
     # Every replacement server (the same-build respawn after one lost device, the CPU backend after a second) has its
     # own scratch dir, and the old server's stop removed the upscaler staged in its own: the retry must stage the model
     # upscaler again under the server that runs it, or sd.cpp cannot find the hires upscaler file.
@@ -3038,7 +3049,12 @@ def test_a_device_loss_replacement_restages_the_hires_upscaler(monkeypatch, tmp_
     monkeypatch.setattr(server_cls, "img_gen", _img_gen)
     staged: list = []
 
-    def _stage(upscaler_id, scratch_dir, *, cancel = None):
+    def _stage(
+        upscaler_id,
+        scratch_dir,
+        *,
+        cancel = None,
+    ):
         dest = Path(scratch_dir) / "hires_x.pth"
         dest.write_bytes(b"w")
         staged.append(dest)
@@ -3073,7 +3089,9 @@ def test_an_explicit_gpu_pool_marks_the_native_load_explicit(monkeypatch):
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(b, "_run_load", lambda **kw: seen.update(kw))
     monkeypatch.setattr(bk, "resolve_selected_cuda_ordinal", lambda ids: None, raising = False)
-    b.begin_load(repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_M.gguf", gpu_ids = [0])
+    b.begin_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_M.gguf", gpu_ids = [0]
+    )
     deadline = time.monotonic() + 5
     while "gpu_explicit" not in seen and time.monotonic() < deadline:
         time.sleep(0.01)
