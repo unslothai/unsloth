@@ -921,6 +921,35 @@ def test_a_block_capture_after_a_failed_one_flushes_the_retired_pool_first(monke
     handle.free()
 
 
+def test_a_block_poisoned_before_capture_counts_the_graphs_it_dropped(monkeypatch):
+    """A block with recorded layouts that fails before capture_begin on a new one (budget, warm-up, statics) is
+    poisoned and drops every graph it held: their pool counts as retired, so the next capture flushes it first."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    x = torch.randn(7, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(4):
+            assert torch.equal(net(x), ref(x))
+    held = sum(len(g.cache) for g in handle.graphs)
+    assert held >= 1
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no room for the statics")
+
+    monkeypatch.setattr(cg, "refuse_if_exhausted", refuse)
+    y = torch.randn(5, 16, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(4):
+            assert torch.equal(net(y), ref(y))
+    assert any(g.poisoned for g in handle.graphs)
+    due = cg.retired_pool_due() if hasattr(cg, "retired_pool_due") else False
+    assert due
+    handle.free()
+
+
 def test_a_block_capture_refused_before_recording_flushes_nothing(monkeypatch):
     """Past the failure budget every block fails before capture_begin: no pool was retired, so no allocator flush."""
     _cuda()

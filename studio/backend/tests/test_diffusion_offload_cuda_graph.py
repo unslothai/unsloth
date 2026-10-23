@@ -351,6 +351,33 @@ def test_a_deferred_release_still_clears_the_cublas_workspaces_before_the_next_r
     cg.uninstall_all(handles)
 
 
+def test_a_settled_retirement_never_waits_on_another_capture(monkeypatch):
+    """Two threads saw the same retirement; the first flushed it and is now recording. The second must not wait on
+    that recording (and be refused after the timeout): its retirements are already flushed."""
+    monkeypatch.setattr(cg, "_RETIRED_POOLS", [1, 1], raising = False)
+    monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 5.0)
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # the first thread is recording
+    import time
+
+    start = time.monotonic()
+    with cg._CAPTURE_IDLE:
+        cg._settle_retired_pools(1)
+    assert time.monotonic() - start < 1.0
+
+
+def test_an_immediate_release_acknowledges_the_retirement_it_flushed(monkeypatch):
+    """A speed drop or a reset counts the dropped pool and then releases it at once (no capture recording): that flush
+    acknowledges it, so the next capture does not synchronize and flush the allocator a second time."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    torch.manual_seed(0)
+    net = torch.nn.Linear(64, 64).cuda()
+    handle = cg.GraphedForward(net)
+    _retire()  # the drop just counted its pool
+    handle._release()  # ... and released it right away
+    assert not _due()
+
+
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
     """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
     held) before anything flushes: the flush stays due for the next capture."""

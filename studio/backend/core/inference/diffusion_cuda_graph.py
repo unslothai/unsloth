@@ -369,6 +369,9 @@ def _settle_retired_pools(seen: int) -> None:
     """Under ``_CAPTURE_IDLE``, from ``_capturing``: flush the pools retired up to ``seen`` before this capture records.
     Waits (lock released) for another thread's recording to end, since that one prohibits the flush; raises
     ``CaptureRefused`` (depth untouched, nothing recorded) when it does not end in time or the flush failed."""
+    with _RETIRE_LOCK:
+        if _RETIRED_POOLS[1] >= seen:
+            return  # another capture flushed them already: no wait on its recording
     if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = RETIRED_FLUSH_WAIT_S):
         raise CaptureRefused(
             "a retired graph pool could not be flushed (another capture is recording); capture deferred"
@@ -392,25 +395,32 @@ def flush_retired_pools() -> bool:
         return _flush_retired_locked(seen)
 
 
+def flush_now_locked(clear_cublas: bool = False) -> bool:
+    """For a caller already holding ``hold_off_capture()`` (True): flush now, and acknowledge every retirement counted
+    before it, so the next capture's entry does not flush again."""
+    with _RETIRE_LOCK:
+        seen = _RETIRED_POOLS[0]
+        if clear_cublas:
+            _CUBLAS_CLEAR_DUE[0] = True
+    gc.collect()
+    return _flush_retired_locked(seen)
+
+
 def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
-    """``empty_cache`` (and the cuBLAS workspaces) only when no capture is recording: either is prohibited inside
-    another thread's recording and can invalidate it. Skipped (False) then, and counted as a retired pool (with the
-    cuBLAS clear owed), so the next capture's entry flush does both instead."""
+    """The one way graph memory goes back outside a capture's entry: ``empty_cache`` (and the cuBLAS workspaces) now,
+    under the capture lock with no capture recording, acknowledging the retirements counted before it; or, while
+    another thread records (either call is prohibited inside its recording and can invalidate it), counted as a
+    retired pool with the cuBLAS clear owed, so the next capture's entry flush does both."""
+    with _RETIRE_LOCK:
+        seen = _RETIRED_POOLS[0]
     gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
     with hold_off_capture() as safe:
         if safe:
-            try:
-                torch = _torch()
-                if clear_cublas:
-                    clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
-                    if callable(clear):
-                        clear()
-                cuda = getattr(torch, "cuda", None)
-                if cuda is not None and hasattr(cuda, "empty_cache"):
-                    cuda.empty_cache()
-            except Exception:  # noqa: BLE001 - best effort
-                pass
-            return True
+            if clear_cublas:
+                with _RETIRE_LOCK:
+                    _CUBLAS_CLEAR_DUE[0] = True
+            if _flush_retired_locked(seen):
+                return True
     if clear_cublas:
         with _RETIRE_LOCK:
             _CUBLAS_CLEAR_DUE[0] = True

@@ -667,9 +667,12 @@ class BlockGraph:
         self.shared.drop(getattr(entry, "slots", ()))
 
     def _forget_all(self) -> None:
+        dropped = bool(self.cache)
         for entry in self.cache.values():
             self._forget(entry)
         self.cache.clear()
+        if dropped:
+            _note_pool_retired()  # possibly the last graphs in their pool: flushed before any capture records
 
     def _replay(self, entry: _Entry, live: list) -> Any:
         for dst, src in zip(entry.static_in, live):
@@ -816,9 +819,12 @@ class SegmentGraph:
         self.versions: list = []
 
     def reset(self) -> None:
+        dropped = bool(self.cache)
         for entry in self.cache.values():
             self._forget(entry)
         self.cache.clear()
+        if dropped:
+            _note_pool_retired()
         self.seen.clear()
         self.refused.clear()
         self._reset_forward()
@@ -1413,6 +1419,14 @@ class BlockGraphSet:
         pf = getattr(self, "_prefetcher", None)
         slots = int(getattr(pf, "slot_bytes", 0) or 0) if pf is not None else 0
         return int(sum(st.pool_bytes + st.static_bytes for st in self._all_shared()) + slots)
+
+
+def _note_pool_retired() -> None:
+    try:
+        from .diffusion_cuda_graph import note_pool_retired
+        note_pool_retired()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _release_cached() -> None:
