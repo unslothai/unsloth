@@ -11,6 +11,7 @@ import { Route as dataRecipesRoute } from "./routes/data-recipes";
 import { Route as dataRecipeRoute } from "./routes/data-recipes.$recipeId";
 import { Route as flowsRoute } from "./routes/flows";
 import { Route as flowEditorRoute } from "./routes/flows.$flowId";
+import { Route as flowAppRoute } from "./routes/flows.$flowId.app";
 import { Route as flowPlayRoute } from "./routes/flows.$flowId.play";
 import { Route as chatRoute } from "./routes/chat";
 import { Route as exportRoute } from "./routes/export";
@@ -45,6 +46,7 @@ const routeTree = rootRoute.addChildren([
   flowsRoute,
   flowEditorRoute,
   flowPlayRoute,
+  flowAppRoute,
   apiMonitorRoute,
 ]);
 

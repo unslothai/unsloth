@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import random
 from typing import Any
@@ -119,3 +120,48 @@ async def param(ctx: NodeContext) -> dict:
 @handler("input.list")
 async def items(ctx: NodeContext) -> dict:
     return {"items": [str(i) for i in ctx.params.get("items") or [] if str(i).strip()]}
+
+
+# The param that holds each input block's value, so an app form or a calling flow can fill it.
+INPUT_VALUE_PARAM = {
+    "input.text": "value",
+    "input.number": "value",
+    "input.toggle": "value",
+    "input.select": "value",
+    "input.seed": "value",
+    "input.image": "asset",
+    "input.audio": "asset",
+    "input.video": "asset",
+    "input.file": "asset",
+    "input.list": "items",
+}
+
+
+def apply_input_values(doc: dict, values: dict) -> tuple[dict, dict]:
+    """A copy of ``doc`` with its inputs filled from ``values``, plus the Flow Input params.
+
+    A key names a Flow Input by its name, or any other input block by its id or label. Unknown keys are ignored."""
+    doc = copy.deepcopy(doc)
+    params: dict[str, Any] = {}
+    names = {
+        str((n.get("params") or {}).get("name") or "input")
+        for n in doc.get("nodes") or []
+        if n.get("type") == "input.param"
+    } | {str(p["id"]) for p in doc.get("params") or [] if isinstance(p, dict) and p.get("id")}
+    inputs = [n for n in doc.get("nodes") or [] if n.get("type") in INPUT_VALUE_PARAM]
+    # Exact ids first, so a label that happens to equal another block's id never takes its value.
+    by_key: dict[str, dict] = {str(n.get("id")): n for n in inputs}
+    for node in inputs:
+        if node.get("label"):
+            by_key.setdefault(str(node["label"]).strip().casefold(), node)
+    for key, value in values.items():
+        key = str(key)
+        if key in names:
+            params[key] = value
+            continue
+        node = by_key.get(key) or by_key.get(key.strip().casefold())
+        if node is not None:
+            node.setdefault("params", {})[INPUT_VALUE_PARAM[node["type"]]] = value
+            if node["type"] == "input.seed":
+                node["params"]["randomize"] = False
+    return doc, params

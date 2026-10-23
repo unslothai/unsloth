@@ -102,6 +102,7 @@ const ICONS: Record<string, IconData> = {
   globe: Globe02Icon,
   map: MapsIcon,
   gamepad: GameController01Icon,
+  flow: FlowConnectionIcon,
   calendar: Calendar01Icon,
   users: UserMultipleIcon,
 };

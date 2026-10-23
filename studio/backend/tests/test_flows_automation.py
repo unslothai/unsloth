@@ -639,3 +639,34 @@ def test_export_drops_signed_url_credentials_and_approvals_bind_the_full_digest(
 def test_a_stray_comma_in_cron_is_an_error_not_every_minute(expr):
     with pytest.raises(ValueError):
         triggers.parse_cron(expr)
+
+
+def test_run_flow_runs_a_called_flows_python_only_with_that_flows_approval(client):
+    from core.flows.nodes import logic, output
+
+    engine_mod.ENGINE.handlers.update(
+        {"flow.call": logic.call_flow, "output.result": output.result}
+    )
+    _python_flow(client, flow_id = "child_py")
+    parent = doc(
+        [
+            node("call", "flow.call", flow_id = "child_py", values = {}),
+            node("out", "output.result", name = "got"),
+        ],
+        [edge("call", "outputs", "out", "value")],
+        id = "parent_py",
+    )
+    assert client.post("/api/flows", json = {"doc": parent}).status_code == 200
+    first = _run(client, "parent_py")
+    assert (
+        first["nodes"]["call"]["status"] == "failed"
+        and "not approved" in first["nodes"]["call"]["error"]
+    )
+    assert _approve(client, "child_py").status_code == 200
+    assert _run(client, "parent_py")["nodes"]["call"]["status"] == "done"
+    # An API key start of the parent still never runs the called flow's Python.
+    by_key = _run(client, "parent_py", "owner_api")
+    assert (
+        by_key["nodes"]["call"]["status"] == "failed"
+        and "API key" in by_key["nodes"]["call"]["error"]
+    )

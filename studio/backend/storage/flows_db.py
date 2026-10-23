@@ -335,6 +335,47 @@ def latest_node_outputs(flow_id: str) -> dict[str, dict]:
         conn.close()
 
 
+def node_output_history(
+    flow_id: str,
+    node_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """A node's last ``limit`` distinct successful outputs across the flow's runs, newest first.
+
+    Outputs hold media refs, never bytes, so the history costs no storage of its own."""
+    conn = get_connection()
+    seen: set[str] = set()
+    entries: list[dict] = []
+    try:
+        # Rows stream newest first until ``limit`` distinct outputs are found: cached reruns repeat one output many times.
+        rows = conn.execute(
+            """
+            SELECT r.run_id, r.status, r.outputs_json, r.updated_at
+            FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
+            WHERE f.flow_id = ? AND r.node_id = ? AND r.status IN ('done', 'cached')
+                AND r.outputs_json IS NOT NULL
+            ORDER BY f.created_at DESC, f.rowid DESC, r.updated_at DESC
+            """,
+            (flow_id, node_id),
+        )
+        for r in rows:
+            if r["outputs_json"] in seen:
+                continue
+            seen.add(r["outputs_json"])
+            entries.append(
+                {
+                    "run_id": r["run_id"],
+                    "updated_at": r["updated_at"],
+                    "outputs": json.loads(r["outputs_json"]),
+                }
+            )
+            if len(entries) >= limit:
+                break
+    finally:
+        conn.close()
+    return entries
+
+
 def reconcile_orphaned_runs(
     error: str = "Unsloth Studio restarted while this flow was running",
 ) -> int:

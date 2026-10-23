@@ -137,6 +137,8 @@ export interface StartRunBody {
   force_nodes?: string[];
   bake?: boolean;
   doc?: FlowDocument;
+  /** Outputs pinned from a node's history: those nodes are not run. */
+  pinned?: Record<string, Record<string, unknown>>;
 }
 
 export const startRun = (flowId: string, body: StartRunBody) =>
@@ -172,6 +174,17 @@ export const cancelRun = (runId: string) =>
 export const latestOutputs = (flowId: string) =>
   request<{ nodes: Record<string, RunNodeState> }>(
     `/${encodeURIComponent(flowId)}/latest-outputs`,
+  );
+
+export interface NodeHistoryEntry {
+  run_id: string;
+  updated_at: number;
+  outputs: Record<string, unknown>;
+}
+
+export const nodeHistory = (flowId: string, nodeId: string) =>
+  request<{ entries: NodeHistoryEntry[] }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/history`,
   );
 
 export interface ImportReport {

@@ -144,3 +144,16 @@ async def product(ctx: NodeContext) -> dict:
 @handler("logic.for_each")
 async def for_each(ctx: NodeContext) -> dict:
     raise FlowNodeError("For Each is run by the engine")
+
+
+@handler("flow.call")
+async def call_flow(ctx: NodeContext) -> dict:
+    flow_id = str(ctx.params.get("flow_id") or "").strip()
+    if not flow_id:
+        raise FlowNodeError("Pick the flow this step runs")
+    values = ctx.inputs.get("values")
+    if values is None:
+        values = ctx.params.get("values") or {}
+    if not isinstance(values, dict):
+        raise FlowNodeError('Values for the called flow are an object, like {"topic": "otters"}')
+    return {"outputs": await ctx.run_flow(flow_id, values)}

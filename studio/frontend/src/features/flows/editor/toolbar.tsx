@@ -76,7 +76,8 @@ function IconButton({
 function ToolbarImpl({
   onBack,
   onPlay,
-}: { onBack: () => void; onPlay: () => void }) {
+  onApp,
+}: { onBack: () => void; onPlay: () => void; onApp?: () => void }) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
   // A pipeline with a Chat Output block plays as a chat.
@@ -208,6 +209,17 @@ function ToolbarImpl({
             void flushSave().then((saved) => saved && setDialog("share"))
           }
         />
+        {onApp && kind === "pipeline" && (
+          <button
+            type="button"
+            onClick={onApp}
+            className="flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1.5 text-[12.5px] text-zinc-200 hover:bg-white/10"
+            title="Open this flow as a simple form with its results"
+            data-testid="flows-open-app"
+          >
+            <HugeiconsIcon icon={GridViewIcon} size={15} /> Open as app
+          </button>
+        )}
         {(kind === "story" || kind === "world" || playsChat) && (
           <button
             type="button"

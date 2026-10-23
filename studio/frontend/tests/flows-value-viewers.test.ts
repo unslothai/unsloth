@@ -70,10 +70,12 @@ test("every structured kind has a viewer and every renderer checks the registry 
   const registry = readSrc("features/flows/editor/value-viewers.tsx");
   for (const kind of STRUCTURED_KINDS)
     assert.match(registry, new RegExp(`\\b${kind}: lazy\\(`));
-  const inspector = readSrc("features/flows/editor/inspector.tsx");
+  // The inspector and the App view share OutputValue.
+  const inspector = readSrc("features/flows/editor/output-value.tsx");
   assert.ok(
-    inspector.indexOf("isStructuredValue(value)") <
-      inspector.indexOf("JSON.stringify(value, null, 2)"),
+    inspector.indexOf("isStructuredValue(value)") > 0 &&
+      inspector.indexOf("isStructuredValue(value)") <
+        inspector.indexOf("JSON.stringify(value, null, 2)"),
   );
   const node = readSrc("features/flows/editor/flow-node.tsx");
   assert.ok(
