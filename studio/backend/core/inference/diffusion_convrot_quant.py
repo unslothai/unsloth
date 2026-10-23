@@ -801,42 +801,57 @@ def _fht_latency(
     variants: tuple,
     stock_quant: Any = None,
 ) -> dict:
-    """{variant: kernel us, "gemm": stock us} over ``_FHT_LATENCY_SHAPES``: CUDA events, best of five interleaved
-    rounds of five calls each. Stock = the rotation GEMM, then ``stock_quant`` of its output when given (the act quant
+    """{variant: kernel us, "gemm": stock us} over ``_FHT_LATENCY_SHAPES``. Each arm is captured in a CUDA graph and
+    replayed (the compiled denoiser replays its kernels the same way, so host launch cost must not count), best of
+    five interleaved rounds. Stock = the rotation GEMM, then ``stock_quant`` of its output when given (the act quant
     kernel the caller runs after it), else the GEMM alone (a lower bound)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
 
     dev = torch.device("cuda", index)
-    # one chunk per row (K 4096) and the multi-chunk recompute path (K 12288), summed
+    # one chunk per row (K 4096) and the multi-chunk recompute path (K 12288)
     xs = [torch.randn(m, k, device = dev).to(torch.bfloat16) for m, k in _FHT_LATENCY_SHAPES]
     h = build_convrot_hadamard(256, device = dev, dtype = torch.bfloat16)
 
-    def _each(fn):
-        for x in xs:
-            fn(x)
+    def stock(x):
+        r = rotate_convrot_activation(x, h, 256)
+        return r if stock_quant is None else stock_quant(r)
 
-    arms = {v: (lambda v = v: _each(lambda x: _fht_launch(x, "v2", kron = v))) for v in variants}
-    if stock_quant is None:
-        arms["gemm"] = lambda: _each(lambda x: rotate_convrot_activation(x, h, 256))
-    else:
-        arms["gemm"] = lambda: _each(lambda x: stock_quant(rotate_convrot_activation(x, h, 256)))
-    best = {name: float("inf") for name in arms}
+    fns = {v: (lambda x, v = v: _fht_launch(x, "v2", kron = v)) for v in variants}
+    fns["gemm"] = stock
+    reps = 4
+    graphs = {}
     with torch.cuda.device(dev):
-        for fn in arms.values():
-            fn()
+        side = torch.cuda.Stream(dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for fn in fns.values():
+                for x in xs:
+                    fn(x)  # compile / autotune outside the capture
+        torch.cuda.current_stream(dev).wait_stream(side)
         torch.cuda.synchronize(dev)
+        for name, fn in fns.items():
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                for _ in range(reps):
+                    for x in xs:
+                        fn(x)
+            graphs[name] = graph
         start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        best = {name: float("inf") for name in graphs}
+        for name, graph in graphs.items():
+            graph.replay()
+        torch.cuda.synchronize(dev)
         for _ in range(5):
-            for name, fn in arms.items():
+            for name, graph in graphs.items():
                 start.record()
-                for _ in range(5):
-                    fn()
+                graph.replay()
                 end.record()
                 end.synchronize()
                 best[name] = min(
-                    best[name], start.elapsed_time(end) * 200.0
-                )  # ms per 5 calls -> us per call
+                    best[name], start.elapsed_time(end) * 1000.0 / reps
+                )  # us per pass over the shapes
+        del graphs
     return best
 
 
@@ -845,6 +860,10 @@ def fht_device_ok(index: int, stock_quant: Any = None) -> bool:
     not be slower than the stock rotation GEMM + ``stock_quant``, or the GEMM alone; skipped under ``=1``). Publishes
     the op handle on success. Call outside any trace / graph capture."""
     global _FHT_HANDLE
+    if (
+        fht_mode() == "off"
+    ):  # read per load: the switches act without a restart, the cached probe stays
+        return False
     if index in _FHT_DEVICE:
         return _FHT_DEVICE[index] is not None
     choice = None

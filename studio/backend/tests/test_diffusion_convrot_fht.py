@@ -154,6 +154,19 @@ def test_a_failed_probe_drops_only_that_variant(monkeypatch):
     assert cq.fht_device_ok(0) and seen == [(False,)] and cq._FHT_DEVICE[0] is False
 
 
+def test_kill_switch_acts_on_a_cached_device(monkeypatch):
+    _fake_device(monkeypatch, (8, 6))
+    monkeypatch.setattr(cq, "_fht_probe", lambda index, kron: True)
+    monkeypatch.setattr(
+        cq, "_fht_latency", lambda index, variants, stock = None: {True: 1.0, False: 2.0, "gemm": 3.0}
+    )
+    assert cq.fht_device_ok(0)
+    monkeypatch.setenv(cq.INT8_ROTQUANT_FHT_ENV, "0")
+    assert not cq.fht_device_ok(0)
+    monkeypatch.delenv(cq.INT8_ROTQUANT_FHT_ENV)
+    assert cq.fht_device_ok(0)
+
+
 def test_latency_gate_times_against_the_callers_act_quant(monkeypatch):
     _fake_device(monkeypatch, (8, 6))
     monkeypatch.setattr(cq, "_fht_probe", lambda index, kron: True)
@@ -282,6 +295,16 @@ def test_fht_handles_an_empty_and_a_one_row_batch():
         assert q.shape == (m, 512) and s.shape == (m,)
         if m:
             assert not q.any() and float(s[0]) > 0  # zero row: zero codes, eps scale
+
+
+@needs_cuda
+def test_latency_check_is_graph_replayed_and_repeatable():
+    """Kernel time, not host launch time: two runs of the check agree within 25% per arm."""
+    index = torch.cuda.current_device()
+    runs = [cq._fht_latency(index, tuple(_variants())) for _ in range(2)]
+    for name in runs[0]:
+        a, b = runs[0][name], runs[1][name]
+        assert 0 < a < float("inf") and abs(a - b) <= 0.25 * max(a, b)
 
 
 @needs_cuda

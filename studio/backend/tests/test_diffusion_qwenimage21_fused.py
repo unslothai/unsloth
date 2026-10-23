@@ -36,6 +36,9 @@ needs_cuda = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _restore(monkeypatch):
     monkeypatch.delenv(qf.Q21_CONVROT_FUSED_ENV, raising = False)
+    # these tests pin the stock rotation bit for bit; rotq_fht_i8 has its own (test_diffusion_convrot_fht.py)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_ROTQUANT_FHT", "0")
+    monkeypatch.setattr(i8f, "_FHT_DEVICES", frozenset())
     yield
     qf.uninstall()
 
