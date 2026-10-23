@@ -409,6 +409,23 @@ def _sd_cpp_default_threads(cpu: Optional[int]) -> Optional[int]:
     return cpu if cpu <= 4 else cpu // 2
 
 
+def _allowed_cpus() -> Optional[int]:
+    """CPUs in this process's affinity mask, or None when unreadable."""
+    try:
+        return len(os.sched_getaffinity(0)) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _cpus_restricted(cpu: Optional[int]) -> bool:
+    """True when a cpuset / taskset or a cgroup quota leaves this process fewer CPUs than the host has."""
+    if not cpu:
+        return False
+    allowed = _allowed_cpus()
+    limit = _cgroup_cpu_limit()
+    return (allowed is not None and allowed < cpu) or (limit is not None and limit < cpu)
+
+
 def _explicit_threads() -> Optional[int]:
     """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
     sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
@@ -423,9 +440,16 @@ def _explicit_threads() -> Optional[int]:
     if performance_cores:
         return performance_cores
     if sys.platform.startswith("linux"):
+        cpu = os.cpu_count()
         threads = _default_threads()
-        if threads != _sd_cpp_default_threads(os.cpu_count()):
-            return threads
+        sd_default = _sd_cpp_default_threads(cpu)
+        if threads == sd_default:
+            return None
+        # Fewer threads than sd.cpp's all-CPU default at 4 CPUs or fewer, only because of SMT: the extra siblings
+        # measured faster (2 vCPU / 1 core, 4 vCPU / 2 cores), so keep sd.cpp's count unless something restricts us.
+        if sd_default is not None and threads < sd_default and not _cpus_restricted(cpu):
+            return None
+        return threads
     return None
 
 
