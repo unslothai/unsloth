@@ -25,11 +25,7 @@ def _adapters(random_state, burn):
     model = FastSentenceTransformer.get_peft_model(
         model, r = 4, lora_alpha = 8, target_modules = ["query", "value"], random_state = random_state
     )
-    return {
-        n: p.detach().clone()
-        for n, p in model.named_parameters()
-        if "lora_A" in n
-    }
+    return {n: p.detach().clone() for n, p in model.named_parameters() if "lora_A" in n}
 
 
 def test_random_state_fixes_the_adapters():

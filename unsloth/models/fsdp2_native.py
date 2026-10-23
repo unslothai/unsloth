@@ -1249,7 +1249,9 @@ def _mesh_broadcast_from_first(tensor, mesh, dist):
         dist.broadcast(tensor, src = dist.get_global_rank(group, 0), group = group)
 
 
-_FINGERPRINT_CHUNK = 1 << 20  # 8 MiB per float64 buffer: a few of them before fully_shard, never a full copy
+_FINGERPRINT_CHUNK = (
+    1 << 20
+)  # 8 MiB per float64 buffer: a few of them before fully_shard, never a full copy
 
 
 def _content_fingerprint(p):
@@ -1266,11 +1268,18 @@ def _content_fingerprint(p):
         chunk = torch.nan_to_num(chunk, nan = 3.0, posinf = 5.0, neginf = -7.0)
         index = torch.arange(start, start + chunk.numel(), dtype = torch.float64, device = chunk.device)
         weight = torch.cos(index * 0.6180339887498949)
-        out += torch.stack((chunk.sum(), chunk.abs().sum(), (chunk * weight).sum(), bad.sum().double()))
+        out += torch.stack(
+            (chunk.sum(), chunk.abs().sum(), (chunk * weight).sum(), bad.sum().double())
+        )
     return out
 
 
-def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
+def _sync_trainable_from_first_rank(
+    model,
+    dist,
+    device,
+    mesh = None,
+):
     """Every rank must start from the same trainable weights. DDP broadcasts rank 0's parameters when
     it wraps the model; fully_shard keeps each rank's own slice instead, so a weight initialised
     without a seed on each rank (a LoRA adapter whose loader ignored random_state, a fresh head) became
@@ -1278,7 +1287,9 @@ def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
     trainable tensor over the ranks of `mesh` and broadcasts the first rank's values of the tensors
     that differ (only those, so a full finetune is not re-sent). Returns how many were synced."""
     params = [
-        p for p in model.parameters() if p.requires_grad and p.device.type != "meta" and _floating(p)
+        p
+        for p in model.parameters()
+        if p.requires_grad and p.device.type != "meta" and _floating(p)
     ]
     if not params or dist.get_world_size() == 1:
         return 0

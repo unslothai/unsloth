@@ -56,7 +56,9 @@ def _worker(rank, world, port, out, case):
         if case == "nan":
             # Identical non-finite weights on every rank (tiny Llama4 ships some) are not a mismatch.
             for m in (model, first):
-                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = float("nan")
+                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = (
+                    float("nan")
+                )
         if case in ("permuted", "nan_elsewhere") and rank == 1:
             # Same sum and L1 norm as rank 0, different contents: the elements reversed.
             w = next(p for n, p in model.named_parameters() if p.requires_grad).data.view(-1)
@@ -64,7 +66,9 @@ def _worker(rank, world, port, out, case):
         if case == "nan_elsewhere":
             # A shared NaN must not hide a difference in the other elements.
             for m in (model, first):
-                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = float("nan")
+                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = (
+                    float("nan")
+                )
         want = {n: p.detach().clone() for n, p in first.named_parameters() if p.requires_grad}
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -72,15 +76,12 @@ def _worker(rank, world, port, out, case):
         got = _full(model, trainable_only = True)
         res = {
             "n": len(want),
-            "max_diff": max(
-                (got[n] - want[n]).nan_to_num(0.0).abs().max().item() for n in want
-            ),
+            "max_diff": max((got[n] - want[n]).nan_to_num(0.0).abs().max().item() for n in want),
             "message": "differed across ranks" in buf.getvalue(),
         }
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         dist.destroy_process_group()

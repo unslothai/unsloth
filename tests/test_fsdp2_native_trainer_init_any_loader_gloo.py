@@ -194,7 +194,13 @@ def _worker(rank, world, port, out, tmp):
 
         class PairTrainer(Trainer):
             # sentence-transformers' own compute_loss: the model returns embeddings, not a loss.
-            def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
+            def compute_loss(
+                self,
+                model,
+                inputs,
+                return_outputs = False,
+                num_items_in_batch = None,
+            ):
                 return _pair_loss(model, inputs)
 
         def collate(rows):
@@ -240,7 +246,6 @@ def _worker(rank, world, port, out, tmp):
         out.put((rank, res))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         dist.destroy_process_group()
@@ -271,5 +276,7 @@ def test_sentence_transformer_shaped_model_shards_and_matches_one_process(tmp_pa
         assert r["installed"] is True and r["sharded"] is True, r
         assert r["units"] >= 2, r  # encoder blocks + root
         assert not r["missing"], r
-        assert r["moved"] > 1e-4, r  # the steps changed the weights, so the comparison means something
+        assert (
+            r["moved"] > 1e-4
+        ), r  # the steps changed the weights, so the comparison means something
         assert r["max_diff"] < 2e-5, r  # fp32, reduction order only

@@ -44,7 +44,6 @@ RANK1 = {"WORLD_SIZE": "2", "RANK": "1", "LOCAL_RANK": "1", "LOCAL_WORLD_SIZE": 
 
 def test_each_rank_loads_on_its_own_device(monkeypatch):
     from unsloth.models.loader_utils import DEVICE_TYPE_TORCH
-
     assert _placement(monkeypatch, RANK1) == {"": f"{DEVICE_TYPE_TORCH}:1"}
 
 
