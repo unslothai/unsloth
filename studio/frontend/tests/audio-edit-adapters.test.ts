@@ -106,7 +106,6 @@ test("run bodies: Advanced minus claims, Vevo2, and Delivery", () => {
   assert.equal(pitchOnly.text, "take-3.wav");
   assert.deepEqual(pitchOnly.edit, { mode: "delivery", pitch_steps: 2 });
   assert.equal(pitchOnly.inputs?.source, undefined);
-  // Delivery on a model without it falls back to Words.
   const dots = build("dots_tts", {
     mode: "delivery",
     delivery: { speed: 1.5, pitchSteps: 3 },
@@ -127,7 +126,6 @@ test("the adapter follows the loaded model's family and edit workflow", () => {
     ["dots_tts", ["edit"], true],
     ["vevo2", ["edit"], true],
     ["firered_audio", ["edit"], true],
-    // DotTTS-MF is dots_tts but cannot edit.
     ["dots_tts", ["speak"], false],
     ["qwen3_tts", ["clone", "edit"], false],
     ["toString", ["edit"], false],
@@ -180,7 +178,6 @@ test("changes group per run of words, anchored on the next word", () => {
   for (const [b, changes, a = S2] of rows) {
     assert.deepEqual(D.changesBetween(a, b), changes, b);
   }
-  // An adjacent delete and insert merge into one replace.
   const ops = D.diffWords("a human voice.", "a robot sound.");
   assert.ok(ops);
   assert.deepEqual(D.groupChanges(ops), [

@@ -499,8 +499,6 @@ test("open-time reconciliation waits for every mutation across component lifetim
     "the first pending mutation must hold refresh",
   );
 
-  // Simulate another API mutation starting after the opening component has
-  // already captured and begun waiting on the first batch.
   trackMcpServerMutation(second.promise);
   first.resolve();
   await Promise.resolve();

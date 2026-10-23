@@ -49,7 +49,8 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
+import { FullInstallDialog } from "@/features/settings";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -271,12 +272,13 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
-  const repair = useTauriRepairController();
+  const fullInstall = useFullInstallUpgrade();
+  const canUpgrade = fullInstall !== null;
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   const exportUnsupportedMessage = exportUnsupportedText(
     hardware.exportUnsupportedReason,
     hardware.exportUnsupportedMessage,
-    repair !== null && !repair.isExternalServer,
+    canUpgrade,
   );
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
@@ -1579,7 +1581,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
+                      <div className="rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1588,7 +1590,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
+                    <div className="rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1652,8 +1654,22 @@ export function ExportPage() {
                   <AlertTitle>Export unavailable</AlertTitle>
                   <AlertDescription>
                     {exportUnsupportedMessage}
+                    {fullInstall && (
+                      <div className="mt-2">
+                        <Button size="xs" onClick={() => setFullInstallOpen(true)}>
+                          Install Training
+                        </Button>
+                      </div>
+                    )}
                   </AlertDescription>
                 </Alert>
+              )}
+              {fullInstall && (
+                <FullInstallDialog
+                  open={fullInstallOpen}
+                  onOpenChange={setFullInstallOpen}
+                  onConfirm={() => void fullInstall.repairInstall()}
+                />
               )}
 
               <MethodPicker
@@ -2239,7 +2255,7 @@ export function ExportPage() {
                     })
                   }
                   aria-label="Scroll to export output"
-                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
+                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
                 >
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}

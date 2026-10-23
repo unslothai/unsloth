@@ -28,6 +28,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
+import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
@@ -608,7 +609,7 @@ function ResolvedBadge({
   const badge = (
     <span
       className={cn(
-        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        "shrink-0 rounded-full px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
         info.tone === "warn"
           ? "bg-destructive/15 text-destructive"
           : "bg-muted text-muted-foreground",
@@ -645,7 +646,7 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+    <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
         Loaded build
         <InfoHint>
@@ -3904,9 +3905,7 @@ function VideoGenerator({
           if (!open) cancelH3TaskChoice();
         }}
       >
-        {/* Squarer than the shared dialog's rounded-4xl: at this width the default reads as a lozenge
-            rather than a panel. */}
-        <DialogContent className="max-w-lg rounded-2xl">
+        <DialogContent className="max-w-lg rounded-3xl">
           <DialogHeader>
             <DialogTitle>Choose how MiniMax H3 should generate</DialogTitle>
             <DialogDescription>
@@ -4016,6 +4015,10 @@ function VideoGenerator({
           )}
           <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <MediaApiButton
+                kind="video"
+                model={status?.loaded ? (status.repo_id ?? null) : null}
+              />
               <LibraryPageLink
                 tab="videos"
                 labelClassName="hidden @[50rem]:inline"
@@ -4162,7 +4165,7 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">
                       Picture {index + 1}
                     </span>
-                    <div className="relative h-24 overflow-hidden rounded-[10px] border border-border bg-muted/30">
+                    <div className="relative h-24 overflow-hidden rounded-lg border border-border bg-muted/30">
                       <button
                         type="button"
                         aria-label={`Edit crop for picture ${index + 1}`}
@@ -4253,7 +4256,7 @@ function VideoGenerator({
                       muted={true}
                       preload="metadata"
                       src={entry.video.dataUrl}
-                      className="max-h-36 w-full rounded-[10px] bg-black object-contain"
+                      className="max-h-36 w-full rounded-lg bg-black object-contain"
                     />
                     <div className="grid grid-cols-2 gap-2">
                       <div className="grid gap-1 text-ui-11 text-muted-foreground">
@@ -4745,14 +4748,14 @@ function VideoGenerator({
                   className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
-                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
+                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-full bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
                     <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
                     Audio
                   </div>
                 )}
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {/* Not a click on the clip itself: Chrome's ⋮ menu, WebKit's centred play button and the
                       first click of a double-click to fullscreen all land on the frame, above the controls. */}
                   <Button
@@ -4869,7 +4872,7 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-primary/30">
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
@@ -4899,7 +4902,7 @@ function VideoGenerator({
                 <button
                   type="button"
                   onClick={() => setSelectedId(video.id)}
-                  className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="relative flex size-full flex-col justify-end overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {thumbnailById[video.id] ? (
                     <img
@@ -4928,7 +4931,7 @@ function VideoGenerator({
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>
@@ -4981,7 +4984,7 @@ function VideoGenerator({
                     <button
                       type="button"
                       onClick={() => setClearConfirmOpen(true)}
-                      className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-[10px] text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
+                      className="btn-fill flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
                     >
                       <HugeiconsIcon icon={Delete02Icon} className="size-4" />
                       <span className="text-ui-9 font-medium">Clear all</span>

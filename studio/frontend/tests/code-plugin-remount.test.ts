@@ -14,37 +14,17 @@ import {
   MIN_INCREMENTAL_CHARS,
 } from "../src/components/assistant-ui/code-plugin.ts";
 
-/**
- * The chat Markdown renderer remounts <Streamdown> whenever the incremental
- * cache has to move its render identity, which throws away the whole block
- * subtree. That is only affordable because none of the highlighting state
- * lives in the component tree: `@streamdown/code` keeps its highlighters and
- * its tokenized results in module-scope Maps, and the wrapper below it is
- * built once per module rather than once per render. So a remount re-asks for
- * tokens it already has and gets them back in the same tick, with no unstyled
- * frame in between.
- *
- * These two tests pin that property. Move the highlight cache into component
- * state, or build the plugin inside the component, and a remount becomes a
- * visible flash back to unhighlighted code on every fence in the reply.
- */
+/** Remounts must reuse module-scope highlight state, or every fence flashes unhighlighted. */
 
-// Enough lines to clear the wrapper's MIN_INCREMENTAL_CHARS, so the fence goes
-// through the per-fence slot path a streaming reply uses rather than the small
-// fence shortcut straight to the underlying plugin.
+// Past MIN_INCREMENTAL_CHARS so the fence takes the per-fence slot path.
 const LINES = 90;
 
-/** Unique per run, so the module-scope cache starts cold for this test. */
 const freshCode = (tag: string): string =>
   Array.from(
     { length: LINES },
     (_, index) => `export const ${tag}_${index} = ${index};`,
   ).join("\n");
 
-/**
- * Waits for the callback the cold ask registered. Polling `highlight` instead
- * would be the renderer asking again, which is the very thing under test.
- */
 async function withTimeout(
   arrived: Promise<void>,
   timeoutMs = 30_000,
@@ -79,9 +59,6 @@ test("a remount gets already highlighted code back in the same tick", async () =
     themes: mounted.getThemes(),
   } as Parameters<typeof mounted.highlight>[0];
 
-  // Cold: the grammar has to load, so the first ask cannot answer inline. The
-  // callback is what the renderer would repaint from; this test only needs the
-  // tokens to reach the cache, so it drops them.
   let arrived!: () => void;
   const tokensArrived = new Promise<void>((resolve) => {
     arrived = resolve;
@@ -93,9 +70,6 @@ test("a remount gets already highlighted code back in the same tick", async () =
   );
   await withTimeout(tokensArrived);
 
-  // A remount rebuilds the component tree, not the module, so the renderer
-  // hands Streamdown this same plugin object and its fence slots again. The
-  // first ask of the new tree has to be answered inline.
   const afterRemount = mounted.highlight(options);
 
   assert.ok(
@@ -121,7 +95,6 @@ const markdownText = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** Every `createCodePlugin(...)` call in the file, with the scope it sits in. */
 function codePluginCalls(): { atModuleScope: boolean }[] {
   const calls: { atModuleScope: boolean }[] = [];
   const visit = (node: ts.Node, insideFunction: boolean): void => {

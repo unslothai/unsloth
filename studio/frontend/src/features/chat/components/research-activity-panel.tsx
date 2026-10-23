@@ -365,7 +365,7 @@ const ActivityRow = memo(function ActivityRow({
       {activity.input ? (
         <p
           className={cn(
-            "line-clamp-3 break-words rounded-xl bg-muted/45 px-3 py-2 text-foreground/80",
+            "line-clamp-3 break-words rounded-lg bg-muted/45 px-3 py-2 text-foreground/80",
             activity.kind === "step" &&
               "bg-primary/[0.045] ring-1 ring-primary/10",
           )}
@@ -374,7 +374,7 @@ const ActivityRow = memo(function ActivityRow({
         </p>
       ) : null}
       {activity.previewLabels?.length ? (
-        <ul className="space-y-1 rounded-xl bg-muted/35 px-3 py-2">
+        <ul className="space-y-1 rounded-lg bg-muted/35 px-3 py-2">
           {activity.previewLabels.map((label, index) => (
             <li
               key={`${activity.id}-preview-${index}`}
@@ -398,7 +398,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ) : null}
       {activity.plan ? (
-        <div className="space-y-2 rounded-xl bg-muted/35 px-3 py-2.5">
+        <div className="space-y-2 rounded-lg bg-muted/35 px-3 py-2.5">
           <p className="font-medium text-foreground/85">
             {activity.plan.title}
           </p>
@@ -438,7 +438,7 @@ const ActivityRow = memo(function ActivityRow({
           key={`${activity.id}-${source.id ?? source.url}`}
           type="button"
           onClick={() => openLink(source.url)}
-          className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group/source flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <InternetGlyph className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
@@ -458,7 +458,7 @@ const ActivityRow = memo(function ActivityRow({
       {activity.evidenceSources?.map((source) => (
         <div
           key={`${activity.id}-${source.chunkId}`}
-          className="rounded-xl bg-muted/45 px-3 py-2"
+          className="rounded-lg bg-muted/45 px-3 py-2"
         >
           <p className="line-clamp-2 break-words font-medium text-foreground/85">
             {source.filename}
@@ -472,7 +472,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ))}
       {activity.excerpt ? (
-        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-xl bg-muted/45 px-3 py-2 leading-relaxed">
+        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-lg bg-muted/45 px-3 py-2 leading-relaxed">
           {activity.excerpt}
         </p>
       ) : null}
@@ -905,7 +905,7 @@ export function ResearchActivityPanel({
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
             <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">

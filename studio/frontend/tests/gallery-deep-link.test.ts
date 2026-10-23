@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Library link into a gallery pages back until its item loads. A failing gallery must end the
-// search after a few tries, not one request per remaining page.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 

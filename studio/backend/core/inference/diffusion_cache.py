@@ -63,6 +63,8 @@ def _auto_static_skip_table() -> dict:
 
 AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
+AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
+
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
 
@@ -106,15 +108,17 @@ def auto_static_skip_plan(
     """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
 
     ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
-    skip costs in quality); off / eager are the lossless tiers and never skip."""
+    skip costs in quality). Only ``max`` skips automatically: the skip is lossy (mean LPIPS up to 0.05 on the
+    ``default`` interval, 0.10 on ``max``, PR #12652) and ComfyUI never skips steps by default, so ``default``, an
+    unset speed and the deferred profile render every step. An explicit ``static`` request is still honoured."""
     if auto_step_skip_disabled(env):
         return None
     if isinstance(identifiers, str) or identifiers is None:
         identifiers = (identifiers,)
     entry = auto_static_skip_entry(*identifiers)
-    if not entry or speed_mode not in (_TIER_DEFAULT, _TIER_MAX):
+    if not entry or speed_mode not in AUTO_STATIC_SKIP_TIERS:
         return None
-    every = entry.get(_TIER_DEFAULT) if speed_mode == _TIER_DEFAULT else entry.get(_TIER_MAX)
+    every = entry.get(_TIER_MAX)
     try:
         steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
     except (TypeError, ValueError):

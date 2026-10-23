@@ -118,6 +118,7 @@ export const ru = {
     reload: "Обновить",
     more: "Ещё",
     addressPlaceholder: "Введите запрос или URL",
+    local: "Локальный",
     suggested: "Рекомендуемые",
     suggestedMenu: {
       open: "Открыть",
@@ -468,6 +469,8 @@ export const ru = {
       downloadFailed: "Не удалось загрузить {name}",
       notMarked: "{name} сохранён, но не удалось пометить его как загруженный из интернета, поэтому система не предупредит перед открытием.",
       blocked: "Этот адрес нельзя открыть в панели браузера. Она открывает только общедоступные сайты.",
+      blockedLocal: "Этот локальный адрес нельзя открыть здесь. Введите его в адресной строке, чтобы открыть.",
+      studioAddress: "Это собственный адрес Unsloth, поэтому его нельзя открыть в панели браузера.",
       clearDataSettingDescription: "Очистить историю просмотров, историю загрузок, кэшированные страницы, а также файлы cookie и данные сайтов. Вы выйдете из аккаунтов на сайтах.",
       clearDataDescription: "Будут очищены история просмотров, история загрузок, кэшированные страницы, а также файлы cookie и данные сайтов, и вы выйдете из аккаунтов на сайтах. Загруженные файлы останутся на компьютере.",
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
@@ -623,6 +626,8 @@ export const ru = {
       "Этот чат не появится в истории и не сохраняется. Он исчезнет, когда вы уйдёте.",
   },
   picker: {
+    unifiedTightFit: "Впритык",
+    unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
@@ -1069,6 +1074,7 @@ export const ru = {
     },
     keyboardShortcuts: {
       title: "Сочетания клавиш",
+      intro: "Чтобы изменить сочетание клавиш, выберите его и нажмите новые клавиши",
       searchPlaceholder: "Поиск сочетаний…",
       keystrokePlaceholder: "Нажмите сочетание для поиска",
       searchByKeystrokes: "Поиск по нажатию",
@@ -1076,18 +1082,23 @@ export const ru = {
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",
-      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
       needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
       conflict: "Используется также другим сочетанием",
       conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
       edit: "Изменить сочетание",
-      clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      primarySlot: "Сочетание",
-      alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
+      metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
+      altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
+      desktopOnly: "Только в настольном приложении",
+      groups: {
+        composer: "Поле ввода",
+        chat: "Чат",
+        navigation: "Навигация",
+        app: "Приложение",
+      },
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1277,6 +1288,10 @@ export const ru = {
           label: "Прикрепить фото и файлы",
           description: "Добавить вложение в поле ввода",
         },
+        openComposerMenu: {
+          label: "Открыть меню +",
+          description: "Открыть меню + поля ввода с инструментами и вложениями",
+        },
         sendMessage: {
           label: "Отправить сообщение",
           description: "Отправить содержимое поля ввода",
@@ -1289,6 +1304,10 @@ export const ru = {
           label: "Скорректировать ответ",
           description: "Остановить текущий ответ и отправить черновик следующим",
         },
+        stopGeneration: {
+          label: "Остановить генерацию",
+          description: "Остановить текущий ответ",
+        },
         cycleReasoningEffort: {
           label: "Переключать усилие рассуждения",
           description: "Перебрать уровни усилия рассуждения",
@@ -1300,10 +1319,6 @@ export const ru = {
         decreaseReasoningEffort: {
           label: "Уменьшить усилие рассуждения",
           description: "Снизить усилие рассуждения на один уровень",
-        },
-        toggleFastMode: {
-          label: "Переключить режим Fast",
-          description: "Включить или выключить режим Fast",
         },
         renameChat: {
           label: "Переименовать чат",
@@ -1814,20 +1829,14 @@ export const ru = {
       },
       notifications: {
         sectionTitle: "Уведомления",
-        showLlamaUpdates: "Уведомления об обновлениях llama.cpp",
-        showLlamaUpdatesDescription:
-          "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
-        showLoadedModels: "Индикатор загруженных моделей",
-        showLoadedModelsDescription:
-          "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
-        showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
-        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
-        showUnslothUpdatesDescription:
-          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        showLoadedModels: "Карточка загруженных моделей",
+        showLoadedModelsDescription: "Карточка в углу со всеми загруженными моделями, выгрузка одним щелчком.",
+        updateReminders: "Напоминания об обновлениях",
+        updateRemindersDescription: "Как часто предлагать новую версию, когда она готова.",
+        llamaHint: "Чат-модели и GGUF",
+        audioHint: "Речь, музыка и расшифровка",
         frequency: {
-          always: "Всегда",
+          always: "Как только выйдет",
           daily: "Раз в день",
           weekly: "Раз в неделю",
           biweekly: "Раз в две недели",
@@ -1987,6 +1996,18 @@ export const ru = {
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
       },
+      fullInstall: {
+        label: "Тип установки",
+        description:
+          "Только чат (GGUF). Полная установка добавляет обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений.",
+        action: "Перейти на полную установку",
+        confirmTitle: "Перейти на полную установку?",
+        confirmDescription:
+          "Эта установка «Только чат» запускает модели GGUF. Полная установка добавляет PyTorch для графического процессора этого компьютера, что включает обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений. Она скачивает несколько гигабайт (не менее 5 ГБ на диске) и перезапускает сервер. Чаты, модели и настройки сохраняются. Это может занять несколько минут.",
+        confirmAction: "Перейти",
+        keywords:
+          "full install upgrade тип установки полная установка обновить только чат chat only gguf add training обучение обучить train fine-tune pytorch torch экспорт видео генерация изображений safetensors",
+      },
       repairInstall: {
         label: "Восстановить установку",
         description:
@@ -1995,6 +2016,8 @@ export const ru = {
         confirmTitle: "Восстановить эту установку?",
         confirmDescription:
           "Останавливает сервер и повторно запускает установщик, который переустанавливает PyTorch для графического процессора этого компьютера. Чаты и настройки сохраняются. Это может занять несколько минут.",
+        confirmDescriptionChatOnly:
+          "Останавливает сервер и повторно запускает установщик. Это установка «Только чат», поэтому установщик также переведёт её на полную установку с PyTorch, в сумме несколько гигабайт. Чаты и настройки сохраняются. Это может занять несколько минут.",
         confirmAction: "Восстановить",
       },
       resetPreferences: {
@@ -2075,9 +2098,9 @@ export const ru = {
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
         activityDescription: {
-          daily: "Период: {weeks} · {total}",
-          weekly: "Пиковая неделя {total} · последние {weeks}",
-          cumulative: "{total} накоплено за последние {weeks}",
+          daily: "{total} с {since}",
+          weekly: "Самая активная неделя {total} · с {since}",
+          cumulative: "Всего {total} с {since}",
         },
         mode: {
           daily: "По дням",
@@ -2086,8 +2109,9 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
-        chartToggle: "График",
-        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
+        emptyDayTooltip: "{date} · Нет активности",
+        apiRequests: "{count} через API",
+        cumulativeTooltip: "К неделе {date} · всего {tokens}",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",
@@ -2721,6 +2745,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      showReplyTimes: "Время ответов",
+      showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
+      showReplyTimesKeywords:
+        "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
@@ -3127,6 +3155,7 @@ export const ru = {
       relativeNever: "никогда",
       relativeJustNow: "только что",
       expired: "истёк",
+      expiredStatus: "Истёк",
       today: "сегодня",
       created: "Создан {value}",
       used: "Использование: {value}",
@@ -3155,6 +3184,14 @@ export const ru = {
         autoSwitchOff:
           "Модель загружается по имени, только когда включено автопереключение моделей. Включите его или сначала загрузите модель на её странице «Аудио».",
         useViaApi: "Через API",
+      },
+      mediaApi: {
+        title: "API для изображений и видео",
+        description: "Создавайте изображения и видео из своего кода через OpenAI-совместимые эндпоинты.",
+        images: "Изображения",
+        video: "Видео",
+        placeholderModel: "Показанная модель приведена для примера. Загрузите модель на странице «Изображения» или «Видео» и откройте этот раздел её кнопкой API, чтобы подставить её.",
+        autoSwitchOff: "Автопереключение медиамоделей выключено, поэтому запросы выполняются на модели, загруженной на странице, какое бы имя в них ни было.",
       },
       decisionApi: {
         title: "API решений",
@@ -3236,6 +3273,24 @@ export const ru = {
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
+      whisperCppVersion: "Версия whisper.cpp",
+      engines: {
+        title: "Движки",
+        description: "Среды выполнения, с помощью которых Unsloth запускает модели. Обновления устанавливаются в фоне, без перезапуска.",
+        updatesLabel: "Обновления движков",
+        notInstalled: "Не установлено",
+        available: "Доступна {version}",
+        upToDate: "Актуальная версия",
+        updatesAvailable: "Доступны обновления",
+        checking: "Проверка обновлений...",
+        checkFailed: "Не удалось проверить обновления. Повторите попытку позже.",
+        unsupported: "Движки этой установки управляются вне Unsloth.",
+        checkForUpdates: "Проверить обновления",
+        update: "Обновить",
+        updating: "Обновление...",
+        updated: "Движки обновлены.",
+        updateFailed: "Не удалось обновить: {error}",
+      },
       hardware: "Оборудование",
       gpu: "GPU",
       gpuIntegrated: "встроенная",
@@ -3324,6 +3379,9 @@ export const ru = {
         docsUpdating: "Обновление",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4677,5 +4735,42 @@ export const ru = {
     cantRun: "Не удалось запустить",
     failed: "Ошибка {status}",
     invalidJson: "Тело запроса не является корректным JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Загруженные модели",
+      countOne: "Загружена {count} модель",
+      countMany: "Загружено моделей: {count}",
+      pillLabel: "{count}. Показать подробности или перетащить",
+      dragToMove: "Перетащите, чтобы переместить",
+      dragHandleLabel: "Переместить панель загруженных моделей. Стрелки сдвигают её понемногу.",
+      collapse: "Свернуть",
+      collapseLabel: "Свернуть загруженные модели",
+      close: "Закрыть",
+      closeLabel: "Закрыть загруженные модели",
+      backOnNextLoad: "Появится снова при следующей загрузке модели",
+      ejectToFree: "Извлечь, чтобы освободить память",
+      ejectLabel: "Извлечь {model}",
+      openTarget: "Открыть {target}",
+      rowLabel: "{model}. Открыть {target}",
+      loading: "Загрузка",
+      ejecting: "Извлечение",
+      stillInMemory: "Всё ещё в памяти",
+      alsoServing: "Также обслуживает",
+      noneLoaded: "Нет загруженных моделей",
+      noneLoadedDetail: "Загруженные вами модели появятся здесь.",
+      otherAccount: "Используется другой учётной записью",
+      otherAccountDetail: "Память занята моделью, которую вы не видите",
+      toastStillResident: "Пока шло извлечение, «{model}» была загружена, поэтому она всё ещё занимает память. Извлеките её ещё раз, чтобы освободить.",
+      toastUnverified: "Запрошена выгрузка {model}, но среда выполнения не подтвердила её. Проверьте карточку через минуту.",
+      toastAlreadyFree: "{model} уже не была загружена.",
+      toastReplaced: "{model} больше не загружена. Её место заняла «{resident}», её не трогали.",
+      toastEjected: "{model} извлечена",
+      toastFailed: "Не удалось извлечь {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
+      reconnecting: "Повторное подключение…",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

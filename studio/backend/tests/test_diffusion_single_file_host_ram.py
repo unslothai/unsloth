@@ -218,3 +218,52 @@ def test_kill_switch_charges_nothing(tmp_path, monkeypatch, krea2, kind):
             fp8_backend = None,
         )
     assert charged == []
+
+
+@pytest.mark.parametrize("kind", ["fp8", "fp8_scaled"])
+def test_a_file_that_fits_only_stored_loads_with_fp8_storage_and_is_refused_widened(
+    tmp_path, monkeypatch, krea2, kind
+):
+    """fp8 storage keeps the codes memory-mapped, so the up-front estimate prices them at their stored bytes (plus
+    the fp32 row scales): free RAM between the stored and the widened need loads with storage, and is refused when
+    UNSLOTH_DIFFUSION_FP8_STORAGE=0 makes the load widen."""
+    path, _ = _write(tmp_path, kind)
+    keep = krea2._keep_in_fp32_modules
+    # Price in bytes, no reserve: the tiny model's needs are a few KB apart.
+    monkeypatch.setattr(conv, "_MIB", 1)
+    monkeypatch.setattr(small_host, "host_reserve_mib", lambda total: 0)
+    if kind == "fp8":
+        widened = conv.converted_host_bytes(str(path), torch.bfloat16, keep_fp32 = keep)
+        stored = conv.converted_host_bytes(
+            str(path), torch.bfloat16, keep_fp32 = keep, dequantized = conv.fp8_stored_estimate(keep)
+        ) + conv._fp8_stored_scale_bytes(str(path), keep)
+    else:
+        scan = cq.refuse_comfy_quant(str(path))
+        widened = conv.converted_host_bytes(
+            str(path), torch.bfloat16, dequantized = {n + ".weight": 1 for n in scan.layers}.get
+        )
+        stored = conv.converted_host_bytes(
+            str(path), torch.bfloat16, dequantized = {n + ".weight": 0 for n in scan.layers}.get
+        )
+    assert 0 < stored < widened
+    _host(monkeypatch, available_mib = (stored + widened) // 2)
+
+    def load(**kw):
+        if kind == "fp8":
+            return conv.load_original_layout_transformer(krea2, str(path), dict(_KWARGS), **kw)
+        return cq.load_comfy_quant_transformer(
+            krea2,
+            str(path),
+            cq.refuse_comfy_quant(str(path)),
+            dict(_KWARGS),
+            int8_backend = None,
+            fp8_backend = None,
+            **kw,
+        )
+
+    model = load(fp8_storage = True)
+    assert model._unsloth_fp8_stored > 0
+    assert model.transformer_blocks[0].attn.to_q.weight_q.dtype == torch.uint8
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        load(fp8_storage = cq.comfy_fp8_storage(None))
