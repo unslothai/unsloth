@@ -281,7 +281,8 @@ def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(mon
     with torch.no_grad(), torch.autocast("cuda", dtype = torch.float16):
         got, want = vae.decoder(z), ref.decoder(z)
     assert not getattr(vae.decoder, "_unsloth_fast_failed", False)
-    assert seen == [torch.float32, torch.float32]
+    # the stock forward aligns register_tokens with proj_in's autocast output, then the float32 anchors promote
+    assert seen == [torch.float16, torch.float32]
     assert got.dtype == want.dtype
     torch.testing.assert_close(got.float(), want.float(), rtol = 2e-3, atol = 2e-3)
 
