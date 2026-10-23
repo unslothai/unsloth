@@ -13,6 +13,8 @@ export type DataEdge = Edge<{
 export function DataEdge({
   data = { path: "auto" },
   id,
+  source,
+  target,
   markerEnd,
   selected,
   sourcePosition,
@@ -35,6 +37,9 @@ export function DataEdge({
   return (
     <RoutedWire
       id={id}
+      source={source}
+      target={target}
+      data={data}
       sourceX={sourceX}
       sourceY={sourceY}
       sourcePosition={sourcePosition}

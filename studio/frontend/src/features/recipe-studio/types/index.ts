@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { RecipePort } from "../utils/ports";
 import type { Node } from "@xyflow/react";
 
 export type SamplerType =
@@ -79,6 +80,8 @@ export type RecipeNodeData = {
     | "model_config"
     | "tool_config";
   layoutDirection?: LayoutDirection;
+  /** Set by the display graph; see utils/ports.ts. */
+  ports?: RecipePort[];
   runtimeState?: "idle" | "running" | "done";
   executionLocked?: boolean;
 };

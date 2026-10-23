@@ -37,7 +37,8 @@ import { RunValidateFloatingControls } from "./components/controls/run-validate-
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
-import { WireRouter } from "./components/graph/wire-routing";
+import { RerouteNode } from "./components/graph/reroute-node";
+import { setWireHover, WireRouter } from "./components/graph/wire-routing";
 import {
   RecipeGraphAuxNode,
   type RecipeGraphAuxNodeData,
@@ -74,7 +75,11 @@ import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
 
-const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
+const NODE_TYPES: NodeTypes = {
+  builder: RecipeNode,
+  aux: RecipeGraphAuxNode,
+  reroute: RerouteNode,
+};
 const EDGE_TYPES: EdgeTypes = {
   canvas: DataEdge,
   semantic: RecipeGraphSemanticEdge,
@@ -124,6 +129,7 @@ export function RecipeStudioPage({
     nodes,
     edges,
     auxNodePositions,
+    reroutes,
     llmAuxVisibility,
     configs,
     processors,
@@ -155,15 +161,19 @@ export function RecipeStudioPage({
     setDialogOpen,
     resetRecipe,
     loadRecipe,
-    setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
+    addReroute,
+    setReroutePosition,
+    dropRerouteOnWire,
+    removeReroutes,
     setExecutionLocked,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       auxNodePositions: state.auxNodePositions,
+      reroutes: state.reroutes,
       llmAuxVisibility: state.llmAuxVisibility,
       configs: state.configs,
       processors: state.processors,
@@ -195,9 +205,12 @@ export function RecipeStudioPage({
       setDialogOpen: state.setDialogOpen,
       resetRecipe: state.resetRecipe,
       loadRecipe: state.loadRecipe,
-      setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
+      addReroute: state.addReroute,
+      setReroutePosition: state.setReroutePosition,
+      dropRerouteOnWire: state.dropRerouteOnWire,
+      removeReroutes: state.removeReroutes,
       setExecutionLocked: state.setExecutionLocked,
     })),
   );
@@ -270,6 +283,9 @@ export function RecipeStudioPage({
     handleAddExpressionFromSheet,
     handleAddValidatorFromSheet,
     handleAddMarkdownNoteFromSheet,
+    handleAddRerouteFromSheet,
+    handleNodeDragStop,
+    selectedReroutes,
   } = useRecipeEditorGraph({
     nodes,
     edges,
@@ -281,6 +297,11 @@ export function RecipeStudioPage({
     onNodesChange,
     onEdgesChange,
     setAuxNodePosition,
+    reroutes,
+    addReroute,
+    setReroutePosition,
+    dropRerouteOnWire,
+    removeReroutes,
     addSamplerNode,
     addSeedNode,
     addLlmNode,
@@ -299,10 +320,6 @@ export function RecipeStudioPage({
     [configList],
   );
 
-  const handleToggleDirection = useCallback(() => {
-    setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
-  }, [layoutDirection, setLayoutDirection]);
-
   const payloadResult = useMemo(
     () =>
       buildRecipePayload(
@@ -312,8 +329,9 @@ export function RecipeStudioPage({
         processors,
         layoutDirection,
         auxNodePositions,
+        reroutes,
       ),
-    [auxNodePositions, configs, edges, layoutDirection, nodes, processors],
+    [auxNodePositions, configs, edges, layoutDirection, nodes, processors, reroutes],
   );
   const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
@@ -324,6 +342,7 @@ export function RecipeStudioPage({
       state.processors,
       state.layoutDirection,
       state.auxNodePositions,
+      state.reroutes,
     ).payload;
   }, []);
   const {
@@ -390,10 +409,22 @@ export function RecipeStudioPage({
     configs,
     nodes,
     edges,
-    layoutDirection,
     auxNodePositions,
+    reroutes,
     llmAuxVisibility,
   });
+  // Reroutes live outside the recipe's nodes, so their selection is kept beside them.
+  const flowNodes = useMemo(
+    () =>
+      selectedReroutes.size === 0
+        ? displayGraph.nodes
+        : displayGraph.nodes.map((node) =>
+            node.type === "reroute" && selectedReroutes.has(node.id)
+              ? { ...node, selected: true }
+              : node,
+          ),
+    [displayGraph.nodes, selectedReroutes],
+  );
   const tourSteps = useMemo(
     () =>
       buildRecipeEditorTourSteps({
@@ -657,7 +688,7 @@ export function RecipeStudioPage({
         onInit={setReactFlowInstance}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        nodes={displayGraph.nodes}
+        nodes={flowNodes}
         edges={displayGraph.edges}
         proOptions={{ hideAttribution: true }}
         nodeTypes={NODE_TYPES}
@@ -670,6 +701,9 @@ export function RecipeStudioPage({
         onEdgesChange={handleEdgesChange}
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
+        onNodeMouseEnter={(_, node) => setWireHover(node.id)}
+        onNodeMouseLeave={() => setWireHover(null)}
+        onNodeDragStop={handleNodeDragStop}
         onNodeDoubleClick={handleNodeDoubleClick}
         deleteKeyCode={CANVAS_DELETE_KEYS}
         isValidConnection={isValidConnection}
@@ -685,9 +719,7 @@ export function RecipeStudioPage({
         className="@container/canvas h-full w-full rounded-t-none"
       >
         <LayoutControls
-          direction={layoutDirection}
           onLayout={applyLayout}
-          onToggleDirection={handleToggleDirection}
         />
         <InternalsSync nodeIds={displayNodeIds} />
         <WireRouter />
@@ -759,6 +791,7 @@ export function RecipeStudioPage({
             onAddExpression={handleAddExpressionFromSheet}
             onAddValidator={handleAddValidatorFromSheet}
             onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
+            onAddReroute={handleAddRerouteFromSheet}
             onOpenProcessors={openProcessorsFromSheet}
             copied={copied}
             onCopy={copyRecipe}

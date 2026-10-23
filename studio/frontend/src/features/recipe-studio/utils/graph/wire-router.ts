@@ -28,6 +28,11 @@ export type WireEdgeInput = {
   net: string;
   /** Wires into the same input handle may merge before it. Defaults to target + side. */
   sink?: string;
+  /** Port position down the side from the card's top edge; the middle of the side if unset. */
+  sourceOffset?: number;
+  targetOffset?: number;
+  /** Cards this wire belongs to, for highlighting. Defaults to source and target. */
+  ends?: string[];
 };
 
 export type WireRoute = {
@@ -37,6 +42,7 @@ export type WireRoute = {
   junctions: WirePoint[];
   /** No clean path existed; drawn as a plain orthogonal path instead. */
   blocked: boolean;
+  ends: string[];
 };
 
 export type WireRouterOptions = {
@@ -46,6 +52,10 @@ export type WireRouterOptions = {
   crossingPenalty?: number;
   overlapPenalty?: number;
   clearancePenalty?: number;
+  /** Per px for running alongside an unrelated wire a few px away. */
+  nearPenalty?: number;
+  /** Per px for running out on the ring around the whole graph. */
+  ringPenalty?: number;
   hopRadius?: number;
 };
 
@@ -80,17 +90,22 @@ const SIDE_DIR: Record<WireSide, number> = {
 const EPS = 0.01;
 const SHARED_DISCOUNT = 0.7;
 
-export function wirePortPoint(rect: WireRect, side: WireSide): WirePoint {
+export function wirePortPoint(rect: WireRect, side: WireSide, offset?: number): WirePoint {
+  const along = offset ?? rect.height / 2;
   switch (side) {
     case "left":
-      return { x: rect.x, y: rect.y + rect.height / 2 };
+      return { x: rect.x, y: rect.y + along };
     case "right":
-      return { x: rect.x + rect.width, y: rect.y + rect.height / 2 };
+      return { x: rect.x + rect.width, y: rect.y + along };
     case "top":
       return { x: rect.x + rect.width / 2, y: rect.y };
     default:
       return { x: rect.x + rect.width / 2, y: rect.y + rect.height };
   }
+}
+
+function onHalfPixel(point: WirePoint): WirePoint {
+  return { x: Math.round(point.x * 2) / 2, y: Math.round(point.y * 2) / 2 };
 }
 
 function offsetPoint(point: WirePoint, dir: number, distance: number): WirePoint {
@@ -253,6 +268,8 @@ type Grid = {
   // Port stub points, kept clear for the wires that own them.
   reservedNet: Int32Array;
   reservedSink: Int32Array;
+  /** Card bounds; grid lines outside them are the outer ring. */
+  inner: { x0: number; x1: number; y0: number; y1: number };
   stamp: Int32Array;
   closed: Int32Array;
   gScore: Float64Array;
@@ -359,6 +376,7 @@ function buildGrid(
     sinkV: new Int32Array(size).fill(-1),
     reservedNet: new Int32Array(size).fill(-1),
     reservedSink: new Int32Array(size).fill(-1),
+    inner: { x0: minX, x1: maxX, y0: minY, y1: maxY },
     stamp: new Int32Array(size * 4),
     closed: new Int32Array(size * 4),
     gScore: new Float64Array(size * 4),
@@ -440,6 +458,39 @@ function inExempt(exempt: WireRect[], x: number, y: number): boolean {
   );
 }
 
+const NEAR_DISTANCE = 16;
+
+// An unrelated wire on a neighbouring grid line, close enough to read as one bundle with this one.
+function runsNearOther(
+  grid: Grid,
+  horizontal: boolean,
+  i: number,
+  j: number,
+  owner: Owner,
+): boolean {
+  const { xs, ys, nx, ny } = grid;
+  for (const step of [-1, 1]) {
+    if (horizontal) {
+      const nj = j + step;
+      if (nj >= 0 && nj < ny && Math.abs(ys[nj] - ys[j]) <= NEAR_DISTANCE) {
+        const q = i * ny + nj;
+        if (usedByOther(grid.netH[q], grid.sinkH[q], owner)) {
+          return true;
+        }
+      }
+    } else {
+      const ni = i + step;
+      if (ni >= 0 && ni < nx && Math.abs(xs[ni] - xs[i]) <= NEAR_DISTANCE) {
+        const q = ni * ny + j;
+        if (usedByOther(grid.netV[q], grid.sinkV[q], owner)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function searchPath(
   grid: Grid,
   input: SearchInput,
@@ -519,6 +570,17 @@ function searchPath(
       }
       const length = Math.abs(xs[ni] - xs[i]) + Math.abs(ys[nj] - ys[j]);
       let cost = soft ? length * 2 + costs.clearancePenalty : length;
+      const horizontal = nd === 0 || nd === 2;
+      const { inner } = grid;
+      const onRing = horizontal
+        ? ys[j] < inner.y0 || ys[j] > inner.y1
+        : xs[i] < inner.x0 || xs[i] > inner.x1;
+      if (onRing) {
+        cost += length * costs.ringPenalty;
+      }
+      if (runsNearOther(grid, horizontal, Math.min(i, ni), Math.min(j, nj), owner)) {
+        cost += length * costs.nearPenalty;
+      }
       if (segNet !== -1 && sharesWith(segNet, segSink, owner)) {
         cost *= SHARED_DISCOUNT;
       } else if (usedByOther(segNet, segSink, owner)) {
@@ -631,6 +693,8 @@ function edgeKey(
   return [
     edge.sourceSide,
     edge.targetSide,
+    edge.sourceOffset,
+    edge.targetOffset,
     sourceRect.x,
     sourceRect.y,
     sourceRect.width,
@@ -722,12 +786,14 @@ function withPortJogs(points: WirePoint[], stub: number): WirePoint[] {
     x: a.x + Math.sign(b.x - a.x) * distance,
     y: a.y + Math.sign(b.y - a.y) * distance,
   });
-  if (legLength(out[0], out[1]) > stub + EPS) {
+  // A leg of exactly stub length still gets a (zero-length) jog: otherwise a lane shift on the
+  // next segment would move the stub's corner and bend the stub off its port.
+  if (legLength(out[0], out[1]) > stub - EPS) {
     const jog = towards(out[0], out[1], stub);
     out.splice(1, 0, jog, { ...jog });
   }
   const last = out.length - 1;
-  if (legLength(out[last - 1], out[last]) > stub + EPS) {
+  if (legLength(out[last - 1], out[last]) > stub - EPS) {
     const jog = towards(out[last], out[last - 1], stub);
     out.splice(last, 0, jog, { ...jog });
   }
@@ -961,6 +1027,8 @@ const DEFAULT_OPTIONS: Required<WireRouterOptions> = {
   crossingPenalty: 60,
   overlapPenalty: 400,
   clearancePenalty: 150,
+  nearPenalty: 3,
+  ringPenalty: 2,
   hopRadius: 4,
 };
 
@@ -1024,8 +1092,13 @@ export function routeWires(
     if (!sinkIds.has(sink)) {
       sinkIds.set(sink, sinkIds.size);
     }
-    const sourcePort = wirePortPoint(sourceRect, edge.sourceSide);
-    const targetPort = wirePortPoint(targetRect, edge.targetSide);
+    // Snapped to the grid's half-pixel steps so the first and last legs stay straight.
+    const sourcePort = onHalfPixel(
+      wirePortPoint(sourceRect, edge.sourceSide, edge.sourceOffset),
+    );
+    const targetPort = onHalfPixel(
+      wirePortPoint(targetRect, edge.targetSide, edge.targetOffset),
+    );
     const sourceStub = offsetPoint(sourcePort, SIDE_DIR[edge.sourceSide], clearance);
     const targetStub = offsetPoint(targetPort, SIDE_DIR[edge.targetSide], clearance);
     const key = edgeKey(edge, sourceRect, targetRect);
@@ -1208,6 +1281,7 @@ export function routeWires(
       hops: hops[index],
       junctions: junctions[index],
       blocked: raw[index].blocked,
+      ends: item.edge.ends ?? [item.edge.source, item.edge.target],
     });
     cache.raw.set(item.edge.id, raw[index]);
   });
@@ -1262,4 +1336,40 @@ export function buildWirePath(
     parts.push(`L ${b.x} ${b.y}`);
   }
   return parts.join(" ");
+}
+
+/** How a wire should be drawn given the cards in focus (hovered, else selected). */
+export function wireEmphasis(
+  focus: ReadonlySet<string>,
+  ends: ReadonlyArray<string>,
+): "none" | "focus" | "dim" {
+  if (focus.size === 0) {
+    return "none";
+  }
+  return ends.some((id) => focus.has(id)) ? "focus" : "dim";
+}
+
+/** Closest wire within `tolerance` of a point, with the y of the run when it is horizontal there. */
+export function findWireNear(
+  routes: Iterable<WireRoute>,
+  point: WirePoint,
+  tolerance: number,
+): { id: string; y: number | null } | null {
+  let best: { id: string; y: number | null; distance: number } | null = null;
+  for (const route of routes) {
+    const points = route.points;
+    for (let k = 0; k + 1 < points.length; k += 1) {
+      const a = points[k];
+      const b = points[k + 1];
+      const horizontal = Math.abs(a.y - b.y) < EPS;
+      const along = horizontal
+        ? point.x >= Math.min(a.x, b.x) && point.x <= Math.max(a.x, b.x)
+        : point.y >= Math.min(a.y, b.y) && point.y <= Math.max(a.y, b.y);
+      const distance = horizontal ? Math.abs(point.y - a.y) : Math.abs(point.x - a.x);
+      if (along && distance <= tolerance && (!best || distance < best.distance)) {
+        best = { id: route.id, y: horizontal ? a.y : null, distance };
+      }
+    }
+  }
+  return best ? { id: best.id, y: best.y } : null;
 }

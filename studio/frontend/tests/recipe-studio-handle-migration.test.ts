@@ -16,37 +16,40 @@ const { importRecipePayload } = await import(
 );
 
 const LEGAL = new Set<string>(Object.values(HANDLE_IDS));
+// Every handle id a saved recipe can hold that the canvas no longer draws, top and bottom ones
+// from the old top-to-bottom layout included.
 const REMOVED = [
+  "data-in-top",
   "data-in-right",
   "data-in-bottom",
+  "data-out-bottom",
   "data-out-left",
   "data-out-top",
+  "semantic-in-top",
   "semantic-in-right",
   "semantic-in-bottom",
+  "semantic-out-bottom",
   "semantic-out-left",
   "semantic-out-top",
+  "llm-input-out-bottom",
   "llm-input-out-left",
   "llm-input-out-top",
 ];
 
-test("every removed handle id maps to a legal handle on the same axis", () => {
+test("every removed handle id maps to the left or right handle of its lane", () => {
   for (const id of REMOVED) {
     const mapped = LEGACY_HANDLE_ALIAS_MAP[id];
     assert.ok(mapped, `${id} has a replacement`);
     assert.ok(LEGAL.has(mapped), `${id} -> ${mapped} is a rendered handle`);
-    const vertical = /-(top|bottom)$/.test(id);
-    assert.equal(/-(top|bottom)$/.test(mapped), vertical, `${id} keeps its axis`);
+    assert.equal(mapped.split("-")[0], id.split("-")[0], `${id} stays in its lane`);
+    assert.doesNotMatch(mapped, /-(top|bottom)$/, `${id} -> ${mapped}`);
   }
 });
 
-test("inputs only sit top or left and outputs only right or bottom", () => {
+test("inputs only sit on the left and outputs only on the right", () => {
   for (const id of [...LEGAL, ...REMOVED]) {
-    const isInput = id.includes("-in");
-    const side = getRecipeHandleSide(id, isInput ? "target" : "source");
-    assert.ok(
-      isInput ? side === "top" || side === "left" : side === "right" || side === "bottom",
-      `${id} sits on ${side}`,
-    );
+    assert.equal(getRecipeHandleSide(id, "target"), "left", id);
+    assert.equal(getRecipeHandleSide(id, "source"), "right", id);
   }
 });
 
@@ -55,28 +58,26 @@ test("a stored edge on a removed handle is remapped, never dropped", () => {
     id: "e-a-b",
     source: "a",
     target: "b",
-    sourceHandle: "data-out-left",
-    targetHandle: "data-in-bottom",
+    sourceHandle: "data-out-bottom",
+    targetHandle: "data-in-top",
   };
   assert.deepEqual(migrateRecipeEdgeHandles(edge), {
     ...edge,
     sourceHandle: HANDLE_IDS.dataOut,
-    targetHandle: HANDLE_IDS.dataInTop,
+    targetHandle: HANDLE_IDS.dataIn,
   });
   const clean = { ...edge, sourceHandle: HANDLE_IDS.dataOut, targetHandle: HANDLE_IDS.dataIn };
   assert.equal(migrateRecipeEdgeHandles(clean), clean, "legal edges are left untouched");
 });
 
-// Same axis as the legal handle, so the old recipe means exactly what the new one does.
+// The handles older saves wrote in place of the ones a save writes now.
 const TO_REMOVED: Record<string, string> = {
-  "data-out": "data-out-left",
-  "data-out-bottom": "data-out-top",
-  "data-in": "data-in-right",
-  "data-in-top": "data-in-bottom",
-  "semantic-out": "semantic-out-left",
-  "semantic-out-bottom": "semantic-out-top",
-  "semantic-in": "semantic-in-right",
-  "semantic-in-top": "semantic-in-bottom",
+  "data-out": "data-out-bottom",
+  "data-in": "data-in-top",
+  "semantic-out": "semantic-out-bottom",
+  "semantic-in": "semantic-in-top",
+  "model-in": "data-in-top",
+  "tools-in": "data-in-top",
 };
 
 const recipeDir = new URL(

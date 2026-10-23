@@ -5,8 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Handle,
-  Position,
   type Node,
   type NodeProps,
   useUpdateNodeInternals,
@@ -14,10 +12,10 @@ import {
 import { memo, type ReactElement, useEffect } from "react";
 import { useRecipeStudioStore } from "../stores/recipe-studio";
 import type { LlmConfig, Score, ScoreOption } from "../types";
-import { AUX_HANDLE_CLASS } from "../utils/handle-layout";
-import { HANDLE_IDS } from "../utils/handles";
+import type { RecipePort } from "../utils/ports";
 import { findInvalidJinjaReferences } from "../utils/refs";
 import { getAvailableVariableEntries } from "../utils/variables";
+import { NodePorts } from "./graph/node-ports";
 import { AvailableReferencesInline } from "./shared/available-references-inline";
 import { BaseNode, BaseNodeContent, BaseNodeHeader, BaseNodeHeaderTitle } from "./rf-ui/base-node";
 
@@ -29,6 +27,7 @@ type PromptInputNodeData = {
   field: PromptField;
   title: string;
   executionLocked?: boolean;
+  ports?: RecipePort[];
 };
 
 type JudgeScoreNodeData = {
@@ -36,6 +35,7 @@ type JudgeScoreNodeData = {
   llmId: string;
   scoreIndex: number;
   executionLocked?: boolean;
+  ports?: RecipePort[];
 };
 
 export type RecipeGraphAuxNodeData = PromptInputNodeData | JudgeScoreNodeData;
@@ -88,26 +88,7 @@ function AuxNodeBase({
   }
   const executionLocked = Boolean(data.executionLocked);
 
-  const sourceHandles = (
-    <>
-      <Handle
-        id={HANDLE_IDS.llmInputOutRight}
-        type="source"
-        position={Position.Right}
-        isConnectable={false}
-        isConnectableStart={false}
-        className={AUX_HANDLE_CLASS}
-      />
-      <Handle
-        id={HANDLE_IDS.llmInputOutBottom}
-        type="source"
-        position={Position.Bottom}
-        isConnectable={false}
-        isConnectableStart={false}
-        className={AUX_HANDLE_CLASS}
-      />
-    </>
-  );
+  const ports = <NodePorts ports={data.ports} />;
 
   if (data.kind === "llm-prompt-input") {
     const value = data.field === "prompt" ? config.prompt : config.system_prompt;
@@ -120,6 +101,7 @@ function AuxNodeBase({
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
+        {ports}
         <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
             className="corner-squircle nodrag nowheel max-h-40 min-h-[calc(88px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
@@ -134,7 +116,6 @@ function AuxNodeBase({
           />
           <AuxVariableBadges entries={variableEntries} />
         </BaseNodeContent>
-        {sourceHandles}
       </BaseNode>
     );
   }
@@ -195,6 +176,7 @@ function AuxNodeBase({
           Remove
         </Button>
       </BaseNodeHeader>
+      {ports}
       <BaseNodeContent className="gap-2 px-3 py-2">
         <Input
           className="nodrag h-7 w-full text-xs"
@@ -257,7 +239,6 @@ function AuxNodeBase({
           </Button>
         </div>
       </BaseNodeContent>
-      {sourceHandles}
     </BaseNode>
   );
 }

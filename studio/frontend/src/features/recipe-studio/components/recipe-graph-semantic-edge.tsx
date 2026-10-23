@@ -7,6 +7,8 @@ import { RoutedWire } from "./graph/wire-routing";
 
 export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -23,6 +25,9 @@ export const RecipeGraphSemanticEdge = memo(function RecipeGraphSemanticEdge({
   return (
     <RoutedWire
       id={id}
+      source={source}
+      target={target}
+      data={data}
       sourceX={sourceX}
       sourceY={sourceY}
       sourcePosition={sourcePosition}

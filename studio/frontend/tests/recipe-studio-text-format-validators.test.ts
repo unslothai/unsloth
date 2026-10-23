@@ -141,7 +141,6 @@ test("changing a JSON check's field keeps the edge to a step reading its result"
     { target_columns: [second.name] },
     configs,
     edges,
-    "LR",
   );
   const pairs = next.map((edge) => `${edge.source}->${edge.target}`).sort();
   assert.deepEqual(pairs, [

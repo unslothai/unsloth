@@ -123,26 +123,19 @@ export function getLayoutedElements<TNode extends Node>(
     configs,
   } = options;
 
-  // With configs, filter infra and aux nodes out of dagre.
+  // Aux boxes stay where they are. Model, provider and tool cards are laid out with the rest:
+  // they feed the left side of the cards that use them, so they belong in an earlier column.
   const hasConfigs = configs && Object.keys(configs).length > 0;
-  const dataNodes = hasConfigs
-    ? nodes.filter((n) => !(isInfraNode(n.id, configs) || isAuxNode(n.id)))
-    : nodes;
-  const dataEdges = hasConfigs
-    ? edges.filter(
-        (e) =>
-          !(
-            isInfraNode(e.source, configs) ||
-            isInfraNode(e.target, configs) ||
-            isAuxNode(e.source) ||
-            isAuxNode(e.target)
-          ),
-      )
-    : edges;
+  const dataNodes = nodes.filter((n) => !isAuxNode(n.id));
+  const dataEdges = edges.filter((e) => !(isAuxNode(e.source) || isAuxNode(e.target)));
 
-  // Phantom edges enforce rank ordering for disconnected nodes.
+  // Phantom edges enforce rank ordering for disconnected column nodes.
   const phantomEdges = hasConfigs
-    ? buildPhantomEdges(dataNodes, dataEdges, configs)
+    ? buildPhantomEdges(
+        dataNodes.filter((n) => !isInfraNode(n.id, configs)),
+        dataEdges,
+        configs,
+      )
     : [];
 
   const graph = new dagre.graphlib.Graph();
@@ -181,7 +174,7 @@ export function getLayoutedElements<TNode extends Node>(
     });
   }
 
-  // Data nodes get dagre positions; infra/aux keep original.
+  // Laid-out nodes get dagre positions; aux boxes keep theirs.
   const layoutedNodes = nodes.map((node) => {
     const position = layoutedPositions.get(node.id);
     if (!position) {

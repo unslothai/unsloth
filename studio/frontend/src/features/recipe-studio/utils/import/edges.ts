@@ -2,24 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { Edge } from "@xyflow/react";
-import type { LayoutDirection, NodeConfig } from "../../types";
-import {
-  getDefaultDataSourceHandle,
-  getDefaultDataTargetHandle,
-  getDefaultSemanticSourceHandle,
-  getDefaultSemanticTargetHandle,
-  isDataSourceHandle,
-  isDataTargetHandle,
-  isSemanticSourceHandle,
-  isSemanticTargetHandle,
-  normalizeRecipeHandleId,
-} from "../handles";
+import type { NodeConfig } from "../../types";
 import { isSemanticRelation } from "../graph/relations";
+import { resolveRecipeEdgeHandles } from "../ports";
 import { extractRefs } from "./helpers";
-
-function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
-  return isSemanticRelation(source, target);
-}
 
 export function buildEdges(
   configs: NodeConfig[],
@@ -29,21 +15,15 @@ export function buildEdges(
         from: string;
         to: string;
         type?: string;
-        sourceHandle?: string;
-        targetHandle?: string;
+        via?: string[];
       }>
     | null,
-  layoutDirection: LayoutDirection,
+  rerouteIds: Set<string> = new Set(),
 ): Edge[] {
   const edges: Edge[] = [];
   const seen = new Set<string>();
   const configByName = new Map(configs.map((config) => [config.name, config]));
-  const addEdgeByName = (
-    from: string,
-    to: string,
-    sourceHandleInput?: string,
-    targetHandleInput?: string,
-  ): void => {
+  const addEdgeByName = (from: string, to: string, via?: string[]): void => {
     const sourceId = nameToId.get(from);
     const targetId = nameToId.get(to);
     if (!(sourceId && targetId)) {
@@ -56,60 +36,21 @@ export function buildEdges(
     seen.add(key);
     const source = configByName.get(from);
     const target = configByName.get(to);
-    const isSemantic = Boolean(
-      source && target && isSemanticConnection(source, target),
-    );
-    const normalizedType = isSemantic ? "semantic" : "canvas";
-    const sourceHandleNormalized = normalizeRecipeHandleId(sourceHandleInput);
-    const targetHandleNormalized = normalizeRecipeHandleId(targetHandleInput);
-    const semanticSourceDefault =
-      source?.kind === "llm"
-        ? getDefaultDataSourceHandle(layoutDirection)
-        : getDefaultSemanticSourceHandle(layoutDirection);
-    const semanticTargetDefault =
-      target?.kind === "llm"
-        ? getDefaultDataTargetHandle(layoutDirection)
-        : getDefaultSemanticTargetHandle(layoutDirection);
-    let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
-    let targetHandle = getDefaultDataTargetHandle(layoutDirection);
-
-    if (isSemantic) {
-      sourceHandle =
-        isSemanticSourceHandle(sourceHandleNormalized) ||
-        isDataSourceHandle(sourceHandleNormalized)
-          ? sourceHandleNormalized ?? semanticSourceDefault
-          : semanticSourceDefault;
-      targetHandle =
-        isSemanticTargetHandle(targetHandleNormalized) ||
-        isDataTargetHandle(targetHandleNormalized)
-          ? targetHandleNormalized ?? semanticTargetDefault
-          : semanticTargetDefault;
-    } else {
-      sourceHandle = isDataSourceHandle(sourceHandleNormalized)
-        ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
-        : getDefaultDataSourceHandle(layoutDirection);
-      targetHandle = isDataTargetHandle(targetHandleNormalized)
-        ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
-        : getDefaultDataTargetHandle(layoutDirection);
-    }
+    const isSemantic = Boolean(source && target && isSemanticRelation(source, target));
+    const knownVia = (via ?? []).filter((id) => rerouteIds.has(id));
     edges.push({
       id: `e-${key}`,
       source: sourceId,
       target: targetId,
-      type: normalizedType,
-      sourceHandle,
-      targetHandle,
+      type: isSemantic ? "semantic" : "canvas",
+      ...resolveRecipeEdgeHandles(source, target),
+      ...(knownVia.length > 0 ? { data: { via: knownVia } } : {}),
     });
   };
 
   if (uiEdges && uiEdges.length > 0) {
     for (const edge of uiEdges) {
-      addEdgeByName(
-        edge.from,
-        edge.to,
-        edge.sourceHandle,
-        edge.targetHandle,
-      );
+      addEdgeByName(edge.from, edge.to, edge.via);
     }
     if (edges.length > 0) {
       return edges;
