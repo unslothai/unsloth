@@ -809,6 +809,8 @@ class ClusterPlan:
     layer_bytes: float = 0.0
     host_bytes: float = 0.0
     pipeline_groups: int = 0
+    # Each remote device's free memory with none of this split on it, to tell a restarted worker.
+    clean_free: Dict[Tuple[str, str], int] = field(default_factory = dict)
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes - self.host_bytes)
@@ -961,12 +963,62 @@ def _paired_only() -> bool:
     return path is None or not path.is_file()
 
 
+_HOST_IDENTITY_TIMEOUT_S = 1.0
+_HOST_IDENTITY_TTL_S = 60.0
+_HOST_IDENTITIES: Dict[str, Tuple[float, str]] = {}
+
+
+def _host_identity(host: str) -> str:
+    """One name per machine: a host name and its IPv4 address, or two loopback aliases, are the same host."""
+    import concurrent.futures
+    import ipaddress
+    import socket
+    import time
+
+    literal = host.strip().lower().strip("[]")
+    cached = _HOST_IDENTITIES.get(literal)
+    if cached is not None and time.monotonic() - cached[0] < _HOST_IDENTITY_TTL_S:
+        return cached[1]
+    try:
+        address = ipaddress.ip_address(literal)
+    except ValueError:
+        if literal == "localhost" or literal.endswith(".localhost"):
+            return "loopback"
+        # getaddrinfo has no timeout of its own, so a slow resolver only costs the literal name.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers = 1)
+        try:
+            infos = pool.submit(
+                socket.getaddrinfo, literal, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            ).result(timeout = _HOST_IDENTITY_TIMEOUT_S)
+            found = sorted(
+                {ipaddress.ip_address(str(i[4][0]).split("%", 1)[0]) for i in infos},
+                key = lambda a: (a.version, int(a)),
+            )
+            address = found[0] if found else None
+        except Exception:
+            address = None
+        finally:
+            pool.shutdown(wait = False)
+    if address is None:
+        identity = literal
+    elif address.is_loopback:
+        identity = "loopback"
+    else:
+        identity = str(address)
+    _HOST_IDENTITIES[literal] = (time.monotonic(), identity)
+    return identity
+
+
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
-    hosts = [n.host for n in nodes if not n.link]
-    for host in {n.host for n in nodes if n.managed and not n.link}:
-        if hosts.count(host) > 1:
-            raise ClusterConfigError(f"{host} is managed, so it can be listed only once")
+    # Paired workers reach this host through loopback relays, so only direct nodes count.
+    direct = [n for n in nodes if not n.link]
+    if len(direct) < 2 or not any(n.managed for n in direct):
+        return nodes
+    hosts = [_host_identity(n.host) for n in direct]
+    for node, host in zip(direct, hosts):
+        if node.managed and hosts.count(host) > 1:
+            raise ClusterConfigError(f"{node.host} is managed, so it can be listed only once")
     return nodes
 
 
@@ -2210,8 +2262,23 @@ class ClusterServing:
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
-        if self._backend is not None and getattr(self._backend, "is_loaded", False):
-            served = self._pre_load[2] if self._pre_load else None
+        served = self._pre_load[2] if self._pre_load else None
+        serving = self._backend is not None and getattr(self._backend, "is_loaded", False)
+        split = (
+            served if serving and served is not None and served.topology == "layer_split" else None
+        )
+        holding = {d.key for d in split.devices} if split is not None else set()
+        clean_free: Dict[Tuple[str, str], int] = {}
+        for d in devices:
+            if not d.remote:
+                continue
+            if d.key in holding and d.endpoint not in self._started:
+                # The layers stayed, so the free memory measured before they loaded still holds.
+                if d.key in split.clean_free:
+                    clean_free[d.key] = split.clean_free[d.key]
+            elif d.endpoint not in busy:
+                clean_free[d.key] = int(d.free_bytes)
+        if serving:
             placed = (
                 {
                     d.key: w * max(0.0, float(served.need_bytes or 0) - served.host_bytes)
@@ -2224,9 +2291,14 @@ class ClusterServing:
                 if d.endpoint in busy:
                     continue
                 held = max(self._resident.get(d.key, 0.0), placed.get(d.key, 0.0))
-                if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
+                was = split.clean_free.get(d.key) if split is not None else None
+                if d.remote and (
+                    (held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2)
+                    or (held > 0 and was is not None and d.free_bytes > was - held / 2)
+                ):
                     # The worker restarted and lost the served layers, so equal arguments must relaunch.
                     self._started.add(d.endpoint)
+                    clean_free[d.key] = int(d.free_bytes)
             for d in devices:
                 if d.endpoint in self._started or d.endpoint in busy:
                     continue
@@ -2377,6 +2449,7 @@ class ClusterServing:
         plan.host_bytes = (0.0 if unified else self._host_embd + self._host_input - off_device) + (
             skipped if plan.topology == "layer_split" else 0.0
         )
+        plan.clean_free = clean_free
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -2392,8 +2465,11 @@ class ClusterServing:
                 self.reason += "; speculative decoding off so its NextN / MTP layers stay unloaded"
                 return ss.SparkServing._request_with(request, {"speculative_type": "off"})
             return request
-        # RPC<k> counts over the probed --rpc list, so every endpoint that exposed a device stays in it.
-        used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
+        # An endpoint with no weighted device is left out of --rpc, so the load never depends on it;
+        # RPC<k> counts over the emitted list, so every device of a kept endpoint is renumbered.
+        used = [e for e in endpoints if any(d.endpoint == e for d in plan.devices)]
+        for k, d in enumerate(d for e in used for d in devices if d.endpoint == e):
+            d.name = f"RPC{k}"
         self.block = split_extra_args(used, plan)
         if emit_groups > 1:
             self.block += [ss.PIPELINE_GROUPS_FLAG, str(emit_groups)]
@@ -2582,8 +2658,13 @@ class ClusterServing:
                     self._uncertain_extra = float(remote) * _MMPROJ_VRAM_SAFETY
                 self._has_projector = self._has_projector or remote > 0
         named_files = ss.launch_files_from(extras)
+        # A chat template is read on the host, never loaded onto a device.
         env_files = ss.env_launch_files(
-            {k: v for k, v in os.environ.items() if k not in _DRAFTER_ENV + _HF_DRAFT_ENV}
+            {
+                k: v
+                for k, v in os.environ.items()
+                if k not in _DRAFTER_ENV + _HF_DRAFT_ENV + ("LLAMA_ARG_CHAT_TEMPLATE_FILE",)
+            }
         )
         replaced = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         replaced = {os.path.abspath(replaced)} if replaced and not env_projector else set()
@@ -3066,3 +3147,4 @@ def reset_for_tests() -> None:
     _STATE = None
     _MANAGED_BLOCKS.clear()
     _stop_links()
+    _HOST_IDENTITIES.clear()

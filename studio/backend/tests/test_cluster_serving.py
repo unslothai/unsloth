@@ -447,6 +447,20 @@ def test_an_endpoint_with_no_device_is_reported(monkeypatch):
     assert out.llama_extra_args[1] == "10.0.0.2:50052"
 
 
+def test_an_endpoint_with_no_usable_memory_is_left_out_of_the_rpc_list(monkeypatch):
+    listing = LISTING.replace("65536 MiB, 60000 MiB free", "65536 MiB, 1000 MiB free")
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 150 * GIB)
+    out = run(ss.before_load(_request(), 4))
+    args = out.llama_extra_args
+    assert ss.status()["topology"] == "layer_split"
+    assert args[args.index("--rpc") + 1] == "10.0.0.2:50052,10.0.0.4:50052"
+    assert args[args.index("--device") + 1] == "RPC0,RPC1,CUDA0"
+    assert [d["endpoint"] for d in ss.status()["plan"]["devices"]][:2] == [
+        "10.0.0.2:50052",
+        "10.0.0.4:50052",
+    ]
+
+
 def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_path):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
@@ -456,6 +470,24 @@ def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_pa
     assert run(ss.before_load(request, 4)) is request
     sizes = {str(mmproj): 10 * GIB}
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_an_environment_chat_template_is_not_charged_as_device_memory(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    template, mmproj = tmp_path / "chat.jinja", tmp_path / "mmproj.gguf"
+    template.write_bytes(b"x")
+    mmproj.write_bytes(b"x")
+    sizes = {str(template): 10 * GIB, str(mmproj): 10 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_CHAT_TEMPLATE_FILE", str(template))
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+    # The projector named beside it is still charged.
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
     run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "layer_split"
@@ -3417,6 +3449,36 @@ def test_a_small_share_worker_that_restarted_forces_a_relaunch(monkeypatch):
     assert out.force_reload is True
 
 
+def test_a_worker_holding_under_512_mib_that_restarted_forces_a_relaunch(monkeypatch):
+    listing = LISTING.replace("24576 MiB, 23000 MiB free", "24576 MiB, 2366 MiB free")
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 200 * GIB)
+    restarted = set()
+
+    def fake_list(binary, endpoints, *a, **kw):
+        devices = cs.parse_device_list(listing, endpoints)
+        st = cs._STATE
+        if st is not None and getattr(st._backend, "is_loaded", False):
+            for d in devices:
+                if d.remote and d.endpoint not in restarted | st._started:
+                    d.free_bytes = max(0, d.free_bytes - int(st._resident.get(d.key, 0)))
+        return [d for d in devices if not d.remote or d.endpoint in endpoints], ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    small = cs.state()._resident[("10.0.0.4:50052", "0")]
+    assert 0 < small < 512 * MIB
+    out = run(ss.before_load(_request(), 4))
+    assert not getattr(out, "force_reload", False)
+    restarted.add("10.0.0.4:50052")
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True
+
+
 @pytest.mark.parametrize("unified", [False, True])
 def test_keep_in_gpu_memory_keeps_a_unified_coordinator_local(monkeypatch, unified):
     seen = _cluster_env(monkeypatch)
@@ -3461,6 +3523,29 @@ def test_the_last_projector_given_is_the_one_sized(monkeypatch, tmp_path):
     extra = ["--mmproj", str(first), "--mmproj", str(last)]
     run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
     assert seen and str(seen[0]) == str(last)
+
+
+def test_a_managed_host_listed_by_name_and_address_is_refused(monkeypatch):
+    import socket
+
+    def fake_getaddrinfo(host, *a, **kw):
+        if host == "gpu2.local":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.9", 0))]
+        raise socket.gaierror("unknown host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    for value in (
+        "gpu2.local,10.0.0.9:50060",
+        "localhost,127.0.0.1:50060",
+        "localhost,127.0.1.1:50060",
+    ):
+        monkeypatch.setenv(cs.ENV_NODES, value)
+        with pytest.raises(cs.ClusterConfigError, match = "listed only once"):
+            cs.load_nodes()
+    # A name that does not resolve is compared as written.
+    monkeypatch.setenv(cs.ENV_NODES, "gpu2.local,gpu3.local,10.0.0.8")
+    assert [n.host for n in cs.load_nodes()] == ["gpu2.local", "gpu3.local", "10.0.0.8"]
 
 
 def test_a_managed_node_named_by_host_name_binds_its_ipv4_address(monkeypatch):
