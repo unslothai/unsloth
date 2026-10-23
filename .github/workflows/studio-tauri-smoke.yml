@@ -18,6 +18,9 @@ name: Unsloth Tauri CI
 
 on:
   pull_request:
+    # ready_for_review: every job below skips draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/frontend/**'
       - 'studio/src-tauri/**'
@@ -81,6 +84,7 @@ permissions:
 
 jobs:
   linux-debug-build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Tauri Linux debug build (no codesign)
     runs-on: ubuntu-22.04
     timeout-minutes: 25
@@ -329,6 +333,7 @@ jobs:
   # checking, so nothing there compiles that code, let alone runs its tests.
   # That is how the RemoteSigned regression in #7819 reached two draft bundles.
   windows-unit-tests:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Rust unit tests (windows)
     runs-on: windows-latest
     # A cold cache compiles both the debug and the release dependency tree.
@@ -382,6 +387,7 @@ jobs:
         run: cargo check --all-targets --release
 
   macos-unit-tests:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Rust unit tests (macos)
     # macos-26, not macos-15, on a measurement rather than a preference. Both are
     # free Apple Silicon standard runners, so this is the same class of machine.

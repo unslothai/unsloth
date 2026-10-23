@@ -382,3 +382,43 @@ def test_a_module_at_the_model_root_is_not_flagged(tmp_path, path):
         tmp_path / "st", {"modules.json": [{"idx": 0, "name": "0", "path": path, "type": "x"}]}
     )
     assert escaping_weight_references(folder) == []
+
+
+# "..." and "...." are ordinary folder names, not the model root: their index is read too.
+_DOT_NAMED_MODULE_PATHS = ["...", "./...", "..../", "....", "0_Transformer/..."]
+if os.name != "nt":
+    # On POSIX a backslash is part of the folder name, as Path(folder, sub) opens it.
+    _DOT_NAMED_MODULE_PATHS.append(".\\...")
+
+
+@pytest.mark.parametrize("path", _DOT_NAMED_MODULE_PATHS)
+def test_a_dot_named_module_folder_index_outside_the_model_is_flagged(tmp_path, path):
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "st", {"modules.json": [{"idx": 0, "name": "0", "path": path, "type": "x"}]}
+    )
+    module = Path(folder, path)
+    depth = len(module.resolve().relative_to(folder.resolve()).parts)
+    victim = "../" * (depth + 1) + "victim/model.safetensors"
+    _write(module, {"model.safetensors.index.json": {"weight_map": {"w": victim}}})
+    assert escaping_weight_references(folder)
+    _write(module, {"model.safetensors.index.json": {"weight_map": {"w": "model.safetensors"}}})
+    assert escaping_weight_references(folder) == []
+
+
+@pytest.mark.parametrize("path", ["0_Transformer", ".", "./"])
+def test_a_normal_module_folder_keeps_its_verdict(tmp_path, path):
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "st", {"modules.json": [{"idx": 0, "name": "0", "path": path, "type": "x"}]}
+    )
+    module = Path(folder, path)
+    _write(module, {"model.safetensors.index.json": {"weight_map": {"w": "model.safetensors"}}})
+    assert escaping_weight_references(folder) == []
+    _write(
+        module,
+        {"model.safetensors.index.json": {"weight_map": {"w": "../../victim/model.safetensors"}}},
+    )
+    assert escaping_weight_references(folder)

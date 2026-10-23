@@ -1693,6 +1693,17 @@ else:
     except Exception:
         pass
 
+    # UNSLOTH_FSDP2=1 shards natively inside the Trainer; a custom loop's own Accelerator keeps
+    # accelerate's FSDP2 (fsdp2_launch.install_raw_accelerator_fsdp2_fallback). Env reads only.
+    try:
+        from .fsdp2_launch import (
+            install_raw_accelerator_fsdp2_fallback as _install_raw_accelerator_fallback,
+        )
+        _install_raw_accelerator_fallback()
+        del _install_raw_accelerator_fallback
+    except Exception:
+        pass
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:

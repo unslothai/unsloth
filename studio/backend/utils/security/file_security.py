@@ -139,9 +139,18 @@ def escaping_weight_references(folder) -> list:
         if _escapes_folder(sub):
             names.append(sub)
             continue
-        if not sub.strip("./\\"):
+        # Sentence Transformers opens Path(folder, sub): "\\" separates on Windows only, so judge
+        # both spellings. Only a path normalizing to "." is the model root; "..." is a real folder.
+        windows = sub.replace("\\", "/")
+        posix = "/".join(part.replace("\\", "_") for part in sub.split("/"))
+        spellings = {posixpath.normpath(p) for p in (windows, posix) if p} - {"."}
+        if any(_escapes_folder(spelled) for spelled in spellings):
+            names.append(sub)
             continue
-        names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
+        if spellings:
+            module_names = _weight_names(folder / sub)
+            for spelled in spellings:
+                names.extend(_in_subfolder(spelled, name) for name in module_names)
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
         names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))

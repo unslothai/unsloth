@@ -1772,15 +1772,20 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE (utils cannot import hub).
+# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE and _IMATRIX_WEIGHTED_RE (utils cannot import hub).
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_WEIGHTED_RE = re.compile(
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
+)
 
 
 def _is_imatrix_path(path: str) -> bool:
     """Activation statistics for llama-quantize, not a model; must be excluded or llama-server gets it. Mirrors hub.utils.gguf.is_imatrix_filename."""
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
+        return True
+    return name.lower().endswith(".imatrix")
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.

@@ -1327,18 +1327,36 @@ _ANNOTATE_JS = r"""
               display, left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px",
             });
           };
+          // Constructed sheets keep the annotation UI visible under a page's style CSP.
+          const addStyle = (target, css) => {
+            if ("adoptedStyleSheets" in target) {
+              const sheet = new CSSStyleSheet();
+              sheet.replaceSync(css);
+              target.adoptedStyleSheets = [...target.adoptedStyleSheets, sheet];
+              return () => { target.adoptedStyleSheets = target.adoptedStyleSheets.filter((item) => item !== sheet); };
+            }
+            const style = document.createElement("style");
+            style.textContent = css;
+            (target.head || target.documentElement || target).appendChild(style);
+            return () => style.remove();
+          };
           const build = () => {
             overlay = document.createElement("unsloth-annotate");
             overlay.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
             root = overlay.attachShadow({ mode: "closed" });
-            root.innerHTML = `<style>
+            for (const name of ["hover", "area"]) {
+              const element = document.createElement("div");
+              element.className = name;
+              root.appendChild(element);
+            }
+            addStyle(root, `
               :host { --c: ${color}; }
               div { position: fixed; box-sizing: border-box; border-radius: 6px; display: none; }
               .hover { border: 1.5px solid color-mix(in srgb, var(--c) 75%, transparent); transition: left .08s, top .08s, width .08s, height .08s; }
               .area, .mark { border: 1.5px dashed color-mix(in srgb, var(--c) 70%, transparent); background: color-mix(in srgb, var(--c) 6%, transparent); }
               .pin { width: ${PIN}px; height: ${PIN}px; border-radius: 50% 50% 50% 4px; background: var(--c); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / .3);
                 align-items: center; justify-content: center; color: #fff; font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
-            </style><div class="hover"></div><div class="area"></div>`;
+            `);
             outline = root.querySelector(".hover");
             area = root.querySelector(".area");
           };
@@ -1476,7 +1494,7 @@ _ANNOTATE_JS = r"""
             swallow(event);
             send("escape");
           };
-          const style = document.createElement("style");
+          let removeStyle = null;
           const cursor = () => {
             const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><path d="M3 27V15A12 12 0 1 1 15 27Z" fill="${color}" stroke="white" stroke-width="2"/></svg>`;
             return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 3 27, crosshair`;
@@ -1492,12 +1510,11 @@ _ANNOTATE_JS = r"""
             if (on) return;
             on = true;
             build();
-            style.textContent = `*, *::before, *::after { cursor: ${cursor()} !important; user-select: none !important; -webkit-user-select: none !important; }`;
+            removeStyle = addStyle(document, `*, *::before, *::after { cursor: ${cursor()} !important; user-select: none !important; -webkit-user-select: none !important; }`);
             for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
             document.addEventListener("mouseout", onLeave, true);
             window.addEventListener("scroll", redraw, true);
             window.addEventListener("resize", redraw);
-            (document.head || document.documentElement).appendChild(style);
             document.documentElement.appendChild(overlay);
             redraw();
           };
@@ -1508,7 +1525,8 @@ _ANNOTATE_JS = r"""
             document.removeEventListener("mouseout", onLeave, true);
             window.removeEventListener("scroll", redraw, true);
             window.removeEventListener("resize", redraw);
-            style.remove();
+            removeStyle?.();
+            removeStyle = null;
             overlay?.remove();
             cancelAnimationFrame(frame);
             if (pending) cancelAnimationFrame(pending);

@@ -3248,6 +3248,34 @@ def test_connect_skips_a_minted_key_the_owner_does_not_hold(fake_studio, tmp_pat
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
 
 
+def test_connect_remints_a_cached_key_the_server_never_stamped(fake_studio, tmp_path, monkeypatch):
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-01dc0de001dc0de0"]}}}))
+    http_json = start._http_json
+    listing = {
+        "api_keys": [
+            {"key_prefix": "01dc0de0", "purpose": None},
+            {"key_prefix": "feedface", "purpose": "unsloth_start"},
+        ]
+    }
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda method, url, *a, **k: listing
+        if method == "GET" and url.endswith("/api/auth/api-keys")
+        else http_json(method, url, *a, **k),
+    )
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
+    mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
+    assert len(mints) == 1
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
+    mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
+    assert len(mints) == 1
+
+
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
     CliRunner().invoke(
         start.start_app,

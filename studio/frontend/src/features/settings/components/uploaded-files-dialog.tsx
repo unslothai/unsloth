@@ -528,7 +528,7 @@ export function UploadedFilesView() {
   return (
     <div className="flex flex-col gap-4">
       {ragFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>RAG documents unavailable: {ragFiles.error}</span>
           <button
             type="button"
@@ -540,7 +540,7 @@ export function UploadedFilesView() {
         </div>
       ) : null}
       {chatFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>Chat attachments unavailable: {chatFiles.error}</span>
           <button
             type="button"
@@ -577,8 +577,7 @@ export function UploadedFilesView() {
               className="group flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 px-1 py-2.5 text-sm last:border-0 sm:flex-nowrap"
             >
               {/* Clicking the file jumps to its chat; files without one
-                open directly. The theme scales rounded-md up to a near
-                circle at this size, so the thumb pins a small radius. */}
+                open directly. */}
               <button
                 type="button"
                 onClick={() =>
@@ -589,7 +588,7 @@ export function UploadedFilesView() {
                 }
                 className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
               >
-                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
+                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-border/50 bg-muted/40">
                   {row.thumb}
                 </span>
                 <span className="flex min-w-0 flex-1 flex-col">
@@ -600,7 +599,7 @@ export function UploadedFilesView() {
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
+                      <span className="shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}
@@ -674,7 +673,7 @@ export function UploadedFilesView() {
                 type="button"
                 disabled={loadingMore}
                 onClick={() => void loadChatPage(chatNextOffset, true)}
-                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+                className="btn-fill rounded-full px-3 py-1.5 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
               >
                 {loadingMore ? "Loading..." : "Load more chat attachments"}
               </button>

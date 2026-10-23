@@ -84,7 +84,7 @@ export function CodeExecutionResultOutput({ result }: { result: unknown }) {
         <CopyBtn text={resultText} />
       </div>
       <ScrollPane
-        className="mt-1 rounded bg-muted/50 p-2"
+        className="mt-1 rounded-lg bg-muted/50 p-2"
         scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
       >
         {displayedResult}

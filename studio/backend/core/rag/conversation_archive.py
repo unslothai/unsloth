@@ -874,11 +874,35 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
+def _with_attachments(message: dict):
+    """Content plus attachments, as `collectTextParts` (chat-adapter.ts) sends it; else the turn takes `_fallback_ordinal`."""
+    content = message.get("content")
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list) or str(message.get("role") or "") == "assistant":
+        return content
+    attached = [
+        part
+        for attachment in attachments
+        if isinstance(attachment, dict)
+        and attachment.get("mcpToolOnly") is not True
+        and isinstance(attachment.get("content"), list)
+        for part in attachment["content"]
+        if isinstance(part, dict) and part.get("type") in ("text", "image")
+    ]
+    if not attached:
+        return content
+    if isinstance(content, list):
+        return [*content, *attached]
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}, *attached]
+    return attached
+
+
 def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Splits stored tool-call parts into wire form; pass sanitise_assistant=False for request messages."""
     wire: list[dict] = []
     for message in messages:
-        content = message.get("content")
+        content = _with_attachments(message)
         parts = content if isinstance(content, list) else None
         # Drop reasoning parts: _probe_text would render them inline and the turn matches no seat.
         if parts is not None and any(
@@ -977,6 +1001,23 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     return wire
 
 
+# `withSandboxAttachmentPaths` (sandbox-attachments.ts) path notes, as `checkpoint._ATTACHMENT` matches them.
+_SANDBOX_NOTE = re.compile(
+    r"^\[[^\n]*(?: is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory"
+    r"|: its text is below, so answer from it\. For calculations, the python tool has the file at "
+    r"path = \"\.unsloth_attachments/[0-9a-f]{12}/)[^\n]*\]$",
+    re.MULTILINE,
+)
+
+
+def _seat_text(message: dict) -> str:
+    """The seat-matching probe minus python path notes, which only the request carries."""
+    text = _probe_text(message)
+    if str(message.get("role") or "") == "user":
+        text = _SANDBOX_NOTE.sub("", text)
+    return _normalise_cased(text)
+
+
 def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) -> int:
     """Past both the archive's next ordinal and the transcript length: the two numbering spaces differ, and a gap in ordinals costs nothing."""
     return max(store.next_archive_ordinal(conn, scope), len(positions or []))
@@ -994,18 +1035,14 @@ def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
         return None
     # Grouped like the evictor, so a position is a TURN index, matching what ordinals compare against.
     wire = _as_wire(_active_chain(messages, branch))
-    return [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(wire)
-        if group
-    ]
+    return [[_seat_text(message) for message in group] for group in group_turns(wire) if group]
 
 
 def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
     """Matches the whole turn, not its first line, so turns that start alike do not share seats. Compared as a prefix, since the transcript lags the evicted group."""
     if not positions or not group:
         return []
-    texts = [_normalise_cased(_probe_text(message)) for message in group]
+    texts = [_seat_text(message) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
@@ -1130,9 +1167,7 @@ def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
     except Exception:
         return None
     positions = [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(_as_wire(live))
-        if group
+        [_seat_text(message) for message in group] for group in group_turns(_as_wire(live)) if group
     ]
     return positions or None
 

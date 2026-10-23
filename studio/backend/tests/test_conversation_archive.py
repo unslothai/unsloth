@@ -2593,6 +2593,220 @@ def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn
     assert text.index("standing instruction") < text.index("middle turn") < text.index("final turn")
 
 
+_REPORT = "[PDF: report.pdf]\nThe service listens on port 8080."
+_REPORT_SHA = "0123456789ab" + "0" * 52
+_REPORT_NOTE = (
+    "[report.pdf: its text is below, so answer from it. For calculations, the python tool has the "
+    'file at path = ".unsloth_attachments/0123456789ab/report.pdf"; fitz.open(path)]'
+)
+_BOOK_PLACEHOLDER = "[book.epub: only the python tool can read this file]"
+_BOOK_NOTE = (
+    "[book.epub is saved at .unsloth_attachments/0123456789ab/book.epub in the python tool's "
+    'working directory; open it with fitz.open(path), where path = ".unsloth_attachments/0123456789ab/book.epub"]'
+)
+
+
+def _document(name, text):
+    """An attached file as the frontend stores it: apart from the typed words."""
+    return {
+        "id": f"att-{name}",
+        "type": "document",
+        "name": name,
+        "contentType": "text/plain",
+        "content": [{"type": "text", "text": text}],
+        "status": {"type": "complete"},
+        "original": {"sha256": _REPORT_SHA, "sizeBytes": 10},
+    }
+
+
+def _save_rows(thread_id, rows):
+    """Persist (role, typed text, attachments) rows in the shape the frontend stores them."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    stored = []
+    for index, (role, text, attachments) in enumerate(rows):
+        row = {
+            "id": f"{thread_id}-{index}",
+            "threadId": thread_id,
+            "parentId": f"{thread_id}-{index - 1}" if index else None,
+            "role": role,
+            "content": [{"type": "text", "text": text}],
+            "createdAt": index + 2,
+        }
+        if attachments:
+            row["attachments"] = attachments
+        stored.append(row)
+    studio_db.sync_chat_messages(thread_id, stored, prune_missing = True)
+
+
+def _ordinals_by_text(conn, thread_id = THREAD):
+    scope = store.conversation_archive_scope(thread_id)
+    return {
+        row["text"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT d.archive_ordinal, c.text FROM documents d JOIN chunks c ON c.document_id = d.id "
+            "WHERE d.scope = ? ORDER BY d.archive_ordinal",
+            (scope,),
+        ).fetchall()
+    }
+
+
+def _report_then_correction(sent_report):
+    """A turn sent with a document, a later correction, then a newer turn. Returns the wire messages."""
+    _save_rows(
+        THREAD,
+        [
+            ("user", "Here is the deployment report.", [_document("report.pdf", _REPORT)]),
+            ("assistant", "Noted, the service listens on port 8080.", None),
+            ("user", "Correction: the service now listens on port 9090.", None),
+            ("assistant", "Updated, the port is 9090.", None),
+            ("user", "Unrelated: what do pelicans eat?", None),
+        ],
+    )
+    return [
+        {"role": "user", "content": f"Here is the deployment report.\n{sent_report}"},
+        {"role": "assistant", "content": "Noted, the service listens on port 8080."},
+        {"role": "user", "content": "Correction: the service now listens on port 9090."},
+        {"role": "assistant", "content": "Updated, the port is 9090."},
+        {"role": "user", "content": "Unrelated: what do pelicans eat?"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "sent_report",
+    [_REPORT, f"{_REPORT_NOTE}\n{_REPORT}"],
+    ids = ["python-off", "python-on"],
+)
+def test_a_turn_sent_with_an_attachment_keeps_its_place(conn, sent_report):
+    """The stored row keeps the document under `attachments` while the request inlines it (after the python
+    tool's path note when that is on). Read without them, the turn took the fallback ordinal and came back
+    as the latest turn, superseding the correction that followed it."""
+    wire = _report_then_correction(sent_report)
+
+    assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 2
+
+    ordinals = _ordinals_by_text(conn)
+    assert sorted(ordinals.values()) == [0, 1]
+    assert ordinals[next(text for text in ordinals if "8080" in text)] == 0
+    found = conversation_archive.recall(
+        THREAD, "which port does the service listen on", top_k = 4, branch_messages = wire
+    )
+    assert found is not None
+    text = found[0]
+    assert 'turn="1"' in text and 'turn="2"' in text
+    assert text.index("port 8080") < text.index("port 9090")
+
+
+def test_a_tool_only_attachment_keeps_its_place_with_the_python_tool_on(conn):
+    """The other note form: a file the python tool alone can read is sent as its path note and placeholder."""
+    _save_rows(
+        THREAD,
+        [
+            ("user", "Summarise chapter one.", [_document("book.epub", _BOOK_PLACEHOLDER)]),
+            ("assistant", "Chapter one is about pelicans.", None),
+            ("user", "And chapter two?", None),
+            ("assistant", "Chapter two is about herons.", None),
+            ("user", "Thanks.", None),
+        ],
+    )
+    wire = [
+        {"role": "user", "content": f"Summarise chapter one.\n{_BOOK_NOTE}\n{_BOOK_PLACEHOLDER}"},
+        {"role": "assistant", "content": "Chapter one is about pelicans."},
+        {"role": "user", "content": "And chapter two?"},
+        {"role": "assistant", "content": "Chapter two is about herons."},
+    ]
+
+    conversation_archive.archive_turns(THREAD, wire)
+
+    ordinals = _ordinals_by_text(conn)
+    assert ordinals[next(text for text in ordinals if "pelicans" in text)] == 0
+    assert ordinals[next(text for text in ordinals if "herons" in text)] == 1
+
+
+def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compaction(conn):
+    """Archives written before the fold hold the attachment turn after every later one; the next eviction
+    of that turn moves it back to its seat."""
+    wire = _report_then_correction(_REPORT)
+    conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
+    scope = store.conversation_archive_scope(THREAD)
+    conn.execute(
+        "UPDATE documents SET archive_ordinal = 7 WHERE scope = ? AND archive_ordinal = 0", (scope,)
+    )
+    conn.commit()
+
+    assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 0
+
+    assert sorted(_ordinals_by_text(conn).values()) == [0, 1]
+
+
+def test_recall_without_a_request_branch_keeps_an_attachment_turn(conn):
+    """The branch filter's stored-transcript fallback reads the same rows: without the attachment text,
+    the archived turn looked rolled back and no query could return it. Studio always passes its branch,
+    so this covers other callers only, and only without the python tool's notes."""
+    wire = _report_then_correction(_REPORT)
+    conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
+
+    found = conversation_archive.recall(THREAD, "deployment report port 8080", top_k = 4)
+
+    assert found is not None
+    assert "The service listens on port 8080." in found[0]
+
+
+def test_stored_attachments_are_projected_the_way_the_client_sends_them():
+    image = {"type": "image", "image": "data:image/png;base64,AAAA"}
+    rows = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "typed"}],
+            "attachments": [
+                _document("a.md", "first file"),
+                {"id": "i", "type": "image", "name": "p.png", "content": [image]},
+                {"id": "t", "type": "image", "mcpToolOnly": True, "content": [image]},
+                _document("b.md", "second file"),
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "reply"}],
+            "attachments": [_document("c.md", "not sent as text")],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "plain"}]},
+    ]
+
+    wire = conversation_archive._as_wire(rows)
+
+    assert wire[0]["content"] == [
+        {"type": "text", "text": "typed"},
+        {"type": "text", "text": "first file"},
+        image,
+        {"type": "text", "text": "second file"},
+    ]
+    assert conversation_archive._probe_text(wire[0]) == "typed\nfirst file\nsecond file"
+    assert wire[1]["content"] == [{"type": "text", "text": "reply"}]
+    assert wire[2]["content"] is rows[2]["content"]
+
+
+def test_seat_text_drops_only_the_python_tool_path_notes():
+    live = {"role": "user", "content": f"typed\n{_REPORT_NOTE}\n{_REPORT}"}
+    quoted = {"role": "assistant", "content": f"typed\n{_REPORT_NOTE}"}
+    lookalike = {"role": "user", "content": "[report.pdf: its text is below, so answer from it.]"}
+
+    assert conversation_archive._seat_text(live) == conversation_archive._seat_text(
+        {"role": "user", "content": f"typed\n{_REPORT}"}
+    )
+    assert "its text is below" in conversation_archive._seat_text(quoted)
+    assert "its text is below" in conversation_archive._seat_text(lookalike)
+
+
 def test_two_turns_that_start_the_same_do_not_take_each_others_places(conn):
     """Turns sharing a first message must match on the whole turn, or each takes the other's seat."""
     first = _turn("continue ZQXVARA123", "the first continuation, about ducks")

@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Mapping, Optional
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
@@ -389,7 +390,7 @@ BATCH_SIZE_MIN = 1
 BATCH_SIZE_MAX = 65536
 
 MAX_SEQ_LENGTH_CEILING = 1048576
-MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
+MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = MAX_CHAT_TEMPLATE_BYTES
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 

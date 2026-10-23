@@ -323,13 +323,21 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
             last_used_at TEXT,
             expires_at TEXT,
             is_active  INTEGER NOT NULL DEFAULT 1,
-            is_internal INTEGER NOT NULL DEFAULT 0
+            is_internal INTEGER NOT NULL DEFAULT 0,
+            purpose    TEXT
         );
         """
     )
     api_key_columns = {row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")}
     if "is_internal" not in api_key_columns:
         conn.execute("ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0")
+    if "purpose" not in api_key_columns:
+        # Set only at mint and never editable; rows predating it stay NULL and carry no authority.
+        try:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN purpose TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -1698,6 +1706,8 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 # What `unsloth start` mints for its coding agents (unsloth_cli/commands/start.py). Only a desktop
 # session can create a key with this name, and only the owner's may spend saved Connections.
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
+# Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
+UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
 
 
 def create_api_key(
@@ -1707,6 +1717,7 @@ def create_api_key(
     internal: bool = False,
     expect_gen: Optional[str] = None,
     account_id: Optional[str] = None,
+    purpose: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """``expect_gen`` fences the insert so a password reset cannot mint a key that outlives it."""
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
@@ -1726,8 +1737,8 @@ def create_api_key(
             account_id = _managed_account_id(conn, username)
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id, purpose)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
@@ -1738,6 +1749,7 @@ def create_api_key(
                 expires_at,
                 1 if internal else 0,
                 account_id,
+                purpose,
             ),
         )
         if account_id is not None:
@@ -1766,7 +1778,7 @@ def list_api_keys(
         cur = conn.execute(
             f"""
             SELECT id, username, key_prefix, name, created_at, last_used_at,
-                   expires_at, is_active, is_internal
+                   expires_at, is_active, is_internal, purpose
             FROM api_keys
             WHERE {scope}{internal}
             ORDER BY created_at DESC
@@ -1920,7 +1932,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -1964,6 +1976,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "is_active": int(row["account_active"]),
             "expires_at": row["expires_at"],
             "key_name": row["name"],
+            "key_purpose": row["purpose"],
         }
         return record, secret
     finally:
