@@ -254,3 +254,16 @@ def test_fit_sized_is_reported_only_where_the_spawn_can_price(
     backend._build_speculative_flags = spy
     _r7._dspark(backend, gguf, tmp_path, extra_args = extras)
     assert seen["fit_sized"] is fit_sized
+
+
+def test_planning_drops_an_inherited_split_mode_the_launch_clears(tmp_path, monkeypatch):
+    """A layer launch clears an inherited non-layer LLAMA_ARG_SPLIT_MODE before spawning, so
+    planning must not narrow the target to the main card on it: the draft pinned to CUDA1
+    shares that card with the target and needs the reserve there."""
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0,CUDA1")
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "none")
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    cmd = _r7._dspark(backend, gguf, tmp_path, extra_args = ["--device-draft", "CUDA1"])
+    assert max(_r7._margins(cmd)) >= _FLOOR

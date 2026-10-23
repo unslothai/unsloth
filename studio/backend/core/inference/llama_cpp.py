@@ -28241,6 +28241,17 @@ class LlamaCppBackend:
                     # draft tensor override) has an unpriced card share: the sidecar reserve
                     # and the Metal Auto drop both read this one answer, so neither charges
                     # the whole file for it.
+                    def _launch_split_env() -> dict:
+                        # The env as the launch hands it on: a layer split clears an
+                        # inherited non-layer split mode (and its tensor split) first.
+                        e = dict(os.environ)
+                        if not tensor_parallel:
+                            sm = (e.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+                            if sm and sm != "layer":
+                                e.pop("LLAMA_ARG_SPLIT_MODE", None)
+                                e.pop("LLAMA_ARG_TENSOR_SPLIT", None)
+                        return e
+
                     def _sidecar_planned_device_count() -> int:
                         # The child's devices as planned now: the selected GPUs, unless
                         # surviving --device extras or LLAMA_ARG_DEVICE name them.
@@ -28252,7 +28263,9 @@ class LlamaCppBackend:
                             if named:
                                 count = _distinct_device_count(named)
                         # --split-mode none keeps the target and an unpinned drafter on one card.
-                        if count > 1 and _split_mode_confines_to_one_device(extra_args, os.environ):
+                        if count > 1 and _split_mode_confines_to_one_device(
+                            extra_args, _launch_split_env()
+                        ):
                             return 1
                         return count
 
@@ -28275,7 +28288,7 @@ class LlamaCppBackend:
                             if _gpu_ids_own_device_flags
                             else extra_args
                         )
-                        _pl_env = dict(os.environ)
+                        _pl_env = _launch_split_env()
                         if gpu_memory_mode == "manual":
                             self._clear_manual_placement_env(_pl_env)
                         if _gpu_ids_own_device_flags:
@@ -32453,7 +32466,7 @@ class LlamaCppBackend:
                 # --split-mode tensor, whose single meta device it cannot size.
                 # (A single-card launch carries it in _sidecar_fit_reserve_mib already.)
                 _sidecar_reserve_at_spawn = bool(_sidecar_fit_reserve_eligible_mib) and (
-                    _extra_args_split_mode(extra_args, os.environ) != "tensor"
+                    _extra_args_split_mode(extra_args, _launch_split_env()) != "tensor"
                 )
                 if _sidecar_reserve_at_spawn:
                     # Only where the spawn can price it: a server with --fit-target, no
