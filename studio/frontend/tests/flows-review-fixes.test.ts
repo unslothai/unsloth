@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { doc, node } from "./flows-editor-fixtures.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -121,4 +121,32 @@ test("a node added inside a frame joins it", () => {
   const nodes = useDocStore.getState().graph.nodes;
   assert.equal(nodes.inside.group, "g1");
   assert.equal(nodes.outside.group ?? null, null);
+});
+
+test("dialogue written while the reader is mid-scene is kept for the next visit", () => {
+  const src = readSrc("features/flows/player/story/story-player.tsx");
+  assert.match(src, /heldLines\.current\.set\(key, written\.lines\)/);
+  const visit = src.indexOf("const held = heldLines.current.get(key);");
+  assert.ok(visit > 0 && visit < src.indexOf("!requested.current.has(key)"));
+});
+
+test("leaving the editor waits for a successful save", () => {
+  const src = readSrc("features/flows/editor/flows-editor-page.tsx");
+  const back = src.slice(src.indexOf("onBack={"), src.indexOf("onPlay={"));
+  assert.match(back, /flushSave\(\)\.then\(\(saved\) => \{\s*if \(saved\) void navigate/);
+  assert.ok(!back.includes(".finally("));
+});
+
+test("a second Run click while the first start request is pending is ignored", () => {
+  const src = readSrc("features/flows/editor/run-controller.ts");
+  const body = src.slice(src.indexOf("export async function runFlow"));
+  assert.ok(body.indexOf("starting = true") < body.indexOf("await startRun("));
+  assert.match(body.slice(0, body.indexOf("starting = true")), /if \(\s*starting \|\|/);
+  assert.match(body, /finally \{\s*starting = false;/);
+});
+
+test("the inspector shows a Preview block's value, not an empty Output section", () => {
+  const src = readSrc("features/flows/editor/inspector.tsx");
+  const outputs = src.slice(src.indexOf("function NodeOutputs"), src.indexOf("function ParamRow"));
+  assert.match(outputs, /spec\.outputs\.length === 0 &&[\s\S]*?Object\.entries\(runtime\.outputs/);
 });
