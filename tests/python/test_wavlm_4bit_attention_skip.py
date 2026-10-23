@@ -58,7 +58,8 @@ def test_only_attention_projections_match_the_transformers_skip_matcher():
         for n, m in model.named_modules()
         if isinstance(m, torch.nn.Linear) and not should_convert(n, skip)
     }
-    assert kept == ATTENTION
+    # Unsloth's alias-expanding matcher also keeps the attention's tiny gate Linear(head_dim, 8) in 16-bit.
+    assert ATTENTION <= kept <= ATTENTION | {"attention.gru_rel_pos_linear"}
 
 
 def test_a_bart_style_decoder_is_still_quantized():
@@ -73,3 +74,21 @@ def test_a_bart_style_decoder_is_still_quantized():
     ):
         assert should_convert(name, skip), name
     assert not should_convert("encoder.encoder.layers.0.attention.q_proj", skip)
+
+
+def _transformers4_skips(name, keys):
+    """transformers 4.52-4.57 `_replace_with_bnb_linear`: bare leaf name, an ancestor key, or the full path."""
+    return name.rsplit(".", 1)[-1] in keys or any(k + "." in name or k == name for k in keys)
+
+
+def test_transformers_4_matcher_keeps_wavlm_attention_and_a_bart_decoder_quantized():
+    skip = _architecture_skip_modules()(["speech-encoder-decoder", "wavlm", "bart"])
+    for proj in ("q_proj", "k_proj", "v_proj", "out_proj"):
+        assert _transformers4_skips(f"wavlm.encoder.layers.0.attention.{proj}", skip), proj
+    for name in (
+        "wavlm.encoder.layers.0.feed_forward.intermediate_dense",
+        "decoder.model.decoder.layers.0.self_attn.q_proj",
+        "decoder.model.decoder.layers.0.encoder_attn.out_proj",
+        "decoder.model.decoder.layers.0.fc1",
+    ):
+        assert not _transformers4_skips(name, skip), name
