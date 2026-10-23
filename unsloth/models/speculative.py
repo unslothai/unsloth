@@ -158,30 +158,61 @@ def get_mtp_head(
     return head
 
 
-def _takes_push_to_hub(fn):
+def _inner_save_fn(fn):
     # Unsloth's loaders wrap save_pretrained as (self, *args, **kwargs); read the wrapped one.
     if getattr(fn, "__name__", "") == "unsloth_model_save_pretrained":
         fn = getattr(getattr(fn, "__self__", None), "original_model_save_pretrained", fn)
+    return fn
+
+
+def _takes_push_to_hub(fn):
     try:
-        return "push_to_hub" in inspect.signature(fn).parameters
+        return "push_to_hub" in inspect.signature(_inner_save_fn(fn)).parameters
     except (TypeError, ValueError):
         return False
 
 
-def _fresh_adapter_dirs(model, save_directory, started):
-    """Adapter folders this save wrote, relative to `save_directory` ("" is the folder itself).
+def _selected_adapters(fn, save_directory, args, kwargs):
+    """The `selected_adapters` this PEFT save was called with, None when it saves them all."""
+    try:
+        bound = inspect.signature(_inner_save_fn(fn)).bind_partial(save_directory, *args, **kwargs)
+    except (TypeError, ValueError):
+        return kwargs.get("selected_adapters")
+    return bound.arguments.get("selected_adapters")
+
+
+def _active_adapters(model):
+    """Adapters the model currently runs with (the ones the MTP head trained against), else None."""
+    try:
+        names = model.active_adapters
+        names = names() if callable(names) else names
+    except Exception:
+        names = None
+    if not names:
+        names = getattr(model, "active_adapter", None)
+    if isinstance(names, str):
+        names = [names]
+    return set(names) if names else None
+
+
+def _fresh_adapter_dirs(model, save_directory, started, selected = None):
+    """Adapter folders this save wrote, relative to `save_directory` ("" is the folder itself),
+    as (adapter name, folder) pairs.
 
     PEFT writes the `default` adapter into `save_directory` and every other adapter into
-    `save_directory/<adapter_name>/`.
+    `save_directory/<adapter_name>/`, only for `selected_adapters` when given.
     """
-    names = list(getattr(model, "peft_config", None) or {})
-    candidates = [""] + [name for name in names if name != "default"]
+    config = getattr(model, "peft_config", None)
+    names = list(selected) if selected is not None else list(config or {})
+    if not names:
+        names = ["default"]
     out = []
-    for folder in candidates:
+    for name in names:
+        folder = "" if name == "default" else name
         adapter_config = os.path.join(save_directory, folder, "adapter_config.json")
         # Written by this save, not left over from an adapter saved here before.
         if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
-            out.append(folder)
+            out.append((name, folder))
     return out
 
 
@@ -224,10 +255,16 @@ def _wrap_save_pretrained(model):
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
-        adapter_dirs = _fresh_adapter_dirs(model, save_directory, started)
+        adapter_dirs = _fresh_adapter_dirs(
+            model, save_directory, started, _selected_adapters(original, save_directory, args, kwargs)
+        )
         if adapter_dirs:
             files = []
-            for folder in adapter_dirs:
+            # The head trained against the active adapter; an inactive one must not inherit it.
+            active = _active_adapters(model) if getattr(model, "peft_config", None) else None
+            for name, folder in adapter_dirs:
+                if active is not None and name not in active:
+                    continue
                 if _save_mtp_head_beside_adapter(model, os.path.join(save_directory, folder)):
                     files.append(
                         "/".join(

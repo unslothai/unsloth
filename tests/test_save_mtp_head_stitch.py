@@ -709,3 +709,53 @@ def test_every_saved_adapter_folder_gets_the_head(save_module, tmp_path, monkeyp
         "mtp_head.safetensors",
         "task/mtp_head.safetensors",
     ]
+
+
+def _two_adapter_model(torch, active):
+    """PEFT-shaped model: `selected_adapters` picks which folders a save writes."""
+    from unsloth.models.speculative import _wrap_save_pretrained
+
+    model = torch.nn.Module()
+    object.__setattr__(model, "peft_config", {"default": None, "task": None})
+    object.__setattr__(model, "active_adapter", active)
+
+    def peft_save(save_directory, safe_serialization = True, selected_adapters = None, **kwargs):
+        for name in selected_adapters or ("default", "task"):
+            folder = Path(save_directory) / ("" if name == "default" else name)
+            folder.mkdir(parents = True, exist_ok = True)
+            (folder / "adapter_config.json").write_text(json.dumps({"name": name}))
+
+    object.__setattr__(model, "save_pretrained", peft_save)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    return model
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_selected_adapters_save_leaves_other_folders_alone(save_module, tmp_path, positional):
+    """`default` saved a moment earlier is not rewritten by a save of `task` only."""
+    import torch
+
+    model = _two_adapter_model(torch, active = "task")
+    (tmp_path / "adapter_config.json").write_text("{}")  # fresh mtime, not part of this save
+    if positional:
+        model.save_pretrained(str(tmp_path), True, ["task"])
+    else:
+        model.save_pretrained(str(tmp_path), selected_adapters = ["task"])
+    assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+
+
+def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
+    """The head was trained against the active adapter; an inactive one must not inherit it."""
+    import torch
+
+    model = _two_adapter_model(torch, active = "task")
+    model.save_pretrained(str(tmp_path))
+    assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "mtp_head.safetensors").exists()
+    # Saving only an inactive adapter writes no head and does not try a full-checkpoint stitch.
+    out = tmp_path / "inactive"
+    model.save_pretrained(str(out), selected_adapters = ["default"])
+    assert (out / "adapter_config.json").is_file()
+    assert not list(out.rglob("mtp_head.safetensors"))
