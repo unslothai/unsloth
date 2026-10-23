@@ -1687,19 +1687,27 @@ def native_fsdp2_unsharded(model):
                 _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
-def _ga_mode():
-    """Non-final gradient accumulation micro-batches (Trainer / accelerate no_sync):
-    "skip" (default) = no reduce-scatter, units resharded after each backward;
-    "defer" = also keep units unsharded until the last micro-batch (torchtitan
-    fsdp_defer_gradient_reduction): no re-all-gather per micro-batch, gathered weights stay resident;
-    "each" = reduce-scatter every micro-batch (sharded gradients, no unsharded fp32 accumulation)."""
-    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "skip").strip().lower() or "skip"
-    return mode if mode in ("skip", "defer", "each") else "skip"
+def _ga_mode(model = None):
+    """What non-final gradient accumulation micro-batches (Trainer / accelerate no_sync) do,
+    `UNSLOTH_FSDP2_GA_SYNC`:
+    "skip" = no reduce-scatter; units resharded after each backward and gathered again next micro-batch;
+    "defer" = no reduce-scatter and units kept unsharded until the last micro-batch (torchtitan
+      fsdp_defer_gradient_reduction): no re-all-gather, gradients bitwise equal to "skip", the gathered
+      weights stay resident (sharded layout: + one compute-dtype copy of the trainable weights);
+    "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
+      accumulators held across micro-batches, the leanest and the slowest;
+    "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
+      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
+    if mode in ("skip", "defer", "each"):
+        return mode
+    layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
+    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
 
 
 @contextlib.contextmanager
 def _no_grad_sync(model):
-    mode = _ga_mode()
+    mode = _ga_mode(model)
     if mode == "each":
         yield
         return

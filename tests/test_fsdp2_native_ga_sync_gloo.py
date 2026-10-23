@@ -6,7 +6,8 @@
 Four micro-batches, the first three under the no_sync context the Trainer enters:
 * "skip" (default): no reduce-scatter on the non-final micro-batches (one per unit per step);
 * "defer": the same gradients bitwise, and fewer all-gathers (none in the fit layout) after the first;
-* "each": a reduce-scatter on every micro-batch, the same gradients up to fp32 summation order.
+* "each": a reduce-scatter on every micro-batch, the same gradients up to fp32 summation order;
+* "auto" (default): "defer" for the fit layout, "skip" for the sharded layout.
 For the sharded layout (full fine-tuning) and the fit layout (LoRA, root unit)."""
 
 import multiprocessing
@@ -90,7 +91,7 @@ def _worker(rank, world, port, out, path):
         res = {
             (layout, mode): _run(native, perf, counts, layout, mode)
             for layout in ("full", "lora")
-            for mode in ("skip", "defer", "each")
+            for mode in ("skip", "defer", "each", "auto")
         }
         if rank == 0:  # a file: a large queued payload blocks the child's exit (join deadlock)
             torch.save(res, path)
@@ -111,7 +112,7 @@ def test_ga_sync_modes(tmp_path):
     assert payload == "ok", payload["error"]
     allres = torch.load(path)
     for layout in ("full", "lora"):
-        res = {m: allres[(layout, m)] for m in ("skip", "defer", "each")}
+        res = {m: allres[(layout, m)] for m in ("skip", "defer", "each", "auto")}
         for m, r in res.items():
             print("GA_SYNC", layout, m, r["fits"], r["units"], r["per_micro"])
         _check(layout, res)
@@ -137,6 +138,8 @@ def _check(layout, res):
         assert all(m["ag"] == 0 for m in defer[1:-1]), defer
     # each: one reduce per unit per micro-batch.
     assert [m["rs"] for m in each] == [units] * MICRO, each
+    # auto (the default): defer for the fit layout, skip for the sharded one.
+    assert res["auto"]["per_micro"] == (defer if layout == "lora" else skip), res["auto"]["per_micro"]
     g_skip, g_defer, g_each = (res[m]["grads"] for m in ("skip", "defer", "each"))
     assert g_skip and g_skip.keys() == g_defer.keys() == g_each.keys()
     for n in g_skip:
