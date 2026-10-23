@@ -6,8 +6,9 @@ unfused decode op sequence they replace, both against an fp64 reference, plus th
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
-if not torch.cuda.is_available():
+if not has_real_cuda():
     pytest.skip("needs a CUDA device", allow_module_level = True)
 
 pytest.importorskip("triton")
@@ -227,7 +228,9 @@ def test_decode_split_sync_and_mixed_devices(monkeypatch):
     assert len(calls) == 0
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two real GPUs"
+)
 def test_decode_rope_on_another_device_orders_with_the_copy():
     # Rotate on GPU 1 with GPU 0 current, then copy to GPU 0: the copy must see rotated values.
     cos, sin = _table(4096, 128, torch.bfloat16)
@@ -236,9 +239,18 @@ def test_decode_rope_on_another_device_orders_with_the_copy():
     for _ in range(3):
         q = 3 * torch.randn(4, 32, 1, 128, device = "cuda:1", dtype = torch.bfloat16)
         k = 3 * torch.randn(4, 8, 1, 128, device = "cuda:1", dtype = torch.bfloat16)
+        # Same kernel, same inputs, rotated with its own device current: bitwise what the copy must
+        # see (a racing copy sees unrotated values). Fused rounds once and the unfused ops several
+        # times, so versus unfused only the 2 ulp bound of test_decode_rope_inplace_matches_unfused
+        # holds (0.0625 differences at |x| >= 8 fail a fixed atol = 0.05).
+        qr, kr = q.clone(), k.clone()
+        with torch.cuda.device(1):
+            assert RE.decode_rope_inplace(qr, kr, cos, sin, p)
         qu, ku = _unfused_rope(q.clone(), k.clone(), cos, sin, p)
         with torch.cuda.device(0):
             assert RE.decode_rope_inplace(q, k, cos, sin, p)
             q0, k0 = q.to("cuda:0"), k.to("cuda:0")
-        assert torch.allclose(q0.cpu().float(), qu.cpu().float(), atol = 0.05)
-        assert torch.allclose(k0.cpu().float(), ku.cpu().float(), atol = 0.05)
+        assert torch.equal(q0.cpu(), qr.cpu()) and torch.equal(k0.cpu(), kr.cpu())
+        ulp = torch.finfo(q.dtype).eps * max(qu.abs().max().item(), ku.abs().max().item())
+        assert (q0.cpu().float() - qu.cpu().float()).abs().max().item() <= 2 * ulp
+        assert (k0.cpu().float() - ku.cpu().float()).abs().max().item() <= 2 * ulp

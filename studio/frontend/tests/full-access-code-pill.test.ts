@@ -46,7 +46,6 @@ interface StoreModule {
 
 let scenario = 0;
 
-/** A fresh store with a tool-capable model selected and Code stored as `codeOn`. */
 async function freshStore(codeOn: boolean, checkpoint = LOCAL) {
   scenario += 1;
   localStorageFake.set(CODE_KEY, String(codeOn));
@@ -78,7 +77,6 @@ test("picking Full access turns Code on, and leaving it turns Code back off", as
   assert.equal(on(), false);
   pick(state(), "full");
   assert.equal(on(), true);
-  // The user's own choice is untouched, so nothing is stored.
   assert.equal(state().codeToolsEnabled, false);
   assert.equal(localStorageFake.get(CODE_KEY), "false");
   for (const mode of ["auto", "ask", "off"]) {
@@ -111,7 +109,6 @@ test("a Code click under Full access is the user's and survives leaving it", asy
   pick(off.state(), "full");
   clickCode(off.state(), !off.on());
   assert.equal(off.on(), false, "the click turns the pill off");
-  // Re-picking the level already on does not undo the click.
   pick(off.state(), "full");
   assert.equal(off.on(), false);
   pick(off.state(), "auto");
@@ -151,7 +148,6 @@ test("the turn-on reaches neither the installation nor the open chat's snapshot"
   );
   pick(state(), "full");
   assert.equal(on(), true);
-  // Any per-chat edit writes the chat's whole snapshot, Code included.
   (state().setToolsEnabled as (on: boolean) => void)(true);
   await drain();
   const row = threadRows.rows.get("A") as Record<string, unknown> | undefined;
@@ -164,11 +160,8 @@ test("the turn-on reaches neither the installation nor the open chat's snapshot"
 });
 
 test("a chat opened after Full access was picked still gets the code tools", async (t) => {
-  // Full access outlives a chat switch but Code does not, so a grant armed once
-  // on entry left the incoming chat on Full access with no code tools.
   enableCountedTimers(t);
   const tick = (ms: number) => t.mock.timers.tick(ms);
-  // Code already on where Full access is picked: the case that arms nothing.
   const { mod, store, on, state } = await freshStore(true);
   const drain = () =>
     drainMockedTimers(tick, {
@@ -183,7 +176,6 @@ test("a chat opened after Full access was picked still gets the code tools", asy
   pick(state(), "full");
   assert.equal(on(), true);
 
-  // An older chat whose own settings are Code off and the ordinary level.
   (state().setActiveThreadId as (id: string) => void)("B");
   mod.beginThreadScopedPairing("B");
   (
@@ -213,7 +205,7 @@ test("a Code click under Full access survives a chat switch too", async (t) => {
   mod.beginThreadScopedPairing("A");
   (state().applyThreadScopedSettings as (id: string, s: null) => void)("A", null);
   pick(state(), "full");
-  clickCode(state(), false); // the user's own no
+  clickCode(state(), false);
   assert.equal(on(), false);
 
   (state().setActiveThreadId as (id: string) => void)("B");

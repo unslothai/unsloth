@@ -144,8 +144,6 @@ def test_customization_sidebar_menu_normalized():
             }
         }
     )
-    # Duplicates keep the first entry; missing ids are appended with their
-    # default visibility.
     assert [(i.id, i.visible) for i in p.appearance.customization.sidebarMenu] == [
         ("guidedTour", False),
         ("api", True),
@@ -163,9 +161,7 @@ def _sidebar(items):
 
 
 def test_customization_sidebar_menu_dedupes_oversized_payload():
-    # A stale/duplicated payload carries more items than there are distinct ids.
-    # It must reach the dedupe validator and normalize to exactly one entry per
-    # id, not be rejected by the length cap before dedupe runs.
+    # Oversized stale payloads must reach the dedupe validator, not the length cap.
     ids = list(SIDEBAR_MENU_ITEM_DEFAULTS)
     doubled = [{"id": i} for i in ids] + [{"id": i} for i in ids]
     assert len(doubled) > len(SIDEBAR_MENU_ITEM_DEFAULTS)
@@ -176,7 +172,6 @@ def test_customization_sidebar_menu_dedupes_oversized_payload():
 
 
 def test_customization_sidebar_menu_rejects_pathological_length():
-    # The generous input cap still refuses an absurdly long list outright.
     huge = [{"id": "api"} for _ in range(MAX_SIDEBAR_MENU_INPUT_ITEMS + 1)]
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(_sidebar(huge))
@@ -186,9 +181,7 @@ def _sidebar_nav(items):
     return {"appearance": {"customization": {"sidebarNav": items}}}
 
 
-# The layout the frontend ships (SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in
-# features/settings/stores/appearance-custom-store.ts). The client sends this list verbatim on
-# every personalization save, so the backend must accept it and default to the same thing.
+# Mirrors SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in appearance-custom-store.ts.
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
@@ -204,8 +197,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
 
 
 def test_customization_sidebar_nav_accepts_the_frontend_shipped_layout():
-    # The frontend always sends every nav id, "api" included. A backend id list short of one of
-    # them 422s the whole PUT, so no appearance customization can ever be saved.
+    # The frontend always sends every nav id; a missing one 422s the whole PUT.
     p = PersonalizationPayload.model_validate(
         _sidebar_nav([{"id": i, "pinned": pinned} for i, pinned in FRONTEND_SHIPPED_SIDEBAR_NAV])
     )
@@ -214,7 +206,6 @@ def test_customization_sidebar_nav_accepts_the_frontend_shipped_layout():
 
 
 def test_customization_sidebar_nav_defaults_match_shipped_layout():
-    # A fresh account must look like the shipped sidebar.
     c = PersonalizationPayload().appearance.customization
     assert [(i.id, i.pinned) for i in c.sidebarNav] == FRONTEND_SHIPPED_SIDEBAR_NAV
 
@@ -229,7 +220,6 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
             ]
         )
     )
-    # Client order survives; duplicates keep the first, unsent ids are appended.
     assert [(i.id, i.pinned) for i in p.appearance.customization.sidebarNav] == [
         ("video", True),
         ("hub", False),
@@ -269,14 +259,11 @@ def _sidebar_nav_auto(value):
 
 
 def test_customization_sidebar_nav_auto_defaults_to_none():
-    # None, not a list: the client reads it as "this record predates the field" and works the
-    # placement out from the layout. A default list would answer for a user who never chose.
+    # None, not a list: the client reads it as 'predates the field'.
     assert PersonalizationPayload().appearance.customization.sidebarNavAuto is None
 
 
 def test_customization_sidebar_nav_auto_keeps_an_explicit_empty_list():
-    # The user decided the Projects row's placement themselves, so no rule applies to it. That
-    # is the opposite of an absent field and has to survive the round trip.
     p = PersonalizationPayload.model_validate(_sidebar_nav_auto([]))
     assert p.appearance.customization.sidebarNavAuto == []
 
@@ -293,8 +280,6 @@ def test_customization_sidebar_nav_auto_dedupes_and_validates():
 
 
 def test_personalization_put_round_trips_sidebar_nav_auto(monkeypatch):
-    # Pinning Projects while the rule hides it leaves the layout at the shipped default, so the
-    # choice lives in this field alone. Dropping it on the way in would undo it on the next load.
     store: dict = {}
     client = _shared_setup_1(monkeypatch, store)
     put = client.put(
@@ -352,8 +337,6 @@ def _imported(fonts):
 
 
 def test_imported_font_name_rejects_css_characters():
-    # Includes backslash (escapes the quoted family), comma/slash (extra
-    # fallbacks / comment start), and a control character.
     for bad in ['Ev"il', "Ev;il", "Ev{il", "Ev<il", "Ev'il", "Ev\\il", "Ev,il", "Ev/il", "Ev\til"]:
         with pytest.raises(ValidationError):
             PersonalizationPayload.model_validate(
@@ -368,7 +351,6 @@ def test_selected_font_names_validated():
                 PersonalizationPayload.model_validate(
                     {"appearance": {"customization": {field: bad}}}
                 )
-    # A normal family name (spaces + digits) is still accepted.
     p = PersonalizationPayload.model_validate(
         {"appearance": {"customization": {"uiFont": "Source Serif 4"}}}
     )
@@ -387,10 +369,7 @@ def test_imported_font_data_url_must_be_base64():
 
 
 def test_imported_font_data_url_rejects_newline():
-    # re's ``$`` also matches just before a trailing newline, so a data URL
-    # ending in "\n" (or with an embedded newline) must be rejected the same way
-    # the frontend JS pattern rejects it; otherwise the backend accepts a value
-    # the client would never have produced.
+    # re's `$` matches before a trailing newline; reject it like the frontend pattern does.
     for bad in [
         "data:font/woff2;base64,AAAA\n",
         "data:font/woff2;base64,AAAA\nBBBB",
@@ -398,7 +377,6 @@ def test_imported_font_data_url_rejects_newline():
     ]:
         with pytest.raises(ValidationError):
             PersonalizationPayload.model_validate(_imported([{"name": "F", "dataUrl": bad}]))
-    # The same URL without the newline is still accepted.
     ok = PersonalizationPayload.model_validate(
         _imported([{"name": "F", "dataUrl": "data:font/woff2;base64,AAAA"}])
     )
@@ -411,7 +389,6 @@ def test_imported_fonts_total_size_capped():
         PersonalizationPayload.model_validate(
             _imported([{"name": f"F{i}", "dataUrl": big} for i in range(3)])
         )
-    # Two fit under the aggregate cap.
     PersonalizationPayload.model_validate(
         _imported([{"name": f"F{i}", "dataUrl": big} for i in range(2)])
     )
@@ -526,7 +503,6 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "chat", "visible": False},
                     {"id": "connections", "visible": False},
                 ],
-                # Reordered and partly unpinned, so the round-trip proves order survives a save.
                 "sidebarNav": [
                     {"id": "images", "pinned": True},
                     {"id": "video", "pinned": True},
@@ -539,7 +515,6 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                 ],
-                # This layout was arranged by hand, so no row is left on a rule.
                 "sidebarNavAuto": [],
             },
         },
@@ -559,8 +534,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
 
 
 def test_personalization_get_flags_legacy_fields(monkeypatch):
-    # A record written before these fields existed must report them as unsaved
-    # so the client keeps local overrides instead of the server-filled defaults.
+    # Pre-field records report fields unsaved so the client keeps local overrides.
     store: dict = {
         pers.PERSONALIZATION_SETTING_KEY: {
             "version": 1,
@@ -634,7 +608,6 @@ def test_personalization_legacy_attachment_display_presence(monkeypatch):
 
 
 def test_personalization_ignores_retired_composer_attachments(monkeypatch):
-    # The composer always shows cards now; older clients and records may still carry the key.
     store = {
         pers.PERSONALIZATION_SETTING_KEY: {
             "appearance": {"customization": {"composerAttachments": "compact"}},
@@ -673,8 +646,6 @@ def test_personalization_saved_chat_width_survives_stale_write(monkeypatch, widt
 
 
 def test_personalization_put_preserves_absent_fields(monkeypatch):
-    # A stale client that omits palette/customization must not materialize them,
-    # so the record stays legacy and GET keeps reporting those fields unsaved.
     store: dict = {}
     client = _shared_setup_1(monkeypatch, store)
 
@@ -700,8 +671,6 @@ def test_personalization_put_preserves_absent_fields(monkeypatch):
 
 
 def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatch):
-    # A stale client that omits palette/customization must not clobber values a
-    # newer client already stored; the merge keeps them and only updates theme.
     store: dict = {
         pers.PERSONALIZATION_SETTING_KEY: {
             "version": 1,
@@ -721,8 +690,6 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
     )
     assert put.status_code == 200
 
-    # The PUT response reflects the stored record, not the defaults-filled request:
-    # a stale write that omits palette/customization still echoes the preserved values.
     put_body = put.json()
     assert put_body["appearance"]["theme"] == "dark"
     assert put_body["appearance"]["palette"] == "classic"

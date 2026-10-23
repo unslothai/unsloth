@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Archive All sends every PATCH with { notify: false } and relies on one batch notification
-// afterwards. Promise.all rejects on the first failure, so without a catch that notification
-// never runs: whatever did archive stays listed here and in every other tab until some
-// unrelated history change.
+// Promise.all rejects on the first failure, so without a catch the batch notification never runs.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -39,7 +36,6 @@ test("a partially failed Archive All still announces what did archive", async ()
 });
 
 test("a partially failed Archive All announces only after every write settles", async () => {
-  // "b" rejects straight away while "c" is still writing, which is what Promise.all cannot wait for.
   resetRecorder(threads, ["b"], ["c"]);
 
   await assert.rejects(() => archiveAllChatItems(), /PATCH failed for b/);
