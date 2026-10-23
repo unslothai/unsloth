@@ -223,7 +223,6 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
 
 
 def _scale_dequant_one_pass(x, s, dtype):
-    # One read of the fp8 bytes and one write, instead of a cast pass plus a multiply pass.
     transposed = _is_transposed_view(x)
     if transposed:
         x = x.t()
@@ -1321,9 +1320,8 @@ def _e4m3fn_scale_dequant_kernel(
     ROUND_SCALE: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
 ):
-    # Per-tensor (stride_s 0) or per-row / per-column scales. ROUND_SCALE rounds the scale to the
-    # output dtype first, as x.to(dtype) * s.to(dtype) does; fp16 keeps the fp32 scale. An e4m3 value
-    # times a bf16 scale is exact in fp32, so one rounding to the output reproduces torch's bits.
+    # Scale per tensor (stride_s 0), row or column. ROUND_SCALE mirrors x.to(dtype) * s.to(dtype) (fp16 keeps
+    # the fp32 scale); e4m3 times a bf16 scale is exact in fp32, so one rounding gives torch's bits.
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
     if LONG_INDEXING:

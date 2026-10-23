@@ -79,7 +79,7 @@ def test_one_pass_matches_torch_expression(F, monkeypatch, dtype, scale_dtype, l
         t = s[17:18].view(1)
         x, xs, ref = q.t(), t, _reference(q.t(), t.view(1, 1), dtype)
     else:
-        # A transposed view whose rows carry the scales (s of length q.t().shape[0]).
+        # Transposed view whose rows carry the scales.
         qt = q.t().contiguous().t()
         x, xs, ref = qt, s, _reference(qt, s, dtype)
     calls = _count_launches(F, monkeypatch)
