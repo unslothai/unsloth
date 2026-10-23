@@ -53772,10 +53772,17 @@ async def diffusion_status(
 ):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
-    from core.inference.diffusion_engine_router import active_status
+    from core.inference import media_load_ids
+    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = await asyncio.to_thread(active_status)
+    engine = get_active_diffusion_engine()
+    # What active_status() answers, with the load id of the same state, so an unload can name
+    # exactly what this answer shows.
+    raw_status, load_id = await asyncio.to_thread(
+        media_load_ids.snapshot, "diffusion", engine, engine.status
+    )
+    status_dict = await asyncio.to_thread(annotate_status, raw_status)
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Step-skip counters trace a render as it runs, which generate-progress hides from other accounts:
@@ -53793,16 +53800,7 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    from core.inference import media_load_ids
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
-    # The load in the slot, so an unload can name exactly what this answer shows.
-    status_dict = {
-        **status_dict,
-        "load_id": await asyncio.to_thread(
-            media_load_ids.current_id, "diffusion", get_active_diffusion_engine()
-        ),
-    }
+    status_dict = {**status_dict, "load_id": load_id}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

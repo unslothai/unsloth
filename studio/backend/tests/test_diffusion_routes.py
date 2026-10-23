@@ -3383,3 +3383,38 @@ def test_image_status_names_the_load_an_unload_can_name(token_client):
     client, backend = token_client
     assert _load_with_token(client, "t1").status_code == 200
     assert client.get("/api/inference/images/status").json()["load_id"] == "t1"
+
+
+def test_image_status_and_load_id_name_the_same_load(token_client):
+    import threading
+
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    read = backend.status
+    admitted = threading.Event()
+
+    def newer_load():
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("diffusion", backend, "t2")
+            backend._load_token += 1
+            backend.loading = ("unsloth/Z-Image-Turbo-GGUF",)
+            media_load_ids.admitted("diffusion", backend, "t2", prior)
+            admitted.set()
+
+    def racing_status():
+        worker = threading.Thread(target = newer_load)
+        worker.start()
+        worker.join(0.3)
+        return read()
+
+    backend.status = racing_status
+    try:
+        answer = client.get("/api/inference/images/status").json()
+    finally:
+        backend.status = read
+    assert admitted.wait(5)
+    assert answer["load_id"] == "t1"
+    backend.loading = ()

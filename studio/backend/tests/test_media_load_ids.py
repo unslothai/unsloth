@@ -241,3 +241,17 @@ def test_a_resident_stays_named_after_a_newer_load_fails():
     assert media_load_ids.current_id("video", engine) == "t1"
     assert _unload(engine, "t2") == ("superseded", None)
     assert _unload(engine, "t1")[0] == "unloaded"
+
+
+def test_a_status_snapshot_reads_under_the_admission_lock():
+    engine = _Engine()
+    _load(engine, "t1")
+    engine.finish()
+    held = []
+
+    def read():
+        held.append(account_access.media_load_lock.locked())
+        return {"loaded": True}
+
+    assert media_load_ids.snapshot("video", engine, read) == ({"loaded": True}, "t1")
+    assert held == [True]

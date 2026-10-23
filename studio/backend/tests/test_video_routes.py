@@ -1867,3 +1867,41 @@ def test_status_names_the_load_an_unload_can_name(token_client):
     assert made.startswith("studio-")
     resp = client.post("/api/inference/video/unload", json = {"expected_load_id": made})
     assert resp.json()["outcome"] == "unloaded" and backend.unloads == 1
+
+
+def test_status_and_load_id_name_the_same_load(token_client):
+    # A load admitted while status reads the backend waits for the read, so the id in the answer
+    # never names a load the answer does not show.
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    read = backend.status
+    admitted = []
+
+    def newer_load():
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("video", backend, "t2")
+            backend._load_token += 1
+            backend.loading = ("unsloth/LTX-2.3-GGUF",)
+            media_load_ids.admitted("video", backend, "t2", prior)
+            admitted.append(True)
+
+    def racing_status():
+        worker = threading.Thread(target = newer_load)
+        worker.start()
+        worker.join(0.3)
+        return read()
+
+    backend.status = racing_status
+    try:
+        answer = client.get("/api/inference/video/status").json()
+    finally:
+        backend.status = read
+    deadline = time.monotonic() + 5
+    while not admitted and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert answer["load_id"] == "t1"
+    assert admitted == [True]
+    backend.loading = ()

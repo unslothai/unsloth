@@ -7,6 +7,7 @@ import time
 
 import pytest
 from fastapi.responses import JSONResponse, Response
+from fastmcp.exceptions import ToolError
 
 from studio_mcp import loading
 
@@ -856,6 +857,7 @@ class _TokenVideo:
         self.events: list = []
         # Called while an unload is out, before it answers (another client acting meanwhile).
         self.during_unload = None
+        self.stall_status = False
         self.made = 0
 
     def admit(self, model, token) -> bool:
@@ -894,7 +896,9 @@ class _TokenVideo:
             return {"phase": None}
         return {"phase": self.current[2]}
 
-    def status(self, request, body):
+    async def status(self, request, body):
+        if self.stall_status:
+            await asyncio.sleep(30)
         if not self.resident:
             return UNLOADED
         return {"loaded": True, "repo_id": self.resident, "load_id": self.current[1]}
@@ -1193,6 +1197,28 @@ def test_a_load_shown_ready_retires_the_tokens_before_it(monkeypatch, fast_polls
     asyncio.run(scenario())
     first, second = _tokens_sent(backend)
     assert list(loading._MEDIA_TOKENS[("owner", "video")]) == [second]
+
+
+def test_a_stalled_status_read_still_ends_the_stopped_load(monkeypatch, fast_polls):
+    monkeypatch.setattr(loading, "READ_S", 0.2)
+    backend = _TokenVideo()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        await _video_load(caller)
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        backend.stall_status = True
+        began = time.monotonic()
+        with pytest.raises(ToolError, match = "did not answer the video status read"):
+            await loading.unload_media(caller, "video")
+        return time.monotonic() - began
+
+    took = asyncio.run(scenario())
+    assert took < 5
+    (token,) = _tokens_sent(backend)
+    assert ("unload answered", token) in backend.events
+    assert backend.current is None
 
 
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(

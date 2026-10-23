@@ -148,6 +148,17 @@ def _slot_token(modality: str, engine: Any) -> Optional[str]:
     return None
 
 
+def snapshot(
+    modality: str, engine: Any, read_status: Callable[[], Any]
+) -> tuple[Any, Optional[str]]:
+    """``read_status()`` and the ``load_id`` of the same state: both under the admission lock, so no
+    load is admitted between them and the id never names a load the status does not show."""
+    with _media_lock():
+        status = read_status()
+        with _lock:
+            return status, _slot_token(modality, engine)
+
+
 def current_id(modality: str, engine: Any) -> Optional[str]:
     """The ``load_id`` the status routes report: the token of the load in the slot, or None."""
     with _lock:

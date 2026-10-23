@@ -754,7 +754,9 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
     tokens += [job.load_token for job in stopped if job.load_token and job.load_token not in tokens]
     # What the slot held when this call came, read before any unload goes out: the unload of the
     # resident below names that load, so one admitted later is never touched.
-    status_read = asyncio.ensure_future(route_json("GET", routes["status"], caller = caller))
+    status_read = asyncio.ensure_future(
+        asyncio.wait_for(route_json("GET", routes["status"], caller = caller), READ_S)
+    )
     try:
         await asyncio.wait({status_read})
     finally:
@@ -762,7 +764,13 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
         ended = [_unload_media_token(caller, kind, token) for token in tokens]
     # Shielded: a cancelled call leaves them running.
     outcomes = await asyncio.shield(asyncio.gather(*ended)) if ended else []
-    before = as_dict(status_read.result())
+    try:
+        before = as_dict(status_read.result())
+    except asyncio.TimeoutError:
+        raise ToolError(
+            f"Unsloth Studio did not answer the {kind} status read within {READ_S:.0f} s. Loads this "
+            f"call stopped were ended, but a resident {kind} model may still be loaded; try unload_model again."
+        ) from None
     model = (
         opt_text(before.get("display_repo_id"))
         or opt_text(before.get("repo_id"))
