@@ -1266,7 +1266,14 @@ def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
     with torch.no_grad():
         local = torch.stack(
             [
-                torch.stack((p.detach().double().sum(), p.detach().double().abs().sum())).to(device)
+                # float64 accumulation without a float64 copy of the weight (a full finetune's
+                # embedding can be billions of elements).
+                torch.stack(
+                    (
+                        p.detach().sum(dtype = torch.float64),
+                        torch.linalg.vector_norm(p.detach(), 1, dtype = torch.float64),
+                    )
+                ).to(device)
                 for p in params
             ]
         )
