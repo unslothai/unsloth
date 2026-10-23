@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 import types
 
 import pytest
@@ -1985,7 +1986,7 @@ def test_run_load_redacts_paths_in_progress_error(monkeypatch):
                 npl._NATIVE_PATH_REDACTIONS.remove(secret_root)
 
 
-def _fake_materialize(resolved, dest):
+def _fake_materialize(resolved, dest, **kwargs):
     """Stand-in for diffusion_lora.materialize_native_dir: write a stub file per adapter
     into ``dest`` and return the resolved list pointing at the written paths (mirroring the
     real helper's contract without touching the Hub / real weights)."""
@@ -2048,6 +2049,51 @@ def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tm
     assert payload["lora"][0]["path"].endswith("myalias.safetensors")
     assert "<lora:" not in payload["prompt"]
     assert not list(_P(tmp_path).glob("gen_*"))
+
+
+def test_generate_server_stages_loras_as_real_files_inside_the_lora_dir(monkeypatch, tmp_path):
+    # sd-server (master-982+) canonicalizes every file under --lora-model-dir and skips one resolving outside it
+    # (examples/server/runtime.cpp refresh_lora_cache / get_lora_full_path), so a symlink into the cache is dropped.
+    import os
+
+    from core.inference import diffusion_lora as dl
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    src = cache / "adapter.safetensors"
+    src.write_bytes(b"weights")
+    server_dir = tmp_path / "server_loras"
+    server_dir.mkdir()
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(server_dir)
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: True)
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **k: [dl.ResolvedLora("id1", "myalias", str(src), "safetensors", 0.7)],
+    )
+    real = dl.materialize_native_dir
+    seen = []
+
+    def _spy(resolved, dest, **kwargs):
+        out = real(resolved, dest, **kwargs)
+        for m in out:
+            seen.append(
+                (os.path.islink(m.path), os.path.realpath(m.path), Path(m.path).read_bytes())
+            )
+        return out
+
+    monkeypatch.setattr(dl, "materialize_native_dir", _spy)
+    b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    assert len(seen) == 1
+    is_link, resolved_path, data = seen[0]
+    assert not is_link
+    assert Path(resolved_path).is_relative_to(Path(os.path.realpath(server_dir)))
+    assert data == b"weights"
+    assert src.read_bytes() == b"weights"
+    assert not list(server_dir.glob("gen_*"))
 
 
 def test_generate_rejects_loras_on_unsupported_family(monkeypatch):

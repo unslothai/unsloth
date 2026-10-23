@@ -148,6 +148,41 @@ def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
         assert Path(r.path).parent == dest
 
 
+def test_materialize_native_dir_real_files_hardlinks_inside_dest(tmp_path):
+    # sd-server rejects a staged LoRA whose canonical path leaves --lora-model-dir, so server staging needs a real file.
+    src = tmp_path / "cache" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    dest = tmp_path / "managed"
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], dest, real_files = True
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.is_file()
+    assert Path(os.path.realpath(staged)).parent == Path(os.path.realpath(dest))
+    assert os.path.samefile(staged, src)  # a hard link, not a copy
+    staged.unlink()
+    assert src.read_bytes() == b"x"
+
+
+def test_materialize_native_dir_real_files_copies_when_hardlink_fails(tmp_path, monkeypatch):
+    src = tmp_path / "a.safetensors"
+    src.write_bytes(b"x")
+
+    def _no_link(*a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dl.os, "link", _no_link)
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)],
+        tmp_path / "managed",
+        real_files = True,
+    )
+    staged = Path(out[0].path)
+    assert not staged.is_symlink() and staged.read_bytes() == b"x"
+    assert not os.path.samefile(staged, src)
+
+
 def test_list_loras_scans_local(tmp_path, monkeypatch):
     d = tmp_path / "loras"
     d.mkdir()
