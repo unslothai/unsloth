@@ -98,6 +98,17 @@ def test_a_timed_out_probe_is_not_kept(rocm_cli, monkeypatch):
     assert _count(rocm_cli, "rocminfo") == 2
 
 
+def test_a_failing_probe_is_not_kept(rocm_cli, monkeypatch):
+    def failing(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        return _Result("", returncode = 1)
+
+    monkeypatch.setattr(subprocess, "run", failing)
+    assert hw._linux_amd_gfx_candidates() == []
+    assert hw._linux_amd_gfx_candidates() == []
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
 def test_the_cache_switch_turns_it_off(rocm_cli, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "0")
     for _ in range(3):

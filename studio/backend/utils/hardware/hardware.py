@@ -491,7 +491,7 @@ def _linux_amd_gfx_candidates() -> list[str]:
 
 
 def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
-    """(targets, settled). ``settled`` is False when a CLI that exists timed out or could not start."""
+    """(targets, settled). ``settled`` is False when a CLI that exists timed out, could not start or failed."""
     settled = True
     for command, pattern in (
         (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
@@ -516,6 +516,9 @@ def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
             return sorted(found), True
+        # A CLI that ran and failed (no /dev/kfd access yet, driver still loading) said nothing about the silicon.
+        if result.returncode != 0:
+            settled = False
     return [], settled
 
 
