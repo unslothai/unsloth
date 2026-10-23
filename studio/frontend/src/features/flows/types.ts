@@ -251,12 +251,39 @@ export interface StoryCharacter {
   side?: "left" | "right" | "center";
 }
 
+export type StoryTransition =
+  | "dissolve"
+  | "fade"
+  | "flash"
+  | "slideleft"
+  | "slideright"
+  | "none";
+
+export type StoryPosition =
+  | "left"
+  | "center"
+  | "right"
+  | "twoleft"
+  | "tworight";
+
+/** Ren'Py-style stage directions; a line with empty text carries only these. */
+export interface StoryStage {
+  show?: string | null;
+  hide?: string | null;
+  at?: StoryPosition | null;
+  expression?: string | null;
+  with?: StoryTransition | null;
+  sound?: string | null;
+  pause?: number | null;
+}
+
 export interface StoryLine {
   speaker?: string | null;
   text: string;
   expression?: string | null;
   if?: Expr;
   voice?: MediaValue | null;
+  stage?: StoryStage | null;
 }
 
 export interface StoryChoice {
@@ -282,6 +309,7 @@ export interface StoryScene {
   ending?: { title: string; kind: "good" | "bad" | "neutral" | "secret" } | null;
   generate_background?: boolean;
   generate_lines?: boolean;
+  transition?: StoryTransition | null;
 }
 
 export interface StoryManifest {
@@ -292,6 +320,7 @@ export interface StoryManifest {
   scenes: StoryScene[];
   mode: "fixed" | "live" | "infinite";
   style?: string | null;
+  sounds?: Record<string, MediaValue> | null;
   entry_points?: Record<string, string>;
 }
 

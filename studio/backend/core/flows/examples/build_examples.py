@@ -249,6 +249,21 @@ def sloth_moon() -> B:
         b.n(cid, "story.character", 2, 4 + i, name = name, look = look, color = color, side = side)
         b.e(f"art_{cid}.image", f"cut_{cid}.image")
         b.e(f"cut_{cid}.image", f"{cid}.portrait")
+    b.n(
+        "faces_mo",
+        "story.expressions",
+        1,
+        3.2,
+        label = "Mo's expressions",
+        model = IMAGE,
+        name = "Mo",
+        look = chars[0][2],
+        style = style,
+        expressions = ["worried", "happy"],
+        seed = 200,
+    )
+    b.e("art_mo.image", "faces_mo.portrait")
+    b.e("faces_mo.expressions", "mo.expressions")
     scenes = [
         (
             "porch",
@@ -286,7 +301,7 @@ def sloth_moon() -> B:
             -2,
             "Fog Hollow",
             "a hollow filled with thick silver fog, faint shapes of trees, mysterious",
-            "Narrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
+            "[scene with fade]\nNarrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
         ),
         (
             "dance",
@@ -304,7 +319,7 @@ def sloth_moon() -> B:
             "Mirror Lake",
             "a perfectly still lake reflecting the stars, reeds, a small wooden dock",
             "Narrator: At the lake, the water was so still it looked like a second sky.\n"
-            "Mo: Look! The moon is in the water!\nOttoline: Or is it?",
+            "Mo (happy): Look! The moon is in the water!\nOttoline: Or is it?",
         ),
     ]
     for sid, col, row, title, bg, lines in scenes:
@@ -382,7 +397,7 @@ def sloth_moon() -> B:
         title = "The Moon Comes Home",
         kind = "good",
         text = "Narrator: The moon, who had only felt forgotten, rose back into the sky.\n"
-        "Mo: Goodnight, moon. We'll watch you every night.",
+        "Mo (happy): Goodnight, moon. We'll watch you every night.",
     )
     b.n(
         "end_secret",
