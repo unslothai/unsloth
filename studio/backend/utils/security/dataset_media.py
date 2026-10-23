@@ -3,22 +3,10 @@
 
 """Keep a managed account's dataset media to files it may read, and validate Arrow data files.
 
-A ``datasets`` Image / Audio / Video / Pdf / Nifti cell holding a ``path`` and no ``bytes`` is opened by the
-feature's decoder in whichever process reads the row: a local path is read from disk, and a Hub URL is fetched
-with ``token_per_repo_id[repo]``, which falls back to the process's own Hub credentials for any repo the dataset
-was not loaded from. Any dataset can carry such cells, so for a managed account a local path must be one the
-account may read (its own roots, a Hub snapshot it can see or its training dataset's, or a member of an archive
-``datasets`` extracted from one of those), a Hub URL (``hf://datasets/...`` or the configured endpoint's
-``/datasets/.../resolve/...``, matched whole) is fetched with the token the caller supplied for its repo or
-anonymously, and any other URL is refused. The extraction cache is shared by every account and named by a hash of
-the archive's path, so each extraction records its source archive and a member is readable only when that archive
-is. The owner is unchanged.
-
-pyarrow's IPC reader trusts the lengths and offsets an ``.arrow`` file declares, so the ``arrow`` builder validates
-each table in full before ``datasets`` converts its rows: a malformed file raises ``ArrowInvalid`` (a ValueError)
-instead of reading past its buffers. ``datasets``' own cache files are memory-mapped by its reader, not this builder.
-
-``install()`` patches ``datasets`` once it is imported, without importing it at startup; it is idempotent.
+Media decoders open a cell's ``path`` locally or fetch Hub URLs with the server's token as fallback, so for a
+managed account local paths must be readable by it (extracted archive members only via a recorded, readable
+source archive), Hub URLs use only a caller-supplied token, and other URLs are refused. ``.arrow`` tables are
+validated in full because pyarrow's IPC reader trusts declared offsets. ``install()`` patches lazily, idempotent.
 """
 
 import functools
@@ -39,15 +27,13 @@ _DECODERS = {
 _ARROW = "datasets.packaged_modules.arrow.arrow"
 _EXTRACT = "datasets.utils.extract"
 _SOURCE_SUFFIX = ".unsloth-source"
-# A record is one archive path; anything longer is not one this module wrote and is refused unread.
 _SOURCE_MAX_BYTES = 16384
 # Protocols ``datasets`` chains in front of an outer location ("zip://member::<outer>").
 _ARCHIVE_HOPS = frozenset({"zip", "tar", "gzip", "bz2", "xz", "zstd", "lz4"})
 _MARK = "_unsloth_dataset_media_guard"
 _SNAPSHOT_REPO = re.compile(r"[\\/]datasets--([^\\/]+?)--([^\\/]+)[\\/]")
-# Hub dataset repos the process was started to train on (a worker serves one account's job).
 _dataset_repos: set[str] = set()
-# Extraction directory (real path) -> the archive ``datasets`` extracted into it, in this process.
+# Extraction dir (real path) -> source archive.
 _extracted_sources: dict[str, str] = {}
 
 
@@ -146,8 +132,7 @@ def _record_extraction(extract):
         if output_path != input_path:
             source, top = os.path.abspath(str(input_path)), os.path.realpath(str(output_path))
             _extracted_sources[top] = source
-            # Published whole by a rename, so a reader never sees a partial record and an interrupted one is
-            # replaced; every writer for this directory records the same archive.
+            # Atomic rename: readers never see a partial record.
             temp = None
             try:
                 fd, temp = tempfile.mkstemp(
@@ -158,7 +143,7 @@ def _record_extraction(extract):
                 os.chmod(temp, 0o644)  # mkstemp's 0600 would hide the record from other users of the cache
                 os.replace(temp, top + _SOURCE_SUFFIX)
                 temp = None
-            except OSError:  # a read-only cache: this process still knows it
+            except OSError:
                 pass
             finally:
                 if temp is not None:
@@ -187,11 +172,7 @@ def _anchored(pattern: str):
 
 
 def _hub_fields(source: str):
-    """The repo fields of a Hub dataset file URL, or None for anything that is not one.
-
-    ``datasets.utils.py_utils.string_to_dict`` searches anywhere in the string, so a URL of another host that
-    merely contains a Hub path matches it; the scheme and authority are pinned here by matching the whole URL.
-    """
+    """Repo fields of a Hub dataset file URL, else None. Matched whole: string_to_dict searches anywhere."""
     from datasets import config
     from datasets.utils.py_utils import string_to_dict
 
@@ -227,7 +208,6 @@ def _permitted_tokens(value, token_per_repo_id):
         return token_per_repo_id
     from datasets.utils.file_utils import is_local_path
 
-    # A chained URL ("zip://inner::<outer>") reads the outer location through archive hops only.
     *hops, source = path.split("::")
     if any(hop.split("://", 1)[0] not in _ARCHIVE_HOPS or "://" not in hop for hop in hops):
         _refuse(path)
