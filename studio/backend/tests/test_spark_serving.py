@@ -4802,6 +4802,43 @@ def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monke
     assert raised.value.status_code == 409 and unloaded == [1]
 
 
+def test_the_load_summary_is_read_after_after_load_drops_a_missing_split(monkeypatch):
+    """Regression: a server launched without the planned split must not be reported as split."""
+    import routes.inference as ri
+    from models.inference import LoadResponse
+
+    split = {"on": True}
+
+    async def _before(request, *a, **k):
+        return request
+
+    async def _impl(*a, **k):
+        return LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {})
+
+    async def _after(*a, **k):
+        split["on"] = False  # the launched argv lacked the planned block: state is now single
+        return False
+
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    monkeypatch.setattr(ss, "before_load", _before)
+    monkeypatch.setattr(ss, "after_load", _after)
+    monkeypatch.setattr(ri, "_load_model_impl", _impl)
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        ri,
+        "_cluster_ux",
+        lambda name, *a, **k: "Split across this machine and studio-2."
+        if name == "split_summary" and split["on"]
+        else None,
+    )
+    request = SimpleNamespace(
+        model_path = "org/model-GGUF", engine = "auto", n_parallel = 4, load_request_id = None
+    )
+    response = run(ri._run_tracked_load_model_impl(request, None, "someone"))
+    assert isinstance(response, LoadResponse) and response.cluster_summary is None
+
+
 def test_the_spark_status_route_is_the_owners_only(monkeypatch):
     """Regression: only the owner may read peer command lines, log tails and host paths."""
     from fastapi import FastAPI

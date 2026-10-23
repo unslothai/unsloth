@@ -12,6 +12,9 @@ import os
 import re
 import struct
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -746,10 +749,22 @@ class Node:
     rpc_port: int = RPC_PORT_DEFAULT
     ssh_user: Optional[str] = None
     managed: bool = False
+    node_id: Optional[str] = None
+    transport: str = "direct"
+    relay: Optional[str] = None
+    name: Optional[str] = None
+    native_port: int = 0
+    tls_fp: Optional[str] = None
 
     @property
     def endpoint(self) -> str:
-        return f"{self.host}:{self.rpc_port}"
+        if self.transport == "native_tls" and self.tls_fp:
+            return f"tls://{self.tls_fp}@{self.host}:{self.native_port}"
+        return self.relay if self.relay else f"{self.host}:{self.rpc_port}"
+
+    @property
+    def link(self) -> bool:
+        return self.transport in ("link", "native_tls")
 
     @property
     def ssh_target(self) -> str:
@@ -911,10 +926,12 @@ def configured() -> bool:
     if (os.environ.get(ENV_NODES) or "").strip():
         return True
     path = _config_path()
-    return bool(path is not None and path.is_file())
+    if path is not None and path.is_file():
+        return True
+    return bool(_paired_workers())
 
 
-def load_nodes() -> List[Node]:
+def load_nodes(verify: bool = True) -> List[Node]:
     value = (os.environ.get(ENV_NODES) or "").strip()
     if value:
         return _one_managed_worker_per_host(
@@ -922,7 +939,10 @@ def load_nodes() -> List[Node]:
         )
     path = _config_path()
     if path is None or not path.is_file():
-        raise ClusterConfigError("no cluster configured")
+        nodes = _link_nodes(verify)
+        if not nodes:
+            raise ClusterConfigError("no cluster configured")
+        return nodes
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, ValueError) as exc:
@@ -931,6 +951,13 @@ def load_nodes() -> List[Node]:
     if (os.environ.get(ENV_MANAGED) or "") == "1":
         nodes = [replace(n, managed = True) for n in nodes]
     return _one_managed_worker_per_host(nodes)
+
+
+def _paired_only() -> bool:
+    if (os.environ.get(ENV_NODES) or "").strip():
+        return False
+    path = _config_path()
+    return path is None or not path.is_file()
 
 
 _HOST_IDENTITY_TIMEOUT_S = 1.0
@@ -981,13 +1008,424 @@ def _host_identity(host: str) -> str:
 
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
-    if len(nodes) < 2 or not any(n.managed for n in nodes):
+    direct = [n for n in nodes if not n.link]
+    if len(direct) < 2 or not any(n.managed for n in direct):
         return nodes
-    hosts = [_host_identity(n.host) for n in nodes]
-    for node, host in zip(nodes, hosts):
+    hosts = [_host_identity(n.host) for n in direct]
+    for node, host in zip(direct, hosts):
         if node.managed and hosts.count(host) > 1:
             raise ClusterConfigError(f"{node.host} is managed, so it can be listed only once")
     return nodes
+
+
+_RELAYS: Any = None
+_LISTENER: Any = None
+_LINKS_LOCK = threading.RLock()
+_LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
+_NATIVE: Dict[str, int] = {}
+LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
+
+
+def _link_identity() -> Any:
+    try:
+        from studio.cluster_link import identity
+        return identity
+    except Exception:
+        pass
+    here = Path(__file__).resolve().parents[3]
+    if not (here / "cluster_link" / "__init__.py").is_file():
+        return None
+    try:
+        import studio
+        if str(here) not in list(studio.__path__):
+            studio.__path__.append(str(here))
+    except ImportError:
+        if str(here.parent) not in sys.path:
+            sys.path.append(str(here.parent))
+    try:
+        from studio.cluster_link import identity
+        return identity
+    except Exception:
+        return None
+
+
+def _registry(identity: Any) -> Any:
+    return identity.Registry().load()
+
+
+def _record_address(identity: Any, node_id: str, host: str, port: int) -> None:
+    registry = identity.Registry()
+    with registry.transaction():
+        registry.record_address(node_id, host, port)
+
+
+def _paired_workers() -> List[Any]:
+    identity = _link_identity()
+    if identity is None:
+        return []
+    try:
+        if not identity.master_identity(create = False):
+            return []
+        return [p for p in _registry(identity).workers() if not getattr(p, "removed", False)]
+    except Exception as exc:
+        logger.info("cluster link: no paired workers (%s)", exc)
+        return []
+
+
+def _relays() -> Optional[Any]:
+    with _LINKS_LOCK:
+        return _relays_locked()
+
+
+def _relays_locked() -> Optional[Any]:
+    global _RELAYS
+    identity = _link_identity()
+    master = identity.master_identity(create = False) if identity is not None else None
+    if _RELAYS is not None and (
+        master is None or _RELAYS.identity.fingerprint != master.fingerprint
+    ):
+        _stop_links()
+    if master is None:
+        return None
+    if _RELAYS is None:
+        from studio.cluster_link.relay import RelayManager
+        def authorize(peer: Any) -> bool:
+            # Re-read per handshake: `unsloth cluster remove` in another process takes effect at once.
+            try:
+                return _registry(identity).authorize(peer, "worker") is not None
+            except Exception:
+                return False
+
+        _RELAYS = RelayManager(master, authorize)
+    return _RELAYS
+
+
+# node_id -> fingerprint of paired workers: discovery keeps only those, so fake ids cannot flood it.
+_PAIRED_FPS: Dict[str, str] = {}
+
+
+def _paired_announcement(node_id: str, fp: str) -> bool:
+    return _PAIRED_FPS.get(node_id) == fp
+
+
+DISCOVERY_SETTLE_S = 6.5
+_LISTENER_STARTED = 0.0
+# node_id -> when its verification first failed: the wait runs from then, not from the listener start.
+_UNVERIFIED: Dict[str, float] = {}
+
+
+def _sightings() -> Dict[str, Any]:
+    global _LISTENER, _LISTENER_STARTED
+    try:
+        with _LINKS_LOCK:
+            if _LISTENER is None:
+                from studio.cluster_link.discovery import Listener
+                _LISTENER = Listener(accept = _paired_announcement).start()
+                _LISTENER_STARTED = time.monotonic()
+            listener = _LISTENER
+        return listener.latest()
+    except Exception:
+        return {}
+
+
+def discovery_settle_s() -> float:
+    """How long to wait before planning."""
+    if not _UNVERIFIED or _LISTENER is None:
+        return 0.0
+    since = max(_LISTENER_STARTED, max(_UNVERIFIED.values()))
+    return min(DISCOVERY_SETTLE_S, max(0.0, DISCOVERY_SETTLE_S - (time.monotonic() - since)))
+
+
+def _sighting_candidates(node_id: str) -> List[Any]:
+    latest = _sightings()
+    listener = _LISTENER
+    if listener is not None and hasattr(listener, "candidates"):
+        try:
+            return list(listener.candidates(node_id))
+        except Exception:
+            pass
+    seen = latest.get(node_id)
+    return [seen] if seen is not None else []
+
+
+def _first_verified(
+    relays: Any, node_id: str, candidates: List[Tuple[str, int]]
+) -> Optional[Tuple[str, int, Dict[str, Any]]]:
+    for host, port in candidates:
+        try:
+            with _LINKS_LOCK:  # status reads re-ensure under it: see _link_nodes
+                relays.ensure(node_id, host, port)
+            answer = relays.status(node_id, timeout = 2.0)
+        except Exception:
+            continue
+        if isinstance(answer, dict) and answer.get("reachable", True) and not answer.get("error"):
+            return host, port, answer
+    return None
+
+
+def _local_tls_client() -> bool:
+    try:
+        from studio.cluster_link import native
+
+        if native.disabled():
+            return False
+        from core.inference import spark_serving as ss
+
+        launched, rpc = ss.llama_server_binary(), ss.rpc_server_binary()
+        if not launched or not rpc:
+            return False
+        if os.path.dirname(os.path.abspath(rpc)) != os.path.dirname(os.path.abspath(launched)):
+            return False
+        return native.binary_supports_tls(rpc)
+    except Exception:
+        return False
+
+
+def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
+    offer = status.get("native") if isinstance(status, dict) else None
+    if not isinstance(offer, dict) or not offer.get("available") or not _local_tls_client():
+        return None
+    reply = relays.native(peer.node_id)
+    if not isinstance(reply, dict) or reply.get("type") != "native_ok":
+        logger.info("cluster link: %s stays on the relay (%s)", peer.node_id, reply)
+        return None
+    if str(reply.get("fingerprint", "")).lower() != str(peer.fingerprint).lower():
+        logger.warning(
+            "cluster link: %s offered another certificate for TLS; using the relay", peer.node_id
+        )
+        relays.native_close(peer.node_id)
+        return None
+    try:
+        port = int(reply.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    return port if 0 < port < 65536 else None
+
+
+def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
+    found: List[Tuple[str, int]] = []
+    for addr in getattr(peer, "addrs", None) or []:
+        host, sep, port = str(addr).rpartition(":")
+        if sep and host and port.isdigit() and ":" not in host:
+            found.append((host, int(port)))
+        elif addr:
+            found.append((str(addr), int(getattr(peer, "agent_port", 0) or default_port)))
+    return found
+
+
+def _alongside_request(request: Any) -> bool:
+    return bool(getattr(request, "alongside", False)) or bool(
+        getattr(request, "force_alongside", False)
+    )
+
+
+def _passthrough_request(request: Any) -> bool:
+    return _alongside_request(request) or (
+        str(getattr(request, "engine", "auto") or "auto") != "auto"
+    )
+
+
+def _same_link_worker(endpoint: str, node: "Node") -> bool:
+    if node.relay and endpoint == node.relay:
+        return True
+    if endpoint.startswith("tls://"):
+        fp = endpoint[len("tls://") :].split("@", 1)[0].lower()
+        return bool(fp) and fp == str(_PAIRED_FPS.get(node.node_id, "")).lower()
+    return False
+
+
+def _revoke_native(relays: Any, node_id: str) -> None:
+    try:
+        relays.native_close(node_id)
+    except Exception:
+        pass
+    try:
+        relays.remove(node_id)
+    except Exception:
+        pass
+
+
+def _drop_stale_relays(current: set, wait: bool = True) -> None:
+    with _LINKS_LOCK:
+        stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
+    if not stale:
+        return
+    relays = _relays()
+    with _LINKS_LOCK:
+        if relays is None:  # the master identity is gone; _relays() already closed every link
+            _LINK_ENDPOINTS.clear()
+            return
+        for endpoint, _node_id in stale:
+            _LINK_ENDPOINTS.pop(endpoint, None)
+    for endpoint, node_id in stale:
+        if _NATIVE.pop(node_id, None) is not None:
+            if wait:
+                _revoke_native(relays, node_id)
+            else:
+                threading.Thread(
+                    target = _revoke_native,
+                    args = (relays, node_id),
+                    name = f"cluster-revoke-{node_id[:12]}",
+                    daemon = True,
+                ).start()
+            continue
+        try:
+            relays.remove(node_id)
+        except Exception:
+            pass
+
+
+def _link_nodes(verify: bool = True) -> List[Node]:
+    workers = _paired_workers()
+    # Before the early return: removing the LAST worker must still cut its session.
+    _drop_stale_relays({p.node_id for p in workers}, wait = verify)
+    for node_id in set(_UNVERIFIED) - {p.node_id for p in workers}:
+        _UNVERIFIED.pop(node_id, None)
+    if not workers:
+        return []
+    from studio.cluster_link import AGENT_PORT_DEFAULT
+
+    relays = _relays()
+    if relays is None:
+        return []
+    _PAIRED_FPS.clear()
+    _PAIRED_FPS.update({p.node_id: p.fingerprint for p in workers})
+    LINK_DROPPED.clear()
+    nodes = []
+    for peer in workers:
+        label = getattr(peer, "name", None) or peer.node_id
+        candidates: List[Tuple[str, int]] = []
+        for seen in _sighting_candidates(peer.node_id):
+            if seen.fp == peer.fingerprint and (seen.host, seen.agent_port) not in candidates:
+                candidates.append((seen.host, seen.agent_port))
+        for recorded in _peer_addresses(peer, AGENT_PORT_DEFAULT):
+            if recorded not in candidates:
+                candidates.append(recorded)
+        if not candidates:
+            LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
+            continue
+        verified = None
+        if verify:
+            verified = _first_verified(relays, peer.node_id, candidates)
+            if verified is None:
+                _UNVERIFIED.setdefault(peer.node_id, time.monotonic())
+            else:
+                _UNVERIFIED.pop(peer.node_id, None)
+        host, port = (verified[0], verified[1]) if verified else candidates[0]
+        try:
+            with _LINKS_LOCK:
+                if not verify:
+                    # Status reads verify nothing: keep the verified destination, or a LAN spoofer could re-point it.
+                    current = relays.destination(peer.node_id)
+                    if current is not None:
+                        host, port = current
+                endpoint = relays.ensure(peer.node_id, host, port)
+        except Exception as exc:
+            LINK_DROPPED[label] = f"relay did not start: {exc}"
+            continue
+        native_port = None
+        if verified is not None:
+            native_port = _go_native(relays, peer, verified[2])
+            if native_port is None:
+                _NATIVE.pop(peer.node_id, None)
+            else:
+                _NATIVE[peer.node_id] = native_port
+        elif not verify:
+            native_port = _NATIVE.get(peer.node_id)
+        node = Node(
+            host = host,
+            rpc_port = port,
+            node_id = peer.node_id,
+            transport = "native_tls" if native_port else "link",
+            relay = endpoint,
+            name = getattr(peer, "name", None),
+            native_port = native_port or 0,
+            tls_fp = str(peer.fingerprint).lower() if native_port else None,
+        )
+        with _LINKS_LOCK:
+            _LINK_ENDPOINTS[node.endpoint] = peer.node_id
+            for old in [
+                e for e, n in _LINK_ENDPOINTS.items() if n == peer.node_id and e != node.endpoint
+            ]:
+                _LINK_ENDPOINTS.pop(old, None)
+        nodes.append(node)
+    if not nodes:
+        raise ClusterConfigError(
+            "no paired worker can be reached: "
+            + "; ".join(f"{k}: {v}" for k, v in LINK_DROPPED.items())
+        )
+    return _dedupe(nodes)
+
+
+def _rpc_endpoints(argv: Sequence[str]) -> List[str]:
+    tokens = [str(a) for a in argv]
+    found: List[str] = []
+    for i, token in enumerate(tokens):
+        if token == "--rpc" and i + 1 < len(tokens):
+            found += tokens[i + 1].split(",")
+        elif token.startswith("--rpc="):
+            found += token.split("=", 1)[1].split(",")
+    found += (os.environ.get("LLAMA_ARG_RPC") or "").split(",")
+    return [e.strip() for e in found if e.strip()]
+
+
+def secure_rpc_env(argv: Sequence[str]) -> Dict[str, str]:
+    """GGML_RPC_NO_RDMA for a llama-server that dials a link relay."""
+    endpoints = _rpc_endpoints(argv)
+    with _LINKS_LOCK:
+        used = [e for e in endpoints if e in _LINK_ENDPOINTS]
+    if not used:
+        return {}
+    from studio.cluster_link import SECURE_RPC_ENV
+
+    env = dict(SECURE_RPC_ENV)
+    if any(e.startswith("tls://") for e in used):
+        identity = _link_identity()
+        master = identity.master_identity(create = False) if identity is not None else None
+        if master is None:
+            raise ClusterConfigError(
+                "a native TLS worker is planned but this machine is not its master"
+            )
+        env.update(
+            {
+                "GGML_RPC_TLS_CERT": master.certfile,
+                "GGML_RPC_TLS_KEY": master.keyfile,
+                "GGML_RPC_TLS_CA": master.rootfile,
+            }
+        )
+    return env
+
+
+def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The paired worker's agent status over mTLS, or (None, why it failed)."""
+    try:
+        answer = _relays().status(node_id, timeout = timeout)
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(answer, dict):
+        return None, "no status"
+    if answer.get("reachable") is False or answer.get("type") == "error":
+        return None, str(answer.get("error") or "unreachable over mutual TLS")
+    if answer.get("rpc_up") is False:
+        return None, "its ggml-rpc-server is not running"
+    return answer, ""
+
+
+def _stop_links() -> None:
+    global _RELAYS, _LISTENER
+    with _LINKS_LOCK:
+        things, _RELAYS, _LISTENER = (_RELAYS, _LISTENER), None, None
+    for thing in things:
+        try:
+            if thing is not None:
+                thing.stop()
+        except Exception:
+            pass
+    _UNVERIFIED.clear()
+    with _LINKS_LOCK:
+        _LINK_ENDPOINTS.clear()
+    _NATIVE.clear()
+    LINK_DROPPED.clear()
 
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
@@ -1028,9 +1466,13 @@ def list_devices(
         env = LlamaCppBackend._llama_server_env_for_binary(binary)
     except Exception:
         env = None
+    argv = [binary, *(["--rpc", ",".join(endpoints)] if endpoints else []), "--list-devices"]
+    secure = secure_rpc_env(argv)
+    if secure:
+        env = {**(env if env is not None else os.environ), **secure}
     try:
         proc = subprocess.run(
-            [binary, *(["--rpc", ",".join(endpoints)] if endpoints else []), "--list-devices"],
+            argv,
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -1307,6 +1749,7 @@ class ClusterServing:
         # The groups refuse to start without a positive -c.
         self._explicit_ctx: bool = False
         self.pipeline_groups_reason: Optional[str] = None
+        self._link_status: Dict[str, Dict[str, Any]] = {}
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -1315,9 +1758,9 @@ class ClusterServing:
         except Exception:
             return False
 
-    def refresh_nodes(self) -> List[Node]:
+    def refresh_nodes(self, verify: bool = True) -> List[Node]:
         try:
-            self.nodes = load_nodes()
+            self.nodes = load_nodes(verify)
             self.config_error = ""
         except ClusterConfigError as exc:
             self.config_error = str(exc)
@@ -1403,17 +1846,58 @@ class ClusterServing:
             or not getattr(self._backend, "is_loaded", False)
         ):
             return {}
-        held = [
-            e for e in endpoints if e in self._seen and any(d.endpoint == e for d in served.devices)
+        links = {n.endpoint: n for n in self.nodes if n.link}
+        served_at = [
+            e for e in dict.fromkeys(d.endpoint for d in served.devices) if e in self._seen
         ]
-        answers = await asyncio.gather(
-            *(asyncio.to_thread(list_devices, binary, [e], BUSY_PROBE_TIMEOUT_S) for e in held)
-        )
+
+        def served_as(e: str) -> Optional[str]:
+            if e in served_at:
+                return e
+            node = links.get(e)
+            return next((old for old in served_at if node and _same_link_worker(old, node)), None)
+
+        held_as = {e: served_as(e) for e in endpoints}
+        held = [e for e in endpoints if held_as[e]]
+
+        async def silent(e: str) -> bool:
+            if e in links:
+                known = self._link_status.get(e)
+                if known is not None and "busy" in known:
+                    return bool(known["busy"])
+                try:
+                    return bool(await asyncio.to_thread(_relays().busy, links[e].node_id))
+                except Exception:
+                    return False
+            devs, _err = await asyncio.to_thread(list_devices, binary, [e], BUSY_PROBE_TIMEOUT_S)
+            return not any(d.endpoint == e for d in devs)
+
+        answers = await asyncio.gather(*(silent(e) for e in held))
         return {
-            e: self._seen[e]
-            for e, (devs, _err) in zip(held, answers)
-            if not any(d.endpoint == e for d in devs)
+            e: [replace(d, endpoint = e) for d in self._seen[held_as[e]]]
+            for e, quiet in zip(held, answers)
+            if quiet
         }
+
+    async def _reachable(self, node: Node) -> bool:
+        from core.inference import spark_serving as ss
+
+        if not node.link:
+            return await ss.wait_for_port(node.host, node.rpc_port, REACH_TIMEOUT_S)
+        answer, why = await asyncio.to_thread(link_status, node.node_id, REACH_TIMEOUT_S)
+        if answer is None:
+            self._link_status.pop(node.endpoint, None)
+            LINK_DROPPED[node.name or node.node_id] = why
+            return False
+        self._link_status[node.endpoint] = answer
+        identity = _link_identity()
+        try:
+            await asyncio.to_thread(
+                lambda: _record_address(identity, node.node_id, node.host, node.rpc_port)
+            )
+        except Exception as exc:
+            logger.info("cluster link: could not record %s's address: %s", node.node_id, exc)
+        return True
 
     async def before_load(
         self,
@@ -1425,6 +1909,11 @@ class ClusterServing:
     ) -> Any:
         from core.inference import spark_serving as ss
 
+        if _paired_workers() and not _passthrough_request(request):
+            await asyncio.to_thread(self.refresh_nodes)
+            settle = discovery_settle_s()
+            if settle:
+                await asyncio.sleep(settle)
         try:
             out = await self._plan_load(
                 request,
@@ -1466,12 +1955,8 @@ class ClusterServing:
         self._cancel_event = cancel_event
         self.in_flight = True
         self.pipeline_groups_reason = None
-        self._alongside = bool(getattr(request, "alongside", False)) or bool(
-            getattr(request, "force_alongside", False)
-        )
-        self._passthrough = self._alongside or (
-            str(getattr(request, "engine", "auto") or "auto") != "auto"
-        )
+        self._alongside = _alongside_request(request)
+        self._passthrough = _passthrough_request(request)
         if self._passthrough:
             return request
         self.settle_internal_load()
@@ -1491,8 +1976,8 @@ class ClusterServing:
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         self.plan, self.block = None, []
         self._down = set()
-        if not self.refresh_nodes() or self.config_error:
-            if self.config_error and self._pre_load[3]:
+        if not await asyncio.to_thread(self.refresh_nodes) or self.config_error:
+            if self.config_error and self._pre_load[3] and not _paired_only():
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
                 if self._requested_model != self._served_model:
@@ -1523,6 +2008,8 @@ class ClusterServing:
                     effective += self.block
                 return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
+            if self._pre_load[3] and _paired_only():
+                self.reason = "no paired worker is left for the last split; serving on this machine"
             return request
         explicit = getattr(request, "llama_extra_args", None)
         effective = list(explicit if explicit is not None else (inherited_extra_args or []))
@@ -1666,9 +2153,7 @@ class ClusterServing:
             return request
         # One unreachable worker aborts llama.cpp's whole probe, so plan with the ones that answer.
         live = [] if local_only else [n for n in self.nodes if n.endpoint not in failed]
-        reachable = await asyncio.gather(
-            *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in live)
-        )
+        reachable = await asyncio.gather(*(self._reachable(n) for n in live))
         down = list(failed) + [n.endpoint for n, ok in zip(live, reachable) if not ok]
         endpoints = [n.endpoint for n, ok in zip(live, reachable) if ok]
         order = list(endpoints)
@@ -1775,6 +2260,10 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
+            for n in self.nodes:
+                # A live relay to a stopped worker passes _reachable; the probe is what finds it gone.
+                if n.link and n.endpoint in missing:
+                    LINK_DROPPED.setdefault(n.name or n.node_id, "its rpc-server did not answer")
         one_kv = float(kv_bytes or 0)
 
         def group_kv(groups: int) -> float:
@@ -1911,7 +2400,9 @@ class ClusterServing:
             self.topology, self.reason, self.plan, self.block = self._pre_load
             self._pre_load, self.in_flight = None, False
             self.last_error = plan.reason
-            raise ss.SparkLoadDoesNotFit(plan.reason)
+            refusal = ss.SparkLoadDoesNotFit(plan.reason)
+            refusal.cluster_plan = plan  # cluster_ux words the /load refusal from it
+            raise refusal
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
             self.block = []
@@ -2469,9 +2960,24 @@ class ClusterServing:
         self.topology, self.block = "single", []
         self._backend, self._resident = None, {}
 
-    def status(self) -> Dict[str, Any]:
+    def _status_nodes(self) -> List[Node]:
         if not self.nodes and not self.config_error:
-            self.refresh_nodes()
+            return self.refresh_nodes(verify = False)
+        if not _paired_only():
+            return self.nodes
+        dropped = dict(LINK_DROPPED)
+        try:
+            nodes = load_nodes(verify = False)
+        except ClusterConfigError:
+            nodes = []
+        paired = {n.name or n.node_id for n in nodes} | set(LINK_DROPPED)
+        for label, why in dropped.items():
+            if label in paired:
+                LINK_DROPPED.setdefault(label, why)
+        return nodes
+
+    def status(self) -> Dict[str, Any]:
+        nodes = self._status_nodes()
         return {
             "enabled": True,
             "mode": "cluster",
@@ -2483,15 +2989,18 @@ class ClusterServing:
                     "host": n.host,
                     "rpc_port": n.rpc_port,
                     "managed": n.managed,
+                    "transport": n.transport,
+                    "name": n.name,
                     "worker": (
                         self.workers[n.endpoint].snapshot() if n.endpoint in self.workers else None
                     ),
                 }
-                for n in self.nodes
+                for n in nodes
             ],
             "plan": self.plan.snapshot() if self.plan is not None else None,
             "split_args": list(self.block) or None,
             "last_error": self.last_error,
+            "link_dropped": dict(LINK_DROPPED) or None,
         }
 
 
@@ -2578,4 +3087,5 @@ def reset_for_tests() -> None:
     global _STATE
     _STATE = None
     _MANAGED_BLOCKS.clear()
+    _stop_links()
     _HOST_IDENTITIES.clear()

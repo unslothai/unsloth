@@ -747,6 +747,9 @@ export interface LoadProgressResponse {
   bytes_loaded: number;
   bytes_total: number;
   fraction: number;
+  /** What the load is doing when the byte count cannot say it (planning or sending layers to paired
+   *  cluster workers); absent on older backends and null otherwise. */
+  message?: string | null;
 }
 
 /** Fetch the active GGUF load's mmap/upload progress. Complements the download progress endpoints

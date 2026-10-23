@@ -255,6 +255,8 @@ export interface LoadModelResponse {
    *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
   carveout_advice?: unknown;
   memory_warning?: string | null;
+  /** Which machines serve a model split across paired cluster workers; absent or null otherwise. */
+  cluster_summary?: string | null;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */

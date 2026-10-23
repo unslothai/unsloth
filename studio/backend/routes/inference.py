@@ -327,6 +327,20 @@ _LOST_CONNECTION_MSG = (
 )
 
 
+def _cluster_ux(name: str, *args: Any, **kwargs: Any) -> Any:
+    """``core.inference.cluster_ux.<name>(...)``: cluster wording for the user, or None if it fails."""
+    try:
+        from core.inference import cluster_ux
+        return getattr(cluster_ux, name)(*args, **kwargs)
+    except Exception:
+        return None
+
+
+def _lost_connection_msg() -> str:
+    """The lost-connection error, naming the paired workers when the model was split across them."""
+    return _cluster_ux("lost_connection_message") or _LOST_CONNECTION_MSG
+
+
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
@@ -358,7 +372,7 @@ def _friendly_error(exc: Exception) -> str:
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
     # unreachable -- crashed or still coming up.
     if isinstance(exc, httpx.RequestError):
-        return _LOST_CONNECTION_MSG
+        return _lost_connection_msg()
     msg = str(exc)
     m = _OVERSIZE_TOKENS_RE.search(msg)
     if m:
@@ -366,7 +380,7 @@ def _friendly_error(exc: Exception) -> str:
         # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
         return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
     if "Lost connection to llama-server" in msg:
-        return _LOST_CONNECTION_MSG
+        return _lost_connection_msg()
     template_msg = _template_raise_message(msg, _loaded_chat_template())
     if template_msg:
         return f"An internal error occurred: {template_msg}"
@@ -18661,6 +18675,49 @@ def _with_token_rejected_warning(response, token_rejections):
     return response.model_copy(update = {"memory_warning": warning})
 
 
+def _cluster_refusal_detail(exc: BaseException) -> str:
+    """A cluster planner refusal in words a user can act on; other refusals keep their text."""
+    return _cluster_ux("does_not_fit_detail", exc) or str(exc)
+
+
+def _cluster_dropped_notice() -> Optional[str]:
+    """Right after planning: the paired workers this load leaves out, or None."""
+    return _cluster_ux("dropped_worker_notice")
+
+
+def _with_load_warning(response, warning: Optional[str]):
+    """Append a notice to a LoadResponse's warning, the field the client shows after a load."""
+    if not warning or not isinstance(response, LoadResponse):
+        return response
+    existing = response.memory_warning
+    if existing and warning in existing:
+        return response
+    return response.model_copy(
+        update = {"memory_warning": " ".join(([existing] if existing else []) + [warning])}
+    )
+
+
+def _with_cluster_summary(response):
+    """Name the machines a split load landed on, for the loaded toast."""
+    if not isinstance(response, LoadResponse):
+        return response
+    summary = _cluster_ux("split_summary")
+    return response.model_copy(update = {"cluster_summary": summary}) if summary else response
+
+
+def _with_cluster_notice_detail(exc: HTTPException, notice: Optional[str]) -> HTTPException:
+    """A failed load that left out an unreachable worker says so: it may be why the load failed."""
+    if (
+        not notice
+        or exc.status_code in (401, 403, 404, 409)  # refused or cancelled, not a failed load
+        or not isinstance(exc.detail, str)
+        or notice in exc.detail
+    ):
+        return exc
+    exc.detail = f"{exc.detail.rstrip()} {notice}" if exc.detail.strip() else notice
+    return exc
+
+
 def _remember_hub_access_warning(response, token_rejections) -> None:
     """Keep a GGUF load's Hub notice for /status, whose warning the client re-shows after a load."""
     if isinstance(response, LoadResponse) and response.is_gguf:
@@ -18670,7 +18727,11 @@ def _remember_hub_access_warning(response, token_rejections) -> None:
 
 def _status_load_warning(llama_backend) -> Optional[str]:
     """The running GGUF's load warning as its load response carried it."""
-    notices = (llama_backend.last_load_warning, getattr(llama_backend, "hub_access_warning", None))
+    notices = (
+        llama_backend.last_load_warning,
+        getattr(llama_backend, "hub_access_warning", None),
+        getattr(llama_backend, "cluster_notice", None),
+    )
     return " ".join(notice for notice in notices if notice) or None
 
 
@@ -18747,7 +18808,10 @@ async def _run_tracked_load_model_impl(
             )
         except spark_serving.SparkLoadDoesNotFit as exc:
             logger.warning("inference.spark_load_does_not_fit: %s", exc)
-            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+            raise HTTPException(
+                status_code = 400, detail = redact_native_paths(_cluster_refusal_detail(exc))
+            )
+        cluster_notice = _cluster_dropped_notice()
         warnings_token = _load_warnings_reach_user.set(True)
         try:
             with collecting_hub_token_rejections() as token_rejections:
@@ -18760,11 +18824,18 @@ async def _run_tracked_load_model_impl(
                     load_cancel_event = attempt.cancel_event,
                     spark_planned = True,
                 )
+        except HTTPException as exc:
+            await spark_serving.load_failed()
+            raise _with_cluster_notice_detail(exc, cluster_notice)
         except BaseException:
             await spark_serving.load_failed()
             raise
         finally:
             _load_warnings_reach_user.reset(warnings_token)
+        response = _with_load_warning(response, cluster_notice)
+        if isinstance(response, LoadResponse) and response.is_gguf:
+            # /status re-shows the load warning after a load; without this it clears the notice.
+            get_llama_cpp_backend().cluster_notice = cluster_notice
         if await spark_serving.after_load(
             get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
         ):
@@ -18774,6 +18845,8 @@ async def _run_tracked_load_model_impl(
             await asyncio.to_thread(get_llama_cpp_backend().unload_model)
             note_model_unloaded()
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        # After after_load: it drops a split the launched server does not carry.
+        response = _with_cluster_summary(response)
         response = _with_token_rejected_warning(response, token_rejections)
         _remember_hub_access_warning(response, token_rejections)
         return response
@@ -24008,6 +24081,13 @@ def _reset_load_progress_step():
         _last_load_progress_step = -1
 
 
+def _cluster_load_message(progress: Optional[dict]) -> Optional[str]:
+    """What a load across paired workers is doing, for the stretches the byte count cannot show."""
+    if progress is not None and progress.get("phase") == "ready":
+        return None
+    return _cluster_ux("load_progress_message", llama_started = progress is not None)
+
+
 @router.get("/load-progress", response_model = LoadProgressResponse)
 async def get_load_progress(current_subject: str = Depends(get_current_subject)):
     """
@@ -24031,9 +24111,10 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
             return LoadProgressResponse(phase = managed.phase)
         llama_backend = loading[0].llama if loading else get_llama_cpp_backend()
         progress = llama_backend.load_progress()
+        message = _cluster_load_message(progress)
         if progress is None:
-            return LoadProgressResponse()
-        resp = LoadProgressResponse(**progress)
+            return LoadProgressResponse(message = message)
+        resp = LoadProgressResponse(**progress, message = message)
         _log_load_progress_step(resp.fraction, resp.phase)
         return resp
     except Exception as e:
