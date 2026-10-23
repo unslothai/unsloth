@@ -730,8 +730,25 @@ def torch_cuda_compute_capability(
     return result[0] if result else None
 
 
-def _torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
-    """Capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any)."""
+def _torch_cuda_capabilities(
+    ordinal: Optional[int], *, timeout_s: Optional[float] = None
+) -> list[tuple[int, int]]:
+    """Capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any). Bounded like
+    torch_cuda_compute_capability: a stalled driver call reads as unknown (keeps MMQ), not a hung load."""
+    import threading
+
+    result: list = []
+    worker = threading.Thread(
+        target = lambda: result.append(_read_torch_cuda_capabilities(ordinal)),
+        daemon = True,
+        name = "sd-cpp-torch-ccs",
+    )
+    worker.start()
+    worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
+    return result[0] if result else []
+
+
+def _read_torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
     try:
         import torch
 
@@ -743,11 +760,32 @@ def _torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
         return []
 
 
-def _sd_cpp_quant_cublas_env(ordinal: Optional[int], diffusion_model: Optional[str]) -> dict[str, str]:
-    weight_types = sd_cpp_args_mod.gguf_quantized_weight_types(diffusion_model)
+def _sd_cpp_quant_cublas_env(
+    ordinal: Optional[int], weight_types: Optional[frozenset[str]]
+) -> dict[str, str]:
     if not weight_types or not weight_types <= sd_cpp_args_mod.QUANT_CUBLAS_WEIGHT_TYPES:
         return {}
-    return sd_cpp_args_mod.quant_cublas_env(_torch_cuda_capabilities(ordinal), weight_types = weight_types)
+    return sd_cpp_args_mod.quant_cublas_env(
+        _torch_cuda_capabilities(ordinal), weight_types = weight_types
+    )
+
+
+def _sd_cpp_spawn_env(
+    off_torch: Any,
+    device: str,
+    ordinal: Optional[int],
+    offload: "tuple[str, ...] | list[str]",
+    pinned: "tuple[str, ...] | list[str]",
+    weight_types: Any,
+) -> Optional[dict[str, str]]:
+    """The child env for the FINAL placement and argv. The ordinal counts only when the argv carries its pin;
+    without one sd.cpp picks its own default card, so every visible card must qualify."""
+    if off_torch is not None:
+        return off_torch.child_env()
+    if device != "cuda":
+        return None
+    pin_applied = len(pinned) > len(offload)
+    return _sd_cpp_quant_cublas_env(ordinal if pin_applied else None, weight_types()) or None
 
 
 def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
@@ -3593,8 +3631,11 @@ class SdCppDiffusionBackend:
 
             device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
-            if device == "cuda" and off_torch is None:
-                spawn_env = {**(spawn_env or {}), **_sd_cpp_quant_cublas_env(gpu_ordinal, paths.get("diffusion_model"))} or None
+
+            @functools.lru_cache(maxsize = 1)
+            def _diffusion_weight_types() -> Optional[frozenset[str]]:
+                return sd_cpp_args_mod.gguf_quantized_weight_types(paths.get("diffusion_model"))
+
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
@@ -3718,12 +3759,21 @@ class SdCppDiffusionBackend:
                     # install that later overwrites the executable underneath the live server.
                     started_ok = False
                     try:
+                        server_offload = _offload_with_device_pin_impl(
+                            offload, server_binary, _ordinal()
+                        )
+                        spawn_env = _sd_cpp_spawn_env(
+                            off_torch,
+                            device,
+                            _ordinal(),
+                            offload,
+                            server_offload,
+                            _diffusion_weight_types,
+                        )
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = _offload_with_device_pin_impl(
-                                offload, server_binary, _ordinal()
-                            ),
+                            offload = server_offload,
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
@@ -3801,6 +3851,15 @@ class SdCppDiffusionBackend:
                         server_binary if mode == "server" else getattr(engine, "binary", None),
                         _ordinal(),
                     )
+                )
+                # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
+                spawn_env = _sd_cpp_spawn_env(
+                    off_torch,
+                    device,
+                    _ordinal(),
+                    offload,
+                    committed_offload_flags,
+                    _diffusion_weight_types,
                 )
                 state = _SdState(
                     repo_id = repo_id,
