@@ -691,7 +691,7 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="secondary" data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
             <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             New project
           </Button>
