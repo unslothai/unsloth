@@ -521,9 +521,6 @@ def test_the_image_loader_syncs_every_decoder_call():
     assert len(calls) == 1
 
 
-# ── VAE sync ──────────────────────────────────────────────────────────
-
-
 def _target(device: str) -> dd.DiffusionDeviceTarget:
     return dd.DiffusionDeviceTarget(
         device = device,
@@ -562,7 +559,6 @@ def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
 
 
 def _mps_torch() -> types.ModuleType:
-    """torch whose mps backend counts synchronize() calls."""
     torch = types.ModuleType("torch")
     torch.syncs = 0
 
