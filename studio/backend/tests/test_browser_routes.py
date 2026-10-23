@@ -372,6 +372,26 @@ def test_custom_elements_named_like_raw_text_ones_are_not_inert():
     assert "<base" not in html and "refresh" not in html
 
 
+@pytest.mark.parametrize(
+    "inside",
+    [
+        '<script>const s = "<template>";</script>',
+        "<!-- <template> -->",
+        "<textarea><template></textarea>",
+        # A real nested template still nests.
+        "<template><base href='https://evil.example/'></template>",
+    ],
+)
+def test_a_template_ends_where_the_parser_ends_it(inside):
+    page = (
+        f"<template>{inside}</template>"
+        '<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    )
+    _, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+
+
 def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     from fastapi import HTTPException
 

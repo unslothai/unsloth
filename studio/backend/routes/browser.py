@@ -124,7 +124,13 @@ _INERT_START_RE = re.compile(
     + _TAG_BODY,
     re.IGNORECASE,
 )
-_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
+# Inside a template: its close, a nested one, or what holds text (a comment, a raw-text element).
+_TEMPLATE_SCAN_RE = re.compile(
+    r"<!--|</template(?=[\s/>])"
+    r"|<(template|script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)(?=[\s/>])"
+    + _TAG_BODY,
+    re.IGNORECASE,
+)
 _CLOSING_TAG_RES = {
     name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
     for name in (
@@ -1849,12 +1855,7 @@ def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
             if tags:
                 spans.append((match.start(), end))
         elif match.group(1).lower() == "template":
-            depth, close = 1, None
-            for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
-                depth += -1 if tag.group(1) else 1
-                if depth == 0:
-                    close = tag
-                    break
+            close = _template_close(page, match.end())
             end = close.end() if close else len(page)
             spans.append((match.end(), close.start() if close else len(page)))
         else:
@@ -1866,6 +1867,37 @@ def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
             spans.append((match.end(), close.start() if close else len(page)))
         at = max(end, match.end())
     return spans
+
+
+def _template_close(page: str, start: int) -> "Optional[re.Match[str]]":
+    """The ``</template`` closing the template whose content starts at ``start``, or None. A
+    ``<template>`` written inside a comment or a script string is text, not a nested template."""
+    depth = 1
+    at = start
+    while match := _TEMPLATE_SCAN_RE.search(page, at):
+        text = match.group(0)
+        name = (match.group(1) or "").lower()
+        if text.startswith("<!--"):
+            close = page.find("-->", match.end())
+            if close < 0:
+                return None
+            at = close + 3
+        elif text.lower().startswith("</template"):
+            depth -= 1
+            if depth == 0:
+                return match
+            at = match.end()
+        elif name == "template":
+            depth += 1
+            at = match.end()
+        elif name == "plaintext":
+            return None
+        else:
+            close = _CLOSING_TAG_RES[name].search(page, match.end())
+            if not close:
+                return None
+            at = close.end()
+    return None
 
 
 def _open_tag(script: str) -> str:
