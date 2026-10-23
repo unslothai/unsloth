@@ -11936,7 +11936,9 @@ class VideoBackend:
                         dtype = getattr(state, "dtype", None),
                         attention_backend = getattr(state, "attention_backend", None),
                         speed_mode = getattr(state, "speed_mode", None),
-                        speed_optims = tuple(getattr(state, "speed_optims", ()) or ()),
+                        speed_optims = video_stream_residency.live_speed_optims(
+                            state.pipe, getattr(state, "speed_optims", ())
+                        ),
                         transformer_cache = request_cache_mode,
                         vae_tiling = getattr(state, "vae_tiling", None),
                         memory_mode = getattr(state, "memory_mode", None),
