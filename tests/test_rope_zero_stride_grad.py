@@ -123,3 +123,30 @@ def test_long_indexing_bounds_the_largest_offset():
     # 4 elements, but the last one sits 2^31 + 1 elements past the first.
     assert long_indexing(torch.empty(2**31 + 2, **meta).as_strided((2, 2), (2**31, 1)))
     assert not long_indexing(torch.empty(64, 128, **meta).t(), torch.empty(0, 4096, **meta))
+
+
+def test_rope_qk_backward_keeps_bshd_layout():
+    from unsloth.kernels.rope_embedding import Fast_RoPE_Embedding_QK
+
+    torch.manual_seed(2)
+    b, s, hq, hk, d = 2, 32, 8, 2, 64
+    cos = torch.randn(s, d // 2, device = "cuda", dtype = torch.bfloat16)
+    sin = torch.randn(s, d // 2, device = "cuda", dtype = torch.bfloat16)
+    idx = torch.arange(s, device = "cuda", dtype = torch.int32).expand(b, s).contiguous()
+    q_bshd = torch.randn(b, s, hq * d, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    k_bshd = torch.randn(b, s, hk * d, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    q_in = q_bshd.view(b, s, hq, d).transpose(1, 2)
+    k_in = k_bshd.view(b, s, hk, d).transpose(1, 2)
+
+    q_out, k_out = Fast_RoPE_Embedding_QK.apply(q_in, k_in, cos, sin, idx)
+    assert q_out.transpose(1, 2).is_contiguous()
+    assert k_out.transpose(1, 2).is_contiguous()
+
+    gq = torch.randn(b, s, hq, d, device = "cuda", dtype = torch.bfloat16).transpose(1, 2)
+    gk = torch.randn(b, s, hk, d, device = "cuda", dtype = torch.bfloat16).transpose(1, 2)
+    gq_before, gk_before = gq.clone(), gk.clone()
+    dq, dk = torch.autograd.grad((q_out, k_out), (q_in, k_in), (gq, gk))
+    assert dq.transpose(1, 2).is_contiguous()
+    assert dk.transpose(1, 2).is_contiguous()
+    assert torch.equal(gq, gq_before)
+    assert torch.equal(gk, gk_before)
