@@ -49,7 +49,9 @@ def _run(native, counts, reentrant, kill_switch):
     per_step, grads = [], None
     for step in range(STEPS):
         before = counts["ag"]
-        ids = torch.randint(3, 1000, (2, 16), generator = torch.Generator().manual_seed(10 * rank + step))
+        ids = torch.randint(
+            3, 1000, (2, 16), generator = torch.Generator().manual_seed(10 * rank + step)
+        )
         model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
         per_step.append(counts["ag"] - before)
         if step == 0:
@@ -60,8 +62,17 @@ def _run(native, counts, reentrant, kill_switch):
             }
         opt.step()
         opt.zero_grad(set_to_none = True)
-    params = {n: (p.full_tensor() if isinstance(p, DTensor) else p).detach().clone() for n, p in model.named_parameters()}
-    return {"per_step": per_step, "grads": grads, "params": params, "fits": layout["fits"], "prefetch": layout["prefetch"]}
+    params = {
+        n: (p.full_tensor() if isinstance(p, DTensor) else p).detach().clone()
+        for n, p in model.named_parameters()
+    }
+    return {
+        "per_step": per_step,
+        "grads": grads,
+        "params": params,
+        "fits": layout["fits"],
+        "prefetch": layout["prefetch"],
+    }
 
 
 def _worker(rank, world, port, out, path):
@@ -88,7 +99,6 @@ def _worker(rank, world, port, out, path):
             out.put("ok")
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         dist.destroy_process_group()
@@ -102,13 +112,23 @@ def test_recompute_does_not_refire_forward_prefetch(tmp_path):
     res = torch.load(path)
     for reentrant in (False, True):
         base, head = res[(reentrant, True)], res[(reentrant, False)]
-        print("RECOMPUTE_PREFETCH", "reentrant" if reentrant else "nonreentrant", "base", base["per_step"], "head", head["per_step"])
+        print(
+            "RECOMPUTE_PREFETCH",
+            "reentrant" if reentrant else "nonreentrant",
+            "base",
+            base["per_step"],
+            "head",
+            head["per_step"],
+        )
         assert base["fits"] and base["prefetch"], base
         if reentrant:
             # Reentrant checkpointing runs the forward under no_grad (no FSDP pre-backward hook), so the
             # recompute's pre-forward runs in full and prefetches the block after it. The kill switch
             # reproduces that waste (the counter can fail); the default removes it.
-            assert all(h < b for h, b in zip(head["per_step"], base["per_step"])), (base["per_step"], head["per_step"])
+            assert all(h < b for h, b in zip(head["per_step"], base["per_step"])), (
+                base["per_step"],
+                head["per_step"],
+            )
         else:
             # Non-reentrant: FSDP's pre-forward already returns early in PRE_BACKWARD; nothing to remove.
             assert head["per_step"] == base["per_step"], (base["per_step"], head["per_step"])

@@ -57,7 +57,9 @@ def _run(native, perf, counts, layout, mode):
     per_micro = []
     for i in range(MICRO):
         before = dict(counts)
-        ids = torch.randint(3, 1000, (2, 16), generator = torch.Generator().manual_seed(100 * rank + i))
+        ids = torch.randint(
+            3, 1000, (2, 16), generator = torch.Generator().manual_seed(100 * rank + i)
+        )
         ctx = native._no_grad_sync(model) if i < MICRO - 1 else torch.enable_grad()
         with ctx:
             model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
@@ -67,7 +69,12 @@ def _run(native, perf, counts, layout, mode):
         for n, p in model.named_parameters()
         if p.requires_grad and p.grad is not None
     }
-    return {"units": units, "per_micro": per_micro, "grads": grads, "fits": model._unsloth_fsdp2_layout["fits"]}
+    return {
+        "units": units,
+        "per_micro": per_micro,
+        "grads": grads,
+        "fits": model._unsloth_fsdp2_layout["fits"],
+    }
 
 
 def _worker(rank, world, port, out, path):
@@ -98,7 +105,6 @@ def _worker(rank, world, port, out, path):
             out.put("ok")
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         dist.destroy_process_group()
@@ -139,7 +145,9 @@ def _check(layout, res):
     # each: one reduce per unit per micro-batch.
     assert [m["rs"] for m in each] == [units] * MICRO, each
     # auto (the default): defer for the fit layout, skip for the sharded one.
-    assert res["auto"]["per_micro"] == (defer if layout == "lora" else skip), res["auto"]["per_micro"]
+    assert res["auto"]["per_micro"] == (defer if layout == "lora" else skip), res["auto"][
+        "per_micro"
+    ]
     g_skip, g_defer, g_each = (res[m]["grads"] for m in ("skip", "defer", "each"))
     assert g_skip and g_skip.keys() == g_defer.keys() == g_each.keys()
     for n in g_skip:

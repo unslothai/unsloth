@@ -243,7 +243,11 @@ def _skip_forward_prefetch_in_backward(unit, ahead):
     micro-batch). Clear the forward prefetch while autograd is running a backward and restore it for
     the next real forward. Public FSDPModule API only; `UNSLOTH_FSDP2_RECOMPUTE_PREFETCH=1` keeps torch's
     behaviour."""
-    if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_PREFETCH", "0").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_PREFETCH", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         return
     if getattr(unit, "_unsloth_recompute_prefetch_hooked", False):
         unit._unsloth_forward_prefetch = list(ahead)
