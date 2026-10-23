@@ -27,8 +27,8 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# (stored dtype name the load converts to, component dirs loaded at their stored dtype) per open scope
-_rules: list[tuple[str, frozenset[str]]] = []
+# per open scope: (dtype name the load converts to, or None for the fp32-only video rule; component dirs it keeps)
+_rules: list[tuple[Optional[str], frozenset[str]]] = []
 
 
 def pread_wanted() -> bool:
@@ -77,11 +77,12 @@ def _backend_for(filename: Any) -> Optional[str]:
     stored = {k: v for k, v in _safetensors_bytes_by_dtype(path).items() if k != "kept"}
     if not stored:
         return None
-    if stored.get("float32", 0) * 2 > sum(stored.values()):
-        return "pread"
     dominant = max(stored.items(), key = lambda kv: kv[1])[0]
-    if dominant in ("bfloat16", "float16") and any(dominant != to for to, _ in rules):
-        return "pread"
+    for to, _ in rules:
+        if to is None and stored.get("float32", 0) * 2 > sum(stored.values()):
+            return "pread"
+        if to is not None and dominant in ("bfloat16", "float16", "float32") and dominant != to:
+            return "pread"
     return None
 
 
@@ -104,7 +105,10 @@ def _with_pread(safe_open: Any) -> Any:
         choice = _backend_for(filename)
         if choice == "pread" and kwargs.get("backend") in (None, "mmap"):
             kwargs["backend"] = "pread"
-        elif choice != "pread" and _core_pread_below(safe_open):
+        elif choice == "keep" and kwargs.get("backend") == "pread":
+            # transformers >= 5.17 asks for pread on Windows itself; the small-host route needs this shard paged
+            kwargs["backend"] = "mmap"
+        if choice != "pread" and _core_pread_below(safe_open):
             # inside a media load this scope decides: shards it leaves on mmap stay there under unsloth's patch too
             kwargs["_unsloth_keep_mmap"] = True
         return safe_open(filename, *args, **kwargs)
@@ -133,9 +137,9 @@ def pread_safetensors(convert_to: Any = None, keep: Iterable[str] = ()) -> Itera
                     installed = True
                 if installed:
                     _depth += 1
-                    if convert_to is not None:
-                        rule = (str(convert_to).replace("torch.", ""), frozenset(keep))
-                        _rules.append(rule)
+                    to = None if convert_to is None else str(convert_to).replace("torch.", "")
+                    rule = (to, frozenset(keep))
+                    _rules.append(rule)
         except Exception:  # noqa: BLE001 - the mmap backend still loads wherever commit allows
             installed = False
     try:

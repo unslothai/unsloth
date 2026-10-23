@@ -216,6 +216,11 @@ def test_video_load_runs_inside_the_scope():
         (torch.bfloat16, torch.float16, ("text_encoder",), None),
         (torch.int8, torch.float16, (), None),
         (torch.bfloat16, None, (), None),
+        # fp32 loaded at fp32 (CPU fallback) is the loaded weight; fp32 converted down reads through pread
+        (torch.float32, torch.float32, (), None),
+        (torch.float32, torch.bfloat16, (), "pread"),
+        # the video scope (no target dtype) keeps its fp32-only rule
+        (torch.float32, None, (), "pread"),
     ],
 )
 def test_converted_shard_backend_choice(monkeypatch, tmp_path, stored, convert_to, keep, expected):
@@ -381,3 +386,22 @@ def test_unsloth_windows_pread_patch_below_keeps_this_scopes_mmap_choices(
         with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu") as handle:
             handle.get_slice("w")[...]
     assert received == [sent]
+
+
+@requires_backend
+@pytest.mark.parametrize("passed, expected", [("pread", "mmap"), (None, None), ("mmap", "mmap")])
+def test_kept_shard_overrides_a_callers_pread(monkeypatch, tmp_path, passed, expected):
+    """transformers >= 5.17 passes backend="pread" on Windows itself; a shard the small-host route keeps stays mapped."""
+    from safetensors.torch import save_file
+
+    comp = tmp_path / "text_encoder"
+    comp.mkdir()
+    path = comp / "model.safetensors"
+    save_file({"w": torch.zeros(64, 64, dtype = torch.bfloat16)}, str(path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    seen = _record_backends(monkeypatch)
+    kwargs = {} if passed is None else {"backend": passed}
+    with sp.pread_safetensors(convert_to = torch.float16, keep = ("text_encoder",)):
+        with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu", **kwargs) as handle:
+            handle.get_slice("w")[...]
+    assert seen == [expected]
