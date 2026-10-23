@@ -12578,9 +12578,7 @@ class VideoBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                # The uint8 clip and the streamed chunks are pinned, so torch's host allocator would keep them cached
-                # (about 3x the clip, power-of-two rounded) for as long as Studio runs. Drop the last references, then
-                # hand the cached pinned blocks back to the driver once the render is over.
+                # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
                 output = video_frames = None
                 release_pinned_host_memory()
 

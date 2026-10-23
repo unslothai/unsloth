@@ -2241,8 +2241,7 @@ def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_a_render_returns_its_pinned_clip_to_the_driver(fake_runtime, monkeypatch, fail):
-    # The uint8 clip and the streamed chunks are pinned host memory that torch's host allocator caches after they are
-    # freed: each render must end with the cache emptied, after the session is closed and the clip is unreferenced.
+    # Each render empties the pinned host cache once, after the session closes and the clip is unreferenced.
     import functools
     import weakref
 
