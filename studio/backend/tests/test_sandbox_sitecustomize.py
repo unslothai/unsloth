@@ -425,6 +425,17 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         ("def setup():\n    __path__ = extend_path(__path__, __name__)\n", False),
         ("paths = extend_path(['x'], 'other')\n", False),
         ("this is not python(\n", False),
+        (
+            "try:\n    import _no_such_module\n"
+            "except ImportError:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            False,
+        ),
+        (
+            "try:\n    import os\n"
+            "except ImportError:\n    pass\n"
+            "else:\n    __path__ = __import__('pkgutil').extend_path(__path__, __name__)\n",
+            True,
+        ),
     ],
 )
 def test_host_packages_finder_only_treats_declared_namespaces_as_open(tmp_path, init, namespace):

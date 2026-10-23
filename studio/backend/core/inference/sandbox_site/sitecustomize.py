@@ -366,7 +366,8 @@ class _HostPackagesFinder:
         # A pkgutil-style (extend_path) or pkg_resources-style (declare_namespace) namespace package
         # collects its portions by scanning sys.path while its __init__ runs, so it never sees this folder.
         # Only the statements that declare one count: `__path__ = <...>extend_path(__path__, __name__)`
-        # or `<...>declare_namespace(__name__)`, at module level or in a module-level try. A comment,
+        # or `<...>declare_namespace(__name__)`, at module level or in a module-level try body / else /
+        # finally (not an except handler, which may not have run). A comment,
         # a string, an unused import or a call under if/def/class leaves the package regular.
         if origin not in cls._extends:
             try:
@@ -384,12 +385,9 @@ class _HostPackagesFinder:
         for node in body:
             yield node
             if isinstance(node, ast.Try):
-                for block in (
-                    node.body,
-                    node.orelse,
-                    node.finalbody,
-                    *(h.body for h in node.handlers),
-                ):
+                # Only blocks that run when the try body completes: a declaration that sits only in
+                # an except handler may never have run, so it does not open the package.
+                for block in (node.body, node.orelse, node.finalbody):
                     yield from cls._top_level(block)
 
     @staticmethod
