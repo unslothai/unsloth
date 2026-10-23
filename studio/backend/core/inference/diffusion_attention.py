@@ -847,6 +847,7 @@ def _sync_rocm_flash_baseline() -> None:
     if current != _ROCM_FLASH_BASELINE[0]:
         ROCM_FLASH_ADMISSIONS.clear()
         _ROCM_FLASH_BUCKETS.clear()
+        _ROCM_FLASH_STORED_MISSES.clear()
         _ROCM_FLASH_BASELINE[0] = current
 
 
@@ -991,6 +992,9 @@ def _rocm_flash_traced_reason(
 
 # Traced query lengths are routed by segments up to this many tokens; longer ones guard on their own bucket.
 _ROCM_FLASH_SEGMENT_LIMIT = 1 << 22
+# Admission keys with no stored verdict, as of their first stored-only lookup (a timing fills ROCM_FLASH_ADMISSIONS,
+# which is read first; a verdict another process stores later is seen by the per-bucket route, which reads the store).
+_ROCM_FLASH_STORED_MISSES: set = set()
 _ROCM_FLASH_SLOWER = "slower or inexact at this size"
 
 
@@ -1195,6 +1199,10 @@ def _rocm_flash_geometry_admitted(
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
         return bool(cached.get("admitted"))
+    if stored_only and key in _ROCM_FLASH_STORED_MISSES:
+        return (
+            None  # traced segments ask for every bucket on every call: read the store once per slot
+        )
     toolchain = _rocm_flash_toolchain_key(device)
     path = _rocm_flash_cache_path(toolchain)
     size = (str(tokens) if kv == tokens else f"{tokens}x{kv}") + ("" if batch == 1 else f"b{batch}")
@@ -1212,6 +1220,7 @@ def _rocm_flash_geometry_admitted(
         _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
         return rec["admitted"]
     if stored_only:
+        _ROCM_FLASH_STORED_MISSES.add(key)
         return None
     if live:
         need = _rocm_flash_probe_bytes(geometry, tokens, kv, batch, dtype, device)
@@ -1250,6 +1259,7 @@ def _rocm_flash_geometry_admitted(
     valid = _rocm_flash_record_ok(rec)
     rec["admitted"] = valid and _rocm_flash_wins(rec)
     ROCM_FLASH_ADMISSIONS[key] = rec
+    _ROCM_FLASH_STORED_MISSES.discard(key)
     if valid:  # an implausible timing is not stored, so it cannot pin a verdict
         _save_rocm_flash_verdict(path, toolchain, slot, rec)
     _log_rocm_flash_verdict(logger, device, geometry, rec, "probe")
@@ -2136,11 +2146,9 @@ def _hook_rocm_flash_dit(dit: Any) -> None:
 
     # Also while Dynamo traces a compiled DiT (it replays these threading.local writes), so a traced call sees the
     # gate and runs native.
-    def pre(
-        _module,
-        _args,
-        dit = dit,
-    ) -> None:
+    # The hook reads the module it runs on (``dit``), never a captured reference: a closure over the DiT, stored in the
+    # DiT's own hook dict, is a cycle that keeps a dropped CFG replica's weights on its card until a cyclic collection.
+    def pre(dit, _args) -> None:
         outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
         if outer is None:
             outer = _ROCM_FLASH_LOCAL.stack = []

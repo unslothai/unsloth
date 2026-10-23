@@ -39,6 +39,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_STORED_MISSES", set(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -1366,6 +1367,45 @@ def test_cfg_replica_routes_count_in_the_generation_report(monkeypatch):
     assert att.rocm_flash_ran(pipe)[0] == "native"
 
 
+def test_a_hooked_replica_is_freed_without_a_cycle_collection():
+    import gc
+    import weakref
+
+    torch = pytest.importorskip("torch")
+    module = torch.nn.Linear(4, 4)
+    att._hook_rocm_flash_dit(module)
+    assert getattr(module, att._ROCM_FLASH_HOOKS_ATTR)
+    ref = weakref.ref(module)
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del module
+        assert (
+            ref() is None
+        )  # no hook -> module cycle: a dropped CFG replica frees its card memory at once
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def test_traced_segments_read_the_stored_verdicts_once_per_absent_bucket(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    loads = []
+    real_load = att._load_rocm_flash_verdicts
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: "tc")
+    monkeypatch.setattr(att, "_rocm_flash_cache_path", lambda tc: str(tmp_path / "probe.json"))
+    monkeypatch.setattr(
+        att, "_load_rocm_flash_verdicts", lambda *a: loads.append(a) or real_load(*a)
+    )
+    g = ((3072, 24, 128),)
+    args = ("cuda:0", torch.bfloat16, g, 4096, 4096, 1)
+    assert att._rocm_flash_bucket_known(*args) is None
+    first = len(loads)
+    assert first == 1
+    assert att._rocm_flash_bucket_known(*args) is None
+    assert len(loads) == first  # an absent slot is not re-read on every traced call
+
+
 def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
     baseline = ["sdpafem,aotriton-exp1"]
     monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: baseline[0])
@@ -2027,6 +2067,7 @@ def test_compiled_lengths_across_known_buckets_guard_only_where_the_route_change
     eager = [float(dit(torch.zeros(1, n, 2, 16, dtype = bf16)).flatten()[0]) for n in lengths]
     att._ROCM_FLASH_BUCKETS.clear()
     att.ROCM_FLASH_ADMISSIONS.clear()
+    att._ROCM_FLASH_STORED_MISSES.clear()
     torch._dynamo.reset()
     frames = []
     compiled = torch.compile(
