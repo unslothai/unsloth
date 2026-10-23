@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -81,4 +81,21 @@ test("Download gives the first media output, else the outputs as JSON", () => {
   assert.deepEqual(JSON.parse(json?.kind === "json" ? json.text : "{}"), {
     rows: [1, 2],
   });
+});
+
+test("generated gallery media downloads through its authenticated /api/ route", () => {
+  // api.ts pulls in the auth transport, so check the mapping in its source.
+  const src = readSrc("features/flows/api.ts");
+  const body = src.slice(
+    src.indexOf("export function mediaPath"),
+    src.indexOf("export async function fetchMediaBlob"),
+  );
+  assert.match(
+    src,
+    /GALLERY_ROUTES: Record<string, string> = \{\s*image: "images",\s*audio: "audio",\s*video: "video",/,
+  );
+  assert.match(
+    body,
+    /return `\/api\/inference\/\$\{gallery\}\/gallery\/\$\{encodeURIComponent\(id\)\}\/file`;/,
+  );
 });
