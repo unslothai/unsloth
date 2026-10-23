@@ -152,3 +152,79 @@ def test_generate_calls_the_release_before_tiling():
     src = inspect.getsource(diffusion.DiffusionBackend.generate)
     assert src.index("_untiled_after_release(") < src.index("restore_vae = _tile_for_verdict(")
     assert "_chain_restores(restore_untiled, restore_resident)" in src
+
+
+def _priced(free: int) -> ImageActivationVerdict:
+    # untiled: 6952 MiB of activations + the 2048 MiB fixed overhead = the 9000 MiB the stub guard wants
+    return ImageActivationVerdict(ACTIVATION_TILE, needed_mib = 6952, tiled_needed_mib = 2952, budget_mib = free)
+
+
+def test_a_priced_verdict_streams_only_the_shortfall(card):
+    verdict, restore = diffusion._untiled_after_release(
+        object(), _priced(6000), TARGET, {"device_memory": 6000}, None
+    )
+    assert verdict.action == ACTIVATION_RUN
+    # short 3000 MiB, plus a quarter for the budget's reserve and 256 MiB: 4006 of the 4283 resident
+    assert card.releases == [(4006, "an untiled VAE decode")]
+    assert card.resident == 277
+    restore()
+    assert card.resident == 4283
+
+
+def test_a_short_first_release_streams_the_rest_once(card, monkeypatch):
+    real = diffusion.release_resident_groups
+    monkeypatch.setattr(
+        diffusion,
+        "release_resident_groups",
+        lambda pipe, need, *a, **k: real(pipe, need if card.releases else need // 4, *a, **k),
+    )
+    verdict, restore = diffusion._untiled_after_release(
+        object(), _priced(6000), TARGET, {"device_memory": 6000}, None
+    )
+    assert verdict.action == ACTIVATION_RUN
+    assert len(card.releases) == 2 and card.resident == 0
+    restore()
+    assert card.resident == 4283 and card.restored == 2
+
+
+def test_a_shortfall_past_every_resident_group_streams_nothing(card):
+    card.resident = 2000  # short 3000 MiB: even all of it leaves the decode tiled
+    tile = _priced(6000)
+    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
+    assert card.releases == []
+
+
+def test_a_vae_on_another_card_streams_nothing(card, monkeypatch):
+    monkeypatch.setattr(diffusion, "_vae_on_other_card", lambda pipe, target: "cuda:1")
+    tile = ImageActivationVerdict(ACTIVATION_TILE)
+    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
+    assert card.releases == []
+
+
+def test_a_broken_release_keeps_the_tile_verdict_and_pins_back(card, monkeypatch):
+    calls = {"n": 0}
+    real = diffusion.release_resident_groups
+
+    def flaky(pipe, need, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("copy stream broke")
+        return real(pipe, need // 4, *a, **k)
+
+    monkeypatch.setattr(diffusion, "release_resident_groups", flaky)
+    tile = _priced(6000)
+    verdict, restore = diffusion._untiled_after_release(object(), tile, TARGET, {}, None)
+    assert verdict is tile and restore is None
+    assert card.resident == 4283 and card.restored == 1
+
+
+def test_a_cancel_mid_release_pins_back_and_propagates(card, monkeypatch):
+    def cancel(**kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(diffusion, "raise_on_image_activation_shortfall", cancel)
+    with pytest.raises(KeyboardInterrupt):
+        diffusion._untiled_after_release(
+            object(), ImageActivationVerdict(ACTIVATION_TILE), TARGET, {}, None
+        )
+    assert card.resident == 4283 and card.restored == 1

@@ -2536,15 +2536,35 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
 RELEASE_BEFORE_TILING_ENV = "UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING"
 
 
+def _untiled_shortfall_mib(verdict: Any, guard_kwargs: dict) -> Optional[int]:
+    """MiB the untiled plan is short by on ``verdict`` (its activations plus the fixed overhead past the budget), or
+    None when the verdict carries no figures."""
+    needed = getattr(verdict, "needed_mib", None)
+    budget = getattr(verdict, "budget_mib", None)
+    if needed is None or budget is None:
+        return None
+    from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
+
+    overhead = guard_kwargs.get("base_overhead_mib", DEFAULT_BASE_OVERHEAD_MIB)
+    return int(needed) + max(0, int(overhead or 0)) - int(budget)
+
+
 def _untiled_after_release(
-    pipe: Any, verdict: Any, guard_target: Any, guard_kwargs: dict, logger: Any
+    pipe: Any,
+    verdict: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    logger: Any,
+    decode_pipe: Any = None,
 ) -> tuple[Any, Optional[Callable[[], None]]]:
     """A tile verdict while offload groups are still resident: stream them again and re-check before tiling. Tiling
     changes the decoded pixels; streaming the groups again only costs transfer time, which is the order the decode's
-    OOM recovery takes too (``diffusion_vae_oom``: free the card first, tile last). Returns ``(verdict, restore)``:
-    the passing re-check and the restore that pins the groups back after the render, or the original verdict and None
-    (nothing resident, the re-check still says tile, or it failed). ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``
-    tiles as before."""
+    OOM recovery takes too (``diffusion_vae_oom``: free the card first, tile last). Streams the shortfall first (text
+    encoders before the denoiser, as ``release_resident_groups`` orders them) and the rest only when that re-check
+    still says tile. Nothing streams when even every resident group could not cover the shortfall, or when the VAE
+    decodes on another card of a split (the primary's verdict never tiles it). Returns ``(verdict, restore)``: the
+    passing re-check and the restore that pins the groups back after the render, or the original verdict and None.
+    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0`` tiles as before."""
     if (
         verdict is None
         or verdict.action != ACTIVATION_TILE
@@ -2556,25 +2576,52 @@ def _untiled_after_release(
     resident = resident_group_mib(pipe)
     if resident <= 0:
         return verdict, None
-    restore = release_resident_groups(
-        pipe,
-        resident,
-        logger,
-        reason = "an untiled VAE decode",
-        device = getattr(guard_target, "torch_device", None),
-    )
-    if restore is None:
+    short = _untiled_shortfall_mib(verdict, guard_kwargs)
+    if short is not None and short > resident:
+        # a freed MiB raises the budget by at most a MiB: streaming every group would still leave it tiled
         return verdict, None
     try:
-        again = raise_on_image_activation_shortfall(
-            **{**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
-        )
-    except Exception:  # noqa: BLE001 - a refusal or a broken probe: keep the tiled plan
-        again = None
-    if again is None or again.action != ACTIVATION_RUN:
+        if _vae_on_other_card(decode_pipe if decode_pipe is not None else pipe, guard_target) is not None:
+            return verdict, None
+    except Exception:  # noqa: BLE001 - unreadable split: the primary's card decodes
+        pass
+    device = getattr(guard_target, "torch_device", None)
+    # the shortfall plus the budget's reserve on what is freed, then everything still resident
+    first = resident if short is None or short <= 0 else min(resident, short + short // 4 + 256)
+    restore: Optional[Callable[[], None]] = None
+    try:
+        for need in (first, None):
+            if need is None:
+                need = resident_group_mib(pipe)
+                if need <= 0:
+                    break
+            step = release_resident_groups(
+                pipe, need, logger, reason = "an untiled VAE decode", device = device
+            )
+            if step is None:
+                break
+            restore = _chain_restores(step, restore)
+            try:
+                again = raise_on_image_activation_shortfall(
+                    **{**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+                )
+            except Exception:  # noqa: BLE001 - a refusal or a broken probe: keep the tiled plan
+                break
+            if again is not None and again.action == ACTIVATION_RUN:
+                return again, restore
+            if need >= resident:
+                break
+    except Exception as exc:  # noqa: BLE001 - a broken release keeps the tiled plan, which the caller still applies
+        if logger is not None:
+            logger.warning("diffusion.memory: streaming before tiling failed (%s)", exc)
+    except BaseException:
+        # a cancel between a release and its handover: pin back before propagating
+        if restore is not None:
+            restore()
+        raise
+    if restore is not None:
         restore()
-        return verdict, None
-    return again, restore
+    return verdict, None
 
 
 def _chain_restores(
@@ -13316,7 +13363,7 @@ class DiffusionBackend:
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
                     # stream resident groups again before tiling: tiling changes pixels, streaming only costs time
                     verdict, restore_untiled = _untiled_after_release(
-                        state.pipe, verdict, guard_target, guard_kwargs, logger
+                        state.pipe, verdict, guard_target, guard_kwargs, logger, decode_pipe = pipe
                     )
                     restore_resident = _chain_restores(restore_untiled, restore_resident)
                     restore_vae = _tile_for_verdict(
