@@ -331,6 +331,43 @@ def _tiny_gemma4():
     return model
 
 
+def _tiny_gemma4_moe_k_eq_v():
+    """Gemma-4 26B-A4B / 31B shape: k_eq_v global layers (fewer KV heads than cp), MoE, no PLE / KV sharing."""
+    from transformers.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+
+    config = Gemma4TextConfig(
+        vocab_size = 128,
+        vocab_size_per_layer_input = 128,
+        hidden_size = 64,
+        hidden_size_per_layer_input = 0,
+        intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_kv_shared_layers = 0,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_global_key_value_heads = 1,
+        head_dim = 16,
+        global_head_dim = 32,
+        attention_k_eq_v = True,
+        sliding_window = 8,
+        final_logit_softcapping = 30.0,
+        enable_moe_block = True,
+        num_experts = 4,
+        top_k_experts = 2,
+        moe_intermediate_size = 32,
+        layer_types = [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    )
+    torch.manual_seed(3407)
+    model = Gemma4ForCausalLM(config).float()
+    model.config.use_cache = False
+    return model
+
+
 def _tiny_kimi_linear(k3 = False):
     from types import SimpleNamespace
     import torch.nn as nn
@@ -646,6 +683,7 @@ def _generic_worker(rank, world, port, seq, out, builder):
         _tiny_minimax,
         _tiny_minimax_m2,
         _tiny_gemma4,
+        _tiny_gemma4_moe_k_eq_v,
         _tiny_kimi_linear,
         _tiny_kimi_k3,
     ],
@@ -681,6 +719,7 @@ if __name__ == "__main__":
         _tiny_minimax,
         _tiny_minimax_m2,
         _tiny_gemma4,
+        _tiny_gemma4_moe_k_eq_v,
         _tiny_kimi_linear,
         _tiny_kimi_k3,
     ):
