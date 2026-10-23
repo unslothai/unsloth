@@ -178,7 +178,7 @@ def _as_messages(value: Any, role: str) -> list[dict]:
     if (
         isinstance(value, list)
         and value
-        and all(isinstance(m, dict) and "from" in m and "value" in m for m in value)
+        and all(isinstance(m, dict) and m.get("from") is not None and "value" in m for m in value)
     ):
         from utils.datasets.chat_templates import _sharegpt_tool_turns
         value, _ = _sharegpt_tool_turns(
@@ -194,7 +194,7 @@ def _as_messages(value: Any, role: str) -> list[dict]:
         return [
             {
                 **{k: v for k, v in m.items() if v is not None},
-                "role": str(m.get("role", role)),
+                "role": str(m.get("role") or role),
                 "content": None if m.get("content") is None else _content_text(m["content"]),
             }
             for m in value
