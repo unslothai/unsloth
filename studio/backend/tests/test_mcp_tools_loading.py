@@ -1276,7 +1276,8 @@ def test_a_newer_load_whose_readiness_read_fails_still_defers_the_late_unload(
     fake = loading.route_json
 
     async def route_json(method, path, **kw):
-        if path.endswith("/load-progress") and state.get("flaky") and state["registered"]:
+        # Status is read only by the readiness wait, never by the progress poll while the POST is out.
+        if path == "/api/inference/video/status" and state.get("flaky") and state["registered"]:
             state["flaky"] = False
             raise ToolError("Unsloth Studio is busy")
         return await fake(method, path, **kw)
@@ -1304,6 +1305,79 @@ def test_a_newer_load_whose_readiness_read_fails_still_defers_the_late_unload(
 
     asyncio.run(scenario())
     assert state["unloads"] == [0]
+
+
+def test_a_newer_load_that_fails_after_a_readiness_read_error_releases_the_late_unload(
+    monkeypatch, fast_polls
+):
+    # The newer load's first readiness read fails transiently, then the backend reports the load
+    # failed: it replaced nothing, so the stopped POST that returns later still gets unloaded.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+    fake = loading.route_json
+
+    async def route_json(method, path, **kw):
+        # Status is read only by the readiness wait, never by the progress poll while the POST is out.
+        if path == "/api/inference/video/status" and state["registered"] and state.get("flaky"):
+            state["flaky"], state["fail"] = False, True
+            raise ToolError("Unsloth Studio is busy")
+        if path.endswith("/load-progress") and state.get("fail") and state["registered"] < 2:
+            return {"phase": "error", "error": "load failed"}
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        state["flaky"] = True
+        with pytest.raises(ToolError, match = "busy"):
+            await loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0, 2]
+
+
+def test_a_stopped_post_still_gets_a_late_unload_when_the_unload_route_fails(
+    monkeypatch, fast_polls
+):
+    # The status read before the unload fails while the stopped POST is still out: the unload
+    # call reports the error, and the POST that registers afterwards is still unloaded.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.3,))
+    fake = loading.route_json
+    failed = []
+
+    async def route_json(method, path, **kw):
+        if path == "/api/inference/video/status" and not failed:
+            failed.append(path)
+            raise ToolError("Unsloth Studio is busy")
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        with pytest.raises(ToolError, match = "busy"):
+            await loading.unload_media(caller, "video")
+        assert state["registered"] == 0
+        await asyncio.sleep(0.4)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert failed and state["unloads"] == [1]
 
 
 def test_a_late_media_unload_retries_a_transient_route_error(monkeypatch, fast_polls):

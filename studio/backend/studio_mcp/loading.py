@@ -675,6 +675,7 @@ async def load_media(
 
         job.post.add_done_callback(lambda post: post.cancelled() or post.exception())
         job.post.add_done_callback(post_answered)
+        watch = False
         try:
             answer = await with_progress(
                 None, asyncio.shield(job.post), _media_poll(caller, routes), job
@@ -687,14 +688,21 @@ async def load_media(
                 # may still be loading it, and an older load's late unload must keep deferring.
                 if _posted_ok(job.post) and getattr(exc, "_unsloth_load_failed", False):
                     _MEDIA_REGISTERED.get(kind, set()).discard(job.generation)
+                else:
+                    # Its outcome is still unknown: keep reading the backend, so a load that later
+                    # fails stops deferring an older load's late unload.
+                    watch = job.generation in _MEDIA_REGISTERED.get(kind, ())
             raise
         finally:
             running[0] = False
             if job.post.done():
                 post_answered(job.post)
-                _settle_media_generation(
-                    kind, job, outcome, job.generation in _MEDIA_REGISTERED.get(kind, ())
-                )
+                if watch:
+                    _hold(_watch_media_outcome(caller, kind, model, routes, job, body, outcome))
+                else:
+                    _settle_media_generation(
+                        kind, job, outcome, job.generation in _MEDIA_REGISTERED.get(kind, ())
+                    )
         name = _media_name(status) or model
         return await finish_load(
             caller, kind, name, before, answer, placement = place.media_placement(status)
@@ -735,7 +743,7 @@ async def _media_ready(
     kind: str,
     model: str,
     routes: dict[str, str],
-    job: LoadJob,
+    job: Optional[LoadJob],
     body: Optional[dict] = None,
 ) -> dict:
     idle = 0
@@ -762,9 +770,11 @@ async def _media_ready(
                 )
         else:
             idle = 0
-            job.note(
-                _media_fraction(progress), "Downloading" if phase == "downloading" else str(phase)
-            )
+            if job is not None:
+                job.note(
+                    _media_fraction(progress),
+                    "Downloading" if phase == "downloading" else str(phase),
+                )
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
     if not _resident_matches(status, model, body):
@@ -790,8 +800,9 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
         pending = [job for job in stopped if job.post in posts and not job.post.done()]
         _mark_media_unloaded(kind)
         after = await route_json("POST", routes["unload"], caller = caller)
-    except asyncio.CancelledError:
-        # The caller went away before this unload went out: unload each stopped load once its POST is back.
+    except BaseException:
+        # The caller went away, or a status read or the unload itself failed: unload each stopped
+        # load once its POST is back, so one that registers later is not left resident.
         _unload_after_posts(caller, kind, stopped)
         raise
     # A POST that outlasted the wait registers its load after the unload above: unload that one later.
@@ -814,11 +825,52 @@ def _unload_after_posts(caller: Caller, kind: str, jobs: list[LoadJob]) -> bool:
     for job in jobs:
         if job.post is None:
             continue
-        late = asyncio.get_running_loop().create_task(_unload_media_once_posted(caller, kind, job))
-        _LATE_UNLOADS.add(late)
-        late.add_done_callback(_LATE_UNLOADS.discard)
+        _hold(_unload_media_once_posted(caller, kind, job))
         scheduled = True
     return scheduled
+
+
+def _hold(work: Awaitable[None]) -> None:
+    # Run ``work`` in the background, held in _LATE_UNLOADS so it is not collected before it ends.
+    task = asyncio.ensure_future(work)
+    _LATE_UNLOADS.add(task)
+    task.add_done_callback(_LATE_UNLOADS.discard)
+
+
+async def _watch_media_outcome(
+    caller: Caller,
+    kind: str,
+    model: str,
+    routes: dict[str, str],
+    job: LoadJob,
+    body: dict,
+    outcome: asyncio.Future,
+) -> None:
+    """Settle the outcome of ``job``'s registered load once the backend shows it ready or failed.
+
+    Its readiness wait hit a route error, so the load may still be coming or may have failed. Until
+    this settles, an older stopped load's late unload waits; a confirmed failure withdraws the
+    registration so that unload goes ahead. Route errors and the wait itself are bounded: past
+    them the load stays registered, as a newer load the caller asked for.
+    """
+    deadline = time.monotonic() + _OUTCOME_WATCH_S
+    try:
+        for failures in range(1, _LATE_UNLOAD_ATTEMPTS + 1):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            try:
+                await asyncio.wait_for(_media_ready(caller, kind, model, routes, None, body), left)
+                return
+            except Exception as exc:
+                if getattr(exc, "_unsloth_load_failed", False):
+                    _MEDIA_REGISTERED.get(kind, set()).discard(job.generation)
+                    return
+                await asyncio.sleep(POLL_INTERVAL_S * failures)
+    finally:
+        _settle_media_generation(
+            kind, job, outcome, job.generation in _MEDIA_REGISTERED.get(kind, ())
+        )
 
 
 # Media load requests this process made, per slot: the last number taken, those whose POST answered
@@ -828,8 +880,10 @@ _MEDIA_GENERATIONS: dict[str, int] = {}
 _MEDIA_REGISTERED: dict[str, set[int]] = {}
 _MEDIA_UNLOADED: dict[str, int] = {}
 _MEDIA_OUTCOMES: dict[str, dict[int, asyncio.Future]] = {}
-# Tries a late unload makes before giving up on route errors.
+# Tries a late unload (or a watch on a newer load's outcome) makes before giving up on route errors.
 _LATE_UNLOAD_ATTEMPTS = 5
+# How long a newer load's outcome is watched after its readiness wait hit a route error.
+_OUTCOME_WATCH_S = 3600.0
 
 
 def _posted_ok(post: Optional[asyncio.Future]) -> bool:
