@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
+"""WavLM's attention passes q/k/v/out_proj.weight to F.multi_head_attention_forward, so 4-bit loads
+failed on the first step (`expecting query weights shape of (64, 64), but got torch.Size([2048, 1])`)."""
+
+import ast
+from pathlib import Path
+
+import pytest
+
+VISION_PATH = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "vision.py"
+ATTENTION = {"q_proj", "k_proj", "v_proj", "out_proj"}
+
+
+def _architecture_skip_modules():
+    tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_architecture_skip_modules"
+    )
+    ns = {}
+    exec(compile(ast.Module([node], []), str(VISION_PATH), "exec"), ns)
+    return ns["_architecture_skip_modules"]
+
+
+def test_wavlm_keeps_its_attention_projections_unquantized():
+    skip = _architecture_skip_modules()
+    assert ATTENTION <= set(skip(["wavlm"]))
+    for model_types in (["wav2vec2"], ["hubert"], ["llama"], ["whisper"], [], None):
+        assert not ATTENTION & set(skip(model_types)), model_types
+
+
+def test_only_attention_projections_match_the_transformers_skip_matcher():
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    utils = pytest.importorskip("transformers.quantizers.quantizers_utils")
+    should_convert = getattr(utils, "should_convert_module", None)
+    if should_convert is None:
+        pytest.skip("transformers < 5 matches skip keys per path component")
+    config = transformers.WavLMConfig(
+        hidden_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        intermediate_size = 64,
+        conv_dim = (8, 8),
+        conv_stride = (5, 2),
+        conv_kernel = (10, 3),
+        num_conv_pos_embeddings = 4,
+        vocab_size = 16,
+    )
+    with torch.device("meta"):
+        model = transformers.WavLMForCTC(config)
+    skip = _architecture_skip_modules()(["wavlm"])
+    kept = {
+        n.rsplit(".", 1)[-1]
+        for n, m in model.named_modules()
+        if isinstance(m, torch.nn.Linear) and not should_convert(n, skip)
+    }
+    assert kept == ATTENTION

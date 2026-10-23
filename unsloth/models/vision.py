@@ -2739,6 +2739,9 @@ def _architecture_skip_modules(model_types):
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
+    # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
+    if any(mt == "wavlm" for mt in model_types):
+        skip.extend(("q_proj", "k_proj", "v_proj", "out_proj"))
     if any(mt.startswith("gemma3n") for mt in model_types):
         skip.extend(("correction_coefs", "prediction_coefs"))
         for name in ("altup_projections", "altup_unembed_projections"):
