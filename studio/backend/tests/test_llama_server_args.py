@@ -1502,6 +1502,13 @@ def test_the_launch_respells_user_ngram_mod_extras_last():
     assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
 
 
+def test_ngram_mod_underscore_spelling_is_respelled_too():
+    from core.inference.llama_server_args import translate_ngram_mod_args
+    assert translate_ngram_mod_args(
+        ["--spec_ngram_mod_n_min", "8", "--spec_ngram_mod_n_match=4"], "legacy"
+    ) == ["--draft-min", "8", "--spec-ngram-size-n", "4"]
+
+
 def test_user_spec_type_with_mtp_counts_as_chained():
     from core.inference.llama_cpp import _child_spec_env, _extra_args_requests_mtp
 

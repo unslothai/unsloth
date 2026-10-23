@@ -2383,8 +2383,9 @@ def translate_ngram_mod_args(
     out: list[str] = []
     i = 0
     while i < len(args):
-        flag, eq, value = args[i].partition("=")
-        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(flag)
+        _flag, eq, value = args[i].partition("=")
+        # llama.cpp accepts `--spec_ngram_mod_n_min` too; _flag_name folds it to the dashed name.
+        legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
         if legacy is None or (not eq and i + 1 >= len(args)):
             out.append(args[i])
             i += 1
