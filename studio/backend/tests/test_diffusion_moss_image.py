@@ -133,11 +133,24 @@ def test_unmasked_forward_takes_no_host_sync(transformers_pair, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "device, where", [("mps", "cpu"), ("xpu", "cpu"), ("cuda", "cuda"), ("cpu", "cpu")]
+    "device, fp64, where",
+    [
+        ("mps", None, "cpu"),
+        ("xpu", False, "cpu"),
+        ("xpu", True, "xpu"),
+        ("cuda", None, "cuda"),
+        ("cpu", None, "cpu"),
+    ],
 )
-def test_timestep_sinusoid_keeps_float64_off_mps(moss, device, where):
-    """MPS has no float64 (the first denoise step raised there), so off CUDA the sinusoid is built on the CPU."""
+def test_timestep_sinusoid_keeps_float64_off_mps(moss, monkeypatch, device, fp64, where):
+    """MPS and Arc XPUs have no float64 (the first denoise step raised there), so the sinusoid is built on the CPU."""
+    from types import SimpleNamespace
+
     import torch
+
+    monkeypatch.setattr(
+        torch.xpu, "get_device_properties", lambda *a, **k: SimpleNamespace(has_fp64 = fp64)
+    )
     assert moss._float64_device(torch.device(device)).type == where
 
 
