@@ -12,6 +12,7 @@ from core.flows.nodes import (  # noqa: F401
     media_utils,
     output,
     story,
+    table,
     text,
     training,
     video,
