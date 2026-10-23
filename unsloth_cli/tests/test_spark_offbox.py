@@ -1787,7 +1787,12 @@ def test_no_fast_flag_reaches_provision(monkeypatch, capsys) -> None:
 def _fake_spark_cluster(seen: dict):
     """A stand-in for studio/spark_cluster.py that records the argv the CLI hands it."""
 
+    real = _load("studio/spark_cluster.py")
+
     class _SC:
+        # The real validator: `spark train` and `spark estimate` share it.
+        training_shape_error = staticmethod(real.training_shape_error)
+
         @staticmethod
         def is_dgx_spark() -> bool:
             return True

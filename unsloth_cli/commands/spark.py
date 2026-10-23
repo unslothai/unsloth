@@ -831,21 +831,9 @@ def train(
         typer.echo("give exactly one of --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
-        # Before the modulo: `--microbatches 0` would raise ZeroDivisionError.
-        if microbatches < 1:
-            typer.echo(f"--microbatches ({microbatches}) must be at least 1.")
-            raise typer.Exit(2)
-        if batch < 1:
-            typer.echo(f"--batch ({batch}) must be at least 1.")
-            raise typer.Exit(2)
-        if seq < 2:
-            typer.echo(f"--seq ({seq}) must be at least 2: one token has nothing to predict.")
-            raise typer.Exit(2)
-        if batch % microbatches:
-            typer.echo(
-                f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "
-                "the pipeline rejects the pair only after loading the model."
-            )
+        shape_error = sc.training_shape_error(batch, microbatches, seq)
+        if shape_error:
+            typer.echo(shape_error)
             raise typer.Exit(2)
         extra = [
             f"--microbatches {microbatches}",
