@@ -556,10 +556,13 @@ export function ChatSkillsDialog({
                 size="sm"
                 variant="outline"
                 disabled={importing}
+                aria-label={t("skills.import")}
+                title={t("skills.import")}
                 onClick={() => fileInputRef.current?.click()}
               >
                 {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} strokeWidth={2} />}
-                {t("skills.import")}
+                {/* Icon-only on phones: the full-screen toolbar has no room for another label. */}
+                <span className="max-sm:hidden">{t("skills.import")}</span>
               </Button>
               <Button variant="secondary" type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />

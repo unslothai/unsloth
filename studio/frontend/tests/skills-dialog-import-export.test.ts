@@ -48,3 +48,8 @@ test("the result list puts failures, with their reason, before the added skills"
 test("export is offered on every readable skill, not only editable ones", () => {
   assert.match(DIALOG, /\{readable \? \(\n\s*<Button[^]*?onClick=\{\(\) => void exportSelected\(\)\}/);
 });
+
+test("the Import label hides on phones but the button keeps its name", () => {
+  assert.match(DIALOG, /aria-label=\{t\("skills\.import"\)\}/);
+  assert.match(DIALOG, /<span className="max-sm:hidden">\{t\("skills\.import"\)\}<\/span>/);
+});
