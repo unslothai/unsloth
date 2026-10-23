@@ -2577,6 +2577,20 @@ def _tile_for_verdict(
     return restore_vae
 
 
+def plan_is_calibrated(plan: Any) -> bool:
+    """Whether ``plan`` was fitted to the measured activation row rather than the flat estimate: the one-card plan, or
+    a multi-GPU split priced with ``calibrated_split_headroom_mib``. The generate guard then charges conditioning
+    (ControlNet, references) on top and drops the flat default-resolution exemption."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if "calibrated_headroom_mib" in estimates:
+        return True
+    split = (
+        getattr(plan, "layer_split", None) is not None
+        or getattr(plan, "secondary_ordinal", None) is not None
+    )
+    return split and "calibrated_split_headroom_mib" in estimates
+
+
 def _controlnet_streams(state: Any) -> bool:
     """Whether a ControlNet added at generate time streams from host memory instead of loading whole beside the base
     model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
@@ -10247,7 +10261,7 @@ class DiffusionBackend:
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
                         offload_policy = effective_policy,
-                        calibrated_placement = "calibrated_headroom_mib" in plan.estimates,
+                        calibrated_placement = plan_is_calibrated(plan),
                         vae_tiling = effective_tiling,
                         memory_mode = plan.requested_mode,
                         speed_mode = effective_speed,
