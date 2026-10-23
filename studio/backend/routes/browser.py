@@ -119,8 +119,9 @@ _INERT_START_RE = re.compile(
     # A tag-name end, not \b: <title-bar> and <template-card> are custom elements, not raw-text ones.
     r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)(?=[\s/>])"
     + _TAG_BODY
-    # No "<" in a tag name: with it, an unclosed "<meta<base<meta..." run backtracked quadratically.
-    + r"|<[a-z][^\s/<>]*"
+    # The body takes the name too: a separate name pattern overlapping it made an unclosed "<abbb..."
+    # quadratic, every split of the name between the two being tried.
+    + r"|<[a-z]"
     + _TAG_BODY,
     re.IGNORECASE,
 )
@@ -131,7 +132,7 @@ _TEMPLATE_SCAN_RE = re.compile(
     r"<!--|</template(?=[\s/>])"
     r"|<(template|script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)(?=[\s/>])"
     + _TAG_BODY
-    + r"|</?[a-z][^\s/<>]*"
+    + r"|</?[a-z]"
     + _TAG_BODY,
     re.IGNORECASE,
 )

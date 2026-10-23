@@ -421,6 +421,9 @@ def test_prepare_page_is_linear_on_unclosed_tags():
     # 23 s quadratic, a few ms linear: room for a loaded CI box without losing the regression.
     browser_mod._prepare_page("<meta<base" * 80_000, "https://example.com/")
     browser_mod._prepare_page("<template>" + "<meta<base" * 80_000, "https://example.com/")
+    # An unclosed tag with a long name: 16,000 characters took 9 s when the name and body overlapped.
+    browser_mod._prepare_page("<p>x</p><a" + "b" * 400_000, "https://example.com/")
+    browser_mod._prepare_page("<template><a" + "b" * 400_000, "https://example.com/")
     assert time.monotonic() - start < 5
 
 
