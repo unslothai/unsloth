@@ -1604,6 +1604,147 @@ def test_archive_embed_restarts_in_the_new_space_after_a_backend_swap(conn, monk
     assert labels == {"llama-server:new"}
 
 
+def _gap_thread(
+    thread_id,
+    n,
+    tag = "gap",
+):
+    turns = []
+    for index in range(n):
+        turns += _turn(
+            f"{tag} question {index} unique {index}", f"{tag} answer {index} code {index}"
+        )
+    _save_thread(thread_id, turns, append = True)
+    return turns
+
+
+def _counting_encoder(monkeypatch):
+    from core.rag import embeddings
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(list(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+    return calls
+
+
+def _run_gap():
+    conversation_archive._start_prewarm()
+    worker = conversation_archive._prewarm_worker
+    if worker is not None:
+        worker.join()
+
+
+def test_an_idle_gap_pre_embeds_so_compaction_encodes_nothing(conn, monkeypatch):
+    """Turns embedded while llama.cpp is idle cost no encode when they are evicted (#14519)."""
+    thread_id = "gap-thread"
+    turns = _gap_thread(thread_id, 6)
+    calls = _counting_encoder(monkeypatch)
+
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls
+    scope = store.conversation_archive_scope(thread_id)
+    # The gap only fills a cache: an edit or rewind before the next request strands nothing.
+    assert (
+        conn.execute("SELECT COUNT(*) FROM documents WHERE scope = ?", (scope,)).fetchone()[0] == 0
+    )
+
+    calls.clear()
+    assert conversation_archive.archive_turns(thread_id, turns[:8]) == 4
+    assert calls == []
+
+
+def test_inference_stops_the_gap_worker_and_it_never_overlaps(conn, monkeypatch):
+    """No embedding batch may run while a llama.cpp stream is open."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    thread_id = "overlap-thread"
+    turns = _gap_thread(thread_id, 40, tag = "overlap")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+    overlapped = []
+
+    def slow(texts, **kwargs):
+        started.set()
+        overlapped.append(conversation_archive._inference_depth > 0)
+        time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    conversation_archive.note_branch(thread_id, turns)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+
+    with conversation_archive.inference_running():
+        worker = conversation_archive._prewarm_worker
+        assert worker is None or not worker.is_alive()
+        before = len(overlapped)
+        time.sleep(0.1)
+        assert len(overlapped) == before
+    assert not any(overlapped)
+    assert len(overlapped) < 40
+
+
+def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
+    thread_id = "edit-thread"
+    turns = _gap_thread(thread_id, 2, tag = "edit")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    edited = [dict(m) for m in turns]
+    edited[1]["content"] = "edit answer 0 was revised to code 77"
+    _save_thread(thread_id, edited, append = False)
+    calls.clear()
+    assert conversation_archive.archive_turns(thread_id, edited[:2]) == 1
+    assert [text for batch in calls for text in batch] and all(
+        "code 77" in text for batch in calls for text in batch
+    )
+
+
+def test_the_cap_counts_only_chunks_that_still_need_embedding(conn, monkeypatch):
+    thread_id = "cap-cache-thread"
+    turns = _gap_thread(thread_id, 6, tag = "capcache")
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, turns) == 6
+    assert calls == []
+
+
+def test_a_gap_job_runs_as_the_account_that_noted_it(monkeypatch):
+    """The worker is a plain thread; without the binding it would read the owner's databases."""
+    from utils.account_context import AccountContext, current_account, run_as
+
+    seen = []
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(
+        conversation_archive,
+        "_prewarm_thread",
+        lambda thread_id, messages: seen.append((current_account().account_id, thread_id)),
+    )
+    member = AccountContext("acct-member", "member", "user")
+    run_as(
+        member,
+        conversation_archive.note_branch,
+        "member-thread",
+        [{"role": "user", "content": "x"}],
+    )
+    _run_gap()
+    assert seen == [("acct-member", "member-thread")]
+
+
 def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
     """A batch failing late in a long pass must not discard the batches before it (#14519)."""
     from core.rag import embeddings

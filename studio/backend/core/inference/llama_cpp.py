@@ -2286,6 +2286,7 @@ def _archive_and_recall(
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    background: bool = False,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -2310,6 +2311,9 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
+        if background:
+            # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
+            conversation_archive.note_branch(thread_id, before)
         # `conversation` is the fitted prompt, so it says which repeats of a turn the model
         # can still read. Without it a twice-said turn is archived twice and spends two
         # recall slots on text already in the prompt.
@@ -38643,13 +38647,19 @@ class LlamaCppBackend:
                     or getattr(self, "_chat_template", None),
                 ),
             }
+        from core.rag.conversation_archive import inference_running
+
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-        with httpx.Client(
-            timeout = stream_timeout,
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        ) as client:
+        # Background archive embedding pauses for the whole stream: it must never compete with inference.
+        with (
+            inference_running(),
+            httpx.Client(
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client,
+        ):
             first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
@@ -39384,6 +39394,7 @@ class LlamaCppBackend:
                             continue_final_message = continue_final_message,
                         ),
                         cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -40459,6 +40470,7 @@ class LlamaCppBackend:
                                 chat_template_kwargs = _reasoning_kw,
                             ),
                             cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -40621,6 +40633,7 @@ class LlamaCppBackend:
                                 recall_done = True,
                                 branch_messages = _extend_live_branch(conversation),
                                 cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                                background = True,
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -43311,6 +43324,7 @@ class LlamaCppBackend:
                             chat_template_kwargs = _reasoning_kw,
                         ),
                         cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -43456,6 +43470,7 @@ class LlamaCppBackend:
                             recall_done = True,
                             branch_messages = _extend_live_branch(conversation),
                             cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )["counts"]
                     )
                 # Recorded rather than only forwarded, for the same reason as the
