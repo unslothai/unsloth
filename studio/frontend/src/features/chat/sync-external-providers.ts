@@ -15,6 +15,7 @@ import {
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 import {
   modelsDevCatalogFetchedAt,
   providerModelCatalogFetchedAt,
@@ -298,7 +299,7 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      if (needsModelBackfill || needsAvailableBackfill) {
+      if (!config.shared_by_owner && (needsModelBackfill || needsAvailableBackfill)) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
@@ -318,8 +319,15 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        reasoningConfig:
+          config.provider_type === "custom" &&
+          config.api_type !== "responses" && config.api_type !== "systemone"
+            ? normalizeCustomReasoningConfig(config.reasoning_config)
+            : undefined,
 
         hasApiKey: config.has_api_key,
+        shared: config.shared === true,
+        sharedByOwner: config.shared_by_owner === true,
 
         authKind: config.auth_kind,
         authStatus: config.auth_status,

@@ -33,6 +33,7 @@ from utils.paths.storage_roots import (
     hf_default_cache_dir,
     lmstudio_model_dirs,
     ollama_model_dirs,
+    omlx_model_dirs,
     well_known_model_dirs,
 )
 
@@ -43,6 +44,7 @@ _REEXPORTED = (
     hermes_model_dirs,
     lmstudio_model_dirs,
     ollama_model_dirs,
+    omlx_model_dirs,
     well_known_model_dirs,
     studio_root,
     cache_root,
@@ -355,6 +357,7 @@ __all__ = [
     "lmstudio_model_dirs",
     "normalize_path",
     "ollama_model_dirs",
+    "omlx_model_dirs",
     "outputs_root",
     "path_is_same_or_child",
     "recipe_datasets_root",

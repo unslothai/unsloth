@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model-picker per-model-config Playwright regression test (GPU-free, CPU gemma).
-
-Guards, end to end against the real frontend, the exact regressions that got the
-predecessor PR reverted:
-
-  - Context Length persists: set a distinctive per-model Context Length + tick
-    "Remember for this model" + Load; the value reaches the /api/inference/load
-    request (max_seq_length) AND lands in localStorage (unsloth_model_configs),
-    and survives a full browser reload (HARD).
-  - Reset clears: after customizing, Reset must clear the stored override, never
-    pin the context to a fixed number (the "Reset pins context" regression) (HARD).
-  - Hidden infra models absent: the RAG embedder (bge-small-en-v1.5) and the
-    llama.cpp validation probe (stories260K) never appear in the picker. The
-    probe GGUF is primed into the HF cache by the CI job, so "absent" proves
-    "hidden", not "not downloaded" (HARD).
-  - Legacy migration is idempotent: a pre-feature unsloth_load_settings store
-    migrates once into the versioned unsloth_model_configs map with the value
-    preserved, and a second reload with a fresh legacy seed present does not
-    re-migrate, duplicate, or clobber (gates under STUDIO_UI_STRICT via soft_fail).
-  - Advanced settings persist: KV cache dtype / tensor-parallel toggled under
-    Advanced + Remember land in unsloth_model_configs (best-effort).
-
-Runs as a plain script (not via pytest), mirroring tests/studio/playwright_extra_ui.py:
-accumulate failures in `_failed`, exit non-zero if any HARD gate failed. With
-STUDIO_UI_STRICT=1 (as CI sets), soft_fail also gates; genuinely-optional checks
-use runtime_warn so they never flake the merge gate.
-"""
+"""GPU-free model-picker config checks, run as a plain script rather than under pytest."""
 
 import json
 import re
@@ -38,7 +12,6 @@ from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
-# Run as a plain script (not via pytest), so prepend the dir to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
@@ -59,26 +32,18 @@ from _playwright_robust import (  # noqa: E402
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
-# Attach mode: log into an already-provisioned Unsloth with an existing password instead of the first-boot
-# change-password dance. CI leaves STUDIO_LOGIN_PW unset to exercise the real change-password flow; local runs can set
-# it to skip re-provisioning.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
-# Substring of the On Device picker row for the loaded model.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT", "gemma-3-270m")
-# A distinctive valid (>=128, multiple of 128, below the model's 32768 ceiling) Context Length, clearly not a default
+# A valid (>=128, multiple of 128, below the 32768 ceiling) non-default Context Length.
 DISTINCT_CTX = int(os.environ.get("STUDIO_DISTINCT_CTX", "4096"))
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
-# Settle window after run-settings opens, before staging an edit. An edit made in the panel's first moments is
-# silently discarded: it re-derives its baseline once mount-time work lands and drops whatever was staged, so Save
-# reports "Default settings kept" and stores nothing.
-# Measured on gemma-3-270m: fails at 0ms, passes from 500ms.
-# The panel exposes no readiness signal to poll (the input value, the Reset state and the primary button label are
-# all identical before and after), so this is a bounded wait rather than a condition.
+# An edit in the panel's first moments is discarded when it re-derives its baseline (fails at 0ms,
+# passes from 500ms). The panel exposes no readiness signal, so this is a bounded wait.
 CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
-# The model picker debounces its search query by 300 ms (useDebouncedValue); a little margin on top.
+# The picker debounces its query by 300 ms (useDebouncedValue), plus margin.
 PICKER_DEBOUNCE_MS = 450
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
@@ -90,15 +55,9 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
-# Per-step ceilings. A step that overruns its own stops the run there, named, instead of the
-# steps after it each waiting out their own timeouts; WALL_TIMEOUT_S stays the bound on the
-# whole run, as it always was. A step that clicks Load waits on a model load, so it gets the
-# load budget on top. Both stretch with the slow-lane knobs (STUDIO_UI_TURN_TIMEOUT_MS,
-# STUDIO_PW_STEP_BUDGET_SCALE).
 _SLOW_LANE = max(1.0, TURN_TIMEOUT_MS / 180_000)
 UI_STEP_BUDGET_S = step_budget_s(180 * _SLOW_LANE)
 LOAD_STEP_BUDGET_S = step_budget_s((LOAD_FETCH_TIMEOUT_MS / 1000 + 180) * _SLOW_LANE)
-# The setup step retries itself; it has no ceiling of its own beyond the run's.
 NO_STEP_CEILING = 0
 
 _n = [0]
@@ -123,14 +82,7 @@ def _normalize_case_insensitive_path(path: str, min_length: int) -> str:
 
 
 def _normalize_model_identity(model_id: str) -> str:
-    """Mirror of normalizeModelIdentity in features/hub/lib/model-identity.ts.
-
-    Case folding is not unconditional there: a plain POSIX path keeps its case,
-    because /models/Foo.gguf and /models/foo.gguf are different files. Only a hub
-    id and the case-insensitive roots -- a Windows drive, a UNC share, a WSL mount
-    -- fold. Lowercasing everything here merged paths the app keeps apart, so an
-    entry belonging to one could satisfy a check that the other had saved.
-    """
+    """Folds case only for hub ids and case-insensitive roots; a plain POSIX path keeps its case."""
     trimmed = model_id.strip()
     if not (trimmed and _LOCAL_PATH_PREFIX_RE.match(trimmed)):
         return trimmed.lower()
@@ -173,13 +125,7 @@ def runtime_warn(m: str) -> None:
 
 
 def _count(loc) -> int:
-    """Number of matches, or 0.
-
-    A raise here is not the same as no match: a closed page or a lost execution
-    context also throws, and reporting that as "selector missing" sends the reader
-    after the markup instead of the crash. Say so, then still return 0 so callers
-    that only branch on emptiness keep working.
-    """
+    """Returns 0 on error too, but logs it as a crash: a raise is not the same as no match."""
     try:
         return loc.count()
     except Exception as exc:
@@ -214,8 +160,7 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
 
 
 with sync_playwright() as p:
-    # WALL_TIMEOUT_S is also the total: this watchdog was never kicked, so it bounded the
-    # whole run, and named steps (which kick) must not turn that into a per-step bound.
+    # Named steps kick the watchdog; total_deadline_s keeps WALL_TIMEOUT_S a whole-run cap.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
         label = "ui-modelcfg",
@@ -223,7 +168,7 @@ with sync_playwright() as p:
         total_deadline_s = WALL_TIMEOUT_S,
     )
     report_failing_step(_watchdog, label = "ui-modelcfg")
-    # Health pre-flight: bash-side health wait can pass before the auth DB migrates.
+    # A shell health wait can pass before the auth DB migrates.
     wait_for_health(BASE, timeout = 30.0, info = info)
     if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
         fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
@@ -256,7 +201,6 @@ with sync_playwright() as p:
 
     page.on("pageerror", _on_pageerror)
 
-    # Record every /api/inference/load POST payload so the persistence gate can assert max_seq_length.
     load_posts: list[str] = []
 
     def _on_request(req):
@@ -268,19 +212,11 @@ with sync_playwright() as p:
 
     page.on("request", _on_request)
 
-    # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
-    # budget PUT), so a click that commits settings is waited out rather than slept on. On the
-    # context, so a replacement page is covered too.
-    # loads: every /load request in send order; loads_ended: the ones that have finished or failed.
+    # Settings-committing requests, tracked on the context so a replacement page is covered.
     _commits = {"started": 0, "inflight": set(), "loads": [], "loads_ended": set()}
 
-    # validate and unload are the Load/Reload flow's own preliminaries: after the override PUT
-    # answers, the flow POSTs /validate (~0.4 s on CI), then /unload, and only then /load. Left
-    # out, those ~0.5 s read as quiet and the wait below returned before /load was even sent, so
-    # the test's next page.reload() aborted it (Chat UI Tests (extra) on main at 52b822c79: validate
-    # and unload logged, no load, then GET /chat). The model came back from the page's own restore a
-    # few seconds later, mid-way through the Reset step, and flipped "Load model" to "Reload model"
-    # under a click that then waited out its 60 s on a button that no longer existed.
+    # validate and unload precede /load in the Load flow; untracked, their gap read as quiet and the
+    # next reload aborted the /load.
     def _is_commit(req) -> bool:
         return req.method != "GET" and (
             "/api/inference/load" in req.url
@@ -292,6 +228,10 @@ with sync_playwright() as p:
     def _is_load(req) -> bool:
         return req.method == "POST" and "/api/inference/load" in req.url
 
+    # Short requests whose missing end event is a lost event after 30 s of no progress, never work in progress.
+    def _is_lost_event_candidate(req) -> bool:
+        return "/api/settings/" in req.url or "/api/inference/validate" in req.url
+
     def _commit_started(req):
         try:
             if _is_commit(req):
@@ -302,8 +242,6 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-    # Finished or failed alike: either way that /load is over, and a failed one is for the
-    # assertions after the wait to report, not for the wait to sit out.
     def _commit_ended(req):
         _commits["inflight"].discard(req)
         try:
@@ -317,36 +255,18 @@ with sync_playwright() as p:
     ctx.on("requestfailed", _commit_ended)
 
     def click_and_wait_for_commit(btn, what: str) -> None:
-        """Click a Load/Save button and return once what it sent has been answered.
-
-        Replaces a fixed 1.5-2.5 s pause. The click writes localStorage synchronously, then
-        mirrors the override to the server and (for Load/Reload) loads the model; this waits
-        for those requests to start and for none to be in flight for three polls in a row
-        (a staged VRAM budget PUT runs before the load, so one quiet poll is not enough).
-        Never raises: a click that sends nothing is logged after 10 s and the assertions after
-        it decide, as they did after the fixed pause.
-        """
-        # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
-        # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
-        # A flow can also stop short of /load (validation refused, consent declined); with
-        # validate and unload tracked, its steps sit tens of ms apart, so 3 s with nothing in
-        # flight and no /load started means it ended there.
+        """Click, then wait for its requests to start and stay quiet for three polls; never raises."""
+        # A Load/Reload click is answered only by its /load; a flow stopping short goes quiet for 3 s.
         label = " ".join((btn.text_content() or "").split())
         expects_load = label in ("Load model", "Reload model")
-        # Snapshot AFTER a Playwright call: the sync API delivers request events only while one
-        # runs (see wait_until), so a page-restore /load already sent would otherwise be recorded
-        # during the call above and counted as this click's. Only a /load sent after this point
-        # answers the click; a restore load ending while the clicked flow is still in /validate
-        # would otherwise reopen the race.
+        # Snapshot after a Playwright call: request events only arrive during one, so a restore /load
+        # already sent would otherwise count as this click's.
         started = _commits["started"]
         loads_before = len(_commits["loads"])
         clicked_at = time.monotonic()
         btn.click()
         quiet = [0]
-        # What the wait can see change. A request whose finish event never reaches the driver
-        # leaves `inflight` non-empty for good; on PR #12333's run the clicked flow sent /validate
-        # and a settings PUT, the server answered both within a second, and this still sat out
-        # the full 180 s, which pushed the script past its 720 s cap.
+        # A request whose finish event never arrives would leave `inflight` non-empty forever.
         progress = [None, time.monotonic()]
 
         def _pending_loads():
@@ -358,13 +278,16 @@ with sync_playwright() as p:
             seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
             if seen != progress[0]:
                 progress[:] = [seen, time.monotonic()]
-            # 30 s with nothing tracked starting or ending, while only settings writes are open,
-            # is a lost event rather than work in progress. Any open /load, /validate or /unload
-            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
-            # teardown can take minutes.
+            # 30 s with nothing tracked starting or ending, while only settings writes or /validate
+            # are open, is a lost event rather than work in progress. /validate answers in under a
+            # second on CI; on PR #13678's run (and main's 38452407726) one never reported its end,
+            # though the server logged every validate answered within 1 s, and each later step then
+            # sat out the full 180 s on that same stale entry until the 720 s cap killed the script.
+            # Any open /load or /unload keeps the full timeout: the frontend awaits /unload before
+            # /load, and a large GGUF teardown can take minutes.
             if (
                 _commits["inflight"]
-                and all("/api/settings/" in req.url for req in _commits["inflight"])
+                and all(_is_lost_event_candidate(req) for req in _commits["inflight"])
                 and not _pending_loads()
                 and time.monotonic() - progress[1] > 30
             ):
@@ -396,10 +319,9 @@ with sync_playwright() as p:
                 info(f"WARN {what}: the load flow ended without sending /api/inference/load")
             elif outcome == "stalled":
                 info(
-                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
+                    f"WARN {what}: nothing changed for 30s with only settings writes or /validate open; still counted in "
                     f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
                 )
-                # Those events are not coming; carrying them would stall every later wait too.
                 _commits["inflight"].clear()
         except TimeoutError as exc:
             info(
@@ -421,12 +343,7 @@ with sync_playwright() as p:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
     def read_configs() -> dict:
-        """Return the parsed unsloth_model_configs map (or {} if absent/invalid).
-
-        Absent and unreadable are not the same: "no entry" is what several assertions
-        below treat as success, so storage that failed to read must be said out loud
-        rather than passed off as a clean slate.
-        """
+        """Parsed unsloth_model_configs map, or {}; unreadable storage must not look like an empty one."""
         raw = robust_evaluate(page, "() => localStorage.getItem('unsloth_model_configs')")
         if not raw:
             return {}
@@ -445,24 +362,15 @@ with sync_playwright() as p:
         return [v for v in cfg.values() if isinstance(v, dict)]
 
     def entries_for_model(cfg: dict) -> list[dict]:
-        """Only the entries keyed to the model under test.
-
-        The keys embed the repo id and quant (`v2:["<repo>","<quant>"]`), so scanning
-        every entry lets a value belonging to a different model -- or to another quant
-        of this one -- satisfy a persistence, reset or migration assertion. Both halves
-        have to match. Falls back to all entries only when no key has the versioned
-        shape, so a schema change degrades to the old behaviour rather than silently
-        asserting nothing.
-        """
+        """Only entries keyed to this model and quant; all entries only if no key has the versioned
+        shape."""
         want = (_normalize_model_identity(GGUF_REPO), GGUF_VARIANT.strip().lower())
         recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
         if not recognised:
             return config_entries(cfg)
         matched = []
         for key in recognised:
-            # Parse the key rather than substring-searching its serialised form: the repo alone also matches this
-            # repo's *other* quants, so a stale entry for one quant could stand in for the one under test and mask
-            # its failed save.
+            # Parse the key: a substring match on the repo also matches its other quants.
             try:
                 parts = json.loads(str(key).split(":", 1)[1])
             except Exception:
@@ -473,14 +381,10 @@ with sync_playwright() as p:
             got = (_normalize_model_identity(str(raw[0])), str(raw[1]).strip().lower())
             if got == want and isinstance(cfg[key], dict):
                 matched.append(cfg[key])
-        # Scoping is meaningful, so an empty result is a real answer: returning every entry here is what let another
-        # model's value satisfy these checks.
+        # An empty result is a real answer; returning everything let another model satisfy the checks.
         return matched
 
-    # ─────────────────────────────────────────────────────
     if LOGIN_PW:
-        # Attach mode: log in via the API and seed the token before navigation, skipping the first-boot change-password
-        # dance.
         step("setup: API login + token seed (attach to running Unsloth)", NO_STEP_CEILING)
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
@@ -490,8 +394,7 @@ with sync_playwright() as p:
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
         step("setup: change-password", NO_STEP_CEILING)
-        # 3-attempt retry: the form can re-render mid-fill on slow runners and detach the password fields; each retry
-        # re-navigates with a fresh page.
+        # The form can re-render mid-fill on slow runners and detach the password fields.
         form_err: Exception | None = None
         for _form_attempt in range(3):
             try:
@@ -532,7 +435,7 @@ with sync_playwright() as p:
                 )
                 if _form_attempt < 2:
                     if "ERR_NO_BUFFER_SPACE" in str(e):
-                        # Kept: ENOBUFS is the OS out of socket buffers; there is nothing to poll, only time to give it.
+                        # ENOBUFS has nothing to poll; only time helps.
                         backoff_s = 5 if _form_attempt == 0 else 15
                         time.sleep(backoff_s)
                     page = recover_or_replace_page(
@@ -608,25 +511,15 @@ with sync_playwright() as p:
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
-    load_posts.clear()  # drop the setup load; keep only UI-driven loads below.
+    load_posts.clear()
 
-    # ─────────────────────────────────────────────────────
-    # Picker helpers (proven selectors).
-    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
-    # Unfiltered, for diagnostics: which gears exist at all when the one being looked for did not.
-    # Kept as CSS rather than reusing row_gear's role lookup, because the point here is to report what is there, not to
-    # match anything.
     GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
 
     def diagnose(name, selector):
-        """Screenshot + JSON sidecar (URL, body, storage) for a selector that missed.
-
-        Without this a miss reaches the log as one line naming a selector, and the
-        artifact holds no record of what the picker was actually showing -- which is
-        how a picker that had closed itself read as a missing gear.
-        """
+        """Capture a screenshot and JSON state on a miss, since a log line alone hides what was on
+        screen."""
         rows = []
         try:
             opts = page.locator("[data-model-picker-option]")
@@ -655,7 +548,6 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
-        # The visible wait is the condition the old 900 ms pause before it was padding.
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -664,20 +556,14 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
             page.locator(POPOVER).first.wait_for(state = "hidden", timeout = 10_000)
         except Exception:
-            pass  # best-effort, as the fixed pause was
+            pass
 
     def reveal_on_device_row(popover, hint):
-        """Bring the row into view without clicking it.
-
-        Since single-quant rows collapse (#7736) the row loads its quant in one
-        click and the picker closes, so selecting first would dismiss the gear
-        this is about to press.
-        """
+        """Scroll the row into view only: clicking a single-quant row loads it and closes the picker."""
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
-        # Rows, not 700 ms: until the cache scan lands the tab renders no rows at all. Returns
-        # at once when the tab is populated; same wait as playwright_memory_estimate.py.
+        # Until the cache scan lands the tab renders no rows at all.
         wait_for_first(popover.locator("[data-model-picker-option]"), timeout_ms = 20_000)
         row = popover.locator("[data-model-picker-option]", has_text = hint).first
         if _count(row) == 0:
@@ -685,7 +571,6 @@ with sync_playwright() as p:
             if _count(search):
                 search.click()
                 search.fill(hint)
-                # The filtered row itself, not 700 ms after typing.
                 wait_for_first(
                     popover.locator("[data-model-picker-option]", has_text = hint),
                     timeout_ms = 10_000,
@@ -698,8 +583,6 @@ with sync_playwright() as p:
         if row is None:
             return None
         row.click()
-        # The click either loads a collapsed sole-quant row (the picker closes) or expands a
-        # multi-quant one (its gears appear). Wait for whichever happens, not 800 ms.
         try:
             wait_until(
                 lambda: not popover.is_visible() or _count(popover.locator(GEAR_ANY)) > 0,
@@ -716,13 +599,9 @@ with sync_playwright() as p:
         """Back is unique to the config page and always rendered inside the picker."""
         return _count(popover.get_by_role("button", name = "Back to model list")) > 0
 
-    # The collapsed sole-quant row appears only after an async probe lands, so an absent gear means either a multi-quant
-    # repo or a probe in flight, with no DOM state to tell them apart.
-    # Only a multi-quant repo pays the full wait, once per open_config.
+    # The sole-quant row appears only after an async probe, indistinguishable from a multi-quant repo.
     SOLE_QUANT_SETTLE_MS = 30_000
 
-    # Long enough for the probe, short enough that naming a quant that is not there does not spend the whole settle
-    # window before falling back to the repo.
     QUANT_GEAR_MS = 2_000
 
     def row_gear(
@@ -731,14 +610,7 @@ with sync_playwright() as p:
         quant = None,
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
-        # The gear is a sibling of the row, not inside [data-model-picker-option], so scope it by repo id;
-        # case-insensitive to match the has_text row lookup.
-        #
-        # The quant, when given, is anchored to the end rather than searched for anywhere in
-        # the label. Every label is "<repo> <quant>", so an unanchored match lets F16 find
-        # BF16, and `.first` among variants the expander orders by fit rather than by name
-        # then opens the other one, after which the exact-key storage checks fail on a quant
-        # that was working.
+        # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
         pattern = f"^Inference settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
@@ -755,15 +627,8 @@ with sync_playwright() as p:
     def open_config(popover, hint):
         if reveal_on_device_row(popover, hint) is None:
             return None
-        # A sole-quant repo is a collapsed row whose click selects the model and closes
-        # the picker, so click its gear without touching the row; a multi-quant repo
-        # shows gears only once the row is expanded.
-        #
-        # The quant first at each step: with "Expand quantizations" on, the expander
-        # is already mounted, so a repo-only lookup finds some gear straight away and
-        # never reaches the expansion branch -- and which one it finds is then
-        # arbitrary. Repo-only stays as the fallback, for the collapsed single-quant
-        # row whose label carries its own quant and need not carry this one.
+        # A sole-quant row click selects the model and closes the picker, so click its gear directly.
+        # Quant first: with "Expand quantizations" on, a repo-only lookup picks an arbitrary gear.
         gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
         if gear is None:
             gear = row_gear(popover, hint)
@@ -771,7 +636,6 @@ with sync_playwright() as p:
             if select_on_device_row(popover, hint) is None:
                 return None
             if not popover.is_visible():
-                # The probe landed mid-click, so the row selected the model; reopen for the gear that is now there.
                 popover = open_picker()
                 if reveal_on_device_row(popover, hint) is None:
                     return None
@@ -781,16 +645,12 @@ with sync_playwright() as p:
         if gear is None:
             return None
         gear.click()
-        # Gate on the page itself rather than a sleep, so a slow mount is waited out and a failed open is not mistaken
-        # for a missing Context Length input below.
         if (
             wait_for_first(
                 popover.get_by_role("button", name = "Back to model list"), timeout_ms = 5_000
             )
             is not None
         ):
-            # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
-            # signal to poll (see its definition).
             page.wait_for_timeout(CONFIG_SETTLE_MS)
             return popover
         diagnose("open-config-not-open", 'button[name="Back to model list"]')
@@ -807,34 +667,23 @@ with sync_playwright() as p:
     PRIMARY_BUTTON_NAMES = re.compile(r"^(Load model|Reload model|Save settings|Forget settings)$")
 
     def primary_button(popover):
-        # Anchored: get_by_role matches the accessible name as a substring by default, so
-        # "Load model" would also match "Reload model". `.first` is the primary: it precedes the
-        # separate Save settings button (#10216).
-        #
-        # One locator for all four, not the name seen at lookup: the label follows the runtime
-        # store, which fills in after a page load, so a resident model can read "Load model" and
-        # then "Reload model" a moment later. A locator pinned to the first name then resolves to
-        # nothing and its click waits out the whole timeout.
+        # Anchored: name matching is substring by default, so "Load model" matches "Reload model".
+        # One locator for all names: the label flips once the runtime store fills in.
         b = popover.get_by_role("button", name = PRIMARY_BUTTON_NAMES).first
         return b if _count(b) else None
 
-    # ─────────────────────────────────────────────────────
     # 1. Hidden infra models absent from the picker (HARD).
-    # ─────────────────────────────────────────────────────
     step("hidden infra models absent from picker")
     popover = open_picker()
     shoot("02-picker-open")
     needles = ["bge-small-en-v1.5", "stories260"]
     tabs = ["Recommended", "On Device", "Connected"]
     hidden_ok = True
-    # This step asserts an absence, so it passes for free if the picker renders no rows at all -- which is exactly the
-    # state a broken picker is in. Prove it is populated first, or "hidden" means nothing.
+    # An absence check passes on an empty picker, so prove it is populated first.
     od_tab = page.get_by_role("tab", name = "On Device").first
     if _count(od_tab):
         od_tab.click()
-    # Waited for, not counted once: until cachedReady flips the picker renders the loading state with no rows at all,
-    # so a fixed pause turns a slow cache scan into a hard failure. A populated picker attaches a row as soon as it has
-    # one, so this returns immediately in the normal case and only spends the timeout when there is genuinely nothing.
+    # Until cachedReady flips the picker renders no rows.
     try:
         popover.locator("[data-model-picker-option]").first.wait_for(
             state = "attached", timeout = 20_000
@@ -861,11 +710,8 @@ with sync_playwright() as p:
             if _count(search):
                 search.click()
                 search.fill(needle)
-                # An absence check, so it must read the list the query produced, not the one
-                # before it. An empty list cannot tell "filtered" from "not applied yet" (the
-                # previous needle leaves one), so first outlast the picker's 300 ms query
-                # debounce (useDebouncedValue), then wait until every row on screen matches the
-                # needle. Never fails by itself; the count below decides.
+                # Outlast the 300 ms debounce, then wait until every row matches the needle: an empty list cannot
+                # tell filtered from not-yet-applied.
                 page.wait_for_timeout(PICKER_DEBOUNCE_MS)
                 try:
                     page.wait_for_function(
@@ -893,16 +739,13 @@ with sync_playwright() as p:
                 hidden_ok = False
                 fail(f"infra model {needle!r} visible in picker '{tab_name}' tab ({c} rows)")
             if _count(search):
-                # The next tab's own filter wait covers the reset; nothing reads the list here.
                 search.fill("")
     if hidden_ok:
         info("OK hidden: bge-small-en-v1.5 + stories260K absent from every picker tab")
     shoot("03-hidden-check")
     close_picker()
 
-    # ─────────────────────────────────────────────────────
     # 2. Context Length persists (load + request + reload) (HARD).
-    # ─────────────────────────────────────────────────────
     step(f"context length {DISTINCT_CTX} persists", LOAD_STEP_BUDGET_S)
     popover = open_picker()
     if open_config(popover, MODEL_HINT) is None:
@@ -931,7 +774,7 @@ with sync_playwright() as p:
             if btn is None:
                 fail("primary Load/Save button not found in run-settings")
             else:
-                # Keep the input focused. The button click must commit the draft and use it in the same load request.
+                # Keep the input focused: the click must commit the draft into the same load request.
                 click_and_wait_for_commit(btn, "context length Load")
                 shoot("06-after-load")
 
@@ -958,8 +801,6 @@ with sync_playwright() as p:
                 if got_req:
                     info(f"OK persist(request): /api/inference/load max_seq_length={DISTINCT_CTX}")
                 else:
-                    # The UI may debounce the load; localStorage is the primary proof, so only warn if the request was
-                    # missed.
                     runtime_warn(
                         "no /api/inference/load carried "
                         f"max_seq_length={DISTINCT_CTX}; posts={load_posts!r}"
@@ -973,9 +814,7 @@ with sync_playwright() as p:
     if open_config(popover, MODEL_HINT) is None:
         fail("could not reopen run-settings after reload")
     else:
-        # The popover can render before the stored per-model config has been applied to it, so a
-        # single read right after opening can see the default. Wait for the stored value; a value
-        # that was really lost never shows up and still fails below.
+        # The popover can render before the stored config is applied, so wait for the stored value.
         val = None
         deadline = time.monotonic() + 15
         while True:
@@ -984,9 +823,7 @@ with sync_playwright() as p:
             if _as_int(val) == DISTINCT_CTX or time.monotonic() >= deadline:
                 break
             page.wait_for_timeout(250)
-        # The input alone cannot prove the remembered record survived: with the model still loaded
-        # the page seeds the field from the active runtime, which also says 4096. Read the stored
-        # per-model entry again, after the reload, so a lost record fails even if the UI looks right.
+        # With the model loaded the field is seeded from the runtime, so re-read the stored entry.
         stored = [
             e
             for e in entries_for_model(read_configs())
@@ -1003,9 +840,7 @@ with sync_playwright() as p:
             fail(f"Context Length did not persist across reload (got {val!r} after 15s)")
         shoot("07-after-reload")
 
-    # ─────────────────────────────────────────────────────
     # 3. Reset clears the override (never pins context) (HARD).
-    # ─────────────────────────────────────────────────────
     step("reset clears the per-model override", LOAD_STEP_BUDGET_S)
     reset_btn = popover.get_by_role("button", name = "Reset").first
     if _count(reset_btn) == 0:
@@ -1013,20 +848,16 @@ with sync_playwright() as p:
     else:
         try:
             reset_btn.click()
-            # Reset is disabled once the draft is back at the defaults: wait for that, not 500 ms.
             try:
                 expect(reset_btn).to_be_disabled(timeout = 5_000)
             except AssertionError:
                 info("WARN Reset did not report the defaults restored within 5s")
         except Exception as e:
             fail(f"Reset click failed: {e}")
-        # The input after Reset is informational only: a live-loaded model can still echo its context even with the
-        # stored override gone. The regression we guard ("Reset PINS the override") lives in localStorage, asserted
-        # below.
+        # A live-loaded model can echo its context after Reset; storage is what is asserted.
         ctx_in = context_input(popover)
         after_reset = ctx_in.input_value() if ctx_in else None
         info(f"reset: Context Length input now shows {after_reset!r}")
-        # Commit the reset so the stored override is dropped, then assert storage.
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
             click_and_wait_for_commit(btn, "reset commit")
@@ -1040,18 +871,9 @@ with sync_playwright() as p:
             info("OK reset: distinctive context cleared from unsloth_model_configs")
         shoot("08-after-reset")
 
-    # ─────────────────────────────────────────────────────
-    # 3b. Re-typing the value already shown must not pin an override (HARD).
-    # Entering the currently displayed context commits no onChange (the value is
-    # unchanged), so the cached blur value must not be replayed into a stored
-    # override on Load. Otherwise re-typing the shown number, or doing so before a
-    # Reset, recreates a phantom context pin. The box shows "Auto" while nothing is
-    # pinned, so the number it edits is read from the focused input below.
-    # ─────────────────────────────────────────────────────
+    # Re-typing the shown value must not pin an override (HARD); Auto shows while nothing is pinned.
     step("re-typing the shown context does not pin an override", LOAD_STEP_BUDGET_S)
-    # Own its state instead of inheriting the step above: the previous step commits a
-    # Reset, which can close the picker, and inheriting turned that into a silent skip
-    # that let this regression go unchecked.
+    # Own its state: the Reset step can close the picker, which turned this into a silent skip.
     popover = open_picker()
     if open_config(popover, MODEL_HINT) is None:
         fail("could not open run-settings for the re-type-shown check")
@@ -1059,12 +881,8 @@ with sync_playwright() as p:
         native_default = None
     else:
         ctx_in = context_input(popover)
-        # With no override stored the box reads "Auto", and only reveals the number it
-        # would edit (the fitted context) once it has focus. Click first, or there is
-        # nothing numeric to re-type and the step skips the regression it guards.
         if ctx_in is not None:
             ctx_in.click()
-            # The focused box swaps "Auto" for the number it would edit; wait for the number.
             try:
                 wait_until(
                     lambda: _as_int(ctx_in.input_value()) is not None,
@@ -1077,8 +895,7 @@ with sync_playwright() as p:
                 info(f"WARN {exc}")
         native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
-        # A skip here is not a pass: this step is the only guard on the phantom-pin
-        # regression, so say so at the level STRICT gates rather than as prose.
+        # A skip is not a pass: this step is the only guard on the phantom-pin regression.
         soft_fail("re-type-shown did not run: Context Length input has no numeric default")
     else:
         remember = popover.get_by_label("Remember for this model").first
@@ -1092,31 +909,13 @@ with sync_playwright() as p:
         expect(ctx_in).to_have_value(str(native_default), timeout = 5_000)
         btn = primary_button(popover)
         if btn is not None and btn.is_enabled():
-            # Same-click Load: the button click must commit the draft, but a draft equal to the shown value carries
-            # no override, so the click must still commit the reset and leave no stored `customContextLength`.
             click_and_wait_for_commit(btn, "re-typed context Load")
         cfg = read_configs()
         entries = entries_for_model(cfg)
         pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
 
-        # Not every stored context here is a phantom pin. model-config-page.tsx pins the
-        # active context ON PURPOSE when the placement is fixed:
-        #
-        #   const pinFixedLayerContext =
-        #     target.isGguf && loadableConfig.gpuMemoryMode === "manual" &&
-        #     loadableConfig.gpuLayers != null && loadableConfig.gpuLayers >= 0 &&
-        #     loadableConfig.customContextLength == null && activeLoadedContext != null;
-        #
-        # with the reason stated above it: "If the user fixes GPU Layers (Manual) and
-        # remembers, pin that shown context so a later fresh load keeps the fitted
-        # placement instead of sending native/0 and recreating the OOM." Storing the
-        # context is the feature; not storing it is the bug it was written to prevent.
-        #
-        # This step could not tell the two apart, so on a runner where the placement IS
-        # manual -- which is every CPU-only CI runner, gpuLayers 0 -- it reported the
-        # documented behaviour as a regression. It went unnoticed because it inherited a
-        # closed popover from the Reset step and silently skipped until #7760 made it own
-        # its state; the first time it actually ran, it failed.
+        # Not every stored context is a phantom pin: model-config-page.tsx pins the active context on purpose
+        # for a manual GPU-layer placement (pinFixedLayerContext), which includes every CPU-only runner.
         expected_pin = [
             e
             for e in pinned
@@ -1140,9 +939,7 @@ with sync_playwright() as p:
         shoot("08b-after-retype-shown")
     close_picker()
 
-    # ─────────────────────────────────────────────────────
     # 4. Advanced settings persist (best-effort, never gates).
-    # ─────────────────────────────────────────────────────
     step("advanced (KV cache dtype / tensor parallel) persists", LOAD_STEP_BUDGET_S)
     try:
         popover = open_picker()
@@ -1153,13 +950,11 @@ with sync_playwright() as p:
                     adv.check()
                 except Exception:
                     adv.click()
-                # The Advanced section renders with the switch's state; wait for the state.
                 try:
                     expect(adv).to_be_checked(timeout = 5_000)
                 except AssertionError:
-                    pass  # best-effort step: the persistence read below reports what happened
-            # The Tensor Parallelism Radix Switch has no aria-label, so target the first switch after the
-            # "Tensor Parallelism" text.
+                    pass
+            # The Tensor Parallelism switch has no aria-label, so target it by the preceding text.
             tp = popover.locator(
                 'xpath=.//span[contains(text(),"Tensor Parallelism")]'
                 '/following::*[@role="switch"][1]'
@@ -1197,42 +992,14 @@ with sync_playwright() as p:
     except Exception as e:
         runtime_warn(f"advanced-persist check errored: {e}")
 
-    # ─────────────────────────────────────────────────────
-    # 5. Legacy migration is idempotent (gates in CI via soft_fail).
-    #    Seed a pre-feature unsloth_load_settings store, confirm it migrates once with the value preserved, then
-    #    reload with a fresh legacy seed and confirm the migration does not re-run, duplicate, or clobber. Re-running
-    #    on every reload was the regression that reverted the predecessor PR.
-    # ─────────────────────────────────────────────────────
+    # 5. Legacy unsloth_load_settings migrates once and stays idempotent (soft_fail gates in CI).
     step("legacy unsloth_load_settings migrates once and stays idempotent", LOAD_STEP_BUDGET_S)
 
     _seed_marks = [0]
 
     def seed_legacy_for_next_document(seed: dict, *, wipe_migrated: bool) -> None:
-        """Put the legacy store in place for the NEXT document, before any app code runs.
-
-        Not `evaluate` on the live page, which is what this used to do. Writing the
-        seed into the document that is about to be discarded makes the assertion race
-        that document's own in-flight work: `savePerModelConfig` in
-        model-config-page.tsx runs from the `.then()` of a GET
-        /api/settings/openai-auto-switch/overrides, so a response that arrives in the
-        window between `removeItem('unsloth_model_configs')` and the navigation
-        RE-CREATES the key from the server row. The reloaded page then finds that key
-        already present, `mergeLegacyEntries` skips the legacy entry it was seeded to
-        migrate (`Object.hasOwn(map, key)`), and `migrateLegacyLoadSettingsOnce`
-        latches `unsloth_model_configs_migrated` anyway -- so the step reported the
-        migration dropping a value when nothing had migrated at all.
-
-        That window is roughly 20ms wide and only opens when the previous step's Load
-        outruns its own wait, which is why this failed intermittently rather than
-        every time: three reds in fourteen main runs, with the commit that introduced
-        the write-back itself green.
-
-        An init script runs at document start on the new page, after every write from
-        the old document has gone with it, so the store the migration reads is the one
-        this step asked for. The sessionStorage mark keeps it to a single document:
-        init scripts cannot be removed, and re-seeding on the reload below would
-        re-arm the very legacy entry the idempotency half needs to stay absent.
-        """
+        """Seed via an init script on the next document; seeding the live page races its server
+        write-back."""
         _seed_marks[0] += 1
         mark = f"__ui_modelcfg_seed_{_seed_marks[0]}"
         page.add_init_script(
@@ -1253,28 +1020,9 @@ with sync_playwright() as p:
         )
 
     def clear_server_overrides_for_model() -> None:
-        """Drop the server-side override rows for the model under test.
-
-        This step clears localStorage and nothing else, which was fine while local
-        storage was the only thing feeding the panel. It is not any more: the shared
-        override row now outranks the local record, and opening the panel writes the
-        row back down into `unsloth_model_configs`. Steps 2 to 4 above each mirror a
-        save to the server and nothing removes it, so what this step actually measured
-        was the migration racing that write-back -- and the migrated value lost
-        whenever the row carried a context of its own.
-
-        Seen on main as two different-looking failures from the same cause: an entry
-        with nothing from the legacy seed in it (row written over a wiped map), and an
-        entry carrying the seed's kvCacheDtype but step 3b's context (row written over
-        the migrated map). Removing the row leaves the legacy import as the only thing
-        that can put a value in this key, which is what the step is about.
-        """
-        # MODEL AND QUANT NORMALISED SEPARATELY, which is what `entries_for_model` already does to these same two
-        # values. Folding the whole `<model>:<quant>` string as one identity only works while the model half folds too:
-        # `normalizeModelIdentity` deliberately keeps a plain POSIX path's case, so with a local-path GGUF_REPO the row
-        # `/models/Foo.gguf:UD-Q4_K_XL` normalises to itself and never matched the lowercased `...:ud-q4_k_xl` this was
-        # comparing against. The stale row then survived the cleanup and the migration check went on to measure server
-        # precedence instead.
+        """Also delete the server override rows: opening the panel writes them back over the
+        migrated value."""
+        # Normalise model and quant separately: normalizeModelIdentity keeps a POSIX path's case.
         want_model = _normalize_model_identity(GGUF_REPO)
         want_quant = GGUF_VARIANT.strip().lower()
 
@@ -1288,14 +1036,8 @@ with sync_playwright() as p:
             )
 
         def rows_for_model() -> list[str] | None:
-            """The override rows for this model, or None if the inventory could not be READ.
-
-            None is not the empty list. `evaluate_fetch` reports a timeout or an HTTP error by
-            returning `status == 0` / a non-None `error` rather than raising, so a request that
-            never landed used to come back as "there are no override rows" -- the cleanup did
-            nothing, its own post-delete verification passed on the same silence, and stale rows
-            went on to contaminate the migration check with no line of output saying so.
-            """
+            """Override rows for this model, or None when the read failed; a failed fetch is not an
+            empty list."""
             resp = evaluate_fetch(
                 page,
                 f"{BASE}/api/settings/openai-auto-switch/overrides",
@@ -1330,18 +1072,10 @@ with sync_playwright() as p:
             )
             return
         remove_rows(stale)
-        # AND IT HAS TO STAY REMOVED. `syncModelOverride` is fire-and-forget, so a mirror PUT
-        # from steps 2 to 4 can still be in flight when this runs and recreate the row moments
-        # after a single post-delete read found it gone -- which puts back exactly the
-        # contamination this cleanup exists to remove. So absence is confirmed over a short
-        # window rather than at one instant, and a row that comes back is removed again.
-        # EVERY INTERVAL, not until the first empty one. Breaking on the first empty sample
-        # confirms absence at one instant plus 250 ms, which is the same single-read weakness one
-        # step further along: a queued PUT arriving in the third interval still recreates the row
-        # before hydration reads it. The window is only a window if it is sampled to the end.
+        # syncModelOverride is fire-and-forget, so a late PUT can recreate the row; sample the whole
+        # window and remove it again each time.
         left: list[str] | None = []
         for _ in range(4):
-            # Kept: this samples a window on purpose (see above); it is not waiting for a state.
             page.wait_for_timeout(250)
             seen_now = rows_for_model()
             if seen_now is None:
@@ -1357,8 +1091,6 @@ with sync_playwright() as p:
                 "server precedence instead"
             )
         elif left:
-            # Not fatal on its own: say so rather than let the migration assertion below report the leftover row as the
-            # migration losing a value.
             runtime_warn(
                 f"server override rows for the model under test survived removal: {left}; "
                 "the migration check below may be measuring server precedence instead"
@@ -1367,16 +1099,7 @@ with sync_playwright() as p:
             info(f"cleared {len(stale)} server override row(s) left by the earlier steps")
 
     def wait_for_migration_settled(timeout_ms: int = 15_000) -> str | None:
-        """Block until the legacy import has actually run, and return its flag.
-
-        The condition, not a sleep. `migrateLegacyLoadSettingsOnce` sets
-        `unsloth_model_configs_migrated` as its last act on every path it takes --
-        imported, nothing to import, legacy store unreadable -- so the flag appearing
-        is exactly "the import has been and gone", which is what the assertions below
-        need to be true before they read anything. A fixed wait either reads too early
-        on a slow runner, which is how this step reported a value missing that was
-        about to be written, or pads every green run with time it does not need.
-        """
+        """Wait for the migrated flag, which the import sets last on every path, rather than sleeping."""
         deadline = time.monotonic() + timeout_ms / 1000
         flag = None
         while time.monotonic() < deadline:
@@ -1396,9 +1119,7 @@ with sync_playwright() as p:
                 "contextLength": DISTINCT_CTX,
                 "kvCacheDtype": "q8_0",
                 "tensorParallel": True,
-                # A fingerprint, and the reason it is this field: no other step here sets Disable Vision, and
-                # toApiOverride only sends disable_vision when true, so a record carrying it can only have come from
-                # this seed.
+                # Fingerprint: only this seed sets disableVision (toApiOverride sends it only when true).
                 "disableVision": True,
             }
         }
@@ -1406,20 +1127,16 @@ with sync_playwright() as p:
         page.reload()
         composer = page.locator('textarea[aria-label="Message input"]')
         composer.wait_for(state = "visible", timeout = 60_000)
-        # Opening the picker config forces the store to read (which migrates).
+        # Opening the picker config makes the store read, which migrates.
         popover = open_picker()
         open_config(popover, MODEL_HINT)
         flag_first = wait_for_migration_settled()
         cfg_first = read_configs()
         model_entries = entries_for_model(cfg_first)
         migrated_ctx = any(e.get("customContextLength") == DISTINCT_CTX for e in model_entries)
-        # Did the import run at all? Two very different failures were being reported as one: "it ran and lost the
-        # context" is a bug in the migration, while "nothing from this seed is here" means the key was written by
-        # something else and the import skipped it, which is what a racing write produces.
+        # Separate "ran and lost the context" from "skipped because something else wrote the key".
         migrated_any = any(e.get("disableVision") is True for e in model_entries)
-        # AND THE PASS REQUIRES THE FINGERPRINT TOO. The context alone does not say where it came from: a server
-        # override row that survived the cleanup carries DISTINCT_CTX as well -- step 3b wrote it -- and hydration can
-        # put that into `model_entries` with the legacy import never having applied the seed at all.
+        # Require the fingerprint too: a surviving server override row also carries DISTINCT_CTX.
         if migrated_ctx and migrated_any:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
         elif migrated_ctx:
@@ -1447,13 +1164,10 @@ with sync_playwright() as p:
         shoot("09-after-migration")
         close_picker()
 
-        # Idempotency: a second reload with a DIFFERENT legacy entry must not re-run the migration (the persistent flag
-        # blocks it), so the new key must not leak in, nothing duplicates, and the migrated value is untouched.
+        # Idempotency: a second reload with a different legacy entry must not re-run the migration.
         if migrated_ctx:
             probe_key = "unsloth/__idem_probe__::Q4_K_M"
-            # Same document-start seeding as the first half, and for the same reason: this one deliberately leaves
-            # `unsloth_model_configs` alone, so a write racing the navigation would land in the very map the assertions
-            # below compare key-for-key.
+            # Seed at document start so no racing write lands in the map compared key-for-key.
             seed_legacy_for_next_document(
                 {probe_key: {"contextLength": DISTINCT_CTX + 2048, "tensorParallel": True}},
                 wipe_migrated = False,
@@ -1462,10 +1176,7 @@ with sync_playwright() as p:
             composer.wait_for(state = "visible", timeout = 60_000)
             popover = open_picker()
             open_config(popover, MODEL_HINT)
-            # The flag is already "1" here, so this waits on the store having been read
-            # by the reloaded page rather than on the import: `readMap` is what would
-            # re-run the import if the flag were being ignored, which is the regression
-            # this half exists to catch.
+            # The flag is already "1", so wait for readMap, which would re-run the import if it were ignored.
             wait_for_migration_settled()
             cfg_second = read_configs()
             keys_first = set(cfg_first.keys())
@@ -1494,6 +1205,55 @@ with sync_playwright() as p:
             close_picker()
     except Exception as e:
         soft_fail(f"migration idempotency check errored: {e}")
+
+    # ─────────────────────────────────────────────────────
+    # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
+    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
+    # ─────────────────────────────────────────────────────
+    step("Hub Run opens run settings on a page loaded at /hub")
+    try:
+        page.goto(f"{BASE}/hub?tab=downloaded", wait_until = "domcontentloaded", timeout = 60_000)
+        # The row's own button; "More options for <repo>" also names the model.
+        row = page.get_by_role("button", name = re.compile(rf"^\S*{re.escape(MODEL_HINT)}\S*$", re.I))
+        heading = page.get_by_role("heading", name = re.compile(re.escape(MODEL_HINT), re.I))
+        row.first.wait_for(state = "visible", timeout = 60_000)
+
+        # The Hub selects its first row once the list lands, which can replace an early click.
+        def model_selected() -> bool:
+            if _count(heading):
+                return True
+            row.first.click()
+            return False
+
+        wait_until(
+            model_selected, timeout_s = 60, what = "Hub selecting the model", interval_s = 2, page = page
+        )
+        page.locator("button").filter(has_text = re.compile(r"^\s*Run\s*$")).last.click()
+        page.wait_for_url(re.compile(r"/chat(\?|$)"), timeout = 30_000)
+        settings = page.get_by_role("button", name = "Back to model list", exact = True)
+        # Sampled for a while: settings that open and are then dismissed must not pass on one sight.
+        seen = []
+        for _ in range(5):
+            page.wait_for_timeout(1000)
+            seen.append(_count(settings) > 0 and settings.first.is_visible())
+        shoot("11-hub-run-settings")
+        if all(seen):
+            info("OK Hub Run kept run settings open on a page loaded at /hub")
+            # The composer ignores focus() while the settings are open, and must stop once they close.
+            page.keyboard.press("Escape")
+            settings.first.wait_for(state = "hidden", timeout = 10_000)
+            composer = page.locator('textarea[aria-label="Message input"]').first
+            composer.evaluate("el => el.focus()")
+            if composer.evaluate("el => el === document.activeElement"):
+                info("OK composer takes focus again after the run settings close")
+            else:
+                fail("composer could not be focused after the Hub Run settings closed")
+        else:
+            fail(
+                f"Hub Run lost its run settings on a page loaded at /hub (visible per second: {seen})"
+            )
+    except Exception as e:
+        fail(f"Hub Run check errored: {e}")
 
     # ─────────────────────────────────────────────────────
     if page_errors:

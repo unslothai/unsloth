@@ -1,4 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -53,7 +53,7 @@ base_model_class = model.__class__.__name__
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    r = 64,
     target_modules = [
         "q_proj",
         "k_proj",
@@ -64,12 +64,12 @@ model = FastLanguageModel.get_peft_model(
         "down_proj",
     ],
     lora_alpha = 64,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
     random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
+    use_rslora = False,
+    loftq_config = None,
 )
 print("✅ Model and LoRA adapters loaded successfully!")
 
@@ -137,14 +137,14 @@ print("🔍 SECTION 6: Running Inference")
 print(f"{'='*80}")
 
 
-FastLanguageModel.for_inference(model)  # Enable native 2x faster inference
+FastLanguageModel.for_inference(model)
 
 snac_model.to("cpu")
 prompts = [
     "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person.",
 ]
 
-chosen_voice = None  # single-speaker
+chosen_voice = None
 
 prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
 
@@ -258,7 +258,7 @@ try:
         audio_data = samples.detach().squeeze().cpu().numpy()
         import soundfile as sf
 
-        sf.write(output_path, audio_data, 24000)  # Explicitly pass sample rate
+        sf.write(output_path, audio_data, 24000)
         print(f"✅ Audio saved to {output_path}!")
 except Exception as e:
     assert False, f"Inference failed with exception: {e}"

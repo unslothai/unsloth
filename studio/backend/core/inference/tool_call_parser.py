@@ -200,7 +200,13 @@ INTENT_SIGNAL = re.compile(
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
     r"|"
-    r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # "Step N" counts only before an action (same line, next non-blank line or its list item) or as a "Step N:" heading:
+    # a bare match re-prompted finished answers like "Step 1 result: 391", re-running every tool.
+    r"\bstep \d+[ \t*_]*(?::[ \t*_\r]*$|(?:[:,.)\u2013\u2014-][ \t*_]*)?(?:\r?\n(?:[ \t]*\r?\n)?[ \t*_#>-]*(?:\d+[.)][ \t*_]*)?)?(?:(?:let['’]?s|let us)\b|"
+    + _ACTION_VERB
+    + r"\b))"
+    r"|"
+    r"\bhere['\u2019]?s (?:my |the |a )?(?:plan|approach)"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"
@@ -442,6 +448,8 @@ _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 # Keys start with a letter/underscore so ``10:00, 11:00`` in a value isn't misread as a new key
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
+# JSON number literals only, as tool_healing decides for the wrapped form (int()/float() take "007", "+1", "nan").
+_GEMMA_JSON_NUMBER_RE = re.compile(r"-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?", re.ASCII)
 
 
 def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
@@ -2332,7 +2340,7 @@ def _disabled_gemma_call_end_containing_signal(
 ) -> int | None:
     """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call whose
     balanced body holds the first foreign signal, else None. A prose name makes the quoted literal
-    data, so the caller drops the span and recurses on the tail; a promotable call defers to the
+    data, so the caller drops the span and parses the tail; a promotable call defers to the
     enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
@@ -2370,57 +2378,55 @@ def parse_tool_calls_from_text(
     the markerless Llama-3.2 bare-JSON form (the marker-based forms carry an explicit signal, so
     a disabled-tool name there is a real call attempt); ``None`` keeps the name-agnostic
     behaviour."""
-    # Drop Magistral [THINK]...[/THINK] BEFORE dispatch: a rehearsed call inside it must never be promoted, and the
-    # parse path must agree with the display strip.
-    content = _strip_mistral_reasoning(content)
+    # Loop, not recurse (one level per JSONL line hit RecursionError). A skipped run's tail is stripped
+    # and masked again before any dispatch, or reasoning after a quoted opener stays executable.
+    while True:
+        # Drop Magistral [THINK]...[/THINK] BEFORE dispatch: a rehearsed call inside it must never be promoted, and
+        # the parse path must agree with the display strip.
+        content = _strip_mistral_reasoning(content)
 
-    # Equal-length mask, so the spans this returns still index the caller's text: a blocked
-    # call's arguments are quoted prose, and a wrapped call nested there was promoted.
-    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
+        # Equal-length mask, so the spans this returns still index the caller's text: a blocked
+        # call's arguments are quoted prose, and a wrapped call nested there was promoted.
+        content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
-    # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
-    # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard,
-    # whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
-    if _xml_signal_inside_leading_bare_json(content):
-        calls = _parse_llama3_bare_json(
-            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
-        )
-        if calls:
-            return calls
-        i = 0
-        while i < len(content) and content[i] in " \t\n\r":
-            i += 1
-        # The guard guarantees a balanced leading value (object or array).
-        end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
-        return parse_tool_calls_from_text(
-            content[end + 1 :],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
+        # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
+        # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral
+        # guard, whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
+        skipped = False
+        while _xml_signal_inside_leading_bare_json(content):
+            calls = _parse_llama3_bare_json(
+                content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+            )
+            if calls:
+                return calls
+            i = 0
+            while i < len(content) and content[i] in " \t\n\r":
+                i += 1
+            # The guard guarantees a balanced leading value (object or array).
+            end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
+            content = content[end + 1 :]
+            skipped = True
+        if skipped:
+            continue
 
-    # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to the
-    # preamble tolerance below, so a quoted [TOOL_CALLS] would otherwise steal the turn.
-    if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
-        calls = _parse_gemma_tool_calls(
-            content,
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
-        if calls:
-            return calls
+        # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to
+        # the preamble tolerance below, so a quoted [TOOL_CALLS] would otherwise steal the turn.
+        if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
+            calls = _parse_gemma_tool_calls(
+                content,
+                id_offset = id_offset,
+                allow_incomplete = allow_incomplete,
+                enabled_tool_names = enabled_tool_names,
+            )
+            if calls:
+                return calls
 
-    # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard, whose
-    # preamble tolerance would otherwise parse a quoted trigger.
-    _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
-    if _prose_end is not None:
-        return parse_tool_calls_from_text(
-            content[_prose_end:],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
-        )
+        # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard,
+        # whose preamble tolerance would otherwise parse a quoted trigger.
+        _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
+        if _prose_end is None:
+            break
+        content = content[_prose_end:]
 
     # A [TOOL_CALLS] call that is the first tool emission owns the turn: XML quoted in its arguments or trailing prose
     # is not promoted over it, nor does a prose preface forfeit it.
@@ -3838,22 +3844,7 @@ def _gemma_parse_value(
         # Stray delimiter where a value was expected: consume one char so callers always advance (no infinite loop on
         # malformed input).
         return "", i + 1, True
-    raw = text[i:end].strip()
-    if raw == "true":
-        return True, end, True
-    if raw == "false":
-        return False, end, True
-    if raw == "null":
-        return None, end, True
-    try:
-        return int(raw), end, True
-    except ValueError:
-        pass
-    try:
-        return float(raw), end, True
-    except ValueError:
-        pass
-    return raw, end, True
+    return _gemma_coerce_scalar(text[i:end]), end, True
 
 
 def _gemma_parse_array(text: str, start: int):
@@ -3875,9 +3866,26 @@ def _gemma_parse_array(text: str, start: int):
 
 def _gemma_coerce_scalar(raw: str) -> Any:
     """Coerce an unquoted Gemma value to bool/int/float/None, else keep str (quotes stripped first
-    so quoted/unquoted variants compare identical)."""
+    so quoted/unquoted variants compare identical). Numbers are JSON number literals only."""
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+    if not raw:
+        return raw
+    first = raw[0]
+    if first in "-0123456789":
+        # isascii(): int() also accepts non-ASCII digits.
+        digits = raw[1:] if first == "-" else raw
+        if digits.isdigit() and digits.isascii() and (digits[0] != "0" or len(digits) == 1):
+            try:
+                return int(raw)
+            except ValueError:
+                # Past sys.get_int_max_str_digits(); json.loads refuses it too.
+                return raw
+        if _GEMMA_JSON_NUMBER_RE.fullmatch(raw) is None:
+            return raw
+        value = float(raw)
+        # "1e999" -> inf, which json.dumps writes as invalid bare Infinity.
+        return raw if abs(value) == float("inf") else value
+    if len(raw) >= 2 and first == raw[-1] and first in "\"'":
         return raw[1:-1]
     if raw == "true":
         return True
@@ -3885,14 +3893,6 @@ def _gemma_coerce_scalar(raw: str) -> Any:
         return False
     if raw == "null":
         return None
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        pass
     return raw
 
 

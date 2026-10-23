@@ -9,6 +9,7 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
@@ -83,7 +84,7 @@ export function CodeExecutionResultOutput({ result }: { result: unknown }) {
         <CopyBtn text={resultText} />
       </div>
       <ScrollPane
-        className="mt-1 rounded bg-muted/50 p-2"
+        className="mt-1 rounded-lg bg-muted/50 p-2"
         scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
       >
         {displayedResult}
@@ -134,12 +135,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   // Collapse the card once the model resumes streaming prose after the tool
   // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // Ask permission gates every local tool call, and what is being approved
   // lives inside the content while Allow/Deny render outside it.

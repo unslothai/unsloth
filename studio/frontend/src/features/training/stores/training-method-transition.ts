@@ -5,6 +5,7 @@ import {
   CPT_LORA_HYPERPARAMS,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
+  LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
   TARGET_MODULES,
@@ -70,6 +71,7 @@ function resolveTrainingMethodLearningRate(
   nextMethod: TrainingMethod,
   learningRateManuallySet: boolean,
   modelAdapterLearningRate: number | null,
+  isDecision: boolean,
 ): number | undefined {
   if (learningRateManuallySet) {
     return undefined;
@@ -88,9 +90,10 @@ function resolveTrainingMethodLearningRate(
   if (wasAdapter && nowAdapter) {
     return undefined;
   }
-  return nowAdapter
-    ? (modelAdapterLearningRate ?? LR_DEFAULT_LORA)
-    : LR_DEFAULT_FULL;
+  if (nowAdapter) {
+    return modelAdapterLearningRate ?? LR_DEFAULT_LORA;
+  }
+  return isDecision ? LR_DEFAULT_DECISION_FULL : LR_DEFAULT_FULL;
 }
 
 // Re-checked at exit: modality or streaming learned inside CPT still vetoes a saved true.
@@ -127,6 +130,7 @@ export function buildTrainingMethodPatch(
     | "datasetStreaming"
     | "selectedModel"
     | "modelDefaultsAppliedFor"
+    | "modelType"
     | "isEmbeddingModel"
     | "isVisionModel"
     | "isAudioModel"
@@ -179,6 +183,7 @@ export function buildTrainingMethodPatch(
     nextMethod,
     provenance.learningRateManuallySet,
     provenance.modelAdapterLearningRate,
+    state.modelType === "decision",
   );
   if (learningRate !== undefined) {
     patch.learningRate = learningRate;

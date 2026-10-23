@@ -39,32 +39,28 @@ interface PlatformState {
   appleSilicon: boolean;
   fileManager: FileManager | undefined;
   chatOnly: boolean;
-  // Why chatOnly is set (null when training is enabled), from /api/health.
-  // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
-  // Train/Export instead of silently disabling them.
+  // /api/health reason for chatOnly; null while training is enabled.
   chatOnlyReason: string | null;
-  // What specifically blocked that reason, when the backend can name it. Today only the
-  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
-  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
-  // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
-  // whether the server was launched with --secure.
+  chatOnlyHint: string | null;
+  // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
+  // on a no-GPU host that opted in.
+  videoCpuOptIn: boolean;
+  // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
+  lanUrls: string[];
   fetched: boolean;
-  // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
-  // until a first-use operation detects, so the sidebar polls on this.
+  verdictStale: boolean;
+  // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
-  // True until /api/health has answered with a server-measured verdict. Before that `chatOnly`
-  // is the browser-platform seed below, not an answer, so anything that would gray a
-  // capability out has to treat it as unknown: rendering the guess blacks out Train and Video
-  // on every Mac from first paint, visually identical to a measured "unsupported".
+  // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
 
-// Client-side fallback when backend isn't ready yet.
 function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
@@ -80,25 +76,24 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   appleSilicon: false,
   fileManager: undefined,
-  // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
-  // that must decide something before /api/health answers. Capability gating must read
-  // capabilitiesUnknown() first and hold, not gray a tab out on this.
+  // user-agent guess for redirects; capability gates await the server.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
+  chatOnlyHint: null,
+  videoCpuOptIn: false,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
+  lanUrls: [],
   fetched: false,
+  verdictStale: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
-  // `fetched` already means "a server-reported verdict is stored" (see fetchDeviceType), so it
-  // is the unknown/known line; no second flag to keep in step with it. A deferred reply counts
-  // as settled even though it carries no device_type: under the torch-warm kill switch nothing
-  // else is coming this session, so treating it as unknown would spin the tabs forever.
+  // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();
-    return !state.fetched && !state.detectionDeferred;
+    return (!state.fetched || state.verdictStale) && !state.detectionDeferred;
   },
 }));
 
@@ -118,6 +113,13 @@ const HARDWARE_DETECT_WAIT_MS = 5000;
 const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
+
+/** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
+export function forgetMeasuredVerdict(): void {
+  hardwareWaitSpent = false;
+  // The old deferred flag would mask staleness, so a failed first read would look settled.
+  usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
+}
 
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
@@ -174,6 +176,7 @@ export async function fetchDeviceType(options?: {
         file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
+        video_cpu_opt_in?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -227,10 +230,12 @@ export async function fetchDeviceType(options?: {
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
+      // Provisional keeps the stored verdict (resolveVerdict); deferred settles it without a replaced backend's reason.
+      const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
         data,
-        previous,
+        previous.verdictStale && isDetectionDeferred(data)
+          ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
+          : previous,
       );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
@@ -242,10 +247,17 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
+        chatOnlyHint,
+        // Rides with the verdict: a provisional reply carries neither, so it keeps the stored one.
+        videoCpuOptIn:
+          data.video_cpu_opt_in === undefined
+            ? previous.videoCpuOptIn
+            : data.video_cpu_opt_in === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         fetched: data.device_type !== undefined || keepPlatform,
+        verdictStale: previous.verdictStale && isProvisionalVerdict(data) && !isDetectionDeferred(data),
         detectionDeferred: isDetectionDeferred(data),
       });
       return deviceType;

@@ -1,31 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-Every apt step on a hosted runner must be bounded, retried, and paid for.
-
-An unbounded apt step is the worst failure shape CI has. It does not go red: it
-sits in apt's download loop, spends the job's entire `timeout-minutes`, and
-GitHub reports the result as **cancelled** -- no reason printed, no failing step
-named, and every step after it skipped. Three of these were caught by hand in a
-single day, on three different workflows:
-
-  Chat UI Tests (chat)        30m18s, the job's whole budget, in `Linux deps`
-  Frontend build              16m38s in `playwright install --with-deps`
-  Source lint                  5m02s in `Linux deps for shellcheck`, on a 5m job
-
-None of the three reported anything about its actual subject. The last one was
-noticed only because a human happened to look at a job that said "cancelled".
-
-So the invariant is not "apt should be retried", it is: **the step is what
-bounds itself, never the job**. A job timeout is a backstop for the unforeseen;
-using it as the bound on a known-flaky step converts a diagnosable failure into
-a silent one. These tests read the workflows and enforce that, plus the two
-things that make the bound honest -- that the retry budget actually fits inside
-the step timeout, and that the step timeout actually fits inside the job's.
-
-`--with-deps` counts as an apt step, because that is precisely what it is; it
-was excluded from the first pass by name and promptly cost a 16-minute job.
-"""
+"""Each apt step must bound itself, since an unbounded one stalls silently until the job is cancelled."""
 
 from __future__ import annotations
 
@@ -42,31 +17,24 @@ HELPER = ".github/scripts/retry-with-apt-lock.sh"
 # PyYAML reads the `on:` key as the boolean True.
 ON = True
 
-# apt reached directly, or via playwright, which shells out to it.
-# `--with-deps` is qualified by `playwright install` on purpose: scan_packages.py takes a flag of the same name that has
-# nothing to do with apt.
+# apt directly, or via `playwright install --with-deps` (scan_packages.py has an unrelated
+# flag of the same name).
 _APT = re.compile(r"\bapt-get\s+(?:update|install)\b|playwright\s+install\b[^\n]*--with-deps\b")
 
-# `release_dpkg_lock()` waits up to 24 * 5s for the orphaned holder, then kills it and sleeps 5.
+# `release_dpkg_lock()` waits up to 24 * 5s, then kills the holder and sleeps 5.
 LOCK_WAIT_SECONDS = 125
 
-# Workflows whose apt calls do not run on a hosted runner and cannot use the helper. Each is here for a reason that
-# would survive a rewrite, not because it was inconvenient to convert.
+# Workflows whose apt calls cannot use the helper, each for a durable reason.
 EXEMPT_WORKFLOWS = {
-    # Runs apt inside bare distro containers and inside WSL, as root, with no checkout (the whole point is a machine
-    # with no git). There is no repo on disk to read the helper from, and `sudo`/`fuser` are deliberately absent -- one
-    # leg asserts that `sudo` does not exist on the image at all.
+    # Runs apt in bare containers and WSL with no checkout, and deliberately without `sudo`.
     "clean-machine-install-ci.yml",
 }
 
-# Individual steps that reach apt as the thing under test rather than as setup.
+# Steps that run apt as the thing under test.
 EXEMPT_STEPS = {
-    # Removes curl to construct the no-transport case.
     ("clean-machine-install-ci.yml", "Take the transport away again"),
-    # Installs the built .deb to find out whether the package declares its own runtime dependencies.
     ("desktop-app-clean-machine-ci.yml", "Install with NO dev tooling, only runtime libs"),
-    # Greps the documentation for the apt line it tells users to run. It reads an
-    # apt command as data; it never executes one.
+    # Reads an apt command as data; never executes one.
     ("release-desktop.yml", "Verify desktop updater and Linux package config"),
 }
 
@@ -109,8 +77,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     attempts = env.get("RETRY_ATTEMPTS")
     per_attempt = env.get("RETRY_ATTEMPT_TIMEOUT")
 
-    # A step may also set them inline, as `RETRY_ATTEMPTS=3 bash ...helper`, which is how the two steps that embed the
-    # call in a larger script pass them.
+    # Also accepts inline `RETRY_ATTEMPTS=3 bash ...helper`.
     if attempts is None:
         inline = re.search(r"RETRY_ATTEMPTS=(\d+)", run)
         attempts = inline.group(1) if inline else None
@@ -118,7 +85,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
         inline = re.search(r"RETRY_ATTEMPT_TIMEOUT=(\d+)", run)
         per_attempt = inline.group(1) if inline else None
 
-    # The helper's own defaults, kept in sync by test_helper_defaults_are_what_the_budgets_assume.
+    # The helper's defaults, kept in sync by test_helper_defaults_are_what_the_budgets_assume.
     attempts = int(attempts) if attempts is not None else 3
     per_attempt = int(per_attempt) if per_attempt is not None else 480
 
@@ -153,10 +120,7 @@ def test_every_apt_step_bounds_itself(path: Path) -> None:
 
 @pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_the_retry_budget_fits_inside_the_step_timeout(path: Path) -> None:
-    """
-    A step timeout smaller than the retries it authorises silently deletes the
-    last attempt, and reports a truncated step rather than the helper's warnings.
-    """
+    """The retry budget must fit inside the step timeout, or the last attempt is silently cut off."""
     if path.name in EXEMPT_WORKFLOWS:
         return
     for job_id, _job, step in _apt_steps(path):
@@ -173,10 +137,7 @@ def test_the_retry_budget_fits_inside_the_step_timeout(path: Path) -> None:
 
 @pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_the_step_timeout_fits_inside_the_job_timeout(path: Path) -> None:
-    """
-    Otherwise the job timeout still fires first and the diagnosis is still lost:
-    the step's bound only helps if the job is alive to report it.
-    """
+    """The step timeout must fit inside the job timeout, or the job is killed before the step reports."""
     if path.name in EXEMPT_WORKFLOWS:
         return
     for job_id, job, step in _apt_steps(path):
@@ -194,11 +155,7 @@ def test_the_step_timeout_fits_inside_the_job_timeout(path: Path) -> None:
 
 @pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_a_workflow_that_calls_the_helper_reruns_when_the_helper_changes(path: Path) -> None:
-    """
-    A paths-filtered workflow that calls the helper but does not list it is not
-    covered by an edit to it: the helper could be broken and every consumer would
-    keep showing the last green run.
-    """
+    """A paths-filtered workflow that calls the helper must list the helper in its paths filter."""
     doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
     if not any(HELPER in step["run"] for _, _, step in _steps(doc)):
         return
@@ -219,33 +176,18 @@ def test_a_workflow_that_calls_the_helper_reruns_when_the_helper_changes(path: P
 
 
 def test_helper_defaults_are_what_the_budgets_assume() -> None:
-    """
-    The worst-case arithmetic above falls back to the helper's own defaults for a
-    step that sets neither variable. If those defaults move and this fallback does
-    not, every such budget check silently starts measuring the wrong number.
-    """
+    """The helper's default retry and timeout values must match the worst-case budget arithmetic assumes."""
     source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
     assert 'ATTEMPTS="${RETRY_ATTEMPTS:-3}"' in source
     assert 'ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"' in source
-    # 24 sleeps of 5s, then a kill and a final 5s.
     assert "seq 1 24" in source
     assert LOCK_WAIT_SECONDS == 24 * 5 + 5
 
 
 def test_the_helper_makes_apt_fail_fast() -> None:
-    """
-    The bound is the backstop; this is the part that stops the stall happening.
-
-    apt's `Acquire::http::Timeout` defaults to 120s and is an *idle* timeout, so a
-    socket that is open and trickling never trips it. That is how a 126 kB index
-    file cost 29 minutes: apt did not consider waiting on it an error at all.
-    Without these four options the helper still works, but every stall costs the
-    full step budget and ends in a kill -- and the kill is what orphans the dpkg
-    lock, so an apt that gives up on its own is one we never have to kill.
-    """
+    """The helper must write apt's fail-fast options; an idle timeout never trips on a trickling socket."""
     source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
 
-    # The generated config only, not the whole file.
     written = re.search(r'conf="(.*?)"\n', source, re.DOTALL)
     assert written, f"{HELPER} no longer builds an apt config to write"
     conf = written.group(1)
@@ -258,7 +200,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     ):
         assert option in conf, f"{HELPER} no longer sets {option}; it writes: {conf!r}"
 
-    # Well under apt's 120s default, or it buys nothing.
+    # Well under apt's 120s default.
     match = re.search(r'APT_TIMEOUT="\$\{APT_ACQUIRE_TIMEOUT:-(\d+)\}"', source)
     assert match, f"{HELPER} does not define a default transfer timeout"
     assert int(match.group(1)) <= 30, (
@@ -266,8 +208,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
         f"default that a stalled mirror still eats the step budget"
     )
 
-    # Ordering is the whole value: configured inside or after the retry loop, the first attempt,
-    # the one that actually stalls, runs unconfigured.
+    # Must be configured before the retry loop, or the first (stalling) attempt runs unconfigured.
     configure = source.index("configure_apt_fail_fast\n\nfor attempt")
     loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
     assert configure < loop, (
@@ -283,10 +224,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
 
 
 def test_the_guard_is_not_vacuous() -> None:
-    """
-    Every assertion above is a for-loop over steps this finds. If the detector
-    stopped matching, all of them would pass by finding nothing.
-    """
+    """At least 10 workflows must match the apt detector, or the loops above pass by finding nothing."""
     found = {path.name: len(_apt_steps(path)) for path in _workflows() if _apt_steps(path)}
     assert (
         len(found) >= 10
@@ -295,28 +233,7 @@ def test_the_guard_is_not_vacuous() -> None:
 
 
 def test_install_deps_does_not_let_apt_retry_inside_the_attempt() -> None:
-    """
-    `playwright install-deps` runs its own `apt-get update`, and that is the one apt
-    call in this repo that cannot be restructured to try the image's lists first.
-    So it is the one step where a stalled mirror is still paid in full, and the only
-    lever left is how many times apt repeats the stall before giving up.
-
-    On 2026-08-19 the helper's 20s transfer cap was applied and confirmed in the log
-    -- "apt configured to fail fast: 20s transfer timeout" -- and the update still
-    burned 4m31s of a 300s attempt, twice, so the step failed having never reached
-    the download. Four InRelease URIs stalling to the cap, repeated over apt's
-    default `Acquire::Retries "3"`, is 4 x 4 x 20s, which is what was measured.
-
-    Retrying belongs in the outer loop, not inside apt: the outer loop re-runs the
-    command under a fresh timeout and prints which way each attempt went, whereas
-    apt's internal retries are invisible and are charged to the caller's budget.
-
-    This is a guard rather than a comment because reverting it looks harmless. The
-    value would go back to apt's default, the step would still be "bounded and
-    retried" by every other assertion in this file, and the symptom would return as
-    a step that fails slowly against a mirror -- which reads as bad luck, not as a
-    setting someone changed.
-    """
+    """`playwright install-deps` must not let apt retry; retries belong in the outer loop, not apt."""
     steps = [
         (f"{path.name}: {step.get('name', '<unnamed>')}", step)
         for path in _workflows()

@@ -2894,6 +2894,10 @@ def _write_baseline(
 ) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen a reviewed entry; reading them from `path` instead would drop every pin whenever the output goes somewhere new."""
     pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
+    # A site (package, file, check) reviewed under a pin stays pinned when its matched code
+    # changes: the new variant has a new evidence hash, so it is not in `pinned`, and writing
+    # it unpinned would suppress that finding whatever the file contains.
+    pinned_sites = {k[:3] for k in pinned}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
@@ -2911,7 +2915,7 @@ def _write_baseline(
             "evidence": f.evidence,
             "evidence_hash": _evidence_hash(f.evidence),
         }
-        if key in pinned and f.file_sha256:
+        if (key in pinned or key[:3] in pinned_sites) and f.file_sha256:
             entry["file_sha256"] = f.file_sha256
         entries.append(entry)
     doc = {

@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parse a Chrome trace into a per-thread task tree.
-
-All timestamps in a Chrome JSON trace are MICROSECONDS on the monotonic clock
-(`ts`), with `dur` also in microseconds for complete (`ph: "X"`) events. Nothing
-in this module rescales; if a caller wants milliseconds it divides, so that a
-unit mistake is a visible division and not a hidden constant.
-
-Two facts about real traces that this module encodes because both were observed
-in a captured trace rather than assumed:
-
-1. `RunTask` (category `disabled-by-default-devtools.timeline`) has EMPTY args.
-   It tells you a task ran and how long it took, and nothing whatsoever about
-   where it came from. The origin lives on a SIBLING event,
-   `ThreadControllerImpl::RunTask` (category `toplevel`), which carries
-   `src_file` / `src_func` / `src_line` naming the code that POSTED the task.
-   The two nest, they are 1:1 on a thread, and their `ts` values differ by a
-   microsecond or two, so they must be joined by interval containment and not by
-   timestamp equality. A naive equality join matched 79% of tasks on a real
-   capture, and the 21% it dropped is not a random sample.
-
-2. `ProfileChunk` events are emitted on the V8 profiler's own thread
-   (`v8:ProfEvntProc`), NOT on the thread being profiled. The profiled thread is
-   named by the `Profile` event's own `pid`/`tid`. Filtering chunks by the
-   renderer main thread id yields zero samples and looks exactly like "the CPU
-   profiler was not enabled".
-"""
+"""Join RunTask to ThreadControllerImpl::RunTask by interval containment, not timestamp equality."""
 
 from __future__ import annotations
 
@@ -37,17 +12,12 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from . import CellFailure
 
-# Complete-duration events are the only phase that forms the task tree. Async (`b`/`e`/`n`), flow
-# (`s`/`t`/`f`), instant (`I`/`R`), sample (`P`), counter (`C`) and metadata (`M`) events are
-# carried alongside but never nested, since their timestamps do not describe a stack.
+# Only complete (`X`) events form the task tree; other phases are carried but never nested.
 _PHASE_COMPLETE = "X"
 _PHASE_BEGIN = "B"
 _PHASE_END = "E"
 
-# When two events share both `ts` and `dur` the trace gives no ordering. On the main thread the
-# devtools view (`RunTask`) is conceptually the outer frame and the scheduler view
-# (`ThreadControllerImpl::RunTask`) the inner one, so pin that order rather than letting dict
-# ordering decide.
+# Equal `ts` and `dur` give no ordering, so pin `RunTask` outside `ThreadControllerImpl::RunTask`.
 _OUTERMOST_FIRST = {
     "RunTask": 0,
     "ThreadControllerImpl::RunTask": 1,
@@ -74,13 +44,8 @@ class Task:
 
     @property
     def self_dur(self) -> int:
-        """Duration minus the time attributed to nested events.
-
-        Children of a complete event do not overlap each other in a well-formed
-        trace, so a plain sum is correct. Clamped at zero because a malformed
-        trace can report a child longer than its parent and a negative self time
-        would poison every downstream sum silently.
-        """
+        """Clamped at zero: a child longer than its parent in a malformed trace would make self time
+        negative."""
         return max(0, self.dur - sum(c.dur for c in self.children))
 
     def walk(self) -> Iterator["Task"]:
@@ -105,7 +70,6 @@ class Thread:
     tid: int
     name: str
     roots: list[Task] = field(default_factory = list)
-    # Every event on this thread, including phases that do not nest.
     events: list[dict[str, Any]] = field(default_factory = list)
 
     def tasks_named(self, name: str) -> list[Task]:
@@ -136,25 +100,17 @@ class Trace:
                     self._thread_names[key] = name  # type: ignore[index]
         self._threads: dict[tuple[int, int], Thread] = {}
 
-    # loading
-
     @classmethod
     def from_json_text(cls, text: str) -> "Trace":
-        """Load the exact wire format `Tracing` emits.
-
-        `transferMode: ReturnAsStream` with `streamFormat: json` produces an
-        OBJECT, `{"traceEvents": [...], "metadata": {...}}`, not the bare array
-        that the Trace Event Format also permits. Both are accepted here because
-        traces saved by the DevTools UI use the array form.
-        """
+        """Tracing emits an object with traceEvents; DevTools-saved traces are bare arrays, so both
+        parse."""
         text = text.strip()
         if not text:
             raise CellFailure("trace_empty", "trace stream contained no bytes")
         try:
             doc = json.loads(text)
         except json.JSONDecodeError as exc:
-            # A truncated JSON document is the signature of a drained stream that was cut short: a failed cell,
-            # never a short trace.
+            # A truncated document is a cut-short stream: a failed cell, never a short trace.
             raise CellFailure(
                 "trace_truncated",
                 f"trace JSON did not parse ({exc}); {len(text)} bytes drained",
@@ -170,11 +126,7 @@ class Trace:
 
     @classmethod
     def from_path(cls, path: str | os.PathLike[str]) -> "Trace":
-        """Load a trace from disk, transparently gunzipping a `.gz`.
-
-        Checked-in fixtures are gzipped because a trace of any useful length is
-        megabytes of highly repetitive JSON.
-        """
+        """Transparently gunzips .gz paths, since checked-in traces are megabytes of repetitive JSON."""
         p = str(path)
         if p.endswith(".gz"):
             import gzip
@@ -182,8 +134,6 @@ class Trace:
                 return cls.from_json_text(fh.read())
         with open(p, "r", encoding = "utf-8") as fh:
             return cls.from_json_text(fh.read())
-
-    # ---------------------------------------------------------------- threads
 
     def thread_name(self, pid: int, tid: int) -> str:
         return self._thread_names.get((pid, tid), "")
@@ -200,12 +150,7 @@ class Trace:
         return th
 
     def profiled_thread(self) -> tuple[int, int]:
-        """The thread the V8 CPU profiler attached to, read from `Profile`.
-
-        This is the correct anchor for the renderer main thread whenever the CPU
-        profiler category is on, because it is the thread whose stacks we have.
-        Falls back to the thread named `CrRendererMain`.
-        """
+        """Taken from the Profile event, the thread whose stacks exist; falls back to CrRendererMain."""
         for e in self.events:
             if e.get("name") == "Profile" and e.get("cat") == "disabled-by-default-v8.cpu_profiler":
                 return (int(e["pid"]), int(e["tid"]))
@@ -220,8 +165,6 @@ class Trace:
     def renderer_main(self) -> Thread:
         pid, tid = self.profiled_thread()
         return self.thread(pid, tid)
-
-    # ------------------------------------------------------------------ joins
 
     def run_tasks(self, thread: Thread | None = None) -> list[Task]:
         """Top-level `RunTask` events on a thread, outermost only."""
@@ -248,13 +191,7 @@ def _has_runtask_ancestor(task: Task) -> bool:
 
 
 def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
-    """Nest complete-duration events on ONE thread into a forest.
-
-    `B`/`E` pairs are folded into synthetic complete events first so that a
-    trace which uses the begin/end encoding parses identically. Unmatched `B`
-    events are dropped rather than guessed at, and an unmatched `E` is ignored,
-    because inventing an end timestamp would invent duration.
-    """
+    """Unmatched B is dropped and unmatched E ignored: an invented end timestamp would invent duration."""
     complete: list[Task] = []
     open_stack: list[dict[str, Any]] = []
     for e in events:
@@ -262,7 +199,6 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
         if ph == _PHASE_COMPLETE:
             dur = e.get("dur")
             if dur is None:
-                # A complete event without `dur` is a zero-width marker.
                 dur = 0
             complete.append(
                 Task(
@@ -302,9 +238,7 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
     for t in complete:
         while stack and t.ts >= stack[-1].end:
             stack.pop()
-        # An event that starts inside its would-be parent but ends after it is not nested; the trace is
-        # inconsistent there, so treat it as a sibling rather than corrupting self-time arithmetic for the
-        # whole subtree.
+        # An improperly nested event is treated as a sibling to keep self-time arithmetic sound.
         while stack and t.end > stack[-1].end:
             stack.pop()
         if stack:
@@ -317,15 +251,7 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
 
 
 def join_posted_from(task: Task) -> dict[str, Any]:
-    """Return the `src_file`/`src_func`/`src_line` that POSTED this task.
-
-    Joined by interval containment against the nested
-    `ThreadControllerImpl::RunTask`, since the timestamps differ by a couple of
-    microseconds and an equality join loses a fifth of all tasks. Returns an
-    empty dict when the `toplevel` category was not recorded, which is a
-    legitimate state and not an error: the caller then classifies on nested
-    evidence alone and reports lower confidence.
-    """
+    """Joined by interval containment, not timestamp equality; empty when toplevel was not recorded."""
     for t in walk_within_task(task):
         if t.name == "ThreadControllerImpl::RunTask":
             a = t.args or {}
@@ -339,12 +265,7 @@ def join_posted_from(task: Task) -> dict[str, Any]:
 
 
 def walk_within_task(task: Task) -> Iterator[Task]:
-    """Walk a task's subtree, stopping at any nested `RunTask` boundary.
-
-    Without the boundary a nested task's scheduler frame or its `TimerFire`
-    would be attributed to the outer task, which is how one long task swallows
-    the origin of every task it contains.
-    """
+    """Stops at nested RunTask so an outer task does not absorb the origin of tasks it contains."""
     yield task
     stack = list(task.children)
     while stack:

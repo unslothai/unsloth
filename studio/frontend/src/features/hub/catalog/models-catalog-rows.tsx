@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 
 import {
@@ -11,7 +12,10 @@ import {
 import {
   type GgufVariantDetail,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
@@ -187,11 +191,10 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-ui-11 text-white/70"
+                    className="text-ui-11 text-(--tooltip-muted)"
                   />
                 </span>
               </li>
@@ -268,8 +271,8 @@ function CatalogRow({
       className={cn(
         "group/row relative w-full select-none overflow-hidden text-left",
         card
-          ? "hub-result-row flex h-full items-center rounded-[16px] px-4"
-          : "catalog-row block rounded-[14px] pl-3 pr-2.5 py-2.5",
+          ? "hub-result-row flex h-full items-center rounded-2xl px-4"
+          : "catalog-row block rounded-md pl-3 pr-2.5 py-2.5",
       )}
     >
       <button
@@ -278,7 +281,7 @@ function CatalogRow({
         onClick={onClick}
         className={cn(
           "absolute inset-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-          card ? "rounded-[16px]" : "rounded-[14px]",
+          card ? "rounded-2xl" : "rounded-md",
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
@@ -426,11 +429,11 @@ export function buildRowStatusTooltip({
           This {resourceLabel} may not be supported yet.
         </span>
         {unsupportedReason && (
-          <span className="mt-0.5 block text-white/75">
+          <span className="mt-0.5 block text-(--tooltip-muted)">
             {unsupportedReason}
           </span>
         )}
-        <span className="mt-0.5 block text-white/75">
+        <span className="mt-0.5 block text-(--tooltip-muted)">
           Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
@@ -454,6 +457,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -465,8 +470,10 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
@@ -496,7 +503,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-8 rounded-[11px]"
+          className="size-8 rounded-sm"
           remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
@@ -585,6 +592,8 @@ export const InventoryRow = memo(function InventoryRow({
       ? row.repoId
       : (row.repoId ?? row.baseModelHubId ?? row.baseModel ?? row.loadId);
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unsupported = useMemo(() => {
     if (isDataset) return false;
     const classified = classifyUnslothSupport({
@@ -594,6 +603,8 @@ export const InventoryRow = memo(function InventoryRow({
       libraryName: row.libraryName,
       quantMethod: row.quantMethod,
       deviceType,
+      vllmAvailable,
+      vllmPlatform,
     });
     // Images/Video run these, so they are not unsupported to a user.
     return classified.status === "unsupported" && !classified.supportedIn;
@@ -605,6 +616,8 @@ export const InventoryRow = memo(function InventoryRow({
     row.libraryName,
     row.quantMethod,
     deviceType,
+    vllmAvailable,
+    vllmPlatform,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const title = row.kind === "cache" ? row.repo : row.title;
@@ -621,6 +634,13 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
+  const localActionPath =
+    !isDataset &&
+    row.kind === "local" &&
+    row.source !== "hf_cache" &&
+    row.path
+      ? row.path
+      : null;
   const partialRepoId =
     row.partial && !row.companionPrefetch
       ? row.kind === "cache"
@@ -730,8 +750,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
             ? undefined
@@ -792,6 +811,33 @@ export const InventoryRow = memo(function InventoryRow({
           onDeleted: onChange,
         } : undefined}
       />
+    ) : localActionPath && row.kind === "local" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        onReveal={() => revealLocalModel(localActionPath, row.loadId)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(row.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{title}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">
+                      {localActionPath}
+                    </span>
+                    .
+                  </>
+                ),
+                successMessage: `Deleted ${title}`,
+                onConfirm: () => deleteLocalModel(localActionPath, row.loadId),
+                onDeleted: onChange,
+              }
+            : undefined
+        }
+      />
     ) : null;
 
   // Compact master pane: drop the capability column and collapse size + date
@@ -814,7 +860,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-8 shrink-0 rounded-[9px] text-ui-12"
+            className="size-8 shrink-0 rounded-sm text-ui-12"
             remote={false}
           />
           <div className="min-w-0 flex-1">
@@ -885,7 +931,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-9 rounded-[12px]"
+            className="size-9 rounded-md"
             remote={false}
           />
           <div className="min-w-0 flex-1">

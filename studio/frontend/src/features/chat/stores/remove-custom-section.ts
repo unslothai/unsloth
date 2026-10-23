@@ -20,6 +20,9 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
   const projectIds = Object.keys(state.sectionByProjectId).filter(
     (id) => state.sectionByProjectId[id] === section.id,
   );
+  const pageIds = Object.keys(state.sectionByPageId).filter(
+    (id) => state.sectionByPageId[id] === section.id,
+  );
   const order = state.manualOrder[customSectionScope(section.id)];
   const hidden = state.hiddenSections.includes(section.id);
   // Undo reinserts it above the first of these that still exists.
@@ -35,6 +38,8 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
       for (const id of chatIds) sectionByChatId[id] ??= section.id;
       const sectionByProjectId = assignmentMap(now.sectionByProjectId);
       for (const id of projectIds) sectionByProjectId[id] ??= section.id;
+      const sectionByPageId = assignmentMap(now.sectionByPageId);
+      for (const id of pageIds) sectionByPageId[id] ??= section.id;
       const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
       const follower = followers.find((key) => sectionOrder.includes(key));
       sectionOrder.splice(
@@ -48,6 +53,7 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
         sectionOrder,
         sectionByChatId,
         sectionByProjectId,
+        sectionByPageId,
         hiddenSections: hidden
           ? [...now.hiddenSections, section.id]
           : now.hiddenSections,

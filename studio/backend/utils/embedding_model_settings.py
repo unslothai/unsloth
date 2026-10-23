@@ -197,7 +197,7 @@ def get_stored_embedding_model() -> str | None:
     return _get_stored_state()[0]
 
 
-def _get_stored_state() -> _StoredState:
+def _get_stored_state(fresh: bool = False) -> _StoredState:
     """Read the override and its resolved artifact association as one snapshot.
 
     The resolution is one JSON value so its model/repo/backend can never be
@@ -208,7 +208,7 @@ def _get_stored_state() -> _StoredState:
     now = time.monotonic()
     with _lock:
         cached = _cached.get(key)
-        if cached is not None and now - cached[0] < _CACHE_TTL_S:
+        if cached is not None and now - cached[0] < _CACHE_TTL_S and not fresh:
             return cached[1]
         gen = _generation.get(key, 0)
     try:
@@ -222,6 +222,8 @@ def _get_stored_state() -> _StoredState:
             ]
         )
     except Exception:
+        if fresh:
+            raise  # a fresh read confirms the model, which a fallback cannot
         # Transient store failure: keep the last known value instead of silently reverting the embed/search hot path to the default model, which would mix vector spaces mid-ingestion.
         with _lock:
             cached = _cached.get(key)
@@ -253,9 +255,10 @@ def _get_stored_state() -> _StoredState:
     return value
 
 
-def get_rag_embedding_model() -> str:
-    """Effective embedding model: persisted override, else env/default."""
-    stored = _get_stored_state()
+def get_rag_embedding_model(fresh: bool = False) -> str:
+    """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache
+    and raises when the store cannot be read, for a check that must see another process's save."""
+    stored = _get_stored_state(fresh)
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
     if stored[1] == model:
@@ -329,3 +332,61 @@ def reset_rag_embedding_model() -> str:
     )
     _invalidate_cache()
     return restored
+
+
+EMBEDDING_DEVICE_SETTING_KEY = "rag_embedding_device"
+EMBEDDING_DEVICE_CHOICES = ("auto", "cpu", "gpu")
+# One embedder per process, so the device is installation-wide: read from the owner's store whoever is asking.
+_device_cached: list = []  # [(monotonic time, value)]
+# Same guard as _generation: a read that overlapped a write must not cache the pre-write value.
+_device_generation = 0
+
+
+def get_stored_embedding_device() -> str:
+    """The device chosen in Settings: ``auto`` when unset, unreadable or unrecognized."""
+    now = time.monotonic()
+    with _lock:
+        if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
+            return _device_cached[0][1]
+        gen = _device_generation
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        from storage.studio_db import get_app_setting
+        value = get_app_setting(EMBEDDING_DEVICE_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001 - store unavailable: the hardware default
+        value = None
+    finally:
+        reset_account(token)
+    device = value if value in EMBEDDING_DEVICE_CHOICES else "auto"
+    with _lock:
+        if _device_generation == gen:
+            _device_cached[:] = [(now, device)]
+    return device
+
+
+def forget_cached_embedding_device() -> None:
+    global _device_generation
+    with _lock:
+        _device_cached.clear()
+        _device_generation += 1
+
+
+def set_embedding_device(device: str) -> bool:
+    """Persist the device; returns whether it changed, so an unchanged save keeps the embedder resident."""
+    if device not in EMBEDDING_DEVICE_CHOICES:
+        raise ValueError("Device must be auto, cpu or gpu.")
+    forget_cached_embedding_device()
+    if get_stored_embedding_device() == device:
+        return False
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        upsert_app_settings({EMBEDDING_DEVICE_SETTING_KEY: device}, read_back = False)
+    finally:
+        reset_account(token)
+        forget_cached_embedding_device()
+    return True

@@ -10,30 +10,6 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
         state.reason ?? "Drop a .gguf model, or documents to chat with.",
     };
   }
-  if (state.status === "attach") {
-    // Only documents are indexed; images, audio and video ride the next message.
-    const description =
-      state.kind === "images" || state.kind === "audio" || state.kind === "video"
-        ? "Attached to your next message."
-        : state.kind === "mixed"
-          ? "Documents indexed, attachments sent with your next message."
-          : "Indexed for this chat.";
-    const noun =
-      state.kind === "images"
-        ? "image"
-        : state.kind === "audio"
-          ? "audio file"
-          : state.kind === "video"
-            ? "video"
-            : "file";
-    return {
-      title:
-        state.count === 1
-          ? `Drop to attach ${noun}`
-          : `Drop to attach ${state.count} ${noun}s`,
-      description,
-    };
-  }
   if (state.status === "valid" && state.action === "replace") {
     return {
       title: "Drop to replace model",
@@ -53,9 +29,10 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
 }
 
 export function NativeModelDropOverlay({ state }: { state: NativeModelDropState }) {
+  if (state.status === "attach") return null;
   const isIdle = state.status === "idle";
   const isAutoLoad =
-    (state.status === "valid" && state.action !== "chip") || state.status === "attach";
+    state.status === "valid" && state.action !== "chip";
   const isInvalid = state.status === "invalid";
   const { title, description } = overlayCopy(state);
 
@@ -70,10 +47,10 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
       aria-live="polite"
       aria-hidden={isIdle}
     >
-      <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-card/96 px-3 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm dark:shadow-black/30">
+      <div className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-card/96 px-3 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm dark:shadow-black/30">
         <div
           className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-200 ease-out",
+            "flex size-8 shrink-0 items-center justify-center rounded-md border transition-colors duration-200 ease-out",
             isAutoLoad
               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
               : isInvalid

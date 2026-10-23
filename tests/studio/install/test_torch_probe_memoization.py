@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The torch classification probe runs once per install run, not once per repair path.
-
-_ensure_cuda_torch / _ensure_xpu_torch / _ensure_rocm_torch / _ensure_cpu_torch all need
-the same few facts about the installed torch, and the installer calls the four of them
-back to back at two separate repair points. Each used to spawn its own `import torch`,
-so a single update paid for up to nine interpreter starts and, on a stalled GPU driver,
-up to nine independent 90s timeouts. These tests pin the shared-probe contract: one
-subprocess per run, invalidated whenever pip changes what is installed.
-"""
+"""The torch probe runs once per run; pip installs drop its memo, so later repairs see the new torch."""
 
 import ast
 import importlib.util
@@ -114,10 +106,8 @@ class TestProbeParsing:
         assert version == ""
 
     def test_a_torch_without_a_version_module_still_classifies(self, tmp_path):
-        """torch.version is not guaranteed to exist. Reaching through it unguarded raises
-        inside the child, which reads as "torch cannot import" and force-reinstalls a
-        working venv. Runs the real subprocess against a real package on PYTHONPATH,
-        since a mock cannot show which attribute the child touched."""
+        """torch.version may not exist; touching it unguarded reads as a broken torch and forces a
+        reinstall."""
         pkg = tmp_path / "torch"
         pkg.mkdir()
         (pkg / "__init__.py").write_text("__version__ = '1.13.1'\n", encoding = "utf-8")
@@ -132,13 +122,7 @@ class TestProbeParsing:
         assert ran is False
 
     def test_undecodable_import_chatter_does_not_escape(self):
-        """The probes this replaced all decoded with errors="replace".
-
-        text=True on its own decodes strictly, and UnicodeDecodeError is a ValueError, so
-        one undecodable byte from torch's import chatter would sail past the except above
-        and take the whole installer down rather than falling back to the on-disk
-        classifier. Runs the real subprocess: a mock cannot show which decoder was used.
-        """
+        """Probe output must be decoded with errors=replace, or undecodable chatter kills the installer."""
         emit = (
             "import sys; sys.stdout.buffer.write("
             r"b'noise \xff\xfe\n' + " + repr(_MARK) + r".encode() + b'2.9.1+cu128||12.8\n')"
@@ -214,10 +198,7 @@ class TestMemoization:
         assert mock_run.call_count == 1
 
     def test_the_torchao_probe_sees_the_reinstalled_torch(self):
-        """The consumer that would actually read a stale answer. _select_torchao_spec
-        reads _probe_installed_torch_version() between the two repair points, so a memo
-        surviving the reinstall pins torchao against the torch that was just replaced.
-        """
+        """A memo surviving the reinstall would pin torchao against the torch that was just replaced."""
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
 
@@ -236,10 +217,7 @@ class TestMemoization:
 
     @pytest.mark.parametrize("installer", ["pip_install", "pip_install_try"])
     def test_a_real_reinstall_is_really_reclassified(self, tmp_path, installer):
-        """The mocked versions above prove the memo was dropped. This proves the answer
-        that replaces it comes from the venv as it is NOW: two real torch packages, a
-        real probe subprocess either side of a real call into the installer.
-        """
+        """Two real torch packages prove the reclassified answer comes from the venv as it is now."""
 
         def _torch(where, version):
             pkg = where / "torch"
@@ -257,7 +235,6 @@ class TestMemoization:
 
         with patch.dict(os.environ, {"PYTHONPATH": str(before)}):
             assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
-        # Still the remembered answer while nothing has installed anything.
         with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
             assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
 
@@ -274,14 +251,8 @@ class TestMemoization:
             assert stack_mod._probe_torch_runtime()[2] == "2.10.0+cu128"
 
     def test_every_installer_entry_point_invalidates(self):
-        """Read from the module rather than listed here, so a third installer helper
-        cannot be added without either invalidating or failing this.
-
-        The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
-        makes a function an installer rather than a probe. The one exemption builds into a
-        scratch --target and installs nothing; `TestScratchPrefetch` runs it to prove that,
-        rather than trusting how its source reads.
-        """
+        """Every helper that routes through _build_pip_cmd or _build_uv_cmd must invalidate the
+        probe memo."""
         tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
         installers = {}
         for node in ast.walk(tree):
@@ -312,8 +283,7 @@ class TestMemoization:
         assert mock_run.call_count == 2
 
 
-# Builds a command without dropping the torch classification, which is only safe because it
-# installs nothing into the environment. TestScratchPrefetch runs each one to hold it to that.
+# Safe only because it installs nothing; TestScratchPrefetch holds it to that.
 SCRATCH_PREFETCHERS = {"_prefetch_diffusers_main"}
 
 
@@ -380,16 +350,12 @@ class TestConsumersShareTheProbe:
 
 
 class TestVersionlessBuildsStillClassify:
-    """An empty version field is not no answer: "" is a torch whose __version__ is
-    missing, which the pins repair, and None is a probe that learned nothing and must
-    leave the venv alone. TestProbeParsing pins that at the probe; these pin it where
-    it decides something, since gating on the version alone would skip the repair.
-    """
+    """An empty version (no __version__) is repaired; None means the probe learned nothing, so skip."""
 
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
-        out = _probe_result("||12.8")  # no version, cuda "12.8"
+        out = _probe_result("||12.8")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -402,7 +368,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
-        out = _probe_result("|7.1.12345|")  # no version, hip set
+        out = _probe_result("|7.1.12345|")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",

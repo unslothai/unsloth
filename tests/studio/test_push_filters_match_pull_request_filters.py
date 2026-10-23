@@ -1,35 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A scoped `pull_request` trigger must be scoped the same way on `push`.
-
-Sixteen workflows carefully scoped their `pull_request` trigger and then left
-`push: branches: [main]` completely unfiltered. The effect is invisible on a pull request
-and only appears after merge: a commit that changes nothing those workflows can observe
-still starts every one of them. Measured over a 1.5 hour window, this repo's 300 most
-recent runs contained 125 queued, and 70% of a job's wall clock was spent waiting for a
-runner rather than running (`unsloth-zoo`, sharing the same account, measured a 143 minute
-median queue against 5.7 minutes of work). Post-merge work that cannot change a verdict is
-therefore paid for twice: once as the slots it holds, and again as the queue every pull
-request behind it waits in.
-
-`tests/studio/test_macos_slots_per_commit.py` already pins this for the macOS workflows,
-where the five-concurrent-job account-wide cap made it urgent first. This module asks the
-same question of every workflow, on the same reasoning it gives: the two lists are one
-question asked twice -- "could this commit break this workflow" -- so drift is always a
-bug, and a push list narrower than the pull_request list is the dangerous direction,
-because it silently stops testing after merge something that was tested before it.
-
-The prerequisite, and why this file is not just a preference: scoping a push trigger is
-only safe if the `pull_request` list is COMPLETE. While push was unfiltered, every commit
-re-ran everything after merge, so a helper the workflow executes but never listed was a
-gap nobody could observe. Narrowing push is exactly what turns that gap into a real hole.
-`studio-export-capability-ci.yml` had one -- it is `uses:` on pip-cache-restore and
-pip-cache-save and listed neither -- and both were added in the same change that scoped its
-push trigger. `test_local_actions_are_in_path_filters.py` and
-`test_macos_slots_per_commit.py::test_every_helper_a_workflow_executes_is_in_its_trigger`
-are the guards for that half of the invariant.
-"""
+"""Push filters must match pull_request filters, and a pull_request list must be complete first."""
 
 from pathlib import Path
 
@@ -39,16 +11,9 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Workflows whose push trigger is deliberately broader than their pull_request trigger.
-# Each needs the reason written here; this set shrinking is good and it growing needs an
-# argument, not a convenience.
+# Each entry needs its reason here; growing this needs an argument.
 DELIBERATELY_UNFILTERED_ON_PUSH = {
-    # Every job here is a function of the dependency manifests, so a PR touching none of
-    # them cannot change a verdict -- but a FLOATING pin can, with no diff at all: a
-    # version range resolving to a new release, or a freshly published advisory against an
-    # unchanged tree. The workflow's own comment records that the daily cron and every
-    # push to main are left unfiltered for exactly that reason, so scoping push here would
-    # narrow a deliberate safety net rather than remove waste.
+    # Floating pins and new advisories change verdicts with no diff, so push stays unfiltered.
     "security-audit.yml",
 }
 

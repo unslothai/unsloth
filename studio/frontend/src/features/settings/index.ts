@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
+export { FullInstallDialog } from "./components/full-install-dialog";
+export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
 export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
@@ -11,13 +17,17 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadLanAccess, publishLanUrls } from "./api/lan-access";
+export { lanApiUrls } from "./api/lan-access-state";
 export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  updateSystemOneSettings,
 } from "./api/systemone";
+export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
@@ -60,6 +70,15 @@ export type {
   SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
+export { useEmbeddingModelStore } from "./stores/embedding-model-store";
+export { useEmbeddingPinsStore } from "./stores/embedding-pins-store";
+export {
+  type EmbeddingSwitchResult,
+  ejectEmbeddingModel,
+  embeddingModelName,
+  embeddingModelOwner,
+  switchEmbeddingModel,
+} from "./lib/switch-embedding-model";
 export {
   applyInterfaceScale,
   stepInterfaceScale,
@@ -99,6 +118,7 @@ export {
   currentBinding,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
+  resolveBindings,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
@@ -110,8 +130,14 @@ export {
   applyDictationDictionary,
   recordRecentDictation,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
+  withSttVariant,
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
-export { isMacPlatform } from "./lib/keyboard-shortcuts";
+export {
+  isMacPlatform,
+  isModEnter,
+  modEnterLabel,
+} from "./lib/keyboard-shortcuts";

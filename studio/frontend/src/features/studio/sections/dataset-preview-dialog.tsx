@@ -192,10 +192,12 @@ export function DatasetPreviewDialog({
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
   const isRawFormat = isRawTextDatasetFormat(datasetFormat);
+  const isDecisionModel = modelType === "decision";
   const hasHeuristicMapping =
     !data?.requires_manual_mapping && !!data?.suggested_mapping;
   const mappingEnabled =
-    !isRawFormat && (!!data?.requires_manual_mapping || hasHeuristicMapping);
+    !(isRawFormat || isDecisionModel) &&
+    (!!data?.requires_manual_mapping || hasHeuristicMapping);
   const showMappingFooter = mode === "mapping" && mappingEnabled;
   const mappingOk =
     isRawFormat ||
@@ -401,7 +403,7 @@ export function DatasetPreviewDialog({
 
   // Pre-fill mapping from suggested_mapping when data arrives (never overwriting existing entries).
   useEffect(() => {
-    if (!open || !datasetName) return;
+    if (!open || !datasetName || isDecisionModel) return;
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
     if (Object.keys(manualMapping).length > 0) return;
     const derived = deriveDefaultMapping(
@@ -415,6 +417,7 @@ export function DatasetPreviewDialog({
   }, [
     open,
     datasetName,
+    isDecisionModel,
     data,
     effectiveIsVlm,
     datasetFormat,
@@ -476,7 +479,7 @@ export function DatasetPreviewDialog({
                       key={`${colName}:${sourcePath}`}
                       src={src}
                       alt={`preview-${index}`}
-                      className="h-16 w-auto max-w-40 rounded-md border object-contain bg-muted"
+                      className="h-16 w-auto max-w-40 rounded-lg border object-contain bg-muted"
                       width={width}
                       height={height}
                       loading="lazy"
@@ -563,7 +566,7 @@ export function DatasetPreviewDialog({
         {/* Header */}
         <DialogHeader className="px-6 max-sm:px-4 pt-5 pb-4 shrink-0">
           <div className="flex items-center gap-3 pr-10">
-            <div className="rounded-xl corner-squircle p-2 ring-1 ring-indigo-200 bg-indigo-50 text-indigo-600 dark:ring-indigo-800 dark:bg-indigo-950 dark:text-indigo-400 shrink-0">
+            <div className="rounded-md corner-squircle p-2 ring-1 ring-indigo-200 bg-indigo-50 text-indigo-600 dark:ring-indigo-800 dark:bg-indigo-950 dark:text-indigo-400 shrink-0">
               <HugeiconsIcon icon={Database02Icon} className="size-4" />
             </div>
             <DialogTitle className="font-heading text-lg font-semibold tracking-tight">
@@ -577,7 +580,7 @@ export function DatasetPreviewDialog({
           {/* Loading */}
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3">
-              <div className="rounded-2xl corner-squircle bg-primary/5 p-4">
+              <div className="rounded-xl corner-squircle bg-primary/5 p-4">
                 <Spinner className="size-5 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground font-medium">
@@ -596,7 +599,7 @@ export function DatasetPreviewDialog({
           {/* Error */}
           {error && (
             <div className="py-20 flex flex-col items-center justify-center gap-3">
-              <div className="rounded-2xl corner-squircle bg-destructive/10 p-3">
+              <div className="rounded-lg corner-squircle bg-destructive/10 p-3">
                 <HugeiconsIcon
                   icon={AlertCircleIcon}
                   className="size-5 text-destructive"
@@ -615,7 +618,7 @@ export function DatasetPreviewDialog({
           {!loading && !error && data && (
             <>
               {/* Metadata card */}
-              <div className="rounded-xl corner-squircle ring-1 ring-border/60 bg-muted/30 px-5 py-4 mb-4 space-y-2">
+              <div className="rounded-lg corner-squircle ring-1 ring-border/60 bg-muted/30 px-5 py-4 mb-4 space-y-2">
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
                   label="Format"
@@ -662,7 +665,7 @@ export function DatasetPreviewDialog({
                 </div>
               )}
 
-              {data.warning && !isRawFormat && (
+              {data.warning && !isRawFormat && !isDecisionModel && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
                   <HugeiconsIcon
                     icon={AlertCircleIcon}

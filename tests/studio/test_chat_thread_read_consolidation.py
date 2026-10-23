@@ -25,15 +25,13 @@ def test_chat_run_reuses_one_thread_metadata_read() -> None:
     assert squash("const thread = await getStoredChatThread(resolvedThreadId);") in run
     assert squash("getStoredChatThread(resolvedThreadId).catch(() => undefined)") not in run
 
-    # The first shared read must sit after the model-ready wait, so a chat moved
-    # to another project mid-load is still seen by the reads that follow.
+    # The first shared read must follow the model-ready wait so a chat moved mid-load is seen.
     model_ready_boundary = run.index(
         squash("      const liveRuntime = useChatRuntimeStore.getState();")
     )
     first_shared_read = run.index(squash("const sandboxSessionId = await resolveSandboxSessionId("))
     assert first_shared_read > model_ready_boundary
 
-    # Prefixes, so a trailing comma or a one-line call both match.
     for call in (
         "resolveProjectId(resolvedThreadId,readThreadRecord",
         "resolveSandboxSessionId(resolvedThreadId,readThreadRecord",

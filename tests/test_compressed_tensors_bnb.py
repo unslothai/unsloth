@@ -11,14 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Loading a compressed-tensors packed INT4 / INT8 checkpoint straight into bitsandbytes 4-bit.
-
-Offline tests cover the checkpoint classifier, the storage-dtype plan for the packed tensors,
-the config stripping (root and sub-configs) and the loader hand-off. The GPU tests build a
-tiny packed Llama with compressed-tensors' own compressor, load it through
-`FastLanguageModel.from_pretrained(load_in_4bit = True)` and compare every Linear4bit bit for
-bit against the same checkpoint decompressed to bf16 on disk first.
-"""
+"""Packed INT4/INT8 checkpoints load into bnb 4-bit; GPU tests match a bf16 decompress bit for bit."""
 
 import json
 import os
@@ -31,7 +24,6 @@ from llama_patch_isolation import restore_llama_patches  # noqa: F401
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth  # noqa: F401
 from unsloth.models.compressed_tensors_bnb import (
     UNSLOTH_COMPRESSED_TENSORS_ATTR,
@@ -49,7 +41,7 @@ try:
     from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
 
     HAS_CT = True
-    # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
+    # compressed-tensors 0.19 dropped GPTQ activation ordering: its compressor ignores weight_g_idx.
     CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
 except Exception:
     HAS_CT = CT_HONOURS_G_IDX = False
@@ -291,11 +283,7 @@ def test_prepared_config_is_the_armed_config_and_nothing_else():
 
 
 def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
-    """The planner rebuilds the repo's config from the model name. For a re-quantized packed
-    checkpoint that config still carries compressed-tensors, and `merge_quantization_configs`
-    then refuses the bitsandbytes flags, so Kimi-K2.7-Code lost its plan and fell back to
-    `sequential`, which spilled to CPU and bitsandbytes refused the load. The armed config
-    object is what the planner has to size; the loaders hand it over as `planner_config`."""
+    """Planner must size the armed config, not one rebuilt from the name, which keeps compressed-tensors."""
     import sys
     import types
     from unsloth.models import loader_utils
@@ -1042,7 +1030,7 @@ def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
             if isinstance(node, ast.If)
             and any("_checked_4bit" in ast.unparse(stmt) for stmt in node.body)
         ]
-        # ... and only while the check kept 4-bit (an unarmed pre-quantized checkpoint must not reach vLLM as bnb).
+        # An unarmed pre-quantized checkpoint must not reach vLLM as bnb.
         assert guards == ["not (_explicit_bnb_4bit and _checked_4bit)"], (module.__name__, guards)
 
 
@@ -1068,7 +1056,7 @@ def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
-    # The loader passes load_in_4bit = False with an explicit config; a bnb 4-bit config must still arm the plan.
+    # With an explicit config the loader passes load_in_4bit = False; bnb 4-bit must still arm.
     import ast, inspect
     from transformers import BitsAndBytesConfig
     from unsloth.models import llama, vision
@@ -1121,7 +1109,7 @@ def test_the_flag_only_dict_shorthand_is_a_bnb_4bit_request():
     [(8, True, (False, True)), (4, True, (True, False)), (8, False, (True, False))],
 )
 def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want, monkeypatch):
-    # Kept packed, INT8 weights stay 8-bit: planning them as bnb 4-bit halves their budget and OOMs the load.
+    # Packed INT8 weights stay 8-bit: planning them as bnb 4-bit halves their budget and OOMs.
     import unsloth.models.compressed_tensors_int4 as ct_int4
     from unsloth.models.loader_utils import compressed_tensors_planner_bits
 
@@ -1131,7 +1119,7 @@ def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want,
     assert compressed_tensors_planner_bits(config, True, False) == want
     assert compressed_tensors_planner_bits(_Config(), True, False) == (True, False)
     assert compressed_tensors_planner_bits(config, False, False) == (False, False)
-    # An explicit bnb 4-bit config would override the 8-bit flags in the planner: it must be dropped too.
+    # An explicit bnb 4-bit config would override the 8-bit flags in the planner.
     from transformers import BitsAndBytesConfig
     from unsloth.models.loader_utils import compressed_tensors_planner_quantization
 

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// An approval the backend is no longer holding is not a failed post. Both used to arrive at the
-// card as one bare throw out of parseJsonOrThrow, so an expired request rendered "Could not send
-// your decision. Try again." next to re-enabled buttons: advice that can never work, since the
-// slot is gone and every retry 404s until tool_end clears the card. The 404 now carries a type.
+// An expired approval 404s on every retry, so it must not render as a retryable failed post.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
 type Module = {
   resolveToolConfirmation: (
@@ -36,6 +34,11 @@ function harness(response: ReturnType<typeof jsonResponse>) {
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
+      "./skill-load-event": { skillLoadCardEvent },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
@@ -110,9 +113,7 @@ test("a matched decision still resolves true", async () => {
   assert.match(requests[0]!.url, /tool-confirm/);
 });
 
-// ── The card's own wiring, pinned at the source ──────────────────────────────
-// The component is not mounted here (no DOM in this suite), so these read the source. Both are
-// one-token regressions that a type check cannot catch and that would silently restore the bug.
+// No DOM in this suite, so these read the source.
 
 const CONTROLS = await import("node:fs").then((fs) =>
   fs.readFileSync(
@@ -146,8 +147,7 @@ test("a decision that is gone disables the buttons instead of inviting another 4
 });
 
 test("Always allow records its session grant only after the backend takes the decision", () => {
-  // The regression: allowToolAlways ran in the onClick, before the post. A press that visibly
-  // failed still auto-approved this tool for every later call in the session.
+  // allowToolAlways must run after a successful post, not in the onClick.
   assert.doesNotMatch(
     CONTROLS,
     /onClick=\{\(\) => \{\s*if \(autoAllowKey\) allowToolAlways/,

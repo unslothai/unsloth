@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""routes/llama_compat.py: the discovery surface a third-party client probes.
-
-Reproduces a real user report. A client pointed at Studio's port ran this sequence:
-
-    GET  /api/v1/models  404      GET  /props    200 text/html
-    GET  /api/tags       404      GET  /version  200 text/html
-    GET  /v1/props       404      POST /api/show 405
-
-The two 200s are the bug: neither was a Studio route, so both fell through the SPA
-catch-all and returned index.html, which a probe reads as "supported" before failing
-on the body. The module is loaded standalone with a double for routes.inference.
-"""
+"""Discovery paths like /props and /version must not 200 with index.html via the SPA catch-all."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import time
@@ -71,6 +61,8 @@ class _Backend:
         self.context_length = 262144
         self.chat_template = "{{ messages }}"
         self._props = props
+        self._port = 52345
+        self._auth_headers = {"Authorization": "Bearer child-key"}
 
     def _query_server_props(self):
         return self._props
@@ -80,6 +72,7 @@ def _inference_double(
     backend,
     catalog,
     orchestrator = None,
+    mlx = None,
 ):
     """Stand-in for routes.inference. Deliberately not a sys.modules entry: stubbing it
     globally broke two unrelated route tests when the suite ran in one process."""
@@ -88,11 +81,27 @@ def _inference_double(
     inference._llama_public_model_id = lambda b, fallback = None: b._openai_advertised_id
     inference._peek_inference_backend = lambda: orchestrator
     inference._orchestrator_public_model_id = lambda b: b.active_model_name
+    inference._active_mlx_backend = lambda: mlx
 
-    async def _objects():
+    async def _objects(quant_pins = False):
         return catalog
 
     inference._openai_catalog_objects = _objects
+    inference.model_slots = types.SimpleNamespace(visible_loading = lambda: None)
+
+    # Inert: is_disconnected() never returns under TestClient; one test supplies its own watcher.
+    async def _await_disconnect_then_cancel(request, cancel_event):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_watcher(watcher, timeout_s = 1.0):
+        watcher.cancel()
+        await asyncio.wait({watcher}, timeout = timeout_s)
+
+    inference._await_disconnect_then_cancel = _await_disconnect_then_cancel
+    inference._stop_local_disconnect_cancel_watcher = _stop_watcher
     return inference
 
 
@@ -103,6 +112,7 @@ def _load(
     backend = None,
     catalog = None,
     orchestrator = None,
+    mlx = None,
 ):
     """The real routes/llama_compat.py, with routes.inference replaced by a double."""
     global _MOD
@@ -117,6 +127,7 @@ def _load(
         backend if backend is not None else _Backend(),
         CATALOG if catalog is None else catalog,
         orchestrator,
+        mlx,
     )
     _MOD._inference = lambda: double
     return _MOD
@@ -147,24 +158,17 @@ def _teardown():
     sys.modules.pop("llama_compat_under_test", None)
 
 
-# ── the reported probe sequence ───────────────────────────────────────────────
-
-
 def test_the_reported_probe_sequence_no_longer_returns_html():
     """THE REGRESSION THIS FILE EXISTS FOR: every probed path answers JSON or 404,
     never 200 text/html."""
     mod = _load()
     with _client(mod) as c:
-        # The two that used to answer with the app shell now answer with JSON.
         for path in ("/props", "/v1/props", "/version"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
 
-        # The Ollama pair stays a 404 on purpose: see test_the_ollama_surface_is_not
-        # _advertised. What matters is that no probe in the sequence gets HTML.
-        # 405 for POST /api/show is main.py's standing answer for a POST to any unknown
-        # /api/ path, unchanged by this PR; what matters is that none of them is HTML.
+        # Ollama paths stay 404 on purpose; 405 is main.py's answer to POST on unknown /api/
         for method, path in (
             ("GET", "/api/v1/models"),
             ("GET", "/api/tags"),
@@ -188,7 +192,7 @@ def test_the_html_fallback_is_what_used_to_answer_these():
 def test_engine_endpoints_studio_does_not_serve_are_404_not_html():
     mod = _load()
     with _client(mod) as c:
-        for path in ("/slots", "/completion", "/metrics", "/tokenize", "/health"):
+        for path in ("/completion", "/tokenize", "/detokenize", "/health"):
             r = c.get(path)
             assert r.status_code == 404, path
             assert "text/html" not in r.headers.get("content-type", ""), path
@@ -200,12 +204,9 @@ def test_probe_matching_ignores_case_and_stray_slashes():
     assert mod.is_engine_probe_path("/slots/")
     assert mod.is_engine_probe_path("Metrics")
     assert not mod.is_engine_probe_path("chat")
-    # Served paths are deliberately absent: they are real routes, matched first.
+    # served paths are deliberately absent: they are real routes, matched first
     assert not mod.is_engine_probe_path("props")
     assert not mod.is_engine_probe_path("version")
-
-
-# ── /props ────────────────────────────────────────────────────────────────────
 
 
 def test_props_never_echoes_the_on_disk_gguf_path():
@@ -232,9 +233,6 @@ def test_props_degrades_to_the_local_view_when_the_engine_cannot_be_read():
         body = c.get("/props").json()
     assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
     assert body["default_generation_settings"]["n_ctx"] == 262144
-    # Not 0: this same response advertises the model as loaded, and a client reading
-    # props for capacity would conclude it cannot serve. The backend knows what it
-    # launched with.
     assert body["total_slots"] == 4
     assert body["build_info"].startswith("unsloth-studio/")
 
@@ -244,8 +242,6 @@ def test_props_with_nothing_loaded_reports_no_model():
     with _client(mod) as c:
         body = c.get("/props").json()
     assert "model_path" not in body
-    # No llama-server, so no llama-server props. Reporting total_slots 0 and an empty
-    # template would describe an engine that is not running.
     assert "total_slots" not in body
     assert "chat_template" not in body
     assert body["build_info"].startswith("unsloth-studio/")
@@ -257,9 +253,6 @@ def test_v1_props_and_props_agree():
         assert c.get("/props").json() == c.get("/v1/props").json()
 
 
-# ── /version ──────────────────────────────────────────────────────────────────
-
-
 def test_version_answers_on_the_bare_path_only():
     """Ollama spells it /api/version; answering there is part of claiming to be Ollama."""
     mod = _load()
@@ -269,9 +262,6 @@ def test_version_answers_on_the_bare_path_only():
     assert bare.status_code == 200
     assert isinstance(bare.json()["version"], str) and bare.json()["version"]
     assert prefixed.status_code == 404
-
-
-# ── platform and robustness, from the sandbox run ─────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -339,9 +329,9 @@ def test_the_version_lookup_is_resolved_once(monkeypatch):
 
 
 def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
-    """The guard runs after the static lookup, so a shipped file named `metrics` wins."""
+    """The guard runs after the static lookup, so a shipped file named `health` wins."""
     mod = _load()
-    (tmp_path / "metrics").write_text("asset-body")
+    (tmp_path / "health").write_text("asset-body")
     app = FastAPI()
     app.include_router(mod.router)
 
@@ -356,8 +346,30 @@ def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
 
     app.dependency_overrides[mod.get_current_subject] = lambda: "test"
     with TestClient(app) as c:
-        assert c.get("/metrics").text == "asset-body"
-        assert c.get("/slots").status_code == 404
+        assert c.get("/health").text == "asset-body"
+        assert c.get("/completion").status_code == 404
+
+
+def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
+    """These GET routes sit ahead of the SPA catch-all, so a page or asset by that name would be shadowed."""
+    frontend = _BACKEND.parent / "frontend"
+    if not frontend.is_dir():
+        pytest.skip("frontend sources not present in this checkout")
+    mod = _load()
+    forwarded = {path for method, path in mod._SERVED_ROUTES if method == "GET"}
+    public = (
+        {p.name.lower() for p in (frontend / "public").iterdir()}
+        if (frontend / "public").is_dir()
+        else set()
+    )
+    declared = set()
+    for path in (frontend / "src" / "app" / "routes").glob("*.tsx"):
+        for line in path.read_text(encoding = "utf-8").splitlines():
+            line = line.strip()
+            if line.startswith('path: "') and line.endswith('",'):
+                declared.add(line[len('path: "') : -2].strip("/").lower())
+    assert not forwarded & public, forwarded & public
+    assert not forwarded & declared, forwarded & declared
 
 
 def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
@@ -378,9 +390,6 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
     assert not shadowed, f"UI route(s) shadowed by the probe deny-list: {shadowed}"
 
 
-# ── the four findings from review ─────────────────────────────────────────────
-
-
 def test_the_ollama_surface_is_not_advertised():
     """Answering /api/tags makes a client select Ollama and then fail on /api/chat.
     The reporting user's client got 404 here, fell back to OpenAI, and worked, so
@@ -390,8 +399,6 @@ def test_the_ollama_surface_is_not_advertised():
     assert "/api/tags" not in routes
     assert "/api/show" not in routes
     assert "/api/version" not in routes
-    # And the inference endpoints an Ollama client would go on to call are absent, which
-    # is what makes advertising the discovery pair wrong rather than merely incomplete.
     assert "/api/chat" not in routes and "/api/generate" not in routes
 
 
@@ -400,8 +407,6 @@ def test_the_ollama_surface_is_not_advertised():
     "path",
     [
         "/completion",
-        "/tokenize",
-        "/detokenize",
         "/rerank",
         "/infill",
         "/embedding",
@@ -449,14 +454,17 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
-    for path in ("/props", "/v1/props", "/version"):
+    for path in ("/props", "/v1/props", "/version", "/models"):
         assert ("GET", path) in _INFERENCE_ROUTES, path
+    for path in ("/models/load", "/models/unload"):
+        assert ("POST", path) not in _INFERENCE_ROUTES, path
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
-
-
-# ── round two ─────────────────────────────────────────────────────────────────
+    for path in ("/tokenize", "/detokenize"):
+        assert ("POST", path) in _INFERENCE_ROUTES, path
+    for path in ("/slots", "/metrics"):
+        assert ("GET", path) not in _INFERENCE_ROUTES, path
 
 
 def test_head_on_an_unserved_probe_path_is_404_not_405():
@@ -536,7 +544,7 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
         for path in (
             "/chat/completions",
             "/responses",
-            "/models",
+            "/models/sse",
             "/tools",
             "/audio/transcriptions",
         ):
@@ -546,9 +554,7 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
                 assert "text/html" not in r.headers.get("content-type", ""), (method, path)
 
 
-def test_props_does_not_advertise_child_endpoints_studio_denies():
-    """tools/server/server-context.cpp puts all three flags in the payload, and Studio
-    launches with --metrics, so endpoint_metrics arrived true while /metrics 404s here."""
+def test_props_advertises_only_the_child_endpoints_studio_forwards():
     upstream = {
         "endpoint_slots": True,
         "endpoint_props": True,
@@ -561,23 +567,254 @@ def test_props_does_not_advertise_child_endpoints_studio_denies():
     mod = _load(backend = _Backend(props = upstream))
     with _client(mod) as c:
         body = c.get("/props").json()
-    assert body["endpoint_slots"] is False
+    assert body["endpoint_slots"] is True
     assert body["endpoint_props"] is False
-    assert body["endpoint_metrics"] is False
+    assert body["endpoint_metrics"] is True
     for child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         assert child_only not in body, child_only
-    # The fields that do describe the model still come through untouched.
     assert body["total_slots"] == 4
 
 
-def test_the_denied_endpoints_props_advertises_really_are_denied():
-    """Every flag set False above names a path that really 404s."""
+def test_props_does_not_advertise_endpoints_the_child_has_off():
+    upstream = {"endpoint_slots": False, "endpoint_metrics": False}
+    mod = _load(backend = _Backend(props = upstream))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_props_does_not_advertise_forwarded_endpoints_with_nothing_loaded():
+    mod = _load(backend = _Backend(loaded = False, props = {"endpoint_metrics": True}))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_props_does_not_advertise_forwarded_endpoints_to_a_managed_account(monkeypatch):
+    mod = _load(backend = _Backend(props = {"endpoint_slots": True, "endpoint_metrics": True}))
+    monkeypatch.setattr(mod, "_caller_is_managed_account", lambda: True)
+    monkeypatch.setattr(mod, "_resident_hidden_from_caller", lambda: False)
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_metrics"] is False
+
+
+def test_post_props_is_still_not_served():
     mod = _load()
     with _client(mod) as c:
-        for path in ("/slots", "/metrics"):
-            assert c.get(path).status_code == 404, path
-        # POST /props is llama-server's props-change endpoint; Studio serves GET only.
         assert c.post("/props", json = {}).status_code in (404, 405)
+
+
+class _Upstream:
+    def __init__(self, *, fail = False):
+        self.calls = []
+        self.fail = fail
+
+    def handler(self, request):
+        import httpx
+
+        self.calls.append(request)
+        if self.fail:
+            raise httpx.ConnectError("connection refused", request = request)
+        path = request.url.path
+        if path == "/metrics":
+            return httpx.Response(
+                200,
+                content = b"llamacpp:prompt_tokens_total 12\n",
+                headers = {"content-type": "text/plain; version=0.0.4"},
+            )
+        if path == "/slots":
+            return httpx.Response(200, json = [{"id": 0, "is_processing": False}])
+        if path == "/tokenize":
+            return httpx.Response(200, json = {"tokens": [9906, 1917]})
+        if path == "/detokenize":
+            return httpx.Response(200, json = {"content": "Hello world"})
+        return httpx.Response(404, json = {"error": "not found"})
+
+
+def _with_upstream(monkeypatch, mod, upstream):
+    import httpx
+    monkeypatch.setattr(
+        mod,
+        "_upstream_client",
+        lambda: httpx.AsyncClient(transport = httpx.MockTransport(upstream.handler)),
+    )
+
+
+@pytest.mark.parametrize(
+    "method, path, expect",
+    [
+        ("GET", "/slots", [{"id": 0, "is_processing": False}]),
+        ("POST", "/tokenize", {"tokens": [9906, 1917]}),
+        ("POST", "/detokenize", {"content": "Hello world"}),
+    ],
+)
+def test_the_forwarded_endpoints_reach_the_child_with_its_key(monkeypatch, method, path, expect):
+    import json
+
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.request(method, path, json = {"content": "Hello world"} if method == "POST" else None)
+    assert r.status_code == 200, r.text
+    assert r.json() == expect
+    (sent,) = upstream.calls
+    assert sent.method == method
+    assert str(sent.url) == "http://127.0.0.1:52345" + path
+    assert sent.headers["authorization"] == "Bearer child-key"
+    if method == "POST":
+        assert json.loads(sent.content) == {"content": "Hello world"}
+        assert sent.headers["content-type"].startswith("application/json")
+
+
+def test_metrics_reaches_the_child_and_keeps_the_prometheus_content_type(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.get("/metrics")
+    assert r.status_code == 200
+    assert r.content == b"llamacpp:prompt_tokens_total 12\n"
+    assert r.headers["content-type"].startswith("text/plain"), r.headers["content-type"]
+    assert upstream.calls[0].headers["authorization"] == "Bearer child-key"
+
+
+def test_the_slash_form_is_forwarded_too(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        assert c.post("/tokenize/", json = {"content": "x"}).status_code == 200
+        assert c.get("/metrics/").status_code == 200
+    assert [r.url.path for r in upstream.calls] == ["/tokenize", "/metrics"]
+
+
+def test_the_query_string_is_forwarded(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        c.get("/slots?fail_on_no_slot=1")
+    assert upstream.calls[0].url.params["fail_on_no_slot"] == "1"
+
+
+def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False))
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.post("/tokenize", json = {"content": "x"})
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == 503
+    assert upstream.calls == []
+
+
+class _MLXTokenizer:
+    """resolve_completion_prompt's rules: only a leading string gets BOS (1), empty raises."""
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        cancel_event = None,
+    ):
+        pieces = [prompt] if isinstance(prompt, str) else prompt
+        ids = []
+        for index, piece in enumerate(pieces):
+            if isinstance(piece, int):
+                ids.append(piece)
+            elif isinstance(piece, str):
+                if piece:
+                    ids += ([1] if index == 0 else []) + [40 + i for i in range(len(piece))]
+            else:
+                raise ValueError("Invalid prompt.")
+        if not ids:
+            raise ValueError("The prompt is empty.")
+        return {"ids": ids, "text": ""}
+
+
+def test_tokenize_answers_from_a_resident_mlx_model(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        special = c.post("/tokenize", json = {"content": "ab", "add_special": True})
+        plain = c.post("/tokenize", json = {"content": "ab"})
+        empty = c.post("/tokenize", json = {"content": ""})
+        bad = c.post("/tokenize", json = {"content": 3})
+        pieces = c.post("/tokenize", json = {"content": "ab", "with_pieces": True})
+    assert special.json() == {"tokens": [1, 40, 41]} and plain.json() == {"tokens": [40, 41]}
+    assert empty.json() == {"tokens": []}
+    assert bad.status_code == 400 and pieces.status_code == 400
+    assert upstream.calls == []
+
+
+def test_an_unload_racing_the_request_is_503_not_500(monkeypatch):
+    """unload_model flips is_loaded before it clears _port."""
+    backend = _Backend()
+    backend._port = None
+    mod = _load(backend = backend)
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.get("/slots")
+    assert r.status_code == 503
+    assert upstream.calls == []
+
+
+def test_an_unreachable_child_is_503_not_500(monkeypatch):
+    mod = _load()
+    _with_upstream(monkeypatch, mod, _Upstream(fail = True))
+    with _client(mod) as c:
+        r = c.get("/metrics")
+    assert r.status_code == 503
+    assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_a_managed_account_gets_the_404_and_the_child_is_never_asked(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    monkeypatch.setattr(mod, "_caller_is_managed_account", lambda: True)
+    with _client(mod) as c:
+        for method, path in (("GET", "/metrics"), ("GET", "/slots"), ("POST", "/tokenize")):
+            r = c.request(method, path, json = {} if method == "POST" else None)
+            assert r.status_code == 404, (method, path, r.status_code)
+    assert upstream.calls == []
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("POST", "/slots"),
+        ("POST", "/slots/0"),
+        ("DELETE", "/slots/0"),
+        ("POST", "/metrics"),
+        ("GET", "/tokenize"),
+        ("PUT", "/detokenize"),
+    ],
+)
+def test_only_the_read_only_methods_are_forwarded(monkeypatch, method, path):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.request(method, path, json = {} if method in ("POST", "PUT") else None)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert upstream.calls == []
+
+
+def test_the_forwarded_gets_survive_api_only_mode(monkeypatch):
+    mod = _load()
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _api_only_client(mod) as c:
+        assert c.get("/metrics").status_code == 200
+        assert c.get("/slots").status_code == 200
+        assert c.get("/health").status_code == 404
 
 
 # ── round three ───────────────────────────────────────────────────────────────
@@ -709,9 +946,6 @@ def test_the_slash_and_bare_forms_agree():
         assert c.get("/version").json() == c.get("/version/").json()
 
 
-# ── 405 leaks the same signal a 200 did ───────────────────────────────────────
-
-
 def _lifespan_app(mod, *, frontend_mounted = False):
     """An app wired the way main.py wires one: installed at startup, because that is
     the point both launch paths reach after the frontend decision."""
@@ -787,7 +1021,7 @@ def test_the_slash_form_of_a_denied_path_404s_rather_than_405(method, path):
 
 @pytest.mark.parametrize(
     "path",
-    ["/completion", "/completion/", "/health", "/metrics", "/slots", "/v1/health", "/slots/3"],
+    ["/completion", "/completion/", "/health", "/tokenize", "/v1/health", "/slots/3"],
 )
 def test_a_get_probe_404s_in_api_only_mode(path):
     """--api-only mounts no frontend, so the catch-all that supplies the GET 404 is not
@@ -801,7 +1035,7 @@ def test_a_get_probe_404s_in_api_only_mode(path):
 def test_api_only_mode_still_serves_the_three_real_routes():
     mod = _load()
     with _api_only_client(mod) as c:
-        for path in ("/props", "/v1/props", "/version"):
+        for path in ("/props", "/v1/props", "/version", "/models"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
@@ -861,3 +1095,598 @@ def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
     )
     with _client(mod) as c:
         assert c.get("/props").json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+
+
+# ── Open WebUI llama.cpp model management (#10610) ──────────────────────────
+
+QWEN = "unsloth/Qwen3.8-27B-GGUF"
+
+
+def _management(
+    load_status = 200,
+    catalog = None,
+    backend = None,
+):
+    """The routes double plus Studio's load and unload lifecycle, recording what they were asked."""
+    mod = _load(backend = backend, catalog = catalog)
+    double = mod._inference()
+    calls = []
+
+    async def _load_gated(
+        request,
+        fastapi_request,
+        current_subject,
+        *,
+        user_initiated = False,
+    ):
+        calls.append(("load", request.model_path, request.gguf_variant, request._advertised_id))
+        if load_status != 200:
+            raise HTTPException(status_code = load_status, detail = "busy")
+        return {"status": "loaded", "model": request.model_path}
+
+    async def _unload_impl(request, current_subject):
+        calls.append(("unload", request.model_path))
+        return {"status": "unloaded", "model": request.model_path}
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    async def _gpu_ids_resolve(gpu_ids, kind):
+        return True
+
+    double.load_model_gated = _load_gated
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    double._override_gpu_ids_still_resolve = _gpu_ids_resolve
+    return mod, calls
+
+
+@pytest.fixture
+def _no_local_gguf(monkeypatch):
+    import core.inference.local_model_resolver as resolver
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", lambda *a, **k: None)
+    monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: (None, {}))
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    return resolver
+
+
+def test_management_list_is_the_v1_chat_catalog():
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, _ = _management(catalog = CATALOG + [media])
+    with _client(mod) as c:
+        for path in ("/models", "/models/"):
+            r = c.get(path)
+            assert r.status_code == 200, path
+            assert r.json() == {"object": "list", "data": CATALOG}
+
+
+def test_management_load_resolves_a_listed_id_through_studios_load(_no_local_gguf):
+    mod, calls = _management()
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+        # A quant this machine does not have is refused, never fetched.
+        assert c.post("/models/load/", json = {"model": QWEN.lower() + ":Q8_0"}).status_code == 404
+    assert calls == [("load", QWEN, None, None)]
+
+
+def test_management_load_keeps_a_colon_in_an_exact_row_id(_no_local_gguf):
+    """An NPU row such as "lemonade:qwen" is the id itself, not a repo with a quant pin."""
+    row = {"id": "lemonade:qwen", "object": "model", "loaded": True}
+    mod, calls = _management(catalog = [row])
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": "lemonade:qwen"}).status_code == 200
+    assert calls == [("load", "lemonade:qwen", None, None)]
+
+
+def test_management_load_keeps_the_listed_alias_advertised(monkeypatch, _no_local_gguf):
+    """A path load would otherwise reappear in /v1/models under the path's basename."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen"),
+    )
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/load", json = {"model": QWEN})
+    assert r.status_code == 200
+    # The answer names the listed row, never the on-disk path.
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == [("load", "/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen")]
+
+
+def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gguf):
+    """The settings auto-switch would launch this row with, looked up by path then alias."""
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        # A single-file GGUF resolves with no quant, and is still llama.cpp's.
+        lambda requested, **k: ("/models/qwen.gguf", None, QWEN),
+    )
+    asked = []
+
+    def _override(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        asked.append((load_id, alias_id, variant))
+        return load_id, {"n_parallel": 2, "kv_cache_dtype": "q8_0", "gpu_layers": 20}
+
+    monkeypatch.setattr(overrides, "resolve_override_for_load", _override)
+    mod, _ = _management()
+    seen = []
+    double = mod._inference()
+    original = double.load_model_gated
+
+    async def _capture(request, *args, **kwargs):
+        seen.append((request.n_parallel, request.cache_type_kv, request.gpu_layers))
+        return await original(request, *args, **kwargs)
+
+    double.load_model_gated = _capture
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert asked == [("/models/qwen.gguf", QWEN, None)]
+    assert seen == [(2, "q8_0", 20)]
+
+
+def test_management_unload_maps_the_advertised_alias_to_the_resident(_no_local_gguf):
+    """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": QWEN.lower()})
+    assert r.status_code == 200
+    # The answer names the listed id, never the resident's path.
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_of_an_idle_row_never_reaches_the_lifecycle(_no_local_gguf):
+    """/unload releases a managed account's shared resident before it compares names."""
+    mod, calls = _management()
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": CATALOG[1]["id"]})
+    assert r.json() == {"success": True, "model": CATALOG[1]["id"]}
+    assert calls == []
+
+
+def test_management_unload_cancels_a_load_under_the_path_it_runs_as(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", "Q4_K_M", requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    backend.model_identifier = "/models/laguna"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == [("unload", "/models/laguna")]
+
+
+@pytest.mark.parametrize("path", ["/models/load", "/models/unload"])
+def test_management_rejects_unlisted_task_or_missing_models(path, _no_local_gguf):
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, calls = _management(catalog = CATALOG + [media])
+    with _client(mod) as c:
+        assert c.post(path, json = {"model": "someone/else"}).status_code == 404
+        # Image, video and speech rows load through their own engines, not /load and /unload.
+        assert c.post(path, json = {"model": media["id"]}).status_code == 404
+        assert c.post(path, json = {"model": ""}).status_code == 422
+        assert c.post(path, json = {}).status_code == 422
+    assert calls == []
+
+
+def test_management_load_keeps_studios_error_status(_no_local_gguf):
+    mod, _ = _management(load_status = 409)
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 409
+
+
+def test_management_requires_a_credential():
+    mod, calls = _management()
+    app = FastAPI()
+    app.include_router(mod.router)
+    with TestClient(app) as c:
+        assert c.get("/models").status_code == 401
+        for path in ("/models/load", "/models/unload"):
+            assert c.post(path, json = {"model": QWEN}).status_code == 401
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("POST", "/models"),
+        ("DELETE", "/models"),
+        ("HEAD", "/models/load"),
+        ("GET", "/models/load"),
+        ("GET", "/models/unload"),
+        ("GET", "/models/sse"),
+    ],
+)
+def test_unserved_management_operations_still_404(method, path):
+    mod, _ = _management()
+    with _client(mod) as c:
+        r = c.request(method, path, json = {} if method == "POST" else None)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert "text/html" not in r.headers.get("content-type", "")
+
+
+def test_management_unload_matches_an_ollama_tag_before_its_suffix(_no_local_gguf):
+    """ ":latest" is part of the advertised Ollama id, not a quant pin to strip first."""
+    tag = "ollama/llama3:latest"
+    backend = _Backend()
+    backend.model_identifier = "ollama-manifest:/models/llama3/latest"
+    backend._openai_advertised_id = tag
+    mod = _load(backend = backend, catalog = [{"id": tag, "object": "model", "loaded": True}])
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    mod._inference()._unload_model_impl = _unload_impl
+    mod._inference()._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": tag})
+    assert r.json() == {"success": True, "model": tag}
+    assert calls == ["ollama-manifest:/models/llama3/latest"]
+
+
+def test_management_unload_finds_a_path_loaded_row_with_no_alias_stamp(monkeypatch, _no_local_gguf):
+    """A Studio load by path advertises nothing, yet the catalog lists the row under its own id."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/lms/qwen", None, requested),
+    )
+    backend = _Backend()
+    backend.model_identifier = "/models/lms/qwen"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/models/lms/qwen")]
+
+
+def test_management_unload_leaves_an_unrelated_load_alone(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    backend = _Backend(loaded = False)
+    backend.is_active = True
+    backend.model_identifier = "/models/other"
+    backend._openai_advertised_id = None
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant(monkeypatch, _no_local_gguf):
+    # Both quants are on disk; only the resident one may be unloaded.
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: (
+            "/media/models/qwen/model.gguf",
+            requested.rpartition(":")[2],
+            QWEN,
+        ),
+    )
+    backend = _Backend()
+    backend.hf_variant = "UD-Q4_K_XL"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 200
+        assert c.post("/models/unload", json = {"model": QWEN + ":UD-Q4_K_XL"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_keeps_a_resident_of_another_named_build(monkeypatch, _no_local_gguf):
+    build = QWEN + ":beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: (
+            "/media/models/qwen/model.gguf",
+            "beta-Q4_K_M",
+            QWEN,
+        ),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_keeps_a_resident_of_another_quant_directory_build(
+    monkeypatch, _no_local_gguf
+):
+    build = "custom-model:Q4_K_M/beta-Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/custom", "Q4_K_M/beta-Q4_K_M", "custom-model"),
+    )
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M/beta-Q4_K_M" if requested == build else None,
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    backend.model_identifier = "/media/models/custom"
+    backend._openai_advertised_id = "custom-model"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls == []
+
+
+def test_management_unload_releases_a_build_loaded_by_its_rekeyed_stem(monkeypatch, _no_local_gguf):
+    build = QWEN + ":Q4_K_M"
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **kwargs: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+
+    def _pinned(requested, **kwargs):
+        return {build: "Q4_K_M", QWEN + ":beta-q4_k_m": "Q4_K_M"}.get(requested)
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    backend = _Backend()
+    backend.hf_variant = "beta-Q4_K_M"
+    pin = {"id": build, "object": "model", "loaded": False}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+
+    with _client(mod) as client:
+        assert client.post("/models/unload", json = {"model": build}).status_code == 200
+
+    assert calls != []
+
+
+def test_an_indexed_build_key_matches_its_listed_base_row(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "local_gguf_pinned_variant",
+        lambda requested, **kwargs: "Q4_K_M" if requested == QWEN + ":beta-Q4_K_M" else None,
+    )
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    assert mod._catalog_match(catalog, QWEN + ":beta-Q4_K_M") is not None
+    assert mod._catalog_match(catalog, QWEN + ":gamma-Q4_K_M") is None
+
+
+def test_a_build_key_is_matched_after_a_cold_index_scan(monkeypatch, _no_local_gguf):
+    import asyncio
+
+    warm = []
+
+    def _pinned(requested, allow_scan = True):
+        if allow_scan:
+            warm.append(requested)
+        return "beta-Q4_K_M" if warm and requested == QWEN + ":beta-Q4_K_M" else None
+
+    monkeypatch.setattr(_no_local_gguf, "local_gguf_pinned_variant", _pinned)
+    catalog = [{"id": QWEN, "object": "model"}]
+    mod, _calls = _management(backend = _Backend(), catalog = catalog)
+
+    async def _catalog():
+        return catalog
+
+    monkeypatch.setattr(mod, "_chat_catalog", _catalog)
+
+    assert asyncio.run(mod._catalog_row(QWEN + ":beta-Q4_K_M"))[0] == QWEN + ":beta-Q4_K_M"
+
+
+def test_management_unload_of_a_bare_id_ignores_the_preferred_quant(monkeypatch, _no_local_gguf):
+    """A bare id resolves to the preferred quant on disk, which need not be the resident one."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", requested),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q8_0"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_cancels_a_switch_while_the_old_model_stays_active(
+    monkeypatch, _no_local_gguf
+):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/laguna", None, requested),
+    )
+    orchestrator = types.SimpleNamespace(
+        active_model_name = "/models/old",
+        get_loading_model = lambda: "/models/laguna",
+        _openai_advertised_id = None,
+    )
+    mod = _load(backend = _Backend(loaded = False), orchestrator = orchestrator)
+    double = mod._inference()
+    calls = []
+
+    async def _unload_impl(request, current_subject):
+        calls.append(request.model_path)
+
+    async def _tunnel_safe_json(coro, *, label):
+        return await coro
+
+    double._unload_model_impl = _unload_impl
+    double._tunnel_safe_json = _tunnel_safe_json
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == ["/models/laguna"]
+
+
+def test_management_unload_refuses_a_pin_this_machine_does_not_have(_no_local_gguf):
+    mod, calls = _management()
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 404
+    assert calls == []
+
+
+def test_management_unload_never_reaches_another_accounts_resident(monkeypatch):
+    """The caller's catalog shows the row unloaded; matching the global resident would reveal it."""
+    mod, calls = _management(catalog = [{**CATALOG[0], "loaded": False}])
+    monkeypatch.setattr(mod, "_resident_hidden_from_caller", lambda: True)
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": QWEN})
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == []
+
+
+@pytest.mark.parametrize("suffix", ["latest", ""])
+def test_management_refuses_a_suffix_that_is_not_a_quant(suffix):
+    mod, calls = _management()
+    with _client(mod) as c:
+        for path in ("/models/load", "/models/unload"):
+            assert c.post(path, json = {"model": f"{QWEN}:{suffix}"}).status_code == 404, path
+    assert calls == []
+
+
+def test_management_unload_compares_a_legacy_pin_by_its_resolved_quant(monkeypatch, _no_local_gguf):
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q4_K_M", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    mod, calls = _management(backend = backend)
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": QWEN + ":BF16"}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf")]
+
+
+def test_management_unload_routes_a_kept_slot_quant_past_the_primary(monkeypatch, _no_local_gguf):
+    """Q4 on the primary, Q8 kept in a slot: the Q8 pin goes to /unload, which routes it to the slot."""
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/media/models/qwen/model.gguf", "Q8_0", QWEN),
+    )
+    backend = _Backend()
+    backend.hf_variant = "Q4_K_M"
+    pin = {"id": QWEN + ":Q8_0", "object": "model", "loaded": True}
+    mod, calls = _management(backend = backend, catalog = CATALOG + [pin])
+    with _client(mod) as c:
+        assert c.post("/models/unload", json = {"model": pin["id"]}).status_code == 200
+    assert calls == [("unload", pin["id"])]
+
+
+def test_tokenize_takes_llama_server_mixed_content_on_mlx(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        mixed = c.post("/tokenize", json = {"content": ["ab", 7, "c"]})
+        leading_special = c.post("/tokenize", json = {"content": ["ab", 7], "add_special": True})
+        bad = c.post("/tokenize", json = {"content": [{}]})
+    assert mixed.json() == {"tokens": [40, 41, 7, 40]}
+    assert leading_special.json() == {"tokens": [1, 40, 41, 7]}
+    assert bad.status_code == 400
+    assert upstream.calls == []
+
+
+def test_tokenize_refuses_parse_special_false_on_mlx(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        refused = c.post("/tokenize", json = {"content": "ab", "parse_special": False})
+        allowed = c.post("/tokenize", json = {"content": "ab", "parse_special": True})
+    assert refused.status_code == 400 and "parse_special" in refused.text
+    assert allowed.json() == {"tokens": [40, 41]}
+    assert upstream.calls == []
+
+
+def test_tokenize_reports_an_mlx_unload_race_as_an_unavailable_engine(monkeypatch):
+    class _Racing:
+        def resolve_completion_prompt(
+            self,
+            prompt,
+            cancel_event = None,
+        ):
+            raise RuntimeError("No active model")
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _Racing())
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        raced = c.post("/tokenize", json = {"content": "ab"})
+    assert raced.status_code == 503
+    assert upstream.calls == []
+
+
+def test_tokenize_rejections_are_invalid_request_errors(monkeypatch):
+    mod = _load(backend = _Backend(loaded = False), mlx = _MLXTokenizer())
+    _with_upstream(monkeypatch, mod, _Upstream())
+    with _client(mod) as c:
+        bad = c.post("/tokenize", json = {"content": 3})
+        unavailable = c.post("/tokenize", json = {"content": "ab", "parse_special": False})
+    assert bad.status_code == 400 and bad.json()["error"]["type"] == "invalid_request_error"
+    assert unavailable.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_tokenize_stops_waiting_for_the_generation_lock_when_the_client_goes(monkeypatch):
+    import threading
+
+    started = threading.Event()
+
+    class _Blocked:
+        def resolve_completion_prompt(
+            self,
+            prompt,
+            cancel_event = None,
+        ):
+            started.set()
+            # Event.wait, not a spin: a busy loop here starves the loop thread of the GIL.
+            assert cancel_event.wait(10), "the disconnect never reached the waiting resolve"
+            raise InterruptedError("Request cancelled.")
+
+    mod = _load(backend = _Backend(loaded = False), mlx = _Blocked())
+    _with_upstream(monkeypatch, mod, _Upstream())
+
+    async def disconnected(request, cancel_event):
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        cancel_event.set()
+
+    monkeypatch.setattr(mod._inference(), "_await_disconnect_then_cancel", disconnected)
+    with _client(mod) as c:
+        gone = c.post("/tokenize", json = {"content": "ab"})
+    assert gone.status_code == 499

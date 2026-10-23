@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateTrainingConfig } = await import(
+const { validateS3Source, validateTrainingConfig } = await import(
   "../src/features/training/lib/validation.ts"
 );
 
@@ -290,7 +290,6 @@ test("training validation accepts DoRA on MLX under an adapter method", () => {
         { ...validConfig, trainingMethod, loraVariant: "dora" },
         "mac",
       ),
-      // cpt is refused on MLX for its own reason, not for DoRA.
       trainingMethod === "cpt"
         ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
         : { ok: true, errorKey: null },
@@ -321,5 +320,87 @@ test("training validation keeps CPT and embedding training available off MLX", (
       "linux",
     ),
     { ok: true, errorKey: null },
+  );
+});
+
+const s3Config = {
+  ...validConfig,
+  datasetSource: "s3" as const,
+  s3Config: { bucket: "my-bucket", region: "us-east-1", useIamRole: true },
+};
+
+test("an audio model can start from S3 (#4539: the audio is downloaded beside its manifest)", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "audio", isAudioModel: true }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("a vision model still cannot start from S3", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "vision", isVisionModel: true }),
+    {
+      ok: false,
+      errorKey: "studio.training.validation.s3MultimodalUnsupported",
+    },
+  );
+});
+
+test("training validation lets LoRA and CPT continue from a saved adapter (#13140)", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...adapter, trainingMethod } as never, "linux"),
+      { ok: true, errorKey: null },
+    );
+  }
+});
+
+test("training validation refuses an adapter where a fresh adapter would be built", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  const refused = { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, trainingMethod: "full" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, modelType: "decision" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, isEmbeddingModel: true } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(validateTrainingConfig(adapter as never, "mac"), refused);
+});
+
+test("training validation refuses continuing a Hub adapter repo", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        selectedModel: "org/adapter",
+        modelFormat: "adapter",
+      } as never,
+      "linux",
+    ),
+    { ok: false, errorKey: "studio.modelPicker.reasonAdapter" },
   );
 });

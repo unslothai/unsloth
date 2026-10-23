@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serving every image a user turn carried to a backend whose template can mark them.
-
-Flattening each turn to a string kept one base64 for the whole thread, so a second image on a turn
-was refused and an earlier turn's silently replaced by the newest.
-"""
+"""Each image on a user turn is served to a template that can mark it, not flattened to one string."""
 
 import base64
 import io
@@ -40,7 +36,6 @@ def _text(text: str) -> dict:
 
 _NOTHING_TO_SEND = {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
 _ASK = _text("which is which?")
-# Small enough to skip resampling, so nothing but the route itself forces the decode.
 _WHOLE = _part(Image.new("RGB", (64, 64), "blue"), container = "JPEG")["image_url"]["url"]
 _TRUNCATED = {"type": "image_url", "image_url": {"url": _WHOLE[: len(_WHOLE) - 12]}}
 _ACROSS_TURNS = [
@@ -94,7 +89,6 @@ def test_every_image_a_user_turn_carried_is_served_in_document_order_at_that_tur
 
     assert [image.width for image in call["images"]] == sizes
     assert call["image"] is None
-    # Per turn, because binding is positional: a marker on the wrong turn is the wrong picture.
     assert [
         _markers(message) for message in call["messages"] if message.get("role") != "system"
     ] == markers
@@ -127,14 +121,42 @@ def test_what_cannot_be_served_is_answered_as_a_bad_request(
 def test_an_image_reaches_the_backend_in_a_mode_it_can_be_handed_over_in(
     monkeypatch, mode, container
 ):
-    """The first three reopen in a mode PNG cannot write and must convert; RGBA must not."""
+    """All arrive as RGB; the first three reopen in a mode PNG cannot write."""
     part = _part(Image.new(mode, (16, 16)), container = container)
 
     delivered = _call(monkeypatch, [ChatMessage(role = "user", content = [part])]).calls[0]["image"]
 
-    assert delivered.mode == ("RGBA" if mode == "RGBA" else "RGB")
+    assert delivered.mode == "RGB"
     # The boundary itself, not a claim about which modes it takes.
     delivered.save(io.BytesIO(), format = "PNG")
+
+
+def _ink_on_nothing(mode):
+    image = Image.new("RGBA", (200, 60), (0, 0, 0, 0))
+    image.paste((0, 0, 0, 255), (20, 20, 180, 40))
+    return image.convert(mode)
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA", "P"])
+def test_dark_ink_on_a_transparent_image_stays_visible_to_the_model(monkeypatch, mode):
+    turn = [ChatMessage(role = "user", content = [_part(_ink_on_nothing(mode))])]
+
+    delivered = _call(monkeypatch, turn).calls[0]["image"]
+
+    seen = delivered.convert("RGB")
+    assert seen.getpixel((5, 5)) == (255, 255, 255)
+    assert seen.getpixel((100, 30)) == (0, 0, 0)
+
+
+def test_an_opaque_photo_reaches_the_model_unchanged(monkeypatch):
+    source = Image.new("RGB", (32, 32), (30, 140, 200))
+    source.paste((250, 240, 10), (0, 0, 16, 16))
+    turn = [ChatMessage(role = "user", content = [_part(source)])]
+
+    delivered = _call(monkeypatch, turn).calls[0]["image"]
+
+    assert delivered.mode == "RGB"
+    assert delivered.tobytes() == source.tobytes()
 
 
 def test_each_image_is_decoded_once_for_a_request_that_rebuilds_the_conversation(monkeypatch):
@@ -165,10 +187,7 @@ def test_a_16_bit_image_keeps_its_levels_instead_of_clipping_to_white(monkeypatc
 
     delivered = _call(monkeypatch, turn).calls[0]["image"]
 
-    # getpixel, like the multi-image test below, because the flattened read is spelled
-    # getdata() on Pillow 10 and 11 and get_flattened_data() only from 12. This file runs on
-    # both: no-torch-runtime.txt pins pillow 12.3.0 from Python 3.10 and 11.3.0 below it, so
-    # the 12-only spelling made this the one test in the file that could not.
+    # getpixel: the flattened read is getdata() on Pillow 10/11, get_flattened_data() on 12.
     levels = delivered.convert("RGB")
     assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
 
@@ -181,14 +200,7 @@ def _as_image(delivered):
 
 
 def test_a_16_bit_image_on_a_multi_image_turn_keeps_its_levels_too(monkeypatch):
-    """The single-image path had this guard and the multi-image one did not, which is how the
-    route came to hand generation the caller's raw base64 instead of what it had just decoded.
-    Only `_decode_and_resize_image` scales 0..65535 down; the worker's own decode does not, so
-    the picture arrived clipped to white with every structural assertion still green.
-
-    Asserted on the pixels rather than on the type, so the claim survives a transport that
-    carries base64 again -- what must not come back is the lost conversion.
-    """
+    """Only _decode_and_resize_image scales 0..65535 to 8-bit; a multi-image turn must not skip it."""
     source = Image.new("I;16", (2, 2))
     source.putdata([0, 20000, 40000, 65535])
     turn = [ChatMessage(role = "user", content = [_part(source), _sized(4), _ASK])]
@@ -197,8 +209,6 @@ def test_a_16_bit_image_on_a_multi_image_turn_keeps_its_levels_too(monkeypatch):
 
     assert len(served) == 2
     levels = _as_image(served[0]).convert("RGB")
-    # getpixel, not the flattened read the single-image test uses: that one is spelled
-    # getdata() on Pillow 10 and get_flattened_data() on 12, and this runs on both.
     assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
 
 
@@ -227,7 +237,6 @@ def test_a_document_part_in_history_never_reaches_the_local_template(monkeypatch
         for part in message["content"]
     ]
     assert "input_document" not in kept
-    # Dropping the document must not drop the text beside it, nor either picture.
     assert [image.width for image in call["images"]] == [2, 4]
     assert "here is the spec" in str(call["messages"])
 
@@ -252,7 +261,6 @@ def test_a_request_beyond_the_image_budget_is_refused_before_decoding(monkeypatc
     assert exc.value.status_code == 400
     assert "carries 4 images" in str(exc.value.detail)
     assert "at most 3 are served per request" in str(exc.value.detail)
-    # Refused before allocating any of them, which is the point.
     assert decoded == []
 
 

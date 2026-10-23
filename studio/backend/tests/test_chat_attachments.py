@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import base64
+import copy
 import json
 import os
 import sqlite3
@@ -110,11 +111,6 @@ def _raw_attachments_json(message_id: str):
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Storage: list_chat_attachments
-# ---------------------------------------------------------------------------
-
-
 def test_list_chat_attachments_empty_db(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     assert studio_db.list_chat_attachments() == []
@@ -133,7 +129,7 @@ def test_list_chat_attachments_round_trip(tmp_path, monkeypatch):
     assert record["type"] == "image"
     assert record["contentType"] == "image/png"
     assert record["createdAt"] == 1_700_000_000_000
-    # Base64 length estimate is within padding error of the decoded size.
+    # Base64 length estimate is within padding error.
     assert abs(record["sizeBytes"] - len(PNG_BYTES)) <= 2
 
 
@@ -242,11 +238,6 @@ def test_list_chat_attachments_gone_after_thread_delete(tmp_path, monkeypatch):
     assert studio_db.list_chat_attachments() == []
 
 
-# ---------------------------------------------------------------------------
-# Storage: get_chat_attachment / delete_chat_attachment
-# ---------------------------------------------------------------------------
-
-
 def test_get_chat_attachment_found_and_missing(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     attachment = studio_db.get_chat_attachment("msg-1", "att-1")
@@ -268,15 +259,111 @@ def test_delete_chat_attachment_keeps_others(tmp_path, monkeypatch):
     assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-2"]
 
 
+@pytest.mark.parametrize("content_part", [False, True])
+@pytest.mark.parametrize("revision", [None, 4])
+def test_attachment_deletion_invalidates_saved_usage_inputs(
+    tmp_path, monkeypatch, content_part, revision
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    message = _message("msg-1", attachments = [] if content_part else [_image_attachment()])
+    message["metadata"] = {"customField": "preserved"}
+    if revision is not None:
+        message["metadata"]["revision"] = revision
+    if content_part:
+        message["content"].append({"type": "image", "image": PNG_DATA_URL})
+    studio_db.upsert_chat_message(message)
+    attachment_id = studio_db.list_chat_attachments()[0]["id"]
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is True
+    saved = studio_db.get_chat_message("thread-1", "msg-1")
+    assert saved["metadata"] == {"customField": "preserved", "revision": (revision or 0) + 1}
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is False
+    assert studio_db.get_chat_message("thread-1", "msg-1")["metadata"] == saved["metadata"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("content_parts", [False, True])
+@pytest.mark.parametrize("pruned", [False, True])
+def test_stale_attachment_writes_cannot_restore_a_saved_usage_revision(
+    tmp_path, monkeypatch, batch, content_parts, pruned
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    original = _message("msg-1", attachments = [])
+    original["metadata"] = {"revision": 4, "customField": "preserved"}
+    if content_parts:
+        original["content"].extend(
+            [
+                {"type": "image", "image": PNG_DATA_URL},
+                {"type": "audio", "audio": "data:audio/wav;base64,AAAA"},
+            ]
+        )
+    else:
+        original["attachments"] = [_image_attachment("att-1"), _image_attachment("att-2")]
+    studio_db.upsert_chat_message(original)
+    attachment_ids = [item["id"] for item in studio_db.list_chat_attachments()]
+
+    def write(message):
+        if batch:
+            studio_db.sync_chat_messages("thread-1", [message])
+        else:
+            studio_db.upsert_chat_message(message)
+        return studio_db.get_chat_message("thread-1", "msg-1")
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_ids[0]) is True
+    intermediate = studio_db.get_chat_message("thread-1", "msg-1")
+    assert intermediate["metadata"]["revision"] == 5
+    assert write(original)["metadata"]["revision"] == 5
+    assert studio_db.delete_chat_attachment("msg-1", attachment_ids[1]) is True
+    if pruned:
+        studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+        assert studio_db.get_chat_message("thread-1", "msg-1") is None
+
+    for stale in [original, intermediate, original]:
+        saved = write(stale)
+        assert saved["metadata"] == {"revision": 6, "customField": "preserved"}
+        assert saved["content"] == [{"type": "text", "text": "hello"}]
+        assert saved["attachments"] == []
+    assert original["metadata"]["revision"] == 4
+    assert intermediate["metadata"]["revision"] == 5
+
+    clean = copy.deepcopy(saved)
+    clean["metadata"]["revision"] = 4
+    assert write(clean)["metadata"]["revision"] == 6
+    clean["metadata"]["revision"] = 7
+    assert write(clean)["metadata"]["revision"] == 7
+    revised_stale = copy.deepcopy(original)
+    revised_stale["metadata"]["revision"] = 7
+    assert write(revised_stale)["metadata"]["revision"] == 9
+    assert write(revised_stale)["metadata"]["revision"] == 9
+
+
+def test_attachment_and_content_sharing_a_deleted_id_advance_revision_once(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    part = {"type": "image", "image": PNG_DATA_URL}
+    attachment_id = studio_db._content_part_id(part)
+    message = _message("msg-1", attachments = [_image_attachment(attachment_id)])
+    message["content"].append(part)
+    message["metadata"] = {"revision": 4}
+    studio_db.upsert_chat_message(message)
+
+    assert studio_db.delete_chat_attachment("msg-1", attachment_id) is True
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+    saved = studio_db.upsert_chat_message(message)
+
+    assert saved["metadata"]["revision"] == 5
+    assert saved["attachments"] == []
+    assert saved["content"] == [{"type": "text", "text": "hello"}]
+
+
 def test_delete_last_chat_attachment_stores_empty_list(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
-    # '[]' rather than NULL: a NULL attachments field reads back as missing
-    # and triggers the legacy IndexedDB backfill, resurrecting the deleted
-    # attachment on the next chat load.
+    # '[]' not NULL: NULL triggers the legacy IndexedDB backfill and resurrects the attachment.
     assert _raw_attachments_json("msg-1") == "[]"
     assert studio_db.list_chat_attachments() == []
-    # The message itself must survive with its content intact.
     message = studio_db.get_chat_message("thread-1", "msg-1")
     assert message is not None
     assert message["content"] == [{"type": "text", "text": "hello"}]
@@ -289,11 +376,6 @@ def test_delete_chat_attachment_missing_targets(tmp_path, monkeypatch):
     assert studio_db.delete_chat_attachment("msg-1", "att-missing") is False
     _set_raw_attachments_json("msg-1", "not json")
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is False
-
-
-# ---------------------------------------------------------------------------
-# Routes: /attachments endpoints (real storage, direct calls)
-# ---------------------------------------------------------------------------
 
 
 def test_list_attachments_route(tmp_path, monkeypatch):
@@ -329,7 +411,7 @@ def test_attachment_file_corrupt_base64_is_422(tmp_path, monkeypatch):
 
 
 def test_attachment_file_accepts_urlsafe_base64(tmp_path, monkeypatch):
-    data = bytes(range(251, 256)) * 3  # encodes to characters remapped by urlsafe
+    data = bytes(range(251, 256)) * 3
     payload = base64.urlsafe_b64encode(data).decode("ascii")
     assert "-" in payload or "_" in payload
     attachment = _image_attachment()
@@ -373,6 +455,23 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
     assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
+
+
+def test_attachment_file_unwraps_a_pasted_text_attachment(tmp_path, monkeypatch):
+    attachment = {
+        "id": "att-paste",
+        "type": "document",
+        "name": "Pasted text",
+        "content": [
+            {
+                "type": "text",
+                "text": "<pasted_text name=Pasted text bytes=11>\nhello\nworld\n</pasted_text>",
+            }
+        ],
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-paste", current_subject = "unsloth")
+    assert response.body.decode("utf-8") == "hello\nworld"
 
 
 def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
@@ -428,10 +527,6 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
         chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
     assert excinfo.value.status_code == 404
 
-
-# ---------------------------------------------------------------------------
-# Audio attachments (adapter {data, format} and compare-chat bare base64)
-# ---------------------------------------------------------------------------
 
 WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
 WAV_B64 = base64.b64encode(WAV_BYTES).decode("ascii")
@@ -510,11 +605,6 @@ def test_audio_attachment_corrupt_payload_is_422(tmp_path, monkeypatch):
     assert excinfo.value.status_code == 422
 
 
-# ---------------------------------------------------------------------------
-# Compare-chat uploads stored as message content parts
-# ---------------------------------------------------------------------------
-
-
 def _compare_message(message_id: str = "msg-cmp") -> dict:
     return {
         "id": message_id,
@@ -540,12 +630,7 @@ _CONTENT_PART_PREFIX = "content-part-sha256-"
 
 
 def _content_part_id_for(message_id: str, kind: str) -> str:
-    """Resolve the stable content-hash id for a message's stored blob.
-
-    Content-part ids are SHA-256 hashes of the blob payload, not array
-    indices, so tests look them up from the listing instead of hardcoding an
-    index that would shift when an earlier part is deleted.
-    """
+    """Content-part ids are SHA-256 hashes, not indices, so look them up from the listing."""
     for record in studio_db.list_chat_attachments():
         if record["messageId"] == message_id and record["type"] == kind:
             return record["id"]
@@ -555,7 +640,6 @@ def _content_part_id_for(message_id: str, kind: str) -> str:
 def test_content_part_uploads_are_listed(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
     records = studio_db.list_chat_attachments()
-    # Ids are stable content hashes, not array indices.
     assert all(r["id"].startswith(_CONTENT_PART_PREFIX) for r in records)
     assert {r["type"] for r in records} == {"image", "audio"}
     image = next(r for r in records if r["type"] == "image")
@@ -580,7 +664,6 @@ def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
     message = studio_db.get_chat_message("thread-1", "msg-cmp")
     types = [p["type"] for p in message["content"]]
     assert types == ["audio", "text"]
-    # The surviving audio blob keeps its own stable hash id after the delete.
     remaining = studio_db.list_chat_attachments()
     assert [r["type"] for r in remaining] == ["audio"]
     assert remaining[0]["id"].startswith(_CONTENT_PART_PREFIX)
@@ -589,10 +672,7 @@ def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
 
 def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    # The text part is not a stored upload, so it never gets an id: only the
-    # image and audio blobs are addressable.
     assert len(studio_db.list_chat_attachments()) == 2
-    # A well-formed but unknown content-hash id, and malformed ids, all no-op.
     assert studio_db.delete_chat_attachment("msg-cmp", _CONTENT_PART_PREFIX + "0" * 64) is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-99") is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-x") is False
@@ -601,7 +681,6 @@ def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
 def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
-    # The word "image" inside text must not create phantom upload rows.
     message = _message("msg-txt")
     message["content"] = [{"type": "text", "text": 'discussing an "image" and "audio" here'}]
     studio_db.upsert_chat_message(message)
@@ -617,7 +696,6 @@ def test_remote_image_urls_are_not_listed_as_uploads(tmp_path, monkeypatch):
         {"type": "text", "text": "look at this"},
     ]
     studio_db.upsert_chat_message(message)
-    # No stored bytes: nothing to list, open, or delete.
     assert studio_db.list_chat_attachments() == []
     assert studio_db.get_chat_attachment("msg-remote", "content-part-0") is None
     assert studio_db.delete_chat_attachment("msg-remote", "content-part-0") is False

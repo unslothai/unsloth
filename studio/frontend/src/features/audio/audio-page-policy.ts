@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { InferenceStatusResponse } from "@/features/chat";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
   AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
+  AUDIO_CPP_REPO,
   audioCppModelFor,
+  isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
 
 /** Why the installed audio runtime cannot run this recommended speech or music model, or null
@@ -68,6 +72,7 @@ export type AudioBusy =
 
 export type AudioGenerationPhase =
   | "preparing"
+  | "switching"
   | "generating"
   | "stopping"
   | "finishing"
@@ -83,6 +88,7 @@ export type AudioGenerationPresentation = {
  *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
+  detail?: string | null,
 ): AudioGenerationPresentation | null {
   switch (phase) {
     case "preparing":
@@ -90,6 +96,12 @@ export function audioGenerationPresentation(
         status: "Preparing audio…",
         actionLabel: "Preparing…",
         canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
       };
     case "generating":
       return {
@@ -130,6 +142,7 @@ const TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 // The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
 const GGUF_TTS_AUDIO_TYPES = new Set([
@@ -138,6 +151,7 @@ const GGUF_TTS_AUDIO_TYPES = new Set([
   "dac",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
@@ -147,12 +161,11 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
 export const MOSS_TTS_MAX_FRAMES = 32768;
-export const MOSS_TTS_MAX_SECONDS =
-  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
 export const MINIMAX_MUSIC_FRAMES_PER_SECOND = 25;
 export const MINIMAX_MUSIC_DEFAULT_SECONDS = 30;
 export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
@@ -335,6 +348,94 @@ export function canTransitionAudioMode(
   );
 }
 
+/** The main slot's loaded model as the picker rows name it. llama-server reports a custom-folder
+ *  GGUF's file stem as active_model and its path as model_identifier, and that row uses the path;
+ *  a Hub model keeps its repo id, since model_identifier can be a cache snapshot path. */
+export function audioLoadedSelection(
+  status:
+    | {
+        active_model?: string | null;
+        model_identifier?: string | null;
+        gguf_variant?: string | null;
+      }
+    | null
+    | undefined,
+  // The quant a GGUF file name carries (`ggufQuantLabel`); without one a file name stays as is.
+  quantLabel?: (filename: string) => string,
+): { id: string | null; variant: string | null } {
+  const active = status?.active_model ?? null;
+  const id = active
+    ? active.includes("/")
+      ? active
+      : (status?.model_identifier ?? active)
+    : null;
+  return { id, variant: id ? loadedQuantKey(status?.gguf_variant ?? null, quantLabel) : null };
+}
+
+/** llama status echoes the load selector, which is a file name for a pick from the quant list
+ *  (`model-q4_k_m.gguf`); picker rows key that quant `Q4_K_M`, under any directory it sits in. */
+function loadedQuantKey(
+  variant: string | null,
+  quantLabel?: (filename: string) => string,
+): string | null {
+  if (!variant || !quantLabel || !/\.gguf$/i.test(variant.trim())) return variant;
+  const path = variant.trim().replace(/\\/g, "/");
+  const cut = path.lastIndexOf("/") + 1;
+  return `${path.slice(0, cut)}${quantLabel(path.slice(cut)).toUpperCase()}`;
+}
+
+/** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
+ *  the model listed. An audio.cpp folder is gone with its package repo, or, once the inventory
+ *  lists folder rows, when its own row is missing. */
+export function rememberedModelIsGone(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  if (!inventory.settled || inventory.error) return false;
+  if (inventory.available.has(id.toLowerCase())) return false;
+  if (!isAudioCppFolderId(id)) return true;
+  return (
+    !inventory.available.has(AUDIO_CPP_REPO.toLowerCase()) ||
+    [...inventory.available].some((listed) => isAudioCppFolderId(listed))
+  );
+}
+
+/** Whether a delete of `deletedRepoId` can have removed the remembered model: the same repo, or
+ *  the audio.cpp package that holds the remembered folder. */
+export function deleteCoversRememberedModel(
+  deletedRepoId: string,
+  rememberedId: string,
+): boolean {
+  const deleted = deletedRepoId.toLowerCase();
+  const remembered = rememberedId.toLowerCase();
+  return remembered === deleted || remembered.startsWith(`${deleted}/`);
+}
+
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
+export function settledDeleteMarkers(
+  markers: ReadonlyMap<string, number>,
+  inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
+): string[] {
+  const { refreshStartedAt } = inventory;
+  if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
+  return [...markers]
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
+    .map(([repoId]) => repoId);
+}
+
+const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was
+ *  deleted while nothing on this page was listening. Local folders and trained checkpoints are not
+ *  listed by repo id, so they are always offered. Nothing is forgotten here. */
+export function rememberedModelUnavailable(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  return HUB_REPO_ID_RE.test(id) && rememberedModelIsGone(id, inventory);
+}
+
 /** A managed TTS completion owns auto-load only while the same staging generation is selected
  *  in Speak. Downloads continue globally after ownership changes, but their completion must
  *  not mutate the main slot. */
@@ -450,6 +551,35 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
+/** The first `wanted` gallery rows fetched in pages of at most `maxPage`, merged into one page. */
+export async function fetchGalleryWindow<
+  C extends { id: string },
+  P extends { audio: C[]; has_more: boolean },
+  K,
+>(
+  fetchPage: (limit: number, cursor: K | null) => Promise<P>,
+  cursorOf: (page: P) => K | null,
+  wanted: number,
+  maxPage: number,
+  cancelled: () => boolean = () => false,
+): Promise<P> {
+  let page = await fetchPage(Math.min(wanted, maxPage), null);
+  const audio = [...page.audio];
+  const seen = new Set(audio.map((clip) => clip.id));
+  while (audio.length < wanted && page.has_more && !cancelled()) {
+    const cursor = cursorOf(page);
+    if (cursor === null) break;
+    page = await fetchPage(Math.min(maxPage, wanted - audio.length), cursor);
+    if (page.audio.length === 0) break;
+    for (const clip of page.audio) {
+      if (seen.has(clip.id)) continue;
+      seen.add(clip.id);
+      audio.push(clip);
+    }
+  }
+  return { ...page, audio };
+}
+
 /** Fold a freshly fetched first page into the list already on screen. The page is authoritative
  *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
  *  collapsed a paginated History on every delete and reselected a different clip.
@@ -478,7 +608,8 @@ export function mergeGalleryPage<T extends { id: string }>(
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
-  const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
+  const scrollback =
+    oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(
     (clip) => !inPage.has(clip.id) && clip.id !== removedId,
   );
@@ -493,18 +624,66 @@ export function persistedClipForGeneration<T extends { id: string }>(
   return clipId ? (refreshed.find((clip) => clip.id === clipId) ?? null) : null;
 }
 
+/** Compare a picker row with the sidecar's resident name by row id. A legacy dictation key
+ *  (`audiocpp-qwen3-asr-0.6b`) names the same folder as the Transcribe row, and ids differ in case. */
+export function sttSameModel(
+  selectedRepo: string,
+  loadedModel: string,
+  sidecarKeyFor: (repoId: string) => string,
+  engine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
+): boolean {
+  if (loadedModel === sidecarKeyFor(selectedRepo)) return true;
+  if (!repoIdForSidecarKey) return false;
+  const rowId = (id: string) =>
+    repoIdForSidecarKey(id, engine ?? undefined).trim().toLowerCase();
+  return rowId(loadedModel) === rowId(sidecarKeyFor(selectedRepo));
+}
+
 export function sttSelectionReady(
   selectedRepo: string | null,
   loadedModel: string | null,
   sidecarKeyFor: (repoId: string) => string,
   selectedEngine?: SttEngine | null,
   loadedEngine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
 ): boolean {
   return Boolean(
     selectedRepo &&
-      loadedModel === sidecarKeyFor(selectedRepo) &&
+      loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine ?? selectedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!selectedEngine || !loadedEngine || selectedEngine === loadedEngine),
   );
+}
+
+/** Eject only what is resident: the selector keeps showing the last Transcribe model after an
+ *  unload, and an Eject there had nothing to release. */
+export function audioEjectAvailable({
+  mode,
+  busy,
+  hasValue,
+  showLastPageModel,
+  sttReady,
+}: {
+  mode: string;
+  busy: AudioBusy;
+  hasValue: boolean;
+  showLastPageModel: boolean;
+  sttReady: boolean;
+}): boolean {
+  if (!hasValue || busy !== null || showLastPageModel) return false;
+  return mode !== "transcribe" || sttReady;
+}
+
+/** Older backends return no `released` flag; treat that as released, like before. */
+export function sttEjectSucceeded(released: boolean | undefined): boolean {
+  return released !== false;
 }
 
 type SttEngineResidency = {
@@ -601,7 +780,13 @@ export function reconcileSttSelection({
   if (loadedModel) {
     if (
       selectedRepo &&
-      sidecarKeyFor(selectedRepo) === loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!loadedEngine ||
         !engineForRepo ||
         engineForRepo(selectedRepo) === loadedEngine)
@@ -613,12 +798,61 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** Permission prompts cannot be aborted, so freshness is checked immediately after
- *  getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
+/** The audio model the Audio page shows, generates with and ejects. A kept model is never promoted,
+ *  so each other serving model is probed (GET /status?model=). */
+export async function describeAudioSlot(
+  primary: InferenceStatusResponse,
+  probe: (model: string) => Promise<InferenceStatusResponse>,
+): Promise<{
+  status: InferenceStatusResponse;
+  slotModel: string | null;
+  slotLabel: string | null;
+}> {
+  if (primary.is_audio) {
+    return { status: primary, slotModel: null, slotLabel: null };
+  }
+  const serving = primary.serving ?? [];
+  const checkpoints = primary.serving_checkpoints ?? [];
+  // A kept model can share the active one's short name: compare checkpoints when sent.
+  const primaryId = primary.model_identifier || primary.active_model;
+  for (let i = 0; i < serving.length; i++) {
+    const checkpoint = checkpoints[i];
+    const id = checkpoint || serving[i];
+    const isPrimary =
+      Boolean(primary.active_model) &&
+      (checkpoint ? checkpoint === primaryId : serving[i] === primary.active_model);
+    if (!id || isPrimary) {
+      continue;
+    }
+    // An id not held in a slot answers with the primary (the chat model), so only audio counts.
+    const slot: InferenceStatusResponse | null = await probe(id).catch(
+      () => null,
+    );
+    // Route by the probed id: a local model's status shows only a short name.
+    if (slot?.is_audio && slot.active_model) {
+      return { status: slot, slotModel: id, slotLabel: slot.active_model };
+    }
+  }
+  // No audio model loaded: never let Eject or the header act on the chat model.
+  return {
+    status: {
+      ...primary,
+      active_model: null,
+      model_identifier: null,
+      gguf_variant: null,
+      is_audio: false,
+    },
+    slotModel: null,
+    slotLabel: null,
+  };
+}
+
+/** The audio model a keep-others speech load replaces, by its unload id, else two would stay loaded. */
+export function audioModelToReplace(
+  status: InferenceStatusResponse | null | undefined,
+  target: string,
+): string | null {
+  if (!status?.is_audio || !status.active_model) return null;
+  const current = status.model_identifier || status.active_model;
+  return current !== target && status.active_model !== target ? current : null;
 }

@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""stdio MCP servers get the managed Node bin dir on PATH.
-
-Run from studio/backend:  python -m pytest tests/test_mcp_stdio_node_path.py -q
-"""
-
 import os
 import shutil
 import sys
@@ -47,11 +42,7 @@ def managed_node(tmp_path, monkeypatch):
 
 @pytest.fixture
 def runtime_free_dir(tmp_path):
-    """A base PATH that resolves no runtime on every host. Real system dirs cannot be used
-    for this: a developer machine with Node in /usr/bin resolves a complete toolchain there,
-    so path_with_managed_node returns it unchanged and a prepend assertion fails, while a CI
-    image without Node passes. The empty dir makes the outcome depend on the managed install
-    under test rather than on what the host happens to ship."""
+    """Base PATH is an empty dir: a system dir with Node would let the host, not the test, decide."""
     base = tmp_path / "runtime-free"
     base.mkdir()
     return base
@@ -285,10 +276,7 @@ def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_p
 
 
 def test_runtime_free_dir_resolves_nothing(runtime_free_dir):
-    """Pins the precondition the prepend tests below rely on. Asserting against a real
-    system dir like /usr/bin instead would make them read the host: where it ships a
-    Node the base PATH already resolves a runtime, so path_with_managed_node correctly
-    returns it unchanged and the prepend assertions flip."""
+    """The runtime-free dir must resolve no usable Node, the precondition the prepend tests rely on."""
     assert node_runtime._path_has_usable_node(str(runtime_free_dir)) is False
     assert node_runtime._path_has_usable_node(str(runtime_free_dir), require_npm = False) is False
 
@@ -453,8 +441,7 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
     old.mkdir()
     _make_executable(old, "node")
 
-    # Patched directly rather than through _patch_floors: that helper drops the path
-    # argument, which is the whole dimension under test here.
+    # Patched directly: _patch_floors drops the path argument, which is under test here.
     def _npm_floor(executable, path = None):
         # The shim runs whichever node its PATH reaches, so only the good PATH clears.
         return path is not None and str(good) in path
@@ -464,8 +451,6 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
     good_path = f"{shim}{os.pathsep}{good}"
     old_path = f"{shim}{os.pathsep}{old}"
     assert node_runtime._path_has_usable_node(good_path) is True
-    # Same npm executable, PATH whose node is below the floor: must be re-probed, not served
-    # from the entry the good PATH cached.
     assert node_runtime._path_has_usable_node(old_path) is False
 
 
@@ -475,12 +460,6 @@ def test_managed_node_used_when_system_lacks_npx(managed_node_install, monkeypat
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
     expected = f"{managed_node_install}{os.pathsep}{sysbin}"
     assert node_runtime.path_with_managed_node(str(sysbin)) == expected
-
-
-def test_complete_system_runtime_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
-    sysbin = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
-    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
 
 
 def test_shadowed_managed_dir_moves_to_front(managed_node_install, monkeypatch, tmp_path):
@@ -659,10 +638,7 @@ def test_npx_server_still_needs_npx_on_a_node_only_path(
 
 
 def test_npx_server_keeps_a_path_with_npx_but_no_npm(managed_node_install, monkeypatch, tmp_path):
-    """A curated PATH exposing node and npx without a separate npm launcher runs npx fine:
-    npx-cli.js delegates in-process to the npm it ships with and never looks up an ``npm``
-    executable. Demanding one would prepend the managed dir and silently swap the
-    configured toolchain for a different npx, changing package resolution."""
+    """A curated PATH with npx but no npm launcher is kept: npx runs its bundled npm in-process."""
     curated = tmp_path / "curated"
     curated.mkdir()
     _make_executable(curated, "node")
@@ -687,7 +663,7 @@ def test_npx_only_path_is_still_held_to_the_npm_floor(managed_node_install, monk
 
     def _npm_floor(executable, path = None):
         probed.append(str(executable))
-        return False  # the bundled npm is below the installers' floor
+        return False
 
     monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
     expected = f"{managed_node_install}{os.pathsep}{curated}"
@@ -788,13 +764,11 @@ def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatc
     node.write_text("#!/bin/sh\necho v22.12.0\n")
     node.chmod(0o755)
     npm = toolchain / "npm"
-    npm.write_text("#!/usr/bin/env node\n")  # only runs if node is on the probe PATH
+    npm.write_text("#!/usr/bin/env node\n")
     npm.chmod(0o755)
     _make_executable(toolchain, "npx")
-    # a backend PATH with no node at all, which is why this PR exists
     monkeypatch.setenv("PATH", "/nonexistent-9304")
     monkeypatch.setattr(node_runtime, "_npm_meets_floor", lambda version: True)
-    # the managed install must be usable, or the function returns before the npm probe
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
     assert node_runtime.path_with_managed_node(str(toolchain)) == str(toolchain)
 

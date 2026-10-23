@@ -12,7 +12,17 @@ Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >=
 ``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
 
 Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
+
+ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
+(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
+kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
+w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
+
+``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
+quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
+Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
+quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
+Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
 """
 
 from __future__ import annotations
@@ -23,6 +33,7 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
 _MIN_TRITON = (3, 2)
@@ -31,14 +42,25 @@ _MIN_ROWS = 17
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_dq_gelu_quant"
 _OP_NAME_SWIGLU = "int8_dq_swiglu_quant"
+_OP_NAME_ACTQ = "int8_act_quant_rows"
 _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 
 _LOCK = threading.Lock()
 # Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
+# set once the act quant kernel matched torchao bit for bit on a device; None = torchao's quant
+_ACTQ_HANDLE: Any = None
+# device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
+_ACTQ_DEVICES: frozenset = frozenset()
+# UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
+_LINEAR_OFF = False
+# torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
+_INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
 _NO_PREV = object()
+# diffusion_int8_gemm's marker: int8_linear leaves those Linears to their fused-dequant GEMM forward
+_I8_GEMM_MARK = "_unsloth_i8_gemm_prev"
 
 
 def int8_fused_disabled() -> bool:
@@ -405,6 +427,57 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             tl.store(qrow + offs, qi.to(tl.int8), mask = m)
 
     @triton.jit
+    def act_quant_rows(
+        x_ptr,
+        q_ptr,
+        s_ptr,
+        K,
+        stride_x,
+        stride_q,
+        BLOCK: tl.constexpr,
+        ONE_PASS: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
+    ):
+        # torchao Int8Tensor.from_hp(x, PerRow()), symmetric: s = bf16(max(bf16(amax / 127.5), fp32 eps)); torchao
+        # <= 0.17 keeps s in bf16 and rounds 1 / s and x * (1 / s) to bf16, >= 0.18 stores s as fp32 and keeps both
+        # in fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        row = tl.program_id(0).to(tl.int64)
+        offs = tl.arange(0, BLOCK)
+        xrow = x_ptr + row * stride_x
+        qrow = q_ptr + row * stride_q
+        if ONE_PASS:
+            m = offs < K
+            x = tl.load(xrow + offs, mask = m, other = 0.0).to(tl.float32)
+            amax = tl.max(tl.abs(x), axis = 0)
+        else:
+            acc = tl.zeros((BLOCK,), dtype = tl.float32)
+            for k in range(0, K, BLOCK):
+                m = k + offs < K
+                x = tl.load(xrow + k + offs, mask = m, other = 0.0).to(tl.float32)
+                acc = tl.maximum(acc, tl.abs(x))
+            amax = tl.max(acc, axis = 0)
+        scale = _rbf16(tl.maximum(_rbf16(tl.math.div_rn(amax, 127.5)), 1.1920928955078125e-07))
+        inv = tl.math.div_rn(1.0, scale)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
+        tl.store(s_ptr + row, scale.to(s_ptr.dtype.element_ty))
+        if ONE_PASS:
+            p = x * inv
+            if not FP32_SCALE:
+                p = _rbf16(p)
+            p = tl.minimum(tl.maximum(tl.extra.cuda.libdevice.rint(p), -128.0), 127.0)
+            tl.store(qrow + offs, p.to(tl.int8), mask = m)
+        else:
+            for k in range(0, K, BLOCK):
+                m = k + offs < K
+                x = tl.load(xrow + k + offs, mask = m, other = 0.0).to(tl.float32)
+                p = x * inv
+                if not FP32_SCALE:
+                    p = _rbf16(p)
+                p = tl.minimum(tl.maximum(tl.extra.cuda.libdevice.rint(p), -128.0), 127.0)
+                tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
+
+    @triton.jit
     def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
@@ -450,6 +523,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     return types.SimpleNamespace(
         dq_gelu_quant = dq_gelu_quant,
         dq_swiglu_quant = dq_swiglu_quant,
+        act_quant_rows = act_quant_rows,
         gelu_bf16 = gelu_bf16,
         dq_bf16 = dq_bf16,
         triton = triton,
@@ -638,6 +712,141 @@ def _op() -> Any:
     return types.SimpleNamespace(gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU))
 
 
+@lru_cache(maxsize = 1)
+def _act_scale_fp32() -> bool:
+    """Whether this torchao's ``Int8Tensor.from_hp`` returns an fp32 activation scale (0.18+) or the input's bf16."""
+    try:
+        import torch
+        from torchao.quantization.granularity import PerRow
+        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+        x = torch.ones(1, 16, dtype = torch.bfloat16)
+        return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
+    except Exception:  # noqa: BLE001 - the device probe still has to match torchao bit for bit
+        return False
+
+
+def _launch_act_quant(x2d: Any) -> tuple:
+    """(int8 [M, K], scale [M] in torchao's dtype) for a contiguous-row bf16 ``x2d``."""
+    import torch
+
+    k = _kernels()
+    m, kk = x2d.shape
+    if x2d.stride(-1) != 1:
+        x2d = x2d.contiguous()
+    fp32 = _act_scale_fp32()
+    q = torch.empty((m, kk), device = x2d.device, dtype = torch.int8)
+    s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32 else x2d.dtype)
+    if m == 0:
+        return q, s
+    one_pass = kk <= 4096
+    block = k.triton.next_power_of_2(kk) if one_pass else 2048
+    with torch.cuda.device(x2d.device):
+        k.act_quant_rows[(m,)](
+            x2d,
+            q,
+            s,
+            kk,
+            x2d.stride(0),
+            q.stride(0),
+            BLOCK = block,
+            ONE_PASS = one_pass,
+            FP32_SCALE = fp32,
+            num_warps = 8,
+            enable_fp_fusion = False,
+        )
+    return q, s
+
+
+def reference_act_quant(x2d: Any) -> tuple:
+    """torchao's own dynamic symmetric per-row quant of ``x2d``: (int8, scale [M])."""
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    t = Int8Tensor.from_hp(x2d, PerRow())
+    return t.qdata, t.scale.reshape(-1)
+
+
+@lru_cache(maxsize = 1)
+def _act_quant_op() -> Any:
+    """``unsloth_studio::int8_act_quant_rows`` (opaque to Inductor, allocation only), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _OP_NAME_ACTQ):
+        return getattr(ns, _OP_NAME_ACTQ)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_OP_NAME_ACTQ}",
+            mutates_args = (),
+            schema = "(Tensor x) -> (Tensor, Tensor)",
+        )
+        def _int8_act_quant_rows(x):
+            return _launch_act_quant(x)
+
+        @_int8_act_quant_rows.register_fake
+        def _(x):
+            return (
+                x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
+                x.new_empty((x.shape[0],), dtype = torch.float32 if _act_scale_fp32() else x.dtype),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _OP_NAMESPACE), _OP_NAME_ACTQ)
+
+
+@lru_cache(maxsize = 8)
+def _act_quant_device_ok(index: int) -> bool:
+    """The per-row act quant kernel must equal torchao's quant bit for bit on this device and torchao: outlier
+    channels, a zero row, huge values, one-pass and looped widths, ragged M."""
+    try:
+        import torch
+
+        if _kernels() is None or _act_quant_op() is None:
+            return False
+        dev = torch.device("cuda", index)
+        g = torch.Generator(device = "cpu").manual_seed(4)
+        for m, k in ((33, 3840), (257, 10240), (17, 2560), (130, 256 * 7), (19, 4096), (5, 4097)):
+            x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
+            x[:, :5] *= 60
+            x[1] = 0
+            x[2, 3] = 3e4
+            x = x.to(torch.bfloat16).to(dev)
+            q, s = _launch_act_quant(x)
+            rq, rs = reference_act_quant(x)
+            if not (torch.equal(q, rq) and s.dtype == rs.dtype and torch.equal(s, rs)):
+                return False
+        torch.cuda.synchronize(dev)
+        return True
+    except Exception:  # noqa: BLE001 - any failure keeps torchao's quant
+        return False
+
+
+def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
+    """``_act_quant`` for a plain per-row Int8Tensor weight: the probed kernel when it matched torchao on this
+    device (one pass over the row at bandwidth, where Inductor's codegen of the same quant ran 2-3x slower on B200),
+    else torchao's own."""
+    import torch
+
+    if (
+        _ACTQ_HANDLE is not None
+        and x2d.is_cuda
+        and x2d.device.index in _ACTQ_DEVICES
+        and x2d.dtype == torch.bfloat16
+        and x2d.dim() == 2
+        and x2d.shape[0] > 0
+    ):
+        q, s = _ACTQ_HANDLE(x2d)
+        return q, s.reshape(-1, 1)
+    return _act_quant(x2d, weight)
+
+
 @lru_cache(maxsize = 8)
 def _device_ok(index: int) -> bool:
     """CUDA NVIDIA, Triton new enough, toolchain present, kernel compiles and matches the reference once."""
@@ -645,7 +854,7 @@ def _device_ok(index: int) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if (
         not (_triton_version_ok() and _triton_jit_toolchain_ok())
@@ -837,9 +1046,45 @@ def _act_quant(x2d: Any, weight: Any) -> tuple:
     return act.qdata, act.scale
 
 
+def _resolve_intmm() -> Any:
+    """The module holding torchao's ``safe_int_mm``, or None. torchao <= 0.18 ships it in ``torchao.kernel.intmm``;
+    main after pytorch/ao#4718 moved it to the int8 workflow and deleted ``torchao.kernel``. Read off the module at
+    call time, so Studio's capture-safe rebinding (diffusion_torchao_patches) is the one that runs."""
+    import importlib
+
+    from .diffusion_torchao_patches import _TORCHAO_INTMM_MODULES
+
+    for name in _TORCHAO_INTMM_MODULES:
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        if callable(getattr(module, "safe_int_mm", None)):
+            return module
+    return None
+
+
+def ensure_intmm_module() -> Any:
+    """Resolve and cache ``_INTMM_MODULE`` (idempotent). Must run eagerly, outside any trace: ``int8_linear`` runs on
+    every int8 Linear of a fused attention processor whether or not ``_finalize`` installed anything (an offloaded or
+    not yet resident denoiser), and an ``importlib.import_module`` reached from ``_int_mm`` under ``torch.compile`` is
+    a graph break in every one of them."""
+    global _INTMM_MODULE
+    module = _INTMM_MODULE
+    if module is None:
+        module = _resolve_intmm()
+        if module is not None:
+            _INTMM_MODULE = module
+    return module
+
+
 def _int_mm(a: Any, weight: Any) -> Any:
-    from torchao.kernel.intmm import safe_int_mm
-    return safe_int_mm(a, weight.qdata.contiguous().t())
+    module = _INTMM_MODULE
+    if module is None:  # a direct call before any install (tests): resolve eagerly
+        module = _resolve_intmm()
+        if module is None:
+            raise ImportError("torchao ships no safe_int_mm in any known module")
+    return module.safe_int_mm(a, weight.qdata.contiguous().t())
 
 
 def _linear_from_q(q: Any, xs: Any, weight: Any, bias: Any, out_dtype: Any) -> Any:
@@ -992,7 +1237,11 @@ def _is_zimage_ff(module: Any) -> bool:
 
 
 def _swiglu_layout_allowed(module: Any) -> bool:
-    return _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module)
+    if _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module):
+        return True
+    # rotated down projection: the SwiGLU kernel never runs
+    from .diffusion_qwenimage21_fused import rotated_ff
+    return rotated_ff(module)
 
 
 def _get(module: Any, dotted: str) -> Any:
@@ -1001,8 +1250,90 @@ def _get(module: Any, dotted: str) -> Any:
     return module
 
 
+def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> Any:
+    """torchao's Int8Tensor linear after ``_int_mm``, op for op: ``int_scaled_matmul``'s ``c * x_scale`` in the scale's
+    dtype (fp32 for an fp16 scale), cast, ``* w_scale``, ``+ bias``, cast."""
+    import torch
+
+    inter = torch.float if xs.dtype == torch.half else xs.dtype
+    y = (c * xs.reshape(-1, 1).to(inter)).to(out_dtype)
+    y = y * ws.flatten()
+    if bias is not None:
+        y = y + bias
+    return y.to(out_dtype)
+
+
+def int8_linear(module: Any, x: Any) -> Any:
+    """``module(x)`` for a plain ``nn.Linear`` or ``ConvRotLinear`` holding a plain per-row ``Int8Tensor``: the module's
+    own input rotation, torchao's act quant, ``_int_mm`` and torchao's epilogue, minus one term. torchao 0.17 applies
+    the ASYMMETRIC zero-point correction whenever the activation carries a zero point, which its symmetric quant always
+    does (zeros): a row sum of the int8 weight and a full-output ``- 0`` on every call (~4 ms per Z-Image 1024px step
+    on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
+    Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
+    ``module(x)``."""
+    from torch import nn
+
+    from .diffusion_convrot import is_rotated_linear
+
+    # an instance-level forward is an offload hook (accelerate / diffusers) or another wrapper: only it may run
+    if (
+        _LINEAR_OFF
+        or not (type(module) is nn.Linear or is_rotated_linear(module))
+        or _I8_GEMM_MARK in module.__dict__
+        or "forward" in module.__dict__
+    ):
+        return module(x)
+    return int8_linear_core(module, x)
+
+
+def int8_linear_core(module: Any, x: Any) -> Any:
+    """``int8_linear`` minus its wrapper checks, for a forward installed on ``module``: fallbacks run the class
+    forward, never ``module(x)`` (would recurse)."""
+    import torch
+
+    from .diffusion_convrot import is_rotated_linear
+
+    rotated = is_rotated_linear(module)
+    if _LINEAR_OFF:
+        return _stock_call(module, x)
+    weight = module.weight
+    lead = x.shape[:-1]
+    x2d = x.reshape(-1, x.shape[-1])
+    if (
+        x2d.shape[0] < _MIN_ROWS
+        or not x.is_cuda
+        or x.dtype != torch.bfloat16
+        or not _plain_int8_weight(weight)
+        or getattr(weight, "act_pre_scale", None) is not None
+        or weight.device != x.device
+    ):
+        return _stock_call(module, x)
+    if rotated:
+        x2d = _rotate(x2d, module.convrot_groupsize)
+    xq, xs = _fast_act_quant(x2d, weight)
+    y = _torchao_epilogue(
+        _int_mm(xq.reshape(-1, xq.shape[-1]), weight), xs, weight.scale, module.bias, x.dtype
+    )
+    return y.reshape(*lead, y.shape[-1])
+
+
+def _stock_call(module: Any, x: Any) -> Any:
+    if "forward" in module.__dict__:
+        return type(module).forward(module, x)
+    return module(x)
+
+
+def _rotate(x2d: Any, group: int) -> Any:
+    """``ConvRotLinear.forward``'s input rotation, same ops and dtype."""
+    from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+    return rotate_convrot_activation(
+        x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
+    )
+
+
 def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any:
-    """SwiGLU MLP with plain int8 weights: one act quant, one GEMM over [gate | value], fused SiLU-product quant."""
+    """SwiGLU MLP with plain int8 weights: one act quant, one GEMM over [gate | value], fused SiLU-product quant.
+    ConvRot parts: the shared input rotates once; a rotated down projection gets the bf16 product (see module doc)."""
     import torch
 
     rec = self.__dict__.get(_SWIGLU_ATTR)
@@ -1017,13 +1348,39 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     )
     ok = ok and hidden_states.dtype == torch.bfloat16
     if ok:
-        fused_in, parts, down_name, n, gate_col, value_col = rec
-        ok = all(_get(self, nm) is mod for nm, mod in parts)
+        fused_in, parts, down_name, n, gate_col, value_col, in_group, down_group = rec
+        ok = (
+            all(_get(self, nm) is mod for nm, mod in parts)
+            and fused_in.weight.device == hidden_states.device
+        )
     if not ok:
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
-    xq, xs = _act_quant(x2d, fused_in.weight)
+    if in_group:
+        x2d = _rotate(x2d, in_group)
+        xq, xs = _fast_act_quant(x2d, fused_in.weight)
+    else:
+        xq, xs = _act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
+    if down_group:
+        ws = fused_in.weight.scale.flatten()
+        bias = fused_in.bias
+        dtype = hidden_states.dtype
+
+        def half(col):
+            return _torchao_epilogue(
+                c[:, col : col + n],
+                xs,
+                ws[col : col + n],
+                None if bias is None else bias[col : col + n],
+                dtype,
+            )
+
+        gating = getattr(self, "_forward_silu_gating", None)
+        g, v = half(gate_col), half(value_col)
+        h = gating(g, v) if callable(gating) else torch.nn.functional.silu(g) * v
+        y = int8_linear(down, h)
+        return y.reshape(*lead, y.shape[-1])
     q, s = _OP_HANDLE.swiglu(
         c, xs.reshape(-1), fused_in.weight.scale.flatten(), fused_in.bias, gate_col, value_col, n
     )
@@ -1052,6 +1409,8 @@ def _prepare_swiglu(module: Any) -> bool:
             n,
             gate_col,
             value_col,
+            0,
+            0,
         )
         return True
     split = _split_spec(module)
@@ -1059,7 +1418,8 @@ def _prepare_swiglu(module: Any) -> bool:
         return False
     gate_name, value_name, down_name = split
     gate, value, down = _get(module, gate_name), _get(module, value_name), _get(module, down_name)
-    if any(type(m) is not nn.Linear for m in (gate, value, down)):
+    groups = _split_rotation_groups(gate, value, down)
+    if groups is None:
         return False
     if not all(_plain_int8_weight(m.weight) for m in (gate, value, down)):
         return False
@@ -1070,8 +1430,20 @@ def _prepare_swiglu(module: Any) -> bool:
         return False
     n = gate.weight.shape[0]
     parts = ((gate_name, gate), (value_name, value), (down_name, down))
-    module.__dict__[_SWIGLU_ATTR] = (fused, parts, down_name, n, 0, n)
+    module.__dict__[_SWIGLU_ATTR] = (fused, parts, down_name, n, 0, n, *groups)
     return True
+
+
+def _split_rotation_groups(gate: Any, value: Any, down: Any) -> Optional[tuple]:
+    """(in-projection ConvRot group, down ConvRot group), 0 = plain, for a split SwiGLU; None when the parts are
+    neither plain Linears nor ConvRotLinears the forward reproduces (gate and value must agree: one input)."""
+    from .diffusion_zimage_fused import _rotation_group
+
+    in_group = _rotation_group([gate, value])
+    down_group = _rotation_group([down])
+    if in_group is None or down_group is None:
+        return None
+    return in_group, down_group
 
 
 def _exact_linear(*modules: Any) -> bool:
@@ -1135,7 +1507,7 @@ def resident_cuda_device(module: Any) -> Any:
     """The one CUDA device every parameter of ``module`` lives on (NVIDIA, not ROCm), else None."""
     try:
         import torch
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return None
         devices = {p.device for p in module.parameters()}
     except Exception:  # noqa: BLE001
@@ -1144,6 +1516,18 @@ def resident_cuda_device(module: Any) -> Any:
         return None
     dev = next(iter(devices))
     return dev if dev.type == "cuda" else None
+
+
+def resident_cuda_cards(module: Any) -> tuple:
+    """The CUDA ordinals ``module``'s weights sit on: its one resident card, or every card of a layer split (each
+    block on one card). Empty when any weight is off the GPU, or on ROCm."""
+    dev = resident_cuda_device(module)
+    if dev is not None:
+        import torch
+        return (dev.index if dev.index is not None else torch.cuda.current_device(),)
+    from .diffusion_int8_gemm import _split_cards
+
+    return _split_cards(module)
 
 
 def run_on_first_call(module: Any, key: str, fn: Any) -> None:
@@ -1185,7 +1569,20 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    if int8_fused_disabled() or transformer is None or offload_active:
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
+    if int8_fused_disabled():
+        # process-global: a previous load's probe must not outlive the kill switch
+        _ACTQ_HANDLE = None
+        _ACTQ_DEVICES = frozenset()
+        _LINEAR_OFF = True
+        return 0
+    _LINEAR_OFF = False
+    # Before the offload / residency returns: int8_linear (fused attention processors) runs either way.
+    try:
+        ensure_intmm_module()
+    except Exception:  # noqa: BLE001 - _int_mm resolves on its own
+        pass
+    if transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
         return _finalize(transformer, logger)
@@ -1197,6 +1594,37 @@ def install(
     if candidates:
         run_on_first_call(transformer, "int8_fused", lambda t: _finalize(t, logger))
     return candidates
+
+
+def arm_linear(device: Any) -> bool:
+    """Arm ``int8_linear`` on ``device`` for a denoiser with no fused-MLP candidate (MOSS-Image calls it from its own
+    block forward): resolve torchao's ``safe_int_mm`` home and probe the act quant kernel. True when the probed kernel
+    serves this device; False keeps torchao's quant (``int8_linear`` still works, at the stock quant's speed)."""
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE, _LINEAR_OFF
+    if int8_fused_disabled():
+        _LINEAR_OFF = True
+        return False
+    _LINEAR_OFF = False
+    try:
+        import torch
+
+        intmm = _resolve_intmm()
+        if intmm is None:
+            return False
+        _INTMM_MODULE = intmm
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        if not _device_ok(index):
+            return False
+        actq = _act_quant_op() if _act_quant_device_ok(index) else None
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+    with _LOCK:
+        if actq is None:
+            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
+            return False
+        _ACTQ_HANDLE = actq
+        _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+    return True
 
 
 def _swiglu_candidate(module: Any) -> bool:
@@ -1215,12 +1643,14 @@ def _swiglu_eligible(module: Any) -> bool:
         spec = _swiglu_spec(module)
         if spec is not None:
             parts = (_get(module, spec[0]), _get(module, spec[2]))
-        else:
-            split = _split_spec(module)
-            if split is None:
-                return False
-            parts = tuple(_get(module, name) for name in split)
-        return all(type(m) is nn.Linear and _plain_int8_weight(m.weight) for m in parts)
+            return all(type(m) is nn.Linear and _plain_int8_weight(m.weight) for m in parts)
+        split = _split_spec(module)
+        if split is None:
+            return False
+        parts = tuple(_get(module, name) for name in split)
+        if _split_rotation_groups(*parts) is None:
+            return False
+        return all(_plain_int8_weight(m.weight) for m in parts)
     except Exception:  # noqa: BLE001
         return False
 
@@ -1233,25 +1663,52 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE
+    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES
+    # Before every early return below: an offloaded denoiser keeps int8_linear in its attention processors.
+    intmm = ensure_intmm_module()
     dev = resident_cuda_device(transformer)
+    cards: tuple = ()
     if dev is None:
-        return 0
+        from .diffusion_int8_gemm import _split_cards
+        cards = _split_cards(transformer)
+        if not cards:
+            return 0
     # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
     if not _has_eligible(transformer):
         return 0
+    if (
+        intmm is None
+    ):  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
+        return 0
     import torch
 
-    if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
-        return 0
+    if cards:
+        usable = {index for index in cards if _device_ok(index)}
+        if not usable:
+            return 0
+        indices = sorted(usable)
+    else:
+        if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):
+            return 0
+        indices = [dev.index if dev.index is not None else torch.cuda.current_device()]
     count = 0
     rearm = False
+    actq_ok = {index: _act_quant_device_ok(index) for index in indices}
+    actq = _act_quant_op() if any(actq_ok.values()) else None
     with _LOCK:
         _OP_HANDLE = _op()
+        for index, ok in actq_ok.items():
+            if ok and actq is not None:
+                _ACTQ_HANDLE = actq
+                _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            else:
+                _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
         for _name, module in transformer.named_modules():
             if _MARK in module.__dict__:
                 count += 1
                 continue
+            if cards and _module_card(module) not in usable:
+                continue  # its card failed the kernel probe (or holds no weights of it): stock path
             if _ff_eligible(module):
                 fn = _ff_forward
             elif _prepare_swiglu(module):
@@ -1289,6 +1746,102 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             count,
         )
     return count
+
+
+def _module_card(module: Any) -> Optional[int]:
+    for t in module.parameters():
+        dev = t.device
+        return dev.index if dev.type == "cuda" else None
+    return None
+
+
+_OFF_TREE_RECORDS = (
+    (_SWIGLU_ATTR, "swiglu"),
+    ("_unsloth_fused_qkv", "qkv"),
+    ("_unsloth_q21_fused_qkv", "qkv"),
+)
+
+
+def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
+    """A layer split moved blocks to other cards after their fused records were built on one card. Each off-tree
+    fused Linear (which shared its parts' storage there) is rebuilt on its parts' new card, freeing the stale copy, or
+    its record is dropped (the module then runs its stock path). Regions on a card whose fused kernels fail the probe
+    get their stock forward back. Returns counts; idempotent. Must run before the first forward (the regional compile
+    traces what it finds)."""
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    out = {"rebuilt": 0, "dropped": 0, "restored": 0}
+    global _ACTQ_DEVICES
+    cards = {}
+    with _LOCK:
+        for module in transformer.modules():
+            for attr, kind in _OFF_TREE_RECORDS:
+                rec = module.__dict__.get(attr)
+                if rec is None:
+                    continue
+                if kind == "swiglu":
+                    parts = [m for _n, m in rec[1][:2]] if len(rec[1]) == 3 else None
+                else:
+                    parts = list(rec[1:4])
+                if parts is None:
+                    continue  # the in-projection is the module's own Linear: it moved with the block
+                fused = rec[0]
+                here = parts[0].weight.device
+                if fused.weight.device == here:
+                    continue
+                rebuilt = _fuse_linears(parts)
+                if rebuilt is not None and _share_storage(rebuilt, parts):
+                    module.__dict__[attr] = (rebuilt, *rec[1:])
+                    out["rebuilt"] += 1
+                else:
+                    module.__dict__.pop(attr, None)
+                    out["dropped"] += 1
+            if _MARK in module.__dict__:
+                index = _module_card(module)
+                if index is not None:
+                    cards.setdefault(index, []).append(module)
+    for index, modules in cards.items():
+        if _device_ok(index):
+            if _act_quant_device_ok(index) and _ACTQ_HANDLE is not None:
+                _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            continue
+        for module in modules:
+            _restore_module(module)
+            out["restored"] += 1
+    if logger is not None and any(out.values()):
+        logger.info(
+            "diffusion.int8_fused: layer split re-homed fused records (%d rebuilt, %d dropped, %d regions stock)",
+            out["rebuilt"],
+            out["dropped"],
+            out["restored"],
+        )
+    return out
+
+
+def drop_stranded_fused_records(transformer: Any) -> int:
+    """Drop fused records whose parts left their card after a failed split (``pipe.to("cpu")`` cannot free them).
+    Returns how many were dropped."""
+    dropped = 0
+    with _LOCK:
+        for module in transformer.modules():
+            for attr, kind in _OFF_TREE_RECORDS:
+                rec = module.__dict__.get(attr)
+                if rec is None:
+                    continue
+                if kind == "swiglu":
+                    parts = [m for _n, m in rec[1][:2]] if len(rec[1]) == 3 else None
+                else:
+                    parts = list(rec[1:4])
+                if parts is None:
+                    continue  # the in-projection is the module's own Linear: it moved with the block
+                try:
+                    stranded = any(p.weight.device != rec[0].weight.device for p in parts)
+                except Exception:  # noqa: BLE001 - an unreadable record cannot be trusted either
+                    stranded = True
+                if stranded:
+                    module.__dict__.pop(attr, None)
+                    dropped += 1
+    return dropped
 
 
 def _hooked_forward_slot(module: Any) -> Optional[tuple]:
@@ -1358,21 +1911,25 @@ def uninstall(transformer: Any = None) -> None:
     cancel_first_call(transformer, "int8_fused")
     with _LOCK:
         for module in transformer.modules():
-            prev = module.__dict__.pop(_MARK, None)
-            if prev is None:
-                continue
-            slot = _hooked_forward_slot(module)
-            if slot is not None and _is_fused_forward(getattr(*slot), module):
-                # Swapped under a hook, or a cache engaged after the swap: restore the hook's inner, keep its wrapper.
-                setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
-            elif _is_fused_forward(module.__dict__.get("forward"), module):
-                if prev is _NO_PREV:
-                    module.__dict__.pop("forward", None)
-                else:
-                    module.forward = prev
-            _disarm_fused_inner(module, prev)
-            module.__dict__.pop("_unsloth_i8_addcmul", None)
-            module.__dict__.pop(_SWIGLU_ATTR, None)
+            _restore_module(module)
+
+
+def _restore_module(module: Any) -> None:
+    """One region's stock forward back (caller holds ``_LOCK`` or owns the module)."""
+    prev = module.__dict__.pop(_MARK, None)
+    if prev is None:
+        return
+    slot = _hooked_forward_slot(module)
+    if slot is not None and _is_fused_forward(getattr(*slot), module):
+        setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
+    elif _is_fused_forward(module.__dict__.get("forward"), module):
+        if prev is _NO_PREV:
+            module.__dict__.pop("forward", None)
+        else:
+            module.forward = prev
+    _disarm_fused_inner(module, prev)
+    module.__dict__.pop("_unsloth_i8_addcmul", None)
+    module.__dict__.pop(_SWIGLU_ATTR, None)
 
 
 def is_installed(module: Any) -> bool:

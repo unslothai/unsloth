@@ -7,6 +7,7 @@ import difflib
 import functools
 import hashlib
 import importlib
+import inspect
 import os
 import re
 import sys
@@ -55,7 +56,11 @@ from core.inference.mcp_images import (
     top_up_image_markers,
     trim_image_turns,
 )
-from utils.models.model_config import is_audio_input_type
+from utils.models.model_config import (
+    is_audio_input_type,
+    load_mlx_adapter_processor,
+    load_mlx_adapter_tokenizer,
+)
 from utils.utils import is_metal_queue_dead
 from loggers import get_logger
 
@@ -70,6 +75,18 @@ logger = get_logger(__name__)
 # mlx-vlm's default step, for when it cannot be read: a prompt no longer than it has no boundary.
 VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
+
+
+def _prefill_layer_step(model, step):
+    if not step:
+        return None
+    try:
+        from unsloth_zoo.mlx.offload import wide_prefill_step
+        wide = wide_prefill_step(model)
+    except Exception:
+        return None
+    own = vlm_prefill_step()
+    return own if wide == own and step % own == 0 else None
 
 
 def vlm_prefill_step():
@@ -238,6 +255,7 @@ class _ForwardRecord:
     __slots__ = (
         "forwards",
         "capture_at",
+        "capture_rows",
         "snapshot",
         "tail_at",
         "tail",
@@ -248,6 +266,7 @@ class _ForwardRecord:
     def __init__(self):
         self.forwards = 0
         self.capture_at = 0
+        self.capture_rows = 0
         self.snapshot = None
         self.tail_at = 0
         self.tail = None
@@ -270,6 +289,21 @@ def _prompt_wide_position_ids(args, kwargs):
         kwargs.get("inputs_embeds"), "shape", None
     )
     return bool(chunk_shape) and len(chunk_shape) > 1 and shape[-1] != chunk_shape[1]
+
+
+def _forward_capturing(base, model, args, kwargs, cache, rows):
+    from unsloth_zoo.mlx.offload import capture_prefill_rows
+
+    def copy(entry):
+        try:
+            return copy_cache_entries([entry])[0]
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+
+    with capture_prefill_rows(rows, copy) as captured:
+        output = base.__call__(model, *args, **kwargs)
+    snapshot = [captured.get(id(entry)) for entry in cache]
+    return output, snapshot if all(entry is not None for entry in snapshot) else None
 
 
 def _recording_class(base):
@@ -296,10 +330,11 @@ def _recording_class(base):
             )
         # As the next forward begins, not as the boundary one returns: generate_step converts the cache between the
         # two (KV quantization).
+        boundary = record is not None and record.forwards == record.capture_at
         if (
             record is not None
             and record.forwards
-            and record.forwards in (record.capture_at, record.tail_at)
+            and (boundary and not record.capture_rows or record.forwards == record.tail_at)
             and cache is not None
         ):
             try:
@@ -307,11 +342,16 @@ def _recording_class(base):
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
             else:
-                if record.forwards == record.capture_at:
+                if boundary:
                     record.snapshot = copied
                 else:
                     record.tail = copied
-        output = base.__call__(self, *args, **kwargs)
+        if boundary and record.capture_rows and cache is not None:
+            output, record.snapshot = _forward_capturing(
+                base, self, args, kwargs, cache, record.capture_rows
+            )
+        else:
+            output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
         return output
@@ -632,8 +672,10 @@ class VLMPromptCacheSession:
         media_block = None,
         policy_hosts = (),
         step = VLM_PREFILL_STEP,
+        window = None,
     ):
         self.step = step
+        self.window = window or step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -703,7 +745,10 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // self.step
+        rows = boundary - prefix_len
+        record.capture_at, record.capture_rows = (
+            divmod(rows, self.window) if rows >= 0 else (rows, 0)
+        )
         if prefix_len <= boundary < len(token_ids) - 1:
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
@@ -888,7 +933,7 @@ def _mlx_inference_patch(name):
 
 
 @contextmanager
-def _mlx_optional_fusion(name, model):
+def _mlx_optional_fusion(name, model, *args):
     """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
     an open scope must unwind through the ExitStack as an unguarded `with` would, or an
     interrupted generation stops restoring the module tree. A dead Metal queue is not guarded."""
@@ -897,7 +942,7 @@ def _mlx_optional_fusion(name, model):
         active = model
         if patch is not None:
             try:
-                entered = scope.enter_context(patch(model))
+                entered = scope.enter_context(patch(model, *args))
             except Exception as error:
                 if is_metal_queue_dead(error):
                     raise
@@ -908,28 +953,301 @@ def _mlx_optional_fusion(name, model):
         yield active
 
 
-def _mlx_fused_moe_gate_up(model):
-    return _mlx_optional_fusion("fused_moe_gate_up", model)
+def _mlx_scope_refused(name, error):
+    if is_metal_queue_dead(error):
+        raise error
+    _mlx_fusion_unavailable(name, error)
 
 
-def _mlx_fused_decode_conv_silu(model):
-    return _mlx_optional_fusion("fused_decode_conv_silu", model)
+# What Studio entered by hand before Zoo's registry; a Zoo without it keeps exactly these.
+_MLX_LEGACY_SCOPES = (
+    "fused_moe_gate_up",
+    "fused_decode_conv_silu",
+    "fused_residual_norm",
+    "fused_moe_router",
+    "fused_moe_routed_experts",
+    "fused_residual_norm_handoff",
+    "fused_packed_gated_delta",
+)
 
 
-def _mlx_fused_residual_norm(model):
-    return _mlx_optional_fusion("fused_residual_norm", model)
+@contextmanager
+def _mlx_inference_scopes(model, call, int8_prefill):
+    """Hold the Zoo scopes Zoo picks for `call` (its call traits), so a new Zoo scope needs no Studio change.
+    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch)."""
+    compose = _mlx_inference_patch("inference_scopes")
+    with ExitStack() as scope:
+        if compose is None and "batch" not in call:
+            for name in _MLX_LEGACY_SCOPES:
+                scope.enter_context(_mlx_optional_fusion(name, model))
+            if "speculative" in call:
+                scope.enter_context(_mlx_optional_fusion("exact_speculative_verify", model))
+        elif compose is not None:
+            try:
+                scope.enter_context(
+                    compose(
+                        model,
+                        call,
+                        int8_prefill = int8_prefill,
+                        on_error = _mlx_scope_refused,
+                    )
+                )
+            except Exception as error:
+                if is_metal_queue_dead(error):
+                    raise
+                _mlx_fusion_unavailable("inference_scopes", error)
+        yield model
 
 
-def _mlx_fused_moe_router(model):
-    return _mlx_optional_fusion("fused_moe_router", model)
+def _mlx_warm_inference(model, int8_prefill):
+    """Zoo's warm-up generation, so the first request skips the scopes' kernel builds and first-use
+    checks. A Zoo without it, or a failed warm-up, leaves them to the first request."""
+    warm = _mlx_inference_patch("warm_inference")
+    if warm is None:
+        return
+    try:
+        warm(model, int8_prefill = int8_prefill)
+    except Exception as error:
+        if is_metal_queue_dead(error):
+            raise
+        logger.warning(
+            "MLX warm-up failed, so the first request runs it: %s: %s",
+            type(error).__name__,
+            error,
+        )
 
 
-def _mlx_fused_moe_routed_experts(model):
-    return _mlx_optional_fusion("fused_moe_routed_experts", model)
+def _int8_prefill_zoo():
+    """unsloth_zoo's MLX inference module when it can run int8 prefill, else None."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+        if "int8_prefill" in inspect.signature(zoo.nax_quantized_linear).parameters:
+            return zoo
+    except Exception:
+        pass
+    return None
 
 
-def _mlx_fused_residual_norm_handoff(model):
-    return _mlx_optional_fusion("fused_residual_norm_handoff", model)
+def _int8_prefill_status(requested, model):
+    """Whether a load runs int8 prefill: asked for, and the loaded model can use it here."""
+    status = {"requested": bool(requested), "active": False, "reason": "", "scope": None}
+    if not requested:
+        return status
+    zoo = _int8_prefill_zoo()
+    available = getattr(zoo, "int8_prefill_available", None)
+    if available is None:
+        status["reason"] = "unsupported_zoo"
+        return status
+    try:
+        verdict = available(model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX int8 prefill check failed: %s", exc)
+        status["reason"] = "probe_failed"
+        return status
+    status["reason"] = verdict.reason
+    if verdict.available:
+        status["active"] = True
+        status["scope"] = zoo.nax_quantized_linear
+    else:
+        logger.info("MLX int8 prefill not applied: %s", verdict.reason)
+    return status
+
+
+_MLX_OFFLOAD_PARTS = (("ple", "PLE tables"), ("experts", "quantized routed experts"))
+
+
+def normalize_mlx_offload(value):
+    """An offload knob as a load reads it: ``"auto"`` (also null), the fraction read from disk, or
+    None for off."""
+    if value in (None, "auto"):
+        return "auto"
+    return None if value == "off" else float(value)
+
+
+def mlx_resolve_offload(
+    model_dir,
+    knobs,
+    *,
+    pinned,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+    vision = None,
+) -> tuple:
+    """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
+    knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given;
+    then the planned prefill step for experts on disk, else None. ``vision=True`` prices the
+    mlx-vlm route a speculative text load takes."""
+    fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
+    if "auto" not in knobs or not model_dir:
+        return fixed
+    from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
+
+    if mlx_offload_planner() is None:
+        return fixed
+    budget = mlx_memory_budget(retains_history = retains_history)
+    ceiling = pinned or mlx_checkpoint_window(model_dir)
+    if budget is None or not ceiling:
+        return fixed
+    if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+        kv_bits = None
+    with mlx_rng_preserved():
+        try:
+            plan = mlx_offload_plan(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                context = pinned or None,
+                ple = knobs[0],
+                experts = knobs[1],
+                kv_bits = kv_bits,
+                load_in_4bit = load_in_4bit,
+                vision = vision,
+            )
+        except Exception as exc:
+            logger.info("MLX auto offload not planned for %s: %s", model_dir, exc)
+            return fixed
+    return fixed if plan is None else plan
+
+
+def mlx_checkpoint_window(model_dir) -> Optional[int]:
+    from types import SimpleNamespace
+
+    from core.inference.mlx_memory import _snapshot_config
+
+    try:
+        config = _snapshot_config(model_dir)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    native = mlx_native_context_length(SimpleNamespace(config = config))
+    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+
+
+def _takes_prefill_step(target) -> bool:
+    fields = getattr(target, "__dataclass_fields__", None)
+    if fields is not None:
+        return "prefill_step_size" in fields
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    return "prefill_step_size" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def _mlx_offload_request(knobs, plan):
+    """The offload a load asks for: the ``(ple, experts)`` knobs as sent, the fraction each wants,
+    the ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot
+    offload. unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it
+    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off."""
+    from core.inference.mlx_memory import mlx_offload_planner
+
+    requested = dict(zip(("ple", "experts"), knobs))
+    wanted = {part: normalize_mlx_offload(value) for part, value in requested.items()}
+    if plan is None:
+        wanted = {part: None if value == "auto" else value for part, value in wanted.items()}
+    offload = {
+        "requested": requested,
+        "wanted": wanted,
+        "reason": None,
+        "kwargs": {},
+        "prefill_step": None,
+    }
+    if not any(wanted.values()):
+        return offload
+    if mlx_offload_planner() is None:
+        offload["reason"] = "the installed unsloth_zoo cannot read weights from disk"
+    elif "auto" in wanted.values():
+
+        def decide(model_dir):
+            *fractions, step = plan(model_dir, tuple(wanted.values()))
+            # A repeat call sees fractions, not "auto", and plans no step: keep the first one.
+            if not offload["decided"]:
+                offload["prefill_step"] = step
+            wanted.update(zip(wanted, fractions))
+            offload["decided"] = True
+            return dict(wanted)
+
+        offload["decided"] = False
+        offload["kwargs"]["offload"] = decide
+    else:
+        offload["kwargs"]["offload"] = dict(wanted)
+    return offload
+
+
+def _load_offloading(load, source, load_kwargs, offload):
+    """``load(source, **load_kwargs)``, again without offload when unsloth_zoo refuses it for this load
+    (an adapter, a bitsandbytes checkpoint, runtime quantization); ``offload`` keeps the reason."""
+    try:
+        return load(source, **load_kwargs)
+    except ValueError as exc:
+        # unsloth_zoo's offload refusals all open so.
+        if not offload["kwargs"] or not str(exc).startswith("Unsloth: offload "):
+            raise
+        logger.info("MLX offload not applied to %s: %s", source, exc)
+        offload["reason"] = str(exc)
+    load_kwargs.pop("offload", None)
+    offload["kwargs"] = {}
+    return load(source, **load_kwargs)
+
+
+def _mlx_offload_status(offload, model):
+    """Per knob the fraction read from disk, the request and why it is not applied; and the bytes
+    the loaded model reads from disk."""
+    reports = getattr(model, "_unsloth_offload", None) or {}
+    status = {"disk_bytes": sum(report["on_disk_bytes"] for report in reports.values()) or None}
+    for part, what in _MLX_OFFLOAD_PARTS:
+        applied = offload["wanted"][part] if part in reports else None
+        reason = None
+        if offload["wanted"][part] not in (None, "auto") and applied is None:
+            reason = offload["reason"] or (
+                "unsloth_zoo cannot offload this load (an adapter, a bitsandbytes checkpoint or "
+                "runtime quantization)"
+                if offload.get("decided") is False
+                else f"the model has no {what} unsloth_zoo can read from disk"
+            )
+        status[part] = {
+            "applied": applied,
+            "requested": offload["requested"][part],
+            "reason": reason,
+        }
+    return status
+
+
+# Keyed by checkpoint fingerprint: the panel asks again on every model switch.
+_int8_prefill_checkpoint_cache: dict = {}
+_int8_prefill_checkpoint_lock = threading.Lock()
+
+
+def mlx_int8_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
+    """(available, reason) of int8 prefill for a downloaded MLX checkpoint, without loading it."""
+    check = getattr(_int8_prefill_zoo(), "int8_prefill_checkpoint_available", None)
+    if check is None:
+        return False, "unsupported_zoo"
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), _checkpoint_fingerprint(model_dir))
+    except Exception:
+        key = None
+    with _int8_prefill_checkpoint_lock:
+        if key in _int8_prefill_checkpoint_cache:
+            return _int8_prefill_checkpoint_cache[key]
+    try:
+        verdict = check(model_dir)
+        answer = (bool(verdict.available), verdict.reason)
+    except Exception as exc:
+        logger.debug("MLX int8 prefill checkpoint check failed for %s: %s", model_dir, exc)
+        return False, "probe_failed"
+    if key is not None and answer[1] != "probe_failed":
+        with _int8_prefill_checkpoint_lock:
+            _int8_prefill_checkpoint_cache[key] = answer
+            while len(_int8_prefill_checkpoint_cache) > 32:
+                _int8_prefill_checkpoint_cache.pop(next(iter(_int8_prefill_checkpoint_cache)))
+    return answer
 
 
 def _vlm_generation_context():
@@ -1218,6 +1536,17 @@ def _video_placeholder(processor):
         if isinstance(token, str) and token:
             return token
     return None
+
+
+def _mlx_lm_reads_images(model) -> bool:
+    """An image model unsloth-zoo loaded through mlx-lm, with an unsloth-zoo that prefills its images."""
+    if getattr(model, "_unsloth_supports_images", None) is not True:
+        return False
+    try:
+        from unsloth_zoo.mlx.generate import prefill_image_prompt  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _mlx_reads_video(processor) -> bool:
@@ -1651,9 +1980,10 @@ def _build_generation_stats(
     gen_tps,
     cached_n = 0,
     finish_reason = None,
+    drafts = None,
 ):
     """Map mlx stream stats onto the usage/timings shape llama-server emits, plus the reason
-    generation ended."""
+    generation ended. ``drafts`` is a speculative reply's (drafted, accepted) token counts."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
     cached_n = int(cached_n or 0)
@@ -1681,6 +2011,7 @@ def _build_generation_stats(
             "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
             "predicted_per_second": gen_tps,
             "cache_n": cached_n,
+            **({} if drafts is None else {"draft_n": drafts[0], "draft_n_accepted": drafts[1]}),
         },
         # Latched where generation exits, so a cancel arriving afterwards cannot rewrite the reason the completion
         # actually ended for.
@@ -2497,8 +2828,10 @@ def mlx_fit_to_memory(
     load_in_4bit: bool,
     retains_history: bool,
     kv_bits = None,
+    **route,
 ) -> Optional[int]:
-    """The context a load of *model_dir* is held to, priced at the KV width its cache takes."""
+    """The context a load of *model_dir* is held to, priced at the KV width its cache takes.
+    ``vision=True`` in *route* prices the mlx-vlm route a speculative text load takes."""
     budget = mlx_memory_budget(retains_history = retains_history)
     if budget is None or not ceiling or not model_dir:
         return None
@@ -2512,6 +2845,7 @@ def mlx_fit_to_memory(
                 max_ctx = int(ceiling),
                 kv_bits = kv_bits,
                 load_in_4bit = load_in_4bit,
+                **route,
             )
             logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
             return fitted
@@ -2530,6 +2864,7 @@ def _fitted_context(
     kv_bits = None,
     is_vlm = False,
     eligibility = None,
+    **route,
 ):
     """The fit for a resident model and the eligibility verdict it was priced under."""
     try:
@@ -2546,8 +2881,52 @@ def _fitted_context(
         load_in_4bit = load_in_4bit,
         retains_history = retains_history,
         kv_bits = kv_bits if verdict is None or verdict[0] in ("full", "partial") else None,
+        **route,
     )
     return fitted, verdict
+
+
+def mlx_drafter_fit(
+    model_dir,
+    ceiling,
+    pinned,
+    source,
+    *,
+    load_in_4bit: bool,
+    costless = False,
+    offload = None,
+    prefill_chunk = None,
+):
+    """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
+    only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
+    the context the load fits without it. ``attaches`` is None when the fit could not be priced."""
+    budget = mlx_memory_budget(retains_history = mlx_vlm_snapshot_store_available())
+    ceiling = pinned or ceiling
+    if budget is None or not ceiling or not model_dir:
+        return None, None
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_fit_outcome
+
+            fit = functools.partial(
+                mlx_fit_outcome,
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                load_in_4bit = load_in_4bit,
+                vision = True,
+                offload = offload,
+                prefill_chunk = prefill_chunk,
+            )
+            outcome, fitted = fit(drafter = (source.path, source.builtin))
+            if outcome == "unsizable":
+                return None, fitted
+            if costless and (outcome, fitted) != fit():
+                return False, fitted
+        except Exception as exc:
+            logger.info("MLX drafter %s not priced: %s", source.path, exc)
+            return None, None
+    return outcome == "fits" or (outcome == "fitted" and not pinned), fitted
 
 
 def _kv_window_enforced(model, is_vlm, window):
@@ -2574,21 +2953,23 @@ def _asking_the_architecture(model_dir, question):
                 _probe_models,
                 _runtime_dtype,
                 _snapshot_config,
+                weightless_forward,
             )
 
             config = _snapshot_config(model_dir)
             if config is None:
                 return None
-            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
-                model = build()
-                try:
-                    model(
-                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
-                        cache = make_prompt_cache(model),
-                    )
-                except Exception:
-                    continue
-                return question(model, make_prompt_cache)
+            with weightless_forward():
+                for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                    model = build()
+                    try:
+                        model(
+                            mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                            cache = make_prompt_cache(model),
+                        )
+                    except Exception:
+                        continue
+                    return question(model, make_prompt_cache)
         except Exception as exc:
             logger.debug("MLX architecture probe unavailable for %s: %s", model_dir, exc)
         return None
@@ -2828,8 +3209,35 @@ class _MLXPromptCacheHistory:
         self._trim = trim
         self._max_bytes = max_bytes
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
+        self._oversized = None
+
+    def _take_oversized(self, key, tokens):
+        held, self._oversized = self._oversized, None
+        if held is None:
+            return None
+        held_key, held_tokens, cache, nbytes = held
+        if held_key != key:
+            return None
+        common = next(
+            (i for i, (a, b) in enumerate(zip(held_tokens, tokens)) if a != b),
+            min(len(held_tokens), len(tokens)),
+        )
+        prefix = min(common, len(tokens) - 1)
+        # A prefix within budget is the LRU's to serve, so chats under it behave as before.
+        if prefix * nbytes <= self._max_bytes * len(held_tokens):
+            return None
+        excess = len(held_tokens) - prefix
+        if excess and not (self._can_trim(cache) and self._trim(cache, excess) == excess):
+            return None
+        return cache, list(tokens[prefix:])
+
+    def release_oversized(self):
+        self._oversized = None
 
     def fetch(self, model, key, tokens):
+        held = self._take_oversized(key, tokens)
+        if held is not None:
+            return held
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -2849,19 +3257,11 @@ class _MLXPromptCacheHistory:
         return cache if self._prepare is None else self._prepare(cache), list(tokens)
 
     def insert(self, key, tokens, cache):
-        # An over-budget entry evicts itself and every other conversation.
         sizes = [_kv_entry_nbytes(entry) for entry in cache]
         if any(size is None for size in sizes):
             logger.debug("MLX prompt cache: skipping state whose size is unmeasurable")
             return
         nbytes = sum(sizes)
-        if nbytes > self._max_bytes:
-            logger.debug(
-                "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
-                nbytes / 1e9,
-                self._max_bytes / 1e9,
-            )
-            return
         covered = _kv_prefix_coverage(cache)
         if covered is None:
             logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
@@ -2876,6 +3276,15 @@ class _MLXPromptCacheHistory:
             return
         tokens = tokens[:covered]
         if not tokens:
+            return
+        if nbytes > self._max_bytes:
+            # In the LRU it would evict itself and every other conversation.
+            logger.debug(
+                "MLX prompt cache: holding %.2f GB entry over the %.2f GB budget for its next turn",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            self._oversized = (key, tokens, cache, nbytes)
             return
         self._lru.insert_cache(key, tokens, cache)
 
@@ -2971,18 +3380,26 @@ def _make_seeded_mlx_sampler(
     return _sampler
 
 
-def _make_mlx_presence_penalty_processor(penalty: float):
+def _penalized_tokens(tokens, state, window):
+    """The tokens a penalty scores: the whole completion, or with ``window`` the last ``window``
+    tokens of prompt and completion, as llama-server's ``repeat_last_n`` scores them."""
+    if window is not None:
+        return tokens[-window:]
+    if state["prompt_len"] is None:
+        # First call is prompt-only; latch its length.
+        state["prompt_len"] = int(tokens.shape[0])
+        return tokens[:0]
+    return tokens[state["prompt_len"] :]
+
+
+def _make_mlx_presence_penalty_processor(penalty: float, window = None):
     """Presence penalty as an mlx_lm/mlx_vlm logits processor, matching the safetensors path.
     generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the full running
     sequence; the first call is prompt-only, so latch that length and penalize only after it."""
     state = {"prompt_len": None}
 
     def _processor(tokens, logits):
-        if state["prompt_len"] is None:
-            # First call is prompt-only; latch its length.
-            state["prompt_len"] = int(tokens.shape[0])
-            return logits
-        generated = tokens[state["prompt_len"] :]
+        generated = _penalized_tokens(tokens, state, window)
         if generated.size == 0:
             return logits
         import mlx.core as mx
@@ -3001,6 +3418,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         logits = logits - mask[:vocab]
         return logits
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3022,7 +3440,7 @@ def _row_logits_processors(processors):
     return [_shown(processor) for processor in processors]
 
 
-def _make_mlx_frequency_penalty_processor(penalty: float):
+def _make_mlx_frequency_penalty_processor(penalty: float, window = None):
     """Frequency penalty as an mlx_lm/mlx_vlm logits processor. Identical to the presence processor
     except the scatter *accumulates*, so a token repeated N times in the completion is charged N
     x penalty. It counts occurrences and scales once, in float32: accumulating the penalty itself
@@ -3031,10 +3449,7 @@ def _make_mlx_frequency_penalty_processor(penalty: float):
     state = {"prompt_len": None}
 
     def _processor(tokens, logits):
-        if state["prompt_len"] is None:
-            state["prompt_len"] = int(tokens.shape[0])
-            return logits
-        generated = tokens[state["prompt_len"] :]
+        generated = _penalized_tokens(tokens, state, window)
         if generated.size == 0:
             return logits
         import mlx.core as mx
@@ -3045,6 +3460,7 @@ def _make_mlx_frequency_penalty_processor(penalty: float):
         counts = mx.zeros((vocab + 1,), dtype = mx.float32).at[safe].add(1.0)
         return logits - (penalty * counts[:vocab]).astype(logits.dtype)
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3069,6 +3485,7 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
         mask = mx.zeros((vocab + 1,), dtype = mx.float32).at[state["safe"]].add(state["values"])
         return logits + mask[:vocab].astype(logits.dtype)
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3111,6 +3528,99 @@ def _build_grammar_constraint(
     return constraint
 
 
+def _raw_prompt_constraint(grammar, tokenizer):
+    if grammar is None:
+        return None
+    from core.inference.grammar_constraint import GrammarConstraint
+
+    # Raw replies decode with skip_special_tokens, so a special id spelling a literal would vanish.
+    return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
+
+
+class LogprobsUnsupported(ValueError):
+    """``n_probs`` asked of a model that does not sample one token per step."""
+
+    public = True
+    openai_param = "logprobs"
+
+
+def _make_mlx_raw_logprob_recorder():
+    """A first logits processor queueing each step's log-softmax of the model's own logits, and
+    the queue. llama-server reports ``n_probs`` from the logits before any sampler, so a token
+    forced by ``logit_bias`` keeps its real logprob; mlx_lm and mlx_vlm compute theirs after the
+    processors. Neither runtime calls processors during prefill, so entry i is generated token i."""
+    from collections import deque
+
+    import mlx.core as mx
+
+    recorded = deque()
+
+    def _processor(tokens, logits):
+        raw = logits.astype(mx.float32)
+        recorded.append(raw - mx.logsumexp(raw, axis = -1, keepdims = True))
+        return logits
+
+    return _processor, recorded
+
+
+def _token_bytes_text(tokenizer, token_id):
+    kw = dict(skip_special_tokens = False, clean_up_tokenization_spaces = False)
+    # SentencePiece decoders strip a sequence's leading space, so "▁the" alone decodes to
+    # "the"; after a copy of itself it keeps the " the" llama-server reports.
+    alone = tokenizer.decode([token_id], **kw)
+    twice = tokenizer.decode([token_id, token_id], **kw)
+    text = twice[len(alone) :] if twice.startswith(alone) else alone
+    return text, list(text.encode("utf-8"))
+
+
+def _mlx_token_logprob(raw, token_id, n_probs, tokenizer) -> dict:
+    """One llama-server ``logprobs.content`` entry: the sampled token's logprob and the
+    ``n_probs`` most likely tokens, all read from the unprocessed logits."""
+    import mlx.core as mx
+
+    raw = raw.reshape(-1)
+    n = min(int(n_probs), raw.shape[0])
+    top = mx.argpartition(-raw, kth = n - 1)[:n]
+    values = raw[top]
+    order = mx.argsort(-values)
+    # llama-server writes the lowest float for -inf, which JSON cannot carry.
+    floor = -3.4028234663852886e38
+    entry_ids, entry_values = top[order].tolist(), values[order].tolist()
+    text, data = _token_bytes_text(tokenizer, int(token_id))
+    top_logprobs = []
+    for tid, value in zip(entry_ids, entry_values):
+        tid_text, tid_bytes = _token_bytes_text(tokenizer, int(tid))
+        top_logprobs.append(
+            {"id": int(tid), "token": tid_text, "bytes": tid_bytes, "logprob": max(value, floor)}
+        )
+    return {
+        "id": int(token_id),
+        "token": text,
+        "bytes": data,
+        "logprob": max(raw[int(token_id)].item(), floor),
+        "top_logprobs": top_logprobs,
+    }
+
+
+def _with_prompt_history(processor, prompt, window):
+    """*processor* also scoring the prompt tokens the runtime withholds: mlx_lm and mlx_vlm hand
+    processors only what is left of the prompt after prefill and prompt-cache reuse."""
+    import mlx.core as mx
+
+    head = None
+
+    def _processor(tokens, logits):
+        nonlocal head
+        if head is None:
+            seen = int(tokens.shape[0])
+            head = mx.array(list(prompt)[: max(len(prompt) - seen, 0)][-window:], dtype = mx.int32)
+        return processor(mx.concatenate([head, tokens.astype(mx.int32)]), logits)
+
+    # Still a function of the token history alone, so a speculative draft keeps running.
+    _processor.history_only = getattr(processor, "history_only", False)
+    return _processor
+
+
 def _mlx_sampling_processors(
     *,
     repetition_penalty = None,
@@ -3118,25 +3628,46 @@ def _mlx_sampling_processors(
     frequency_penalty: float = 0.0,
     logit_bias = None,
     grammar_constraint = None,
+    penalty_window = None,
+    penalty_prompt = None,
 ):
     """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
     the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
     penalty here: its presence and frequency processors window the last 20 tokens *including the
     prompt*, while the penalties below score the whole completion and exclude it, so using them
-    would make the same request sample differently depending on the backend."""
+    would make the same request sample differently depending on the backend. ``penalty_window``
+    is llama-server's ``repeat_last_n``: one window for all three penalties, ``0`` disabling them.
+    ``penalty_prompt`` is the full prompt, so the window reaches the part the runtime withholds."""
     processors = []
     if grammar_constraint is not None:
         from core.inference.grammar_constraint import make_grammar_logits_processor
         processors.append(make_grammar_logits_processor(grammar_constraint))
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
+    if penalty_window == 0:
+        return processors or None
+    penalties = []
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
         from mlx_lm.sample_utils import make_logits_processors
-        processors.extend(make_logits_processors(repetition_penalty = float(repetition_penalty)))
+
+        window = {} if penalty_window is None else {"repetition_context_size": penalty_window}
+        repetition = make_logits_processors(repetition_penalty = float(repetition_penalty), **window)
+        for processor in repetition:
+            processor.history_only = True
+        penalties.extend(repetition)
     if presence_penalty:
-        processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+        penalties.append(
+            _make_mlx_presence_penalty_processor(float(presence_penalty), penalty_window)
+        )
     if frequency_penalty:
-        processors.append(_make_mlx_frequency_penalty_processor(float(frequency_penalty)))
+        penalties.append(
+            _make_mlx_frequency_penalty_processor(float(frequency_penalty), penalty_window)
+        )
+    if penalty_window is not None and penalty_prompt:
+        penalties = [
+            _with_prompt_history(penalty, penalty_prompt, penalty_window) for penalty in penalties
+        ]
+    processors.extend(penalties)
     return processors or None
 
 
@@ -3161,34 +3692,44 @@ def _vlm_add_special_tokens(model_type, processor):
         )
 
 
+def _vlm_prepared_inputs(model, processor, prompt, images):
+    """The processor's inputs for *prompt* and *images*, as mlx-vlm's ``stream_generate`` prepares them."""
+    from mlx_vlm.utils import prepare_inputs
+
+    config = getattr(model, "config", None)
+    read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
+    return prepare_inputs(
+        processor,
+        images = images,
+        prompts = prompt,
+        image_token_index = read("image_token_index"),
+        add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+    )
+
+
+def _vlm_generate_kwargs(inputs):
+    """Prepared inputs as ``stream_generate`` kwargs, which then skips its own preparation."""
+    inputs = dict(inputs)
+    return {
+        "input_ids": inputs.pop("input_ids"),
+        "pixel_values": inputs.pop("pixel_values", None),
+        "mask": inputs.pop("attention_mask", None),
+        **inputs,
+    }
+
+
 class _VLMMediaBlock:
     """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
     tokens attend to each other prefill in one forward that lands off the grid, and this is that
     forward cut where the grid can continue."""
 
     def __init__(self, model, processor, prompt, images, make_cache):
-        from mlx_vlm.utils import prepare_inputs
-
         self._model = model
         self._make_cache = make_cache
-        config = getattr(model, "config", None)
-        read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
-        self._inputs = prepare_inputs(
-            processor,
-            images = images,
-            prompts = prompt,
-            image_token_index = read("image_token_index"),
-            add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
-        )
+        self._inputs = _vlm_prepared_inputs(model, processor, prompt, images)
 
     def generate_kwargs(self):
-        inputs = dict(self._inputs)
-        return {
-            "input_ids": inputs.pop("input_ids"),
-            "pixel_values": inputs.pop("pixel_values", None),
-            "mask": inputs.pop("attention_mask", None),
-            **inputs,
-        }
+        return _vlm_generate_kwargs(self._inputs)
 
     def rows(self, token_ids):
         ids = self._inputs["input_ids"]
@@ -3265,7 +3806,9 @@ class _RowStream:
         if self._normalizer is not None:
             return self._normalize(self.sampled[self._released : self._cut])
         if not self._sequences:
-            return [self._prefix + self.sampled]
+            # Re-decoded snapshots hold back an unfinished character, as in _generate_text.
+            held = self.sampled.rstrip("\ufffd") if self._decode is not None else self.sampled
+            return [self._prefix + held]
         if self._decode is not None:
             return []
         if self._cut > self._released:
@@ -3275,6 +3818,8 @@ class _RowStream:
 
     def settle(self):
         if not self._sequences:
+            if self._decode is not None and self.sampled.endswith("\ufffd"):
+                return [self._prefix + self.sampled]
             return []
         if not self.stopped:
             self._cut = len(self.sampled)
@@ -3343,8 +3888,10 @@ def _request_batch_gap(request):
         return "a reply carries a video clip"
     if request.get("tools") or request.get("tool_protocol_active"):
         return "a reply runs the tool protocol"
-    if request.get("response_format") is not None:
+    if request.get("response_format") is not None or request.get("grammar") is not None:
         return "a reply is constrained to a response format"
+    if request.get("n_probs"):
+        return "a reply reports token probabilities"
     return None
 
 
@@ -3444,6 +3991,8 @@ def _row_kwargs(request):
         frequency_penalty = request.get("frequency_penalty", 0.0),
         logit_bias = request.get("logit_bias"),
         stop = request.get("stop"),
+        prompt_ids = request.get("prompt_ids"),
+        penalty_window = request.get("penalty_window"),
     )
 
 
@@ -3472,6 +4021,8 @@ class _TextBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
+            self._held.enter_context(backend._int8_prefill_scope())
+            self._held.enter_context(backend._generation_scopes("batch"))
             self.generator = BatchGenerator(
                 backend._model,
                 stop_tokens = [
@@ -3479,6 +4030,7 @@ class _TextBatchSession:
                 ],
                 completion_batch_size = width,
                 prefill_batch_size = width,
+                **backend._prefill_step_kwargs(BatchGenerator),
             )
         except BaseException:
             self._held.close()
@@ -3503,26 +4055,43 @@ class _TextBatchSession:
     def admit(self, request, handle):
         """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
+        image = request.get("image") if backend._reads_vision_input() else None
+        messages = request.get("messages") or []
+        row_kwargs = _row_kwargs(request)
         plan = backend._plan_text_row(
-            _messages_with_system_prompt(
-                request.get("messages") or [],
-                request.get("system_prompt", ""),
-            ),
-            **_row_kwargs(request),
+            _messages_with_system_prompt(messages, request.get("system_prompt", ""))
+            if image is None
+            else backend._conversation_to_render(messages, request.get("system_prompt", ""), image),
+            **row_kwargs,
         )
-        prefix, remainder, cache, cache_key, all_tokens = backend._batch_prompt_row(
-            plan.prompt,
-            self._adapter_state,
-        )
+        began = time.perf_counter()
+        if image is None:
+            prefix, remainder, cache, cache_key, all_tokens = backend._batch_prompt_row(
+                plan.prompt,
+                self._adapter_state,
+            )
+        else:
+            from unsloth_zoo.mlx.generate import prefill_image_prompt
+
+            # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
+            cache = backend._make_row_cache()
+            all_tokens = prefill_image_prompt(
+                backend._model, backend._tokenizer, plan.prompt, [image], cache
+            )
+            prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
+            if row_kwargs["max_new_tokens"] is None:
+                plan.max_tokens = backend._unset_generation_budget(plan.prompt, all_tokens)
         row = _TextBatchRow(
             handle = handle,
             plan = plan,
             cache_key = cache_key,
             all_tokens = all_tokens,
-            prompt_len = len(remainder),
-            cached = len(prefix),
+            prompt_len = len(remainder) if image is None else len(all_tokens),
+            cached = len(prefix) if image is None else 0,
             detokenizer = backend._tokenizer.detokenizer if plan.detokenizes else None,
         )
+        if image is not None:
+            row.processing_at = began
         uids = self.generator.insert(
             [remainder],
             max_tokens = [plan.max_tokens],
@@ -3530,7 +4099,6 @@ class _TextBatchSession:
             all_tokens = [prefix],
             samplers = [plan.sampler],
             logits_processors = [_row_logits_processors(plan.processors)],
-            state_machines = None,
         )
         if len(uids) != 1:
             self.generator.remove(list(uids))
@@ -3551,7 +4119,7 @@ class _TextBatchSession:
         )
         return plan.think_prefix
 
-    def step(self):
+    def step(self, waiting = None):
         """Report what the batch produced, retiring every reply that ended."""
         began = time.perf_counter()
         prompt_events, events = self.generator.next()
@@ -3569,6 +4137,7 @@ class _TextBatchSession:
             if row.ready_at is None:
                 row.ready_at = now
             yield from self._feed(row, event)
+        self._release_held_cache_beside_live_rows()
 
     def _feed(self, row, event):
         stream = row.plan.stream
@@ -3619,6 +4188,14 @@ class _TextBatchSession:
                 row.plan.stream,
             )
             yield from self._retire(row, cancelled = True)
+        self._release_held_cache_beside_live_rows()
+
+    def _release_held_cache_beside_live_rows(self):
+        # Decided once every row that ended together is retired: holding it beside a row still
+        # decoding would raise peak memory.
+        history = self.backend._prompt_cache_history
+        if self._rows and history is not None:
+            history.release_oversized()
 
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
@@ -3699,6 +4276,7 @@ class _VisionBatchRow:
         "admitted_at",
         "ready_at",
         "cancelled",
+        "drafts",
     )
 
     def __init__(self, *, handle, plan, row):
@@ -3712,6 +4290,7 @@ class _VisionBatchRow:
         self.admitted_at = time.perf_counter()
         self.ready_at = None
         self.cancelled = False
+        self.drafts = None
 
 
 def _row_prompt_cache_gap():
@@ -3754,6 +4333,8 @@ class _VisionBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
+            self._held.enter_context(backend._int8_prefill_scope())
+            self._speculative = getattr(backend, "_speculative_draft", None)
             self.stream = BatchStream(
                 backend._model,
                 backend._processor,
@@ -3762,7 +4343,9 @@ class _VisionBatchSession:
                     completion_batch_size = width,
                     # Rows quantize their own caches where the single path's decode does.
                     **backend._kv_runtime_quant_kwargs(),
+                    **backend._prefill_step_kwargs(GenerationDefaults, grid = True),
                 ),
+                **({} if self._speculative is None else {"speculative": self._speculative}),
             )
         except BaseException:
             self._held.close()
@@ -3806,7 +4389,7 @@ class _VisionBatchSession:
         try:
             row_number = self.stream.add(
                 GenerationRequest(
-                    prompt = backend._vlm_batch_prompt(plan.prompt),
+                    **backend._vlm_batch_prompt(plan.prompt),
                     image = plan.images[0] if plan.images else None,
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
@@ -3828,9 +4411,15 @@ class _VisionBatchSession:
         )
         return plan.think_prefix
 
-    def step(self):
-        now = None
-        for event in self.stream.step():
+    def step(self, waiting = None):
+        now, stopped = None, {}
+        # Only a speculative step spans many tokens, reported as they are decoded; only its unsloth-zoo has the call.
+        # The batch cannot change mid-step, so a row that stopped itself ends the step and leaves after it.
+        for event in (
+            self.stream.iter_step(lambda: bool(stopped) or (waiting is not None and waiting()))
+            if self._speculative is not None
+            else self.stream.step()
+        ):
             row = self._by_row.get(event.index)
             if row is None:
                 continue
@@ -3849,11 +4438,12 @@ class _VisionBatchSession:
                 result = event.result
                 if not row.cancelled:
                     row.reason = result.finish_reason
-                row.prompt_tokens = result.prompt_token_count
-                row.cached_tokens = getattr(result, "cached_token_count", 0)
-                row.generated = len(result.token_ids) + (result.finish_reason == "stop")
+                self._record(row, result, len(result.token_ids) + (result.finish_reason == "stop"))
                 yield from self._retire(row, cancelled = row.cancelled)
             elif row.cancelled:
+                stopped[row.handle] = row
+        for row in stopped.values():
+            if row.handle in self._rows:
                 yield from self._retake(row)
 
     def withdraw(self, handles):
@@ -3868,10 +4458,14 @@ class _VisionBatchSession:
     def _retake(self, row):
         managed = self.stream.withdraw(row.row)
         if managed is not None:
-            row.prompt_tokens = managed.prompt_token_count
-            row.cached_tokens = getattr(managed, "cached_token_count", 0)
-            row.generated = len(managed.token_ids)
+            self._record(row, managed, len(managed.token_ids))
             yield from self._retire(row, cancelled = True)
+
+    def _record(self, row, result, generated):
+        row.prompt_tokens, row.generated = result.prompt_token_count, generated
+        row.cached_tokens = getattr(result, "cached_token_count", 0)
+        if self._speculative is not None:
+            row.drafts = (result.draft_tokens, result.accepted_draft_tokens)
 
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
@@ -3890,6 +4484,7 @@ class _VisionBatchSession:
             row.generated / max(decoded, 1e-9),
             cached_n = row.cached_tokens,
             finish_reason = row.reason or "stop",
+            drafts = row.drafts,
         )
         yield row.handle, None
 
@@ -3922,6 +4517,9 @@ class MLXInferenceBackend:
         self._is_vlm = False
         self._reads_vision = None
         self._turboquant_refusal = ""
+        self._speculative_draft = None
+        self._prefill_step = None
+        self._prefill_layer_step = None
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -3934,6 +4532,7 @@ class MLXInferenceBackend:
         # Load-time runtime knobs; every generation path reads them from here rather than from per-request kwargs.
         # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
+        self._int8_prefill = _int8_prefill_status(False, None)
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
@@ -4065,6 +4664,7 @@ class MLXInferenceBackend:
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
                 step = vlm_prefill_step(),
+                window = self._session_window(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -4150,7 +4750,7 @@ class MLXInferenceBackend:
         if history is None:
             return prompt, None, None, None, 0
         try:
-            tokens = self._encode_prompt(prompt)
+            tokens = list(prompt) if isinstance(prompt, list) else self._encode_prompt(prompt)
             if not tokens:
                 return prompt, None, None, None, 0
             key = f"{self.active_model_name}|{adapter_state!r}"
@@ -4190,6 +4790,8 @@ class MLXInferenceBackend:
         videos = None,
         cap = None,
     ):
+        if prompt_tokens is None and isinstance(prompt, list):
+            prompt_tokens = prompt
         budget = getattr(self, "_kv_context_budget", None)
         if not budget:
             # No budget: size from the placeholder count as before, never preparing the media.
@@ -4217,6 +4819,23 @@ class MLXInferenceBackend:
             max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
+    def _int8_prefill_scope(self):
+        """Outermost scope of a generation, which every Zoo scope nested in it inherits. Pinned
+        off when inactive, so Zoo's full-precision NAX routes still run and no scope reads the Int8
+        Prefill env."""
+        scope = (getattr(self, "_int8_prefill", None) or {}).get("scope")
+        if scope is not None:
+            return scope(self._model, True)
+        if _int8_prefill_zoo() is None:
+            return nullcontext()
+        return _mlx_optional_fusion("nax_quantized_linear", self._model, False)
+
+    def _generation_scopes(self, *call):
+        """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in
+        _int8_prefill_scope, which stays outermost."""
+        active = (getattr(self, "_int8_prefill", None) or {}).get("active", False)
+        return _mlx_inference_scopes(self._model, call, active)
+
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
 
@@ -4226,6 +4845,31 @@ class MLXInferenceBackend:
         if bits is None or getattr(self, "_turboquant", False):
             return entries
         return _quantize_kv_entries(entries, bits)
+
+    def _session_window(self):
+        # TurboQuant converts the cache between forwards and a KV window rotates it per forward,
+        # so neither can take in-window snapshots.
+        step = getattr(self, "_prefill_step", None)
+        if (
+            step
+            and getattr(self, "_prefill_layer_step", None)
+            and getattr(self, "_kv_cache_window", None) is None
+            and not self._kv_runtime_quant_kwargs()
+        ):
+            return step
+        return vlm_prefill_step()
+
+    def _prefill_step_kwargs(
+        self,
+        target = None,
+        grid = False,
+    ):
+        step = getattr(self, "_prefill_step", None)
+        if step is not None and grid:
+            step = vlm_prefill_step()
+        if step is None or not (target is None or _takes_prefill_step(target)):
+            return {}
+        return {"prefill_step_size": step}
 
     def _kv_runtime_quant_kwargs(self):
         """TurboQuant's width for mlx-vlm's converter; start 0, since its default leaves 5000 tokens unquantized."""
@@ -4471,8 +5115,16 @@ class MLXInferenceBackend:
         distributed_group = None,
         kv_quant = None,
         chat_template_override = None,
+        int8_prefill = False,
+        speculative_type = None,
+        spec_draft_n_max = None,
+        spec_draft_model = None,
+        spec_drafters_allowed = None,
+        offload = (None, None),
     ) -> bool:
         import mlx.core as mx
+
+        from core.inference import mlx_speculative
 
         # Keep the token so the native-template fallback can fetch a gated model's repo template during generation.
         self._hf_token = hf_token
@@ -4495,14 +5147,33 @@ class MLXInferenceBackend:
             if self._turboquant
             else ""
         )
+        spec_mode = mlx_speculative.mlx_spec_mode(speculative_type)
+        spec_reason = None
+        speculates = mlx_speculative.speculates_on_route(
+            spec_mode, bool(is_vision), spec_draft_model
+        )
+        if speculates:
+            spec_reason = mlx_speculative.speculation_refusal(
+                kv_quant = kv_bits is not None or self._turboquant,
+                distributed = is_distributed,
+                lora = is_lora,
+            )
+            speculates = spec_reason is None
+            if (
+                spec_mode == "auto" and not spec_draft_model
+            ):  # not a request, so no refusal to report
+                spec_reason = None
+        self._speculative_draft = None
         # mlx-lm cannot batch a quantized cache; mlx-vlm, which also ships text architectures, can.
         batches_quantized_text = (
             kv_bits is not None
             and not (is_distributed or is_lora)
             and _row_quantized_cache_gap() is None
         )
+        # Speculation runs on mlx-vlm models and caches.
         use_vlm = (
             is_vision
+            or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
         )
@@ -4571,22 +5242,50 @@ class MLXInferenceBackend:
                 load_kwargs["pipeline_group"] = distributed_group
             else:
                 load_kwargs["tensor_group"] = distributed_group
+        precision_folder = (
+            None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
+        )
+        load_source = model_name
+        if precision_folder:
+            from hub.utils.mlx_variants import download_precision_folder
+            load_source = download_precision_folder(model_name, precision_folder, hf_token)
+
+        knobs = offload
+
+        # Auto is planned only where the load is priced: not distributed, an adapter or an explicit dtype.
+        def offload_request():
+            return _mlx_offload_request(
+                knobs,
+                None
+                if is_distributed or is_lora or dtype is not None
+                else functools.partial(
+                    mlx_resolve_offload,
+                    pinned = _positive_int(max_seq_length),
+                    load_in_4bit = load_in_4bit,
+                    retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                    kv_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits),
+                    vision = True if speculates and not is_vision else None,
+                ),
+            )
+
+        offload = offload_request()
+        load_kwargs.update(offload["kwargs"])
 
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
         self._clear_prompt_cache()
         model = None
         try:
-            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-                model_name,
-                **load_kwargs,
+            model, tokenizer_or_processor = _load_offloading(
+                FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
         except Exception as exc:
             if is_vision or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
-                "Load of %s through mlx-vlm for its KV quantization failed (%s); serving through mlx-lm",
+                "Load of %s through mlx-vlm for %s failed (%s); serving through mlx-lm",
                 model_name,
+                "speculative decoding" if speculates else "its KV quantization",
                 exc,
             )
         _eligibility = None
@@ -4601,6 +5300,22 @@ class MLXInferenceBackend:
                     reason,
                 )
                 model = tokenizer_or_processor = _eligibility = None
+        # unsloth-zoo builds an image checkpoint mlx-vlm lacks through mlx-lm: the text paths
+        # serve it, reading its images only through an unsloth-zoo that prefills them.
+        served_by_mlx_lm = use_vlm and getattr(model, "_is_vlm_model", None) is False
+        if served_by_mlx_lm and not _mlx_lm_reads_images(model):
+            is_vision = False
+        if model is None or served_by_mlx_lm:
+            if speculates:
+                speculates = False
+                spec_reason = (
+                    None
+                    if spec_mode == "auto" and not spec_draft_model
+                    else mlx_speculative.RUNTIME_ERROR
+                )
+            elif self._turboquant:
+                self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
+            use_vlm = False
         if model is None:
             import gc
 
@@ -4608,44 +5323,111 @@ class MLXInferenceBackend:
             gc.collect()
             _drain_generation_streams(mx)
             mx.clear_cache()
-            if self._turboquant:
-                self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
-            use_vlm = False
             load_kwargs["text_only"] = True
-            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-                model_name,
-                **load_kwargs,
+            # Auto planned on the mlx-vlm route, and decide() consumed its knobs: plan this route afresh.
+            offload = offload_request()
+            load_kwargs.update(offload["kwargs"])
+            model, tokenizer_or_processor = _load_offloading(
+                FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
 
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
+            if is_lora:
+                processor = load_mlx_adapter_processor(processor, model_name, hf_token)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
             self._is_vlm = True
         else:
             tokenizer = tokenizer_or_processor
+            if is_lora:
+                tokenizer = load_mlx_adapter_tokenizer(tokenizer, model_name, hf_token)
             self._model = model
             self._tokenizer = tokenizer
             self._processor = None
             self._is_vlm = False
 
+        _config_audio_type = getattr(config, "audio_type", None)
+        if served_by_mlx_lm and _config_audio_type == "audio_vlm":
+            # Omni audio input rides mlx-vlm's processor, which an mlx-lm load does not have.
+            _config_audio_type = None
         _audio_type = _classify_mlx_audio_type(
             model,
             self._processor,
             is_vision,
-            config_audio_type = getattr(config, "audio_type", None),
+            config_audio_type = _config_audio_type,
         )
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        _offload = _mlx_offload_status(offload, self._model)
+        _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
+        _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
+        self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
+        if self._prefill_step:
+            _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
+        spec_kind = _drafter_ctx = None
+        _drafter_fitted = False
+        _vlm_route = speculates and not is_vision
+        if speculates and _vlm_generation_is_diffusion(self._model):
+            # Neither the single path nor the resident batch may decode a diffusion model speculatively.
+            speculates = False
+            spec_reason = (
+                None
+                if spec_mode == "auto" and not spec_draft_model
+                else mlx_speculative.RUNTIME_ERROR
+            )
+        if speculates:
+            model_dir = _snapshot_dir(self._model, model_name)
+            resolution = mlx_speculative.resolve_speculation(
+                spec_mode,
+                spec_draft_model,
+                model_dir = model_dir,
+                target_name = model_name,
+                allowed = spec_drafters_allowed,
+            )
+
+            def _fits(source):
+                if not _priceable:
+                    return None, None
+                return mlx_drafter_fit(
+                    model_dir,
+                    _served_ctx,
+                    _positive_int(max_seq_length),
+                    source,
+                    load_in_4bit = load_in_4bit,
+                    costless = spec_mode == "auto",
+                    **_offloaded,
+                )
+
+            (
+                self._speculative_draft,
+                spec_kind,
+                spec_reason,
+                _drafter_ctx,
+            ) = mlx_speculative.build_draft(
+                self._model, resolution, fits = _fits, draft_n_max = _positive_int(spec_draft_n_max)
+            )
+            _drafter_fitted = (
+                self._speculative_draft is not None and self._speculative_draft.drafter is not None
+            )
+            logger.info(
+                "MLX speculative decoding: %s (mode %s, reason %s)",
+                spec_kind or "off",
+                spec_mode,
+                spec_reason,
+            )
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
         _fitted_ctx, _eligibility = (
-            (None, _eligibility)
+            (_drafter_ctx, _eligibility)
+            if _drafter_fitted
+            else (None, _eligibility)
             if not _priceable or _positive_int(max_seq_length) is not None
             else _fitted_context(
                 self._model,
@@ -4656,6 +5438,8 @@ class MLXInferenceBackend:
                 kv_bits = _requested_bits,
                 is_vlm = use_vlm,
                 eligibility = _eligibility,
+                **_offloaded,
+                **({"vision": True} if _vlm_route else {}),
             )
         )
         if _fitted_ctx:
@@ -4682,6 +5466,7 @@ class MLXInferenceBackend:
                 self._kv_quant["kv_bits"],
                 self._kv_quant["eligibility"],
             )
+        self._int8_prefill = _int8_prefill_status(int8_prefill, self._model)
 
         # Captured before installing, so chat_template_info keeps reporting what the model shipped with. From the
         # render target, not the nested tokenizer: on a processor owning its own template those differ, and saving the
@@ -4728,6 +5513,8 @@ class MLXInferenceBackend:
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
+            "gguf_variant": precision_folder,
+            "precision_folder": precision_folder,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,
             "model": self._model,
@@ -4766,15 +5553,28 @@ class MLXInferenceBackend:
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
             "mlx_kv_quant_reason": self._kv_quant["reason"],
             "mlx_kv_quant_note": self._kv_quant["note"],
+            "mlx_int8_prefill": self._int8_prefill["active"],
+            "mlx_int8_prefill_requested": self._int8_prefill["requested"],
+            "mlx_int8_prefill_reason": self._int8_prefill["reason"],
+            "mlx_offload": _offload,
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
+            "speculative_type": spec_mode,
+            "spec_draft_n_max": _positive_int(spec_draft_n_max),
+            "spec_draft_model": spec_draft_model or None,
+            "spec_drafter_kind": spec_kind,
+            "spec_fallback_reason": spec_reason,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
         # The worker owns fixed base weights until unload; adapter requests stay scoped.
         if not is_lora:
-            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
+            self._model_fusion.enter_context(_mlx_optional_fusion("fused_moe_gate_up", model))
+        # Every rank of a distributed load must run each forward together.
+        if not is_distributed:
+            with mlx_rng_preserved(), self._int8_prefill_scope():
+                _mlx_warm_inference(model, self._int8_prefill["active"])
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -4837,7 +5637,10 @@ class MLXInferenceBackend:
         )
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
-        info["renders_image"] = _proc is not None and self._reads_vision_input()
+        # An image model served through mlx-lm marks images with its tokenizer's template.
+        info["renders_image"] = self._reads_vision_input() and (
+            _proc is not None or not getattr(self, "_is_vlm", False)
+        )
         info["accepts_multiple_images"] = info["renders_image"] and bool(
             getattr(self, "_multi_image_marker", None)
         )
@@ -4876,6 +5679,9 @@ class MLXInferenceBackend:
         self._model_fusion.close()
         if model_name in self.models:
             del self.models[model_name]
+        self._speculative_draft = None
+        self._prefill_step = None
+        self._prefill_layer_step = None
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -4959,7 +5765,7 @@ class MLXInferenceBackend:
 
     def _conversation_to_render(self, messages, system_prompt, image):
         """The turns this request renders, whichever way its reply is decoded."""
-        if self._is_vlm and image is not None:
+        if (self._is_vlm or self._reads_vision_input()) and image is not None:
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
@@ -5143,6 +5949,7 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                images = attached if self._reads_vision_input() else None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
@@ -5160,6 +5967,97 @@ class MLXInferenceBackend:
             )
         yield from stream
 
+    def _vocab_size(self):
+        """The model's token-id range, as llama-server's ``n_vocab`` bounds a prompt's ids."""
+        config = getattr(self._model, "config", None)
+        for owner in (
+            getattr(self._model, "args", None),
+            getattr(config, "text_config", None),
+            config,
+        ):
+            size = getattr(owner, "vocab_size", None)
+            if isinstance(size, int) and size > 0:
+                return size
+        return len(getattr(self._tokenizer, "_tokenizer", self._tokenizer))
+
+    def resolve_completion_prompt(self, prompt) -> dict:
+        """Token ids and echo text for one llama-server completion prompt, tokenized as its
+        ``tokenize_mixed`` does: specials parsed, only a leading string gets BOS."""
+        if self._model is None:
+            raise RuntimeError("No model loaded")
+        if isinstance(prompt, dict):
+            prompt = prompt.get("prompt_string")
+        pieces = [prompt] if isinstance(prompt, str) else prompt
+        if not isinstance(pieces, list):
+            raise ValueError("Invalid prompt.")
+        vocab = self._vocab_size()
+        ids, text, run = [], [], []
+        for index, piece in enumerate(pieces + [""]):
+            if isinstance(piece, int) and not isinstance(piece, bool):
+                if not 0 <= piece < vocab:
+                    raise ValueError("Prompt contains invalid tokens.")
+                run.append(piece)
+                continue
+            if not isinstance(piece, str):
+                raise ValueError("Invalid prompt.")
+            if run:
+                text.append(
+                    self._tokenizer.decode(
+                        run, skip_special_tokens = False, clean_up_tokenization_spaces = False
+                    )
+                )
+                ids.extend(run)
+                run = []
+            if index < len(pieces):
+                ids.extend(self._tokenizer.encode(piece, add_special_tokens = index == 0))
+                text.append(piece)
+        if not ids:
+            raise ValueError("The prompt is empty.")
+        return {"ids": ids, "text": "".join(text), "n_vocab": vocab}
+
+    def generate_completion(
+        self,
+        prompt_ids,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 40,
+        min_p = 0.0,
+        max_new_tokens = 256,
+        repetition_penalty = 1.0,
+        cancel_event = None,
+        presence_penalty = 0.0,
+        seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
+        stop = None,
+        penalty_window = None,
+        grammar = None,
+        n_probs = 0,
+    ) -> Generator[str, None, None]:
+        """Cumulative text sampled after ``prompt_ids`` with no chat template.
+        ``penalty_window`` is llama-server's ``repeat_last_n``; ``n_probs`` > 0 adds each
+        token's ``logprobs.content`` entry to the stats as ``token_logprobs``."""
+        if self._model is None:
+            raise RuntimeError("No model loaded")
+        self.last_generation_stats = None
+        sampling = dict(
+            presence_penalty = presence_penalty,
+            seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
+            prompt_ids = list(prompt_ids),
+            penalty_window = penalty_window,
+            grammar = grammar,
+        )
+        if n_probs:
+            sampling["n_probs"] = int(n_probs)
+        args = (temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, cancel_event)
+        if self._is_vlm:
+            yield from self._generate_vlm(None, None, *args, **sampling)
+        else:
+            yield from self._generate_text(None, *args, **sampling)
+
     def _mark_stopped(self):
         """Record that a text sequence ended the turn, not the runtime."""
         if isinstance(self.last_generation_stats, dict):
@@ -5176,6 +6074,7 @@ class MLXInferenceBackend:
         repetition_penalty,
         cancel_event,
         *,
+        images = None,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -5190,51 +6089,61 @@ class MLXInferenceBackend:
         stop = None,
         response_format = None,
         reasoning_is_extracted = False,
+        prompt_ids = None,
+        penalty_window = None,
+        grammar = None,
+        n_probs = 0,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
-        render_result = self._render_text_prompt(
-            messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
-        prompt = render_result.prompt
-        reasoning_channel_markers = render_result.reasoning_channel_markers
+        if prompt_ids is not None:
+            # A raw completion prompt: no template, so no prefill or reasoning channel.
+            prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
+            preserve_native_channels = False
+            constraint = _raw_prompt_constraint(grammar, self._tokenizer)
+        else:
+            render_result = self._render_text_prompt(
+                messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+            )
+            prompt = render_result.prompt
+            reasoning_channel_markers = render_result.reasoning_channel_markers
+
+            preserve_native_channels = reasoning_channel_markers is not None
+            # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
+            # frontend renders the block.
+            # Matches native_token_decoder below: when it runs </think> survives, so re-emit the opener.
+            think_close_survives = (
+                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+            ) and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            )
+            think_prefix = _think_prefix(
+                prompt,
+                getattr(self._tokenizer, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+                preserves_think_close = think_close_survives,
+            )
+            constraint = _build_grammar_constraint(
+                response_format,
+                self._tokenizer,
+                prompt,
+                reasoning_markers = reasoning_channel_markers,
+                reasoning_is_extracted = reasoning_is_extracted,
+                # Must match the prefill's answer, or a closer it re-emits would be refused.
+                reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
+            )
+            if constraint is not None and not constraint.allows_reasoning:
+                think_prefix = ""
+                preserve_native_channels = False
         # Not the request flag: a later tool-loop pass keeps it but renders an ordinary post-tool prompt.
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
-
-        preserve_native_channels = reasoning_channel_markers is not None
-        # An open <think> prefilled by the template lives in the prompt, not the generated tokens; re-emit it so the
-        # frontend renders the block.
-        # Matches native_token_decoder below: when it runs </think> survives, so re-emit the opener.
-        think_close_survives = (
-            bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
-        ) and decoder_preserves_token(
-            self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-        )
-        think_prefix = _think_prefix(
-            prompt,
-            getattr(self._tokenizer, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-            preserves_think_close = think_close_survives,
-        )
-        constraint = _build_grammar_constraint(
-            response_format,
-            self._tokenizer,
-            prompt,
-            reasoning_markers = reasoning_channel_markers,
-            reasoning_is_extracted = reasoning_is_extracted,
-            # Must match the prefill's answer, or a closer it re-emits would be refused.
-            reply_keeps_special_tokens = preserve_native_channels or think_close_survives,
-        )
-        if constraint is not None and not constraint.allows_reasoning:
-            think_prefix = ""
-            preserve_native_channels = False
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -5257,7 +6166,14 @@ class MLXInferenceBackend:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             grammar_constraint = constraint,
+            penalty_window = penalty_window,
+            penalty_prompt = prompt_ids,
         )
+        recorded = token_logprobs = None
+        if n_probs:
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            logits_processors = [recorder, *(logits_processors or ())]
+            token_logprobs = []
 
         native_token_decoder = (
             NativeToolTokenDecoder(
@@ -5311,20 +6227,26 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
-            _mlx_fused_moe_gate_up(self._model),
-            _mlx_fused_decode_conv_silu(self._model),
-            _mlx_fused_residual_norm(self._model),
-            _mlx_fused_moe_router(self._model),
-            _mlx_fused_moe_routed_experts(self._model),
-            _mlx_fused_residual_norm_handoff(self._model),
+            self._int8_prefill_scope(),
+            self._generation_scopes(),
         ):
-            (
-                gen_prompt,
-                prompt_cache,
-                cache_key,
-                prompt_tokens,
-                cached_n,
-            ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            input_embeddings = None
+            if images:
+                from unsloth_zoo.mlx.generate import image_prompt_embeddings
+
+                # Any two images of one size expand to the same ids, so the token-keyed cache stays out.
+                prompt_tokens, input_embeddings = image_prompt_embeddings(
+                    self._model, self._tokenizer, prompt, images
+                )
+                gen_prompt, prompt_cache, cache_key, cached_n = prompt_tokens, None, None, 0
+            else:
+                (
+                    gen_prompt,
+                    prompt_cache,
+                    cache_key,
+                    prompt_tokens,
+                    cached_n,
+                ) = self._prepare_prompt_cache(prompt, _adapter_state)
             max_new_tokens = self._generation_limit(prompt, max_new_tokens, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
@@ -5345,10 +6267,13 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_window_generate_kwargs())
+                gen_kwargs.update(self._prefill_step_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 else:
                     gen_kwargs.update(self._kv_quant_generate_kwargs())
+                if input_embeddings is not None:
+                    gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
                 for response in stream_generate(
@@ -5358,6 +6283,12 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
+                    if recorded:
+                        token_logprobs.append(
+                            _mlx_token_logprob(
+                                recorded.popleft(), response.token, n_probs, self._tokenizer
+                            )
+                        )
                     if preserve_native_channels:
                         sampled += streamed_text.feed(response)
                         if sequences:
@@ -5396,15 +6327,18 @@ class MLXInferenceBackend:
                             sampled = self._tokenizer.decode(
                                 token_ids,
                                 skip_special_tokens = True,
-                                # Cleanup would rewrite " ." inside a grammar-approved string.
+                                # Cleanup would rewrite " ." inside a grammar-approved string,
+                                # and llama-server returns a raw completion's pieces as is.
                                 **(
                                     {"clean_up_tokenization_spaces": False}
-                                    if constraint is not None
+                                    if constraint is not None or prompt_ids is not None
                                     else {}
                                 ),
                             )
                         if not sequences:
-                            yield think_prefix + sampled
+                            # A character whose bytes span tokens decodes to U+FFFD until its last token lands, and
+                            # consumers diff snapshots by length, so yielding that would replace it for good (#8594).
+                            yield think_prefix + sampled.rstrip("\ufffd")
                         else:
                             # Matched every step, delivered once at the end: this decode revises earlier snapshots,
                             # and consumers diff them by length, so a revised one splices two renderings into text
@@ -5444,6 +6378,8 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
+                    if token_logprobs is not None:
+                        self.last_generation_stats["token_logprobs"] = token_logprobs
         # The turn's settled text: delivered once for the plain path, as the tail for the native-channel one. Every
         # snapshot was matched as it arrived, so a turn no sequence ended owes all of its text, held-back partial
         # included.
@@ -5452,6 +6388,8 @@ class MLXInferenceBackend:
             sampled += streamed_text.finish(sampled)
             if sequences:
                 cut, stopped = _mlx_stop_cut(sampled, sequences)
+        if not sequences and streamed_text is None and sampled.endswith("\ufffd"):
+            yield think_prefix + sampled
         if sequences or streamed_text is not None:
             if not stopped:
                 cut = len(sampled)
@@ -5498,33 +6436,39 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         tool_protocol_active = None,
+        prompt_ids = None,
+        penalty_window = None,
     ) -> "_TextRowPlan":
         from mlx_lm.sample_utils import make_sampler
 
-        render_result = self._render_text_prompt(
-            messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
-        prompt = render_result.prompt
-        reasoning_channel_markers = render_result.reasoning_channel_markers
-        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
-
-        think_prefix = _think_prefix(
-            prompt,
-            getattr(self._tokenizer, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-            preserves_think_close = (
-                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+        if prompt_ids is not None:
+            prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
+            _resumed_partial = False
+        else:
+            render_result = self._render_text_prompt(
+                messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
-            and decoder_preserves_token(
-                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-            ),
-        )
+            prompt = render_result.prompt
+            reasoning_channel_markers = render_result.reasoning_channel_markers
+            _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
+
+            think_prefix = _think_prefix(
+                prompt,
+                getattr(self._tokenizer, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+                preserves_think_close = (
+                    bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+                )
+                and decoder_preserves_token(
+                    self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+                ),
+            )
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -5546,6 +6490,8 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            penalty_window = penalty_window,
+            penalty_prompt = prompt_ids,
         )
 
         normalizer = (
@@ -5565,7 +6511,11 @@ class MLXInferenceBackend:
             decode = (
                 None
                 if normalizer is not None
-                else lambda ids: self._tokenizer.decode(ids, skip_special_tokens = True)
+                else lambda ids: self._tokenizer.decode(
+                    ids,
+                    skip_special_tokens = True,
+                    **({"clean_up_tokenization_spaces": False} if prompt_ids is not None else {}),
+                )
             ),
         )
         return _TextRowPlan(
@@ -5576,7 +6526,9 @@ class MLXInferenceBackend:
             sampler = sampler,
             processors = logits_processors,
             max_tokens = (
-                self._unset_generation_budget(prompt) if max_new_tokens is None else max_new_tokens
+                self._unset_generation_budget(prompt, prompt_ids)
+                if max_new_tokens is None
+                else max_new_tokens
             ),
         )
 
@@ -5739,8 +6691,10 @@ class MLXInferenceBackend:
     def _plan_vlm_request(self, request) -> "_VLMRowPlan":
         image = request.get("image")
         messages = request.get("messages") or []
-        conversation = self._conversation_to_render(
-            messages, request.get("system_prompt", ""), image
+        conversation = (
+            []
+            if request.get("prompt_ids") is not None
+            else self._conversation_to_render(messages, request.get("system_prompt", ""), image)
         )
         return self._plan_vlm_row(conversation, image, **_row_kwargs(request))
 
@@ -5765,24 +6719,29 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         stop = None,
+        prompt_ids = None,
+        penalty_window = None,
     ) -> "_VLMRowPlan":
         images = [image] if image is not None else None
-        prompt, chat_target, markers = self._render_vlm_prompt(
-            messages,
-            images,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
+        if prompt_ids is not None:
+            prompt, markers, think_prefix = list(prompt_ids), None, ""
+        else:
+            prompt, chat_target, markers = self._render_vlm_prompt(
+                messages,
+                images,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+            )
 
-        think_prefix = _think_prefix(
-            prompt,
-            getattr(chat_target, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-        )
+            think_prefix = _think_prefix(
+                prompt,
+                getattr(chat_target, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+            )
         normalizer = (
             make_reasoning_normalizer(
                 markers,
@@ -5803,6 +6762,7 @@ class MLXInferenceBackend:
         max_new_tokens = self._generation_limit(
             prompt,
             max_new_tokens,
+            prompt_ids,
             images = images,
             cap = UNSET_GENERATION_BUDGET if images else None,
         )
@@ -5827,6 +6787,8 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            penalty_window = penalty_window,
+            penalty_prompt = prompt_ids,
         )
         if processors:
             # Never the repetition_penalty shortcut: mlx-vlm would build that processor
@@ -5877,38 +6839,44 @@ class MLXInferenceBackend:
         video = None,
         response_format = None,
         reasoning_is_extracted = False,
+        prompt_ids = None,
+        penalty_window = None,
+        grammar = None,
+        n_probs = 0,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
-        images = list(images) if images else None
-        prompt, chat_target, vlm_reasoning_markers = self._render_vlm_prompt(
-            messages,
-            images,
-            videos = [video] if video is not None else None,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
-
         from core.inference.chat_template_helpers import detect_think_prefill
 
-        # Detected once: the decoder keeps the delimiters the normalizer below consumes.
-        prefill = _think_prefix(
-            prompt,
-            getattr(chat_target, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-            # The same activation the decoder below uses: in unrestricted mode ``tools`` is
-            # empty while the protocol is live, so ``bool(tools)`` said the closer would be
-            # stripped, the opener was suppressed, and the stream ran on to an orphan
-            # ``</think>``. Mirrors the text path.
-            preserves_think_close = (
-                bool(tools) or tool_protocol_active or vlm_reasoning_markers is not None
+        images = list(images) if images else None
+        if prompt_ids is not None:
+            prompt, chat_target, vlm_reasoning_markers, prefill = "", None, None, ""
+        else:
+            prompt, chat_target, vlm_reasoning_markers = self._render_vlm_prompt(
+                messages,
+                images,
+                videos = [video] if video is not None else None,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
-            and decoder_preserves_token(self._tokenizer, "</think>"),
-        )
+            # Detected once: the decoder keeps the delimiters the normalizer below consumes.
+            prefill = _think_prefix(
+                prompt,
+                getattr(chat_target, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+                # The same activation the decoder below uses: in unrestricted mode ``tools`` is
+                # empty while the protocol is live, so ``bool(tools)`` said the closer would be
+                # stripped, the opener was suppressed, and the stream ran on to an orphan
+                # ``</think>``. Mirrors the text path.
+                preserves_think_close = (
+                    bool(tools) or tool_protocol_active or vlm_reasoning_markers is not None
+                )
+                and decoder_preserves_token(self._tokenizer, "</think>"),
+            )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
@@ -5923,6 +6891,7 @@ class MLXInferenceBackend:
             max_new_tokens = self._generation_limit(
                 prompt,
                 max_new_tokens,
+                prompt_ids,
                 images = images,
                 videos = [counted_clip] if counted_clip is not None else None,
                 cap = UNSET_GENERATION_BUDGET if images or video is not None else None,
@@ -5961,14 +6930,18 @@ class MLXInferenceBackend:
             0.0,
             1.0,
         )
-        constraint = _build_grammar_constraint(
-            response_format,
-            chat_target,
-            prompt,
-            reasoning_markers = vlm_reasoning_markers,
-            tools = tools,
-            reasoning_is_extracted = reasoning_is_extracted,
-            reply_keeps_special_tokens = True,
+        constraint = (
+            _raw_prompt_constraint(grammar, self._tokenizer)
+            if prompt_ids is not None
+            else _build_grammar_constraint(
+                response_format,
+                chat_target,
+                prompt,
+                reasoning_markers = vlm_reasoning_markers,
+                tools = tools,
+                reasoning_is_extracted = reasoning_is_extracted,
+                reply_keeps_special_tokens = True,
+            )
         )
         document_only = constraint is not None and not constraint.allows_reasoning
         if document_only:
@@ -5984,7 +6957,25 @@ class MLXInferenceBackend:
                 "constrain the next token. Load an autoregressive model to use "
                 "guided decoding."
             )
-        if presence_penalty or frequency_penalty or logit_bias or constraint is not None:
+        recorded = token_logprobs = None
+        if n_probs:
+            if _vlm_generation_is_diffusion(self._model):
+                raise LogprobsUnsupported(
+                    "logprobs is not supported on this model: it generates by diffusion rather "
+                    "than one token at a time."
+                )
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            token_logprobs = []
+        draft = self._speculative_draft
+        if (
+            presence_penalty
+            or frequency_penalty
+            or logit_bias
+            or constraint is not None
+            or (_rep_active and draft is not None)
+            or penalty_window is not None
+            or recorded is not None
+        ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
             vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
@@ -5993,7 +6984,15 @@ class MLXInferenceBackend:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 grammar_constraint = constraint,
+                penalty_window = penalty_window,
+                penalty_prompt = prompt_ids,
             )
+            if recorded is not None:
+                # Not history_only, so no draft runs: its verify pass would record rejected tokens.
+                vlm_kwargs["logits_processors"] = [
+                    recorder,
+                    *(vlm_kwargs["logits_processors"] or ()),
+                ]
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
@@ -6032,11 +7031,15 @@ class MLXInferenceBackend:
             else None
         )
 
-        if not self._reads_vision_input():
+        if prompt_ids is not None:
+            import mlx.core as mx
+            vlm_kwargs["input_ids"] = mx.array([list(prompt_ids)])
+            # As the text path and llama-server: control tokens are not reply text.
+            vlm_kwargs["skip_special_tokens"] = True
+        elif not self._reads_vision_input():
             # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
             import mlx.core as mx
             vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
-
         session = self._vlm_prompt_cache_session(
             _adapter_state, images, prompt, has_video = video is not None
         )
@@ -6047,10 +7050,29 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = session.step
+            vlm_kwargs["prefill_step_size"] = session.window
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
+            vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
+        processors = vlm_kwargs.get("logits_processors") or ()
+        # The draft is told these processors, and takes only ones that read just the history (a grammar's
+        # matcher advances per call); tool turns decode as before; a clip is nothing a drafter was built for.
+        if (
+            draft is None
+            or tools
+            or tool_protocol_active
+            or video is not None
+            or not all(getattr(processor, "history_only", False) for processor in processors)
+            or _vlm_generation_is_diffusion(self._model)
+        ):
+            draft = None
+        elif "input_ids" not in vlm_kwargs:
+            vlm_kwargs.update(
+                _vlm_generate_kwargs(
+                    _vlm_prepared_inputs(self._model, self._processor, prompt, images)
+                )
+            )
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -6061,6 +7083,7 @@ class MLXInferenceBackend:
             with (
                 self._generation_lock,
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
+                self._int8_prefill_scope(),
                 ExitStack() as generation_scope,
                 session_scope,
             ):
@@ -6068,14 +7091,27 @@ class MLXInferenceBackend:
                     # The vision pass gets the headroom, under the lock so nothing refills it.
                     # A video turn resumes no snapshot, so retained ones are pure occupancy.
                     self._release_vlm_snapshots()
-                generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
-                generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
-                generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
-                generation_scope.enter_context(_mlx_fused_moe_router(self._model))
-                generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
-                generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+                generation_scope.enter_context(
+                    self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
+                )
                 final_response = None
                 clip_path = None
+                if draft is not None:
+                    from unsloth_zoo.mlx.generate import SamplingParams
+
+                    # Under the lock: the load's one draft serves one generation at a time.
+                    draft.prepare(
+                        vlm_kwargs["input_ids"][0].tolist(),
+                        SamplingParams(
+                            temperature = temperature,
+                            top_p = top_p,
+                            top_k = max(int(top_k or 0), 0),
+                            min_p = float(min_p or 0.0),
+                            seed = seed,
+                        ),
+                        processors,
+                    )
+                    vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
                     if video is not None:
                         clip_path = _write_video_clip(video)
@@ -6099,11 +7135,46 @@ class MLXInferenceBackend:
                             )
                         )
                     ) as responses:
+                        raw_ids = [] if prompt_ids is not None else None
                         for response in responses:
                             final_response = response
-                            if vlm_streamed_text is not None:
+                            raw_id = (
+                                getattr(response, "token", None) if raw_ids is not None else None
+                            )
+                            filled = getattr(response, "generation_tokens", None)
+                            if raw_id is not None and (
+                                filled is None or int(filled) == len(raw_ids) + 1
+                            ):
+                                # The streaming detokenizer trims the first leading space; decode the ids.
+                                raw_ids.append(int(raw_id))
+                                if recorded:
+                                    token_logprobs.append(
+                                        _mlx_token_logprob(
+                                            recorded.popleft(),
+                                            int(raw_id),
+                                            n_probs,
+                                            self._tokenizer,
+                                        )
+                                    )
+                                decoded = self._tokenizer.decode(
+                                    raw_ids,
+                                    skip_special_tokens = True,
+                                    clean_up_tokenization_spaces = False,
+                                ).rstrip("\ufffd")
+                                token_text = (
+                                    decoded[len(sampled) :] if decoded.startswith(sampled) else ""
+                                )
+                            elif (
+                                raw_ids is not None
+                                and filled is not None
+                                and int(filled) <= len(raw_ids)
+                            ):
+                                token_text = ""
+                            elif vlm_streamed_text is not None:
                                 token_text = vlm_streamed_text.feed(response)
                             else:
+                                # A block naming several ids (a denoised step): the runtime's text stands.
+                                raw_ids = None
                                 token_text = (
                                     response.text if hasattr(response, "text") else str(response)
                                 )
@@ -6172,9 +7243,14 @@ class MLXInferenceBackend:
                                 getattr(final_response, "generation_tokens", 0),
                                 max_new_tokens,
                             ),
+                            drafts = None
+                            if draft is None
+                            else (draft.draft_n, draft.draft_n_accepted),
                         )
+                        if token_logprobs is not None:
+                            self.last_generation_stats["token_logprobs"] = token_logprobs
 
-        if document_only:
+        if document_only or prompt_ids is not None:
             # The normalizer would rewrite marker text inside the document.
             yield from _stream_vlm_snapshots()
         else:
@@ -6213,6 +7289,8 @@ class MLXInferenceBackend:
             return "fewer than two replies were requested"
         if self._is_vlm:
             reason = self._vlm_batch_unavailable_reason(requests)
+            if reason is None and self._speculative_draft is not None:
+                reason = self._vlm_resident_unavailable_reason({})
             if reason is not None:
                 return reason
             if any(_mlx_stop_sequences(request.get("stop")) for request in requests):
@@ -6288,6 +7366,9 @@ class MLXInferenceBackend:
         gap = _row_processor_gap(engine, requests)
         if gap is not None:
             return gap
+        if any(request.get("prompt_ids") is not None for request in requests):
+            # The batch detokenizer keeps control tokens and trims the first leading space.
+            return "a raw prompt on a vision model decodes on its own"
         if not getattr(self._model, "_is_vlm_model", False):
             return "this model was not loaded as a vision model"
         return None
@@ -6306,12 +7387,18 @@ class MLXInferenceBackend:
         self.last_batch_generation_stats = [None] * len(requests)
         self.last_generation_stats = None
 
-        run = self._generate_vlm_batch if self._is_vlm else self._generate_text_batch
-        yield from run(requests, cancel_event = cancel_event, _adapter_state = _adapter_state)
+        kwargs = {"cancel_event": cancel_event, "_adapter_state": _adapter_state}
+        if not self._is_vlm:
+            yield from self._generate_session_batch(requests, _TextBatchSession, **kwargs)
+        elif self._speculative_draft is not None:  # stream_batch has no speculative mode
+            yield from self._generate_session_batch(requests, _VisionBatchSession, **kwargs)
+        else:
+            yield from self._generate_vlm_batch(requests, **kwargs)
 
-    def _generate_text_batch(
+    def _generate_session_batch(
         self,
         requests,
+        session_type,
         *,
         cancel_event = None,
         _adapter_state = None,
@@ -6323,7 +7410,7 @@ class MLXInferenceBackend:
                 yield row, snapshot
 
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
-            session = _TextBatchSession(
+            session = session_type(
                 self,
                 width = len(requests),
                 adapter_state = _adapter_state,
@@ -6336,13 +7423,15 @@ class MLXInferenceBackend:
                     if prefix:
                         yield row, prefix
                 while session.rows_in_flight:
-                    yield from report(session.step())
+                    yield from report(session.step(cancel_event and cancel_event.is_set))
                     if cancel_event is not None and cancel_event.is_set():
                         yield from report(session.withdraw(list(session.handles)))
             finally:
                 session.close()
 
     def _vlm_batch_prompt(self, prompt):
+        if isinstance(prompt, list):
+            return {"prompt_token_ids": prompt}
         from unsloth_zoo.mlx.generate import vlm_batch_adds_special_tokens
 
         bos = getattr(self._tokenizer, "bos_token", None)
@@ -6353,8 +7442,8 @@ class MLXInferenceBackend:
             and vlm_batch_adds_special_tokens(self._model, self._processor)
         ):
             # The single path encodes a text load's prompt itself, keeping only the template's BOS.
-            return prompt[len(bos) :]
-        return prompt
+            return {"prompt": prompt[len(bos) :]}
+        return {"prompt": prompt}
 
     def _generate_vlm_batch(
         self,
@@ -6375,7 +7464,7 @@ class MLXInferenceBackend:
         plans = [self._plan_vlm_request(request) for request in requests]
         batch = [
             GenerationRequest(
-                prompt = self._vlm_batch_prompt(plan.prompt),
+                **self._vlm_batch_prompt(plan.prompt),
                 image = plan.images[0] if plan.images else None,
                 max_tokens = plan.max_tokens,
                 sampling = SamplingParams(**plan.sampling),
@@ -6387,9 +7476,14 @@ class MLXInferenceBackend:
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = len(plans),
             completion_batch_size = len(plans),
+            **self._prefill_step_kwargs(GenerationDefaults, grid = True),
         )
 
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+            self._int8_prefill_scope(),
+        ):
             if any(plan.images for plan in plans):
                 self._release_vlm_snapshots()
             logger.info(
@@ -6466,7 +7560,7 @@ class MLXInferenceBackend:
     def _batch_prompt_row(self, prompt, adapter_state):
         rest, cache, key, tokens, cached_n = self._prepare_prompt_cache(prompt, adapter_state)
         if cache is None or tokens is None:
-            tokens = self._encode_prompt(prompt)
+            tokens = list(prompt) if isinstance(prompt, list) else self._encode_prompt(prompt)
             rest, cached_n, key = tokens, 0, None
             cache = self._make_row_cache()
         return list(tokens[:cached_n]), list(rest), cache, key, list(tokens)
@@ -6567,16 +7661,12 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, use_adapter),
+            self._int8_prefill_scope(),
             ExitStack() as generation_scope,
         ):
             # As on the image path: the tower gets the headroom, under the lock.
             self._release_vlm_snapshots()
-            generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
-            generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
-            generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
-            generation_scope.enter_context(_mlx_fused_moe_router(self._model))
-            generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
-            generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+            generation_scope.enter_context(self._generation_scopes("vision", "audio"))
             final_response = None
             try:
                 with closing(
@@ -6592,6 +7682,7 @@ class MLXInferenceBackend:
                             **self._kv_runtime_quant_kwargs(),
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
+                            **self._prefill_step_kwargs(),
                         )
                     )
                 ) as responses:

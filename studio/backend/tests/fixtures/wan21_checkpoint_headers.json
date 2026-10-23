@@ -1,0 +1,2800 @@
+{
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/clip_vision/clip_vision_h.safetensors": {
+"meta": {},
+"shapes": {
+"vision_model.embeddings.class_embedding": [
+1280
+],
+"vision_model.embeddings.patch_embedding.weight": [
+1280,
+3,
+14,
+14
+],
+"vision_model.embeddings.position_embedding.weight": [
+257,
+1280
+],
+"vision_model.embeddings.position_ids": [
+1,
+257
+],
+"vision_model.encoder.layers.0.layer_norm1.bias": [
+1280
+],
+"vision_model.encoder.layers.0.layer_norm1.weight": [
+1280
+],
+"vision_model.encoder.layers.0.layer_norm2.bias": [
+1280
+],
+"vision_model.encoder.layers.0.layer_norm2.weight": [
+1280
+],
+"vision_model.encoder.layers.0.mlp.fc1.bias": [
+5120
+],
+"vision_model.encoder.layers.0.mlp.fc1.weight": [
+5120,
+1280
+],
+"vision_model.encoder.layers.0.mlp.fc2.bias": [
+1280
+],
+"vision_model.encoder.layers.0.mlp.fc2.weight": [
+1280,
+5120
+],
+"vision_model.encoder.layers.0.self_attn.k_proj.bias": [
+1280
+],
+"vision_model.encoder.layers.0.self_attn.k_proj.weight": [
+1280,
+1280
+],
+"vision_model.encoder.layers.0.self_attn.out_proj.bias": [
+1280
+],
+"vision_model.encoder.layers.0.self_attn.out_proj.weight": [
+1280,
+1280
+],
+"vision_model.encoder.layers.0.self_attn.q_proj.bias": [
+1280
+],
+"vision_model.encoder.layers.0.self_attn.q_proj.weight": [
+1280,
+1280
+],
+"vision_model.encoder.layers.0.self_attn.v_proj.bias": [
+1280
+],
+"vision_model.encoder.layers.0.self_attn.v_proj.weight": [
+1280,
+1280
+],
+"vision_model.post_layernorm.bias": [
+1280
+],
+"vision_model.post_layernorm.weight": [
+1280
+],
+"vision_model.pre_layrnorm.bias": [
+1280
+],
+"vision_model.pre_layrnorm.weight": [
+1280
+],
+"visual_projection.weight": [
+1024,
+1280
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/diffusion_models/wan2.1_fun_inp_1.3B_bf16.safetensors": {
+"meta": {},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+1536
+],
+"blocks.0.cross_attn.k.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.k_img.bias": [
+1536
+],
+"blocks.0.cross_attn.k_img.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.norm_k.weight": [
+1536
+],
+"blocks.0.cross_attn.norm_k_img.weight": [
+1536
+],
+"blocks.0.cross_attn.norm_q.weight": [
+1536
+],
+"blocks.0.cross_attn.o.bias": [
+1536
+],
+"blocks.0.cross_attn.o.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.q.bias": [
+1536
+],
+"blocks.0.cross_attn.q.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.v.bias": [
+1536
+],
+"blocks.0.cross_attn.v.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.v_img.bias": [
+1536
+],
+"blocks.0.cross_attn.v_img.weight": [
+1536,
+1536
+],
+"blocks.0.ffn.0.bias": [
+8960
+],
+"blocks.0.ffn.0.weight": [
+8960,
+1536
+],
+"blocks.0.ffn.2.bias": [
+1536
+],
+"blocks.0.ffn.2.weight": [
+1536,
+8960
+],
+"blocks.0.modulation": [
+1,
+6,
+1536
+],
+"blocks.0.norm3.bias": [
+1536
+],
+"blocks.0.norm3.weight": [
+1536
+],
+"blocks.0.self_attn.k.bias": [
+1536
+],
+"blocks.0.self_attn.k.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.norm_k.weight": [
+1536
+],
+"blocks.0.self_attn.norm_q.weight": [
+1536
+],
+"blocks.0.self_attn.o.bias": [
+1536
+],
+"blocks.0.self_attn.o.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.q.bias": [
+1536
+],
+"blocks.0.self_attn.q.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.v.bias": [
+1536
+],
+"blocks.0.self_attn.v.weight": [
+1536,
+1536
+],
+"head.head.bias": [
+64
+],
+"head.head.weight": [
+64,
+1536
+],
+"head.modulation": [
+1,
+2,
+1536
+],
+"img_emb.proj.0.bias": [
+1280
+],
+"img_emb.proj.0.weight": [
+1280
+],
+"img_emb.proj.1.bias": [
+1280
+],
+"img_emb.proj.1.weight": [
+1280,
+1280
+],
+"img_emb.proj.3.bias": [
+1536
+],
+"img_emb.proj.3.weight": [
+1536,
+1280
+],
+"img_emb.proj.4.bias": [
+1536
+],
+"img_emb.proj.4.weight": [
+1536
+],
+"patch_embedding.bias": [
+1536
+],
+"patch_embedding.weight": [
+1536,
+36,
+1,
+2,
+2
+],
+"text_embedding.0.bias": [
+1536
+],
+"text_embedding.0.weight": [
+1536,
+4096
+],
+"text_embedding.2.bias": [
+1536
+],
+"text_embedding.2.weight": [
+1536,
+1536
+],
+"time_embedding.0.bias": [
+1536
+],
+"time_embedding.0.weight": [
+1536,
+256
+],
+"time_embedding.2.bias": [
+1536
+],
+"time_embedding.2.weight": [
+1536,
+1536
+],
+"time_projection.1.bias": [
+9216
+],
+"time_projection.1.weight": [
+9216,
+1536
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/diffusion_models/wan2.1_i2v_480p_14B_fp8_scaled.safetensors": {
+"meta": {},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+5120
+],
+"blocks.0.cross_attn.k.scale_weight": [],
+"blocks.0.cross_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.k_img.bias": [
+5120
+],
+"blocks.0.cross_attn.k_img.scale_weight": [],
+"blocks.0.cross_attn.k_img.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.norm_k.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_k_img.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_q.weight": [
+5120
+],
+"blocks.0.cross_attn.o.bias": [
+5120
+],
+"blocks.0.cross_attn.o.scale_weight": [],
+"blocks.0.cross_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.q.bias": [
+5120
+],
+"blocks.0.cross_attn.q.scale_weight": [],
+"blocks.0.cross_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v.bias": [
+5120
+],
+"blocks.0.cross_attn.v.scale_weight": [],
+"blocks.0.cross_attn.v.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v_img.bias": [
+5120
+],
+"blocks.0.cross_attn.v_img.scale_weight": [],
+"blocks.0.cross_attn.v_img.weight": [
+5120,
+5120
+],
+"blocks.0.ffn.0.bias": [
+13824
+],
+"blocks.0.ffn.0.scale_weight": [],
+"blocks.0.ffn.0.weight": [
+13824,
+5120
+],
+"blocks.0.ffn.2.bias": [
+5120
+],
+"blocks.0.ffn.2.scale_weight": [],
+"blocks.0.ffn.2.weight": [
+5120,
+13824
+],
+"blocks.0.modulation": [
+1,
+6,
+5120
+],
+"blocks.0.norm3.bias": [
+5120
+],
+"blocks.0.norm3.weight": [
+5120
+],
+"blocks.0.self_attn.k.bias": [
+5120
+],
+"blocks.0.self_attn.k.scale_weight": [],
+"blocks.0.self_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.norm_k.weight": [
+5120
+],
+"blocks.0.self_attn.norm_q.weight": [
+5120
+],
+"blocks.0.self_attn.o.bias": [
+5120
+],
+"blocks.0.self_attn.o.scale_weight": [],
+"blocks.0.self_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.q.bias": [
+5120
+],
+"blocks.0.self_attn.q.scale_weight": [],
+"blocks.0.self_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.v.bias": [
+5120
+],
+"blocks.0.self_attn.v.scale_weight": [],
+"blocks.0.self_attn.v.weight": [
+5120,
+5120
+],
+"head.head.bias": [
+64
+],
+"head.head.scale_weight": [],
+"head.head.weight": [
+64,
+5120
+],
+"head.modulation": [
+1,
+2,
+5120
+],
+"img_emb.proj.0.bias": [
+1280
+],
+"img_emb.proj.0.weight": [
+1280
+],
+"img_emb.proj.1.bias": [
+1280
+],
+"img_emb.proj.1.scale_weight": [],
+"img_emb.proj.1.weight": [
+1280,
+1280
+],
+"img_emb.proj.3.bias": [
+5120
+],
+"img_emb.proj.3.scale_weight": [],
+"img_emb.proj.3.weight": [
+5120,
+1280
+],
+"img_emb.proj.4.bias": [
+5120
+],
+"img_emb.proj.4.weight": [
+5120
+],
+"patch_embedding.bias": [
+5120
+],
+"patch_embedding.weight": [
+5120,
+36,
+1,
+2,
+2
+],
+"scaled_fp8": [
+2
+],
+"text_embedding.0.bias": [
+5120
+],
+"text_embedding.0.scale_weight": [],
+"text_embedding.0.weight": [
+5120,
+4096
+],
+"text_embedding.2.bias": [
+5120
+],
+"text_embedding.2.scale_weight": [],
+"text_embedding.2.weight": [
+5120,
+5120
+],
+"time_embedding.0.bias": [
+5120
+],
+"time_embedding.0.scale_weight": [],
+"time_embedding.0.weight": [
+5120,
+256
+],
+"time_embedding.2.bias": [
+5120
+],
+"time_embedding.2.scale_weight": [],
+"time_embedding.2.weight": [
+5120,
+5120
+],
+"time_projection.1.bias": [
+30720
+],
+"time_projection.1.scale_weight": [],
+"time_projection.1.weight": [
+30720,
+5120
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors": {
+"meta": {},
+"shapes": {
+"model.diffusion_model.blocks.0.cross_attn.k.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.o.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.q.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.v.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.ffn.0.bias": [
+8960
+],
+"model.diffusion_model.blocks.0.ffn.0.weight": [
+8960,
+1536
+],
+"model.diffusion_model.blocks.0.ffn.2.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.ffn.2.weight": [
+1536,
+8960
+],
+"model.diffusion_model.blocks.0.modulation": [
+1,
+6,
+1536
+],
+"model.diffusion_model.blocks.0.norm3.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.norm3.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.k.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.o.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.q.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.v.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.head.head.bias": [
+64
+],
+"model.diffusion_model.head.head.weight": [
+64,
+1536
+],
+"model.diffusion_model.head.modulation": [
+1,
+2,
+1536
+],
+"model.diffusion_model.patch_embedding.bias": [
+1536
+],
+"model.diffusion_model.patch_embedding.weight": [
+1536,
+16,
+1,
+2,
+2
+],
+"model.diffusion_model.text_embedding.0.bias": [
+1536
+],
+"model.diffusion_model.text_embedding.0.weight": [
+1536,
+4096
+],
+"model.diffusion_model.text_embedding.2.bias": [
+1536
+],
+"model.diffusion_model.text_embedding.2.weight": [
+1536,
+1536
+],
+"model.diffusion_model.time_embedding.0.bias": [
+1536
+],
+"model.diffusion_model.time_embedding.0.weight": [
+1536,
+256
+],
+"model.diffusion_model.time_embedding.2.bias": [
+1536
+],
+"model.diffusion_model.time_embedding.2.weight": [
+1536,
+1536
+],
+"model.diffusion_model.time_projection.1.bias": [
+9216
+],
+"model.diffusion_model.time_projection.1.weight": [
+9216,
+1536
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/diffusion_models/wan2.1_t2v_14B_fp8_scaled.safetensors": {
+"meta": {},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+5120
+],
+"blocks.0.cross_attn.k.scale_weight": [],
+"blocks.0.cross_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.norm_k.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_q.weight": [
+5120
+],
+"blocks.0.cross_attn.o.bias": [
+5120
+],
+"blocks.0.cross_attn.o.scale_weight": [],
+"blocks.0.cross_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.q.bias": [
+5120
+],
+"blocks.0.cross_attn.q.scale_weight": [],
+"blocks.0.cross_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v.bias": [
+5120
+],
+"blocks.0.cross_attn.v.scale_weight": [],
+"blocks.0.cross_attn.v.weight": [
+5120,
+5120
+],
+"blocks.0.ffn.0.bias": [
+13824
+],
+"blocks.0.ffn.0.scale_weight": [],
+"blocks.0.ffn.0.weight": [
+13824,
+5120
+],
+"blocks.0.ffn.2.bias": [
+5120
+],
+"blocks.0.ffn.2.scale_weight": [],
+"blocks.0.ffn.2.weight": [
+5120,
+13824
+],
+"blocks.0.modulation": [
+1,
+6,
+5120
+],
+"blocks.0.norm3.bias": [
+5120
+],
+"blocks.0.norm3.weight": [
+5120
+],
+"blocks.0.self_attn.k.bias": [
+5120
+],
+"blocks.0.self_attn.k.scale_weight": [],
+"blocks.0.self_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.norm_k.weight": [
+5120
+],
+"blocks.0.self_attn.norm_q.weight": [
+5120
+],
+"blocks.0.self_attn.o.bias": [
+5120
+],
+"blocks.0.self_attn.o.scale_weight": [],
+"blocks.0.self_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.q.bias": [
+5120
+],
+"blocks.0.self_attn.q.scale_weight": [],
+"blocks.0.self_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.v.bias": [
+5120
+],
+"blocks.0.self_attn.v.scale_weight": [],
+"blocks.0.self_attn.v.weight": [
+5120,
+5120
+],
+"head.head.bias": [
+64
+],
+"head.head.scale_weight": [],
+"head.head.weight": [
+64,
+5120
+],
+"head.modulation": [
+1,
+2,
+5120
+],
+"patch_embedding.bias": [
+5120
+],
+"patch_embedding.weight": [
+5120,
+16,
+1,
+2,
+2
+],
+"scaled_fp8": [
+2
+],
+"text_embedding.0.bias": [
+5120
+],
+"text_embedding.0.scale_weight": [],
+"text_embedding.0.weight": [
+5120,
+4096
+],
+"text_embedding.2.bias": [
+5120
+],
+"text_embedding.2.scale_weight": [],
+"text_embedding.2.weight": [
+5120,
+5120
+],
+"time_embedding.0.bias": [
+5120
+],
+"time_embedding.0.scale_weight": [],
+"time_embedding.0.weight": [
+5120,
+256
+],
+"time_embedding.2.bias": [
+5120
+],
+"time_embedding.2.scale_weight": [],
+"time_embedding.2.weight": [
+5120,
+5120
+],
+"time_projection.1.bias": [
+30720
+],
+"time_projection.1.scale_weight": [],
+"time_projection.1.weight": [
+30720,
+5120
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors": {
+"meta": {},
+"shapes": {
+"model.diffusion_model.blocks.0.cross_attn.k.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.o.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.q.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.v.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.cross_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.ffn.0.bias": [
+8960
+],
+"model.diffusion_model.blocks.0.ffn.0.weight": [
+8960,
+1536
+],
+"model.diffusion_model.blocks.0.ffn.2.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.ffn.2.weight": [
+1536,
+8960
+],
+"model.diffusion_model.blocks.0.modulation": [
+1,
+6,
+1536
+],
+"model.diffusion_model.blocks.0.norm3.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.norm3.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.k.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.o.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.q.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.v.bias": [
+1536
+],
+"model.diffusion_model.blocks.0.self_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.head.head.bias": [
+64
+],
+"model.diffusion_model.head.head.weight": [
+64,
+1536
+],
+"model.diffusion_model.head.modulation": [
+1,
+2,
+1536
+],
+"model.diffusion_model.patch_embedding.bias": [
+1536
+],
+"model.diffusion_model.patch_embedding.weight": [
+1536,
+16,
+1,
+2,
+2
+],
+"model.diffusion_model.text_embedding.0.bias": [
+1536
+],
+"model.diffusion_model.text_embedding.0.weight": [
+1536,
+4096
+],
+"model.diffusion_model.text_embedding.2.bias": [
+1536
+],
+"model.diffusion_model.text_embedding.2.weight": [
+1536,
+1536
+],
+"model.diffusion_model.time_embedding.0.bias": [
+1536
+],
+"model.diffusion_model.time_embedding.0.weight": [
+1536,
+256
+],
+"model.diffusion_model.time_embedding.2.bias": [
+1536
+],
+"model.diffusion_model.time_embedding.2.weight": [
+1536,
+1536
+],
+"model.diffusion_model.time_projection.1.bias": [
+9216
+],
+"model.diffusion_model.time_projection.1.weight": [
+9216,
+1536
+],
+"model.diffusion_model.vace_blocks.0.after_proj.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.after_proj.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.before_proj.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.before_proj.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.k.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.o.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.q.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.v.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.cross_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.ffn.0.bias": [
+8960
+],
+"model.diffusion_model.vace_blocks.0.ffn.0.weight": [
+8960,
+1536
+],
+"model.diffusion_model.vace_blocks.0.ffn.2.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.ffn.2.weight": [
+1536,
+8960
+],
+"model.diffusion_model.vace_blocks.0.modulation": [
+1,
+6,
+1536
+],
+"model.diffusion_model.vace_blocks.0.norm3.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.norm3.weight": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.k.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.k.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.norm_k.weight": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.norm_q.weight": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.o.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.o.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.q.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.q.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.v.bias": [
+1536
+],
+"model.diffusion_model.vace_blocks.0.self_attn.v.weight": [
+1536,
+1536
+],
+"model.diffusion_model.vace_patch_embedding.bias": [
+1536
+],
+"model.diffusion_model.vace_patch_embedding.weight": [
+1536,
+96,
+1,
+2,
+2
+]
+}
+},
+"Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/vae/wan_2.1_vae.safetensors": {
+"meta": {},
+"shapes": {
+"conv1.bias": [
+32
+],
+"conv1.weight": [
+32,
+32,
+1,
+1,
+1
+],
+"conv2.bias": [
+16
+],
+"conv2.weight": [
+16,
+16,
+1,
+1,
+1
+],
+"decoder.conv1.bias": [
+384
+],
+"decoder.conv1.weight": [
+384,
+16,
+3,
+3,
+3
+],
+"decoder.head.0.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.head.2.bias": [
+3
+],
+"decoder.head.2.weight": [
+3,
+96,
+3,
+3,
+3
+],
+"decoder.middle.0.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.middle.0.residual.2.bias": [
+384
+],
+"decoder.middle.0.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.middle.0.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.middle.0.residual.6.bias": [
+384
+],
+"decoder.middle.0.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.middle.1.norm.gamma": [
+384,
+1,
+1
+],
+"decoder.middle.1.proj.bias": [
+384
+],
+"decoder.middle.1.proj.weight": [
+384,
+384,
+1,
+1
+],
+"decoder.middle.1.to_qkv.bias": [
+1152
+],
+"decoder.middle.1.to_qkv.weight": [
+1152,
+384,
+1,
+1
+],
+"decoder.middle.2.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.middle.2.residual.2.bias": [
+384
+],
+"decoder.middle.2.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.middle.2.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.middle.2.residual.6.bias": [
+384
+],
+"decoder.middle.2.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.0.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.0.residual.2.bias": [
+384
+],
+"decoder.upsamples.0.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.0.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.0.residual.6.bias": [
+384
+],
+"decoder.upsamples.0.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.1.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.1.residual.2.bias": [
+384
+],
+"decoder.upsamples.1.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.1.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.1.residual.6.bias": [
+384
+],
+"decoder.upsamples.1.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.10.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.10.residual.2.bias": [
+192
+],
+"decoder.upsamples.10.residual.2.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.10.residual.3.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.10.residual.6.bias": [
+192
+],
+"decoder.upsamples.10.residual.6.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.11.resample.1.bias": [
+96
+],
+"decoder.upsamples.11.resample.1.weight": [
+96,
+192,
+3,
+3
+],
+"decoder.upsamples.12.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.12.residual.2.bias": [
+96
+],
+"decoder.upsamples.12.residual.2.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.12.residual.3.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.12.residual.6.bias": [
+96
+],
+"decoder.upsamples.12.residual.6.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.13.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.13.residual.2.bias": [
+96
+],
+"decoder.upsamples.13.residual.2.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.13.residual.3.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.13.residual.6.bias": [
+96
+],
+"decoder.upsamples.13.residual.6.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.14.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.14.residual.2.bias": [
+96
+],
+"decoder.upsamples.14.residual.2.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.14.residual.3.gamma": [
+96,
+1,
+1,
+1
+],
+"decoder.upsamples.14.residual.6.bias": [
+96
+],
+"decoder.upsamples.14.residual.6.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"decoder.upsamples.2.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.2.residual.2.bias": [
+384
+],
+"decoder.upsamples.2.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.2.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.2.residual.6.bias": [
+384
+],
+"decoder.upsamples.2.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.3.resample.1.bias": [
+192
+],
+"decoder.upsamples.3.resample.1.weight": [
+192,
+384,
+3,
+3
+],
+"decoder.upsamples.3.time_conv.bias": [
+768
+],
+"decoder.upsamples.3.time_conv.weight": [
+768,
+384,
+3,
+1,
+1
+],
+"decoder.upsamples.4.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.4.residual.2.bias": [
+384
+],
+"decoder.upsamples.4.residual.2.weight": [
+384,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.4.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.4.residual.6.bias": [
+384
+],
+"decoder.upsamples.4.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.4.shortcut.bias": [
+384
+],
+"decoder.upsamples.4.shortcut.weight": [
+384,
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.5.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.5.residual.2.bias": [
+384
+],
+"decoder.upsamples.5.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.5.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.5.residual.6.bias": [
+384
+],
+"decoder.upsamples.5.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.6.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.6.residual.2.bias": [
+384
+],
+"decoder.upsamples.6.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.6.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"decoder.upsamples.6.residual.6.bias": [
+384
+],
+"decoder.upsamples.6.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"decoder.upsamples.7.resample.1.bias": [
+192
+],
+"decoder.upsamples.7.resample.1.weight": [
+192,
+384,
+3,
+3
+],
+"decoder.upsamples.7.time_conv.bias": [
+768
+],
+"decoder.upsamples.7.time_conv.weight": [
+768,
+384,
+3,
+1,
+1
+],
+"decoder.upsamples.8.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.8.residual.2.bias": [
+192
+],
+"decoder.upsamples.8.residual.2.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.8.residual.3.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.8.residual.6.bias": [
+192
+],
+"decoder.upsamples.8.residual.6.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.9.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.9.residual.2.bias": [
+192
+],
+"decoder.upsamples.9.residual.2.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"decoder.upsamples.9.residual.3.gamma": [
+192,
+1,
+1,
+1
+],
+"decoder.upsamples.9.residual.6.bias": [
+192
+],
+"decoder.upsamples.9.residual.6.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"encoder.conv1.bias": [
+96
+],
+"encoder.conv1.weight": [
+96,
+3,
+3,
+3,
+3
+],
+"encoder.downsamples.0.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.0.residual.2.bias": [
+96
+],
+"encoder.downsamples.0.residual.2.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"encoder.downsamples.0.residual.3.gamma": [
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.0.residual.6.bias": [
+96
+],
+"encoder.downsamples.0.residual.6.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"encoder.downsamples.1.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.1.residual.2.bias": [
+96
+],
+"encoder.downsamples.1.residual.2.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"encoder.downsamples.1.residual.3.gamma": [
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.1.residual.6.bias": [
+96
+],
+"encoder.downsamples.1.residual.6.weight": [
+96,
+96,
+3,
+3,
+3
+],
+"encoder.downsamples.10.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.10.residual.2.bias": [
+384
+],
+"encoder.downsamples.10.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.10.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.10.residual.6.bias": [
+384
+],
+"encoder.downsamples.10.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.2.resample.1.bias": [
+96
+],
+"encoder.downsamples.2.resample.1.weight": [
+96,
+96,
+3,
+3
+],
+"encoder.downsamples.3.residual.0.gamma": [
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.3.residual.2.bias": [
+192
+],
+"encoder.downsamples.3.residual.2.weight": [
+192,
+96,
+3,
+3,
+3
+],
+"encoder.downsamples.3.residual.3.gamma": [
+192,
+1,
+1,
+1
+],
+"encoder.downsamples.3.residual.6.bias": [
+192
+],
+"encoder.downsamples.3.residual.6.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"encoder.downsamples.3.shortcut.bias": [
+192
+],
+"encoder.downsamples.3.shortcut.weight": [
+192,
+96,
+1,
+1,
+1
+],
+"encoder.downsamples.4.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"encoder.downsamples.4.residual.2.bias": [
+192
+],
+"encoder.downsamples.4.residual.2.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"encoder.downsamples.4.residual.3.gamma": [
+192,
+1,
+1,
+1
+],
+"encoder.downsamples.4.residual.6.bias": [
+192
+],
+"encoder.downsamples.4.residual.6.weight": [
+192,
+192,
+3,
+3,
+3
+],
+"encoder.downsamples.5.resample.1.bias": [
+192
+],
+"encoder.downsamples.5.resample.1.weight": [
+192,
+192,
+3,
+3
+],
+"encoder.downsamples.5.time_conv.bias": [
+192
+],
+"encoder.downsamples.5.time_conv.weight": [
+192,
+192,
+3,
+1,
+1
+],
+"encoder.downsamples.6.residual.0.gamma": [
+192,
+1,
+1,
+1
+],
+"encoder.downsamples.6.residual.2.bias": [
+384
+],
+"encoder.downsamples.6.residual.2.weight": [
+384,
+192,
+3,
+3,
+3
+],
+"encoder.downsamples.6.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.6.residual.6.bias": [
+384
+],
+"encoder.downsamples.6.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.6.shortcut.bias": [
+384
+],
+"encoder.downsamples.6.shortcut.weight": [
+384,
+192,
+1,
+1,
+1
+],
+"encoder.downsamples.7.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.7.residual.2.bias": [
+384
+],
+"encoder.downsamples.7.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.7.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.7.residual.6.bias": [
+384
+],
+"encoder.downsamples.7.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.8.resample.1.bias": [
+384
+],
+"encoder.downsamples.8.resample.1.weight": [
+384,
+384,
+3,
+3
+],
+"encoder.downsamples.8.time_conv.bias": [
+384
+],
+"encoder.downsamples.8.time_conv.weight": [
+384,
+384,
+3,
+1,
+1
+],
+"encoder.downsamples.9.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.9.residual.2.bias": [
+384
+],
+"encoder.downsamples.9.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.downsamples.9.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.downsamples.9.residual.6.bias": [
+384
+],
+"encoder.downsamples.9.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.head.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.head.2.bias": [
+32
+],
+"encoder.head.2.weight": [
+32,
+384,
+3,
+3,
+3
+],
+"encoder.middle.0.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.middle.0.residual.2.bias": [
+384
+],
+"encoder.middle.0.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.middle.0.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.middle.0.residual.6.bias": [
+384
+],
+"encoder.middle.0.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.middle.1.norm.gamma": [
+384,
+1,
+1
+],
+"encoder.middle.1.proj.bias": [
+384
+],
+"encoder.middle.1.proj.weight": [
+384,
+384,
+1,
+1
+],
+"encoder.middle.1.to_qkv.bias": [
+1152
+],
+"encoder.middle.1.to_qkv.weight": [
+1152,
+384,
+1,
+1
+],
+"encoder.middle.2.residual.0.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.middle.2.residual.2.bias": [
+384
+],
+"encoder.middle.2.residual.2.weight": [
+384,
+384,
+3,
+3,
+3
+],
+"encoder.middle.2.residual.3.gamma": [
+384,
+1,
+1,
+1
+],
+"encoder.middle.2.residual.6.bias": [
+384
+],
+"encoder.middle.2.residual.6.weight": [
+384,
+384,
+3,
+3,
+3
+]
+}
+},
+"QuantStack/Wan2.1_T2V_14B_FusionX-GGUF/Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf": {
+"meta": {
+"general.architecture": "wan"
+},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+5120
+],
+"blocks.0.cross_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.norm_k.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_q.weight": [
+5120
+],
+"blocks.0.cross_attn.o.bias": [
+5120
+],
+"blocks.0.cross_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.q.bias": [
+5120
+],
+"blocks.0.cross_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v.bias": [
+5120
+],
+"blocks.0.cross_attn.v.weight": [
+5120,
+5120
+],
+"blocks.0.ffn.0.bias": [
+13824
+],
+"blocks.0.ffn.0.weight": [
+13824,
+5120
+],
+"blocks.0.ffn.2.bias": [
+5120
+],
+"blocks.0.ffn.2.weight": [
+5120,
+13824
+],
+"blocks.0.modulation": [
+1,
+6,
+5120
+],
+"blocks.0.norm3.bias": [
+5120
+],
+"blocks.0.norm3.weight": [
+5120
+],
+"blocks.0.self_attn.k.bias": [
+5120
+],
+"blocks.0.self_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.norm_k.weight": [
+5120
+],
+"blocks.0.self_attn.norm_q.weight": [
+5120
+],
+"blocks.0.self_attn.o.bias": [
+5120
+],
+"blocks.0.self_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.q.bias": [
+5120
+],
+"blocks.0.self_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.v.bias": [
+5120
+],
+"blocks.0.self_attn.v.weight": [
+5120,
+5120
+],
+"head.head.bias": [
+64
+],
+"head.head.weight": [
+64,
+5120
+],
+"head.modulation": [
+1,
+2,
+5120
+],
+"patch_embedding.bias": [
+5120
+],
+"patch_embedding.weight": [
+5120,
+16,
+1,
+2,
+2
+],
+"text_embedding.0.bias": [
+5120
+],
+"text_embedding.0.weight": [
+5120,
+4096
+],
+"text_embedding.2.bias": [
+5120
+],
+"text_embedding.2.weight": [
+5120,
+5120
+],
+"time_embedding.0.bias": [
+5120
+],
+"time_embedding.0.weight": [
+5120,
+256
+],
+"time_embedding.2.bias": [
+5120
+],
+"time_embedding.2.weight": [
+5120,
+5120
+],
+"time_projection.1.bias": [
+30720
+],
+"time_projection.1.weight": [
+30720,
+5120
+]
+}
+},
+"city96/Wan2.1-I2V-14B-480P-gguf/wan2.1-i2v-14b-480p-Q4_K_M.gguf": {
+"meta": {
+"general.architecture": "wan"
+},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+5120
+],
+"blocks.0.cross_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.k_img.bias": [
+5120
+],
+"blocks.0.cross_attn.k_img.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.norm_k.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_k_img.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_q.weight": [
+5120
+],
+"blocks.0.cross_attn.o.bias": [
+5120
+],
+"blocks.0.cross_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.q.bias": [
+5120
+],
+"blocks.0.cross_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v.bias": [
+5120
+],
+"blocks.0.cross_attn.v.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v_img.bias": [
+5120
+],
+"blocks.0.cross_attn.v_img.weight": [
+5120,
+5120
+],
+"blocks.0.ffn.0.bias": [
+13824
+],
+"blocks.0.ffn.0.weight": [
+13824,
+5120
+],
+"blocks.0.ffn.2.bias": [
+5120
+],
+"blocks.0.ffn.2.weight": [
+5120,
+13824
+],
+"blocks.0.modulation": [
+1,
+6,
+5120
+],
+"blocks.0.norm3.bias": [
+5120
+],
+"blocks.0.norm3.weight": [
+5120
+],
+"blocks.0.self_attn.k.bias": [
+5120
+],
+"blocks.0.self_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.norm_k.weight": [
+5120
+],
+"blocks.0.self_attn.norm_q.weight": [
+5120
+],
+"blocks.0.self_attn.o.bias": [
+5120
+],
+"blocks.0.self_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.q.bias": [
+5120
+],
+"blocks.0.self_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.v.bias": [
+5120
+],
+"blocks.0.self_attn.v.weight": [
+5120,
+5120
+],
+"head.head.bias": [
+64
+],
+"head.head.weight": [
+64,
+5120
+],
+"head.modulation": [
+1,
+2,
+5120
+],
+"img_emb.proj.0.bias": [
+1280
+],
+"img_emb.proj.0.weight": [
+1280
+],
+"img_emb.proj.1.bias": [
+1280
+],
+"img_emb.proj.1.weight": [
+1280,
+1280
+],
+"img_emb.proj.3.bias": [
+5120
+],
+"img_emb.proj.3.weight": [
+5120,
+1280
+],
+"img_emb.proj.4.bias": [
+5120
+],
+"img_emb.proj.4.weight": [
+5120
+],
+"patch_embedding.bias": [
+5120
+],
+"patch_embedding.weight": [
+5120,
+36,
+1,
+2,
+2
+],
+"text_embedding.0.bias": [
+5120
+],
+"text_embedding.0.weight": [
+5120,
+4096
+],
+"text_embedding.2.bias": [
+5120
+],
+"text_embedding.2.weight": [
+5120,
+5120
+],
+"time_embedding.0.bias": [
+5120
+],
+"time_embedding.0.weight": [
+5120,
+256
+],
+"time_embedding.2.bias": [
+5120
+],
+"time_embedding.2.weight": [
+5120,
+5120
+],
+"time_projection.1.bias": [
+30720
+],
+"time_projection.1.weight": [
+30720,
+5120
+]
+}
+},
+"city96/Wan2.1-T2V-14B-gguf/wan2.1-t2v-14b-Q4_K_M.gguf": {
+"meta": {
+"general.architecture": "wan"
+},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+5120
+],
+"blocks.0.cross_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.norm_k.weight": [
+5120
+],
+"blocks.0.cross_attn.norm_q.weight": [
+5120
+],
+"blocks.0.cross_attn.o.bias": [
+5120
+],
+"blocks.0.cross_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.q.bias": [
+5120
+],
+"blocks.0.cross_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.cross_attn.v.bias": [
+5120
+],
+"blocks.0.cross_attn.v.weight": [
+5120,
+5120
+],
+"blocks.0.ffn.0.bias": [
+13824
+],
+"blocks.0.ffn.0.weight": [
+13824,
+5120
+],
+"blocks.0.ffn.2.bias": [
+5120
+],
+"blocks.0.ffn.2.weight": [
+5120,
+13824
+],
+"blocks.0.modulation": [
+1,
+6,
+5120
+],
+"blocks.0.norm3.bias": [
+5120
+],
+"blocks.0.norm3.weight": [
+5120
+],
+"blocks.0.self_attn.k.bias": [
+5120
+],
+"blocks.0.self_attn.k.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.norm_k.weight": [
+5120
+],
+"blocks.0.self_attn.norm_q.weight": [
+5120
+],
+"blocks.0.self_attn.o.bias": [
+5120
+],
+"blocks.0.self_attn.o.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.q.bias": [
+5120
+],
+"blocks.0.self_attn.q.weight": [
+5120,
+5120
+],
+"blocks.0.self_attn.v.bias": [
+5120
+],
+"blocks.0.self_attn.v.weight": [
+5120,
+5120
+],
+"head.head.bias": [
+64
+],
+"head.head.weight": [
+64,
+5120
+],
+"head.modulation": [
+1,
+2,
+5120
+],
+"patch_embedding.bias": [
+5120
+],
+"patch_embedding.weight": [
+5120,
+16,
+1,
+2,
+2
+],
+"text_embedding.0.bias": [
+5120
+],
+"text_embedding.0.weight": [
+5120,
+4096
+],
+"text_embedding.2.bias": [
+5120
+],
+"text_embedding.2.weight": [
+5120,
+5120
+],
+"time_embedding.0.bias": [
+5120
+],
+"time_embedding.0.weight": [
+5120,
+256
+],
+"time_embedding.2.bias": [
+5120
+],
+"time_embedding.2.weight": [
+5120,
+5120
+],
+"time_projection.1.bias": [
+30720
+],
+"time_projection.1.weight": [
+30720,
+5120
+]
+}
+},
+"samuelchristlie/Wan2.1-T2V-1.3B-GGUF/Wan2.1-T2V-1.3B-Q8_0.gguf": {
+"meta": {
+"general.architecture": "wan"
+},
+"shapes": {
+"blocks.0.cross_attn.k.bias": [
+1536
+],
+"blocks.0.cross_attn.k.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.norm_k.weight": [
+1536
+],
+"blocks.0.cross_attn.norm_q.weight": [
+1536
+],
+"blocks.0.cross_attn.o.bias": [
+1536
+],
+"blocks.0.cross_attn.o.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.q.bias": [
+1536
+],
+"blocks.0.cross_attn.q.weight": [
+1536,
+1536
+],
+"blocks.0.cross_attn.v.bias": [
+1536
+],
+"blocks.0.cross_attn.v.weight": [
+1536,
+1536
+],
+"blocks.0.ffn.0.bias": [
+8960
+],
+"blocks.0.ffn.0.weight": [
+8960,
+1536
+],
+"blocks.0.ffn.2.bias": [
+1536
+],
+"blocks.0.ffn.2.weight": [
+1536,
+8960
+],
+"blocks.0.modulation": [
+1,
+6,
+1536
+],
+"blocks.0.norm3.bias": [
+1536
+],
+"blocks.0.norm3.weight": [
+1536
+],
+"blocks.0.self_attn.k.bias": [
+1536
+],
+"blocks.0.self_attn.k.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.norm_k.weight": [
+1536
+],
+"blocks.0.self_attn.norm_q.weight": [
+1536
+],
+"blocks.0.self_attn.o.bias": [
+1536
+],
+"blocks.0.self_attn.o.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.q.bias": [
+1536
+],
+"blocks.0.self_attn.q.weight": [
+1536,
+1536
+],
+"blocks.0.self_attn.v.bias": [
+1536
+],
+"blocks.0.self_attn.v.weight": [
+1536,
+1536
+],
+"head.head.bias": [
+64
+],
+"head.head.weight": [
+64,
+1536
+],
+"head.modulation": [
+1,
+2,
+1536
+],
+"patch_embedding.bias": [
+1536
+],
+"patch_embedding.weight": [
+1536,
+16,
+1,
+2,
+2
+],
+"text_embedding.0.bias": [
+1536
+],
+"text_embedding.0.weight": [
+1536,
+4096
+],
+"text_embedding.2.bias": [
+1536
+],
+"text_embedding.2.weight": [
+1536,
+1536
+],
+"time_embedding.0.bias": [
+1536
+],
+"time_embedding.0.weight": [
+1536,
+256
+],
+"time_embedding.2.bias": [
+1536
+],
+"time_embedding.2.weight": [
+1536,
+1536
+],
+"time_projection.1.bias": [
+9216
+],
+"time_projection.1.weight": [
+9216,
+1536
+]
+}
+}
+}

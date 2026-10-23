@@ -3,6 +3,7 @@
 
 import {
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
 } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -25,6 +26,11 @@ import {
 } from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
 import { extractMcpUiEnvelope } from "../mcp-apps/mcp-ui";
+import {
+  providerCompactionPart,
+  providerCompactionReplayToolCallCount,
+} from "./provider-compaction";
+import { toolModelNoteTarget, withToolModelSuffix } from "../tool-model-suffix";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -107,7 +113,7 @@ function recoveredToolResult(
       // Keep malformed envelopes as text.
     }
   }
-  if (sandbox) {
+  if (sandbox && (SANDBOX_RUN_TOOLS.has(toolName as string) || files.length > 0)) {
     return { text, images: [], sessionId, files };
   }
   if (toolName === SEARCH_IMAGE_TOOL) {
@@ -364,12 +370,25 @@ export function createGenerationToolRecovery(
     if (
       event?.type !== "tool_start" &&
       event?.type !== "tool_end" &&
-      event?.type !== "document_citations"
+      event?.type !== "tool_model_note" &&
+      event?.type !== "document_citations" &&
+      event?.type !== "compaction_block"
     ) {
       return;
     }
     if (seq <= appliedSeq) return;
     appliedSeq = seq;
+    if (event.type === "compaction_block") {
+      const providerCompaction = providerCompactionPart(event);
+      if (!providerCompaction) return;
+      return {
+        providerCompaction,
+        providerCompactionAfterToolCalls:
+          providerCompactionReplayToolCallCount(
+            carried.map((entry) => entry.part),
+          ),
+      };
+    }
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
     if (event.tool_name === "deep_research") {
@@ -393,6 +412,23 @@ export function createGenerationToolRecovery(
           generationToolCallId: `${runId}:${seq}`,
         };
         pending.set(backendId || `#idless:legacy:${seq}`, entry);
+      }
+      return;
+    }
+    if (event.type === "tool_model_note") {
+      const suffix = typeof event.suffix === "string" ? event.suffix : "";
+      const at = toolModelNoteTarget(
+        carried.map((carriedEntry) => record(carriedEntry.part) ?? {}) as unknown as Parameters<
+          typeof toolModelNoteTarget
+        >[0],
+        backendId,
+      );
+      const part = at === -1 ? undefined : record(carried[at].part);
+      if (part && suffix) {
+        carried[at].part = {
+          ...part,
+          provenance: withToolModelSuffix(record(part.provenance), suffix),
+        } as CarriedPart["part"];
       }
       return;
     }

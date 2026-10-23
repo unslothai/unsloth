@@ -392,10 +392,20 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
-def _oauth(url: str):
+def _oauth(
+    url: str,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
+):
     from fastmcp.client.auth import OAuth
 
-    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
+    auth = OAuth(
+        mcp_url = url,
+        token_storage = _oauth_store(),
+        client_id = oauth_client_id,
+        client_secret = oauth_client_secret,
+    )
     _strip_client_id_under_basic_auth(auth)
     return auth
 
@@ -578,6 +588,7 @@ def _client(
     url: str,
     headers: Optional[dict],
     use_oauth: bool = False,
+    **oauth,
 ):
     validate_mcp_address(url)
     from fastmcp import Client
@@ -611,7 +622,7 @@ def _client(
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
-    auth = _oauth(url) if use_oauth else None
+    auth = _oauth(url, **oauth) if use_oauth else None
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
@@ -622,6 +633,16 @@ def _client(
         if auth is not None:
             auth.httpx_client_factory = _public_http_client_factory
     return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
+
+
+def oauth_client_kwargs(row: dict) -> dict:
+    # Empty unless configured, so test doubles of _client without these kwargs keep working.
+    if not row.get("oauth_client_id"):
+        return {}
+    return {
+        "oauth_client_id": row["oauth_client_id"],
+        "oauth_client_secret": row.get("oauth_client_secret"),
+    }
 
 
 _SESSION_IDLE_TTL = 300.0
@@ -1458,18 +1479,94 @@ def _session_reaper() -> None:
             logger.debug("MCP session reaper iteration failed: %s", exc)
 
 
+MCP_RESOURCE_TOOL = "read_resource"
+MAX_MCP_RESOURCES = 200
+
+
+class McpToolList(list):
+    """Tools plus the resources listed on the same connection."""
+
+    resources: Optional[list[dict]] = None
+
+
+def _capabilities(client) -> Any:
+    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+
+
+async def _list_resources(client) -> Optional[list[dict]]:
+    capabilities = _capabilities(client)
+    if capabilities is not None and getattr(capabilities, "resources", None) is None:
+        return None
+    listed, cursors = [], set()
+    cursor = None
+    try:
+        while len(listed) < MAX_MCP_RESOURCES:
+            page = await client.list_resources_mcp(cursor = cursor)
+            listed.extend(getattr(page, "resources", None) or ())
+            cursor = getattr(page, "nextCursor", None) or getattr(page, "next_cursor", None)
+            # A repeated cursor would loop forever.
+            if not cursor or cursor in cursors:
+                break
+            cursors.add(cursor)
+    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
+        logger.debug("MCP resources/list failed: %s", exc)
+        if not listed:
+            return None
+    resources = []
+    for resource in listed:
+        uri = str(getattr(resource, "uri", "") or "")
+        # MCP Apps templates are for the host's widgets, not the model.
+        if not uri or uri.startswith(UI_RESOURCE_SCHEME):
+            continue
+        audience = getattr(getattr(resource, "annotations", None), "audience", None)
+        if audience and "assistant" not in audience:
+            continue
+        fields = {
+            "name": getattr(resource, "name", None),
+            "description": getattr(resource, "description", None),
+            "mimeType": _resource_mime(resource),
+        }
+        resources.append(
+            {"uri": uri, **{k: v for k, v in fields.items() if isinstance(v, str) and v}}
+        )
+    return resources[:MAX_MCP_RESOURCES] or None
+
+
 async def list_tools_async(
     url: str,
     headers: Optional[dict] = None,
     timeout: float = 5.0,
     use_oauth: bool = False,
+    **oauth,
 ) -> list[dict]:
-    async def _fetch() -> list[dict]:
-        async with _client(url, headers, use_oauth) as client:
-            tools = await client.list_tools()
-        return [t.model_dump(exclude_none = True) for t in tools]
+    listed: list = []
 
-    return await asyncio.wait_for(_fetch(), timeout = timeout)
+    async def _fetch() -> list[dict]:
+        async with _client(url, headers, use_oauth, **oauth) as client:
+            try:
+                raw_tools = await client.list_tools()
+            except Exception:
+                # A resource-only server need not answer tools/list.
+                capabilities = _capabilities(client)
+                if (
+                    capabilities is None
+                    or getattr(capabilities, "tools", None) is not None
+                    or getattr(capabilities, "resources", None) is None
+                ):
+                    raise
+                raw_tools = []
+            tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
+            listed.append(tools)
+            tools.resources = await _list_resources(client)
+        return tools
+
+    try:
+        return await asyncio.wait_for(_fetch(), timeout = timeout)
+    except asyncio.TimeoutError:
+        # A slow resources/list must not cost the server its tools.
+        if listed:
+            return listed[0]
+        raise
 
 
 # Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools() probes a server only
@@ -1508,11 +1605,17 @@ def serialize_mcp_server_mutation(handler):
 # MCP server fields whose change invalidates a server's discovered tools: the endpoint/auth used to probe it (url,
 # headers, oauth) or whether it's used at all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {"url", "headers_json", "use_oauth", "oauth_client_id", "oauth_client_secret", "is_enabled"}
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
     return _tool_cache.get(_account_key(server_id))
+
+
+def get_cached_resources(server_id: str) -> Optional[list[dict]]:
+    return getattr(_tool_cache.get(_account_key(server_id)), "resources", None)
 
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:
@@ -2114,6 +2217,7 @@ def call_tool_sync(
     scope: Optional[str] = None,
     config_check = None,
     ui_resource_uri: Optional[str] = None,
+    **oauth,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -2133,7 +2237,7 @@ def call_tool_sync(
     """
 
     async def _one_shot() -> Any:
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
             # Connecting (OAuth included) can outlast an edit or delete of the server row.
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
@@ -2213,6 +2317,7 @@ def _ui_request_sync(
     cancel_event = None,
     scope = None,
     config_check = None,
+    **oauth,
 ) -> Any:
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
@@ -2220,7 +2325,10 @@ def _ui_request_sync(
         # As the session branch: an edit during discovery must not reach the old endpoint.
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
+            # Connecting (OAuth included) can outlast an edit, as in call_tool_sync.
+            if config_check is not None and not config_check():
+                raise RuntimeError("MCP server was updated or removed while connecting")
             return await dispatch(client)
 
     session_args = (url, headers, label, {}, timeout, cancel_event, scope, config_check, use_oauth)

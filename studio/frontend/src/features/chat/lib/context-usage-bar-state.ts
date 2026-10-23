@@ -4,6 +4,7 @@
 // its own plain module so the node suite can drive it: the component is JSX the runner cannot import
 
 export const formatTokenCount = (n: number): string => {
+  if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 };
@@ -20,6 +21,7 @@ export type ContextUsageBarInput = {
   cached?: number;
   // anthropic-only (billed at the write premium)
   cacheWrites?: number;
+  compactionCount?: number;
   promptTokens?: number;
   completionTokens?: number;
   // MLX keeps generating past the window instead of stopping there, so it needs the
@@ -30,7 +32,48 @@ export type ContextUsageBarInput = {
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
+  estimated?: boolean;
 };
+
+export type ContextUsageRows = Pick<
+  ContextUsageBarInput,
+  "promptTokens" | "completionTokens" | "cached" | "cacheWrites"
+>;
+
+export function contextUsageRows(
+  usage:
+    | {
+        promptTokens: number;
+        completionTokens: number;
+        contextTokens?: number;
+        cachedTokens?: number;
+        cacheWriteTokens?: number;
+      }
+    | null
+    | undefined,
+  summedPrompt: boolean,
+): ContextUsageRows {
+  if (!usage) return {};
+  const context = usage.contextTokens;
+  if (context === undefined) {
+    return {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      cached: usage.cachedTokens,
+      cacheWrites: usage.cacheWriteTokens,
+    };
+  }
+  const describesContext = summedPrompt
+    ? context === usage.promptTokens + usage.completionTokens
+    : context >= usage.promptTokens;
+  if (!describesContext) return {};
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: context - usage.promptTokens,
+    cached: usage.cachedTokens,
+    cacheWrites: usage.cacheWriteTokens,
+  };
+}
 
 /**
  * Which limit warning the tooltip carries, if any.
@@ -103,10 +146,39 @@ export function deriveContextUsageBar({
   contextUnboundedWhenBatched,
   parallelSlots,
   contextBudget,
+  estimated,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
-    typeof used === "number" && Number.isFinite(used) ? used : null;
+    typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;
+
+  // no per-turn rows and no limit advice: neither is known from a guess
+  if (estimated && usedTokens !== null && usedTokens > 0) {
+    const approx = `~${formatTokenCount(usedTokens)}`;
+    const approxFull = `~${formatTokenCountFull(usedTokens)}`;
+    if (limit === null) {
+      return {
+        face: `${approx} tokens`,
+        compactFace: approx,
+        label: `Estimated context usage: ${approx} tokens`,
+        totalRowName: "Estimated tokens",
+        totalRowValue: approxFull,
+        percent: null,
+        hasUsageDetails: false,
+        advice: "none",
+      };
+    }
+    return {
+      face: `${approx} / ${formatTokenCount(limit)}`,
+      compactFace: null,
+      label: `Estimated context usage: ${approx} of ${formatTokenCount(limit)} tokens`,
+      totalRowName: "Estimated total",
+      totalRowValue: `${approxFull} / ${formatTokenCountFull(limit)}`,
+      percent: Math.min((usedTokens / limit) * 100, 100),
+      hasUsageDetails: false,
+      advice: "none",
+    };
+  }
   const hasUsageDetails =
     promptTokens !== undefined ||
     completionTokens !== undefined ||

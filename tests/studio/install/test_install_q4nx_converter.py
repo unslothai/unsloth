@@ -138,7 +138,6 @@ def test_shipped_pins_are_full_commits_and_digests(name):
 
 
 def test_shipped_q4nx_pin_predates_the_q4_1_repack():
-    # d1d5232 re-packed Q4_0 / Q4_1 in an order FastFlowLM's aie2p engines read as noise; the
-    # q4nx pin must stay on the commit that reproduces Qwen3-0.6B-NPU2/model.q4nx.
+    # d1d5232 repacked Q4_0/Q4_1 in an order FastFlowLM's aie2p engines misread; stay on dd0993c.
     assert qc.load_pins(name = "q4nx")["commit"].startswith("dd0993c")
     assert qc.load_pins(name = "q4k")["commit"].startswith("d1d5232")

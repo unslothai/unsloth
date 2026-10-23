@@ -33,8 +33,12 @@ _BLOCK = 128
 _TOKENIZER_REPO = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 _KEEP_16BIT = "model.layers.1.self_attn.o_proj"
 
-needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "bitsandbytes 4bit needs a GPU"
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
+
+needs_gpu = pytest.mark.skipif(
+    not (cuda_available or xpu_available), reason = "bitsandbytes 4bit needs a GPU"
 )
 
 
@@ -51,8 +55,8 @@ needs_feature = pytest.mark.skipif(
     reason = f"fp8 -> 4bit loading unavailable: {_feature_unavailable()}",
 )
 needs_fp8_gpu = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (8, 9),
-    reason = "fp8 checkpoints load natively only on sm89+",
+    not ((cuda_available and torch.cuda.get_device_capability() >= (8, 9)) or xpu_available),
+    reason = "fp8 checkpoints load natively only on sm89+ or XPU",
 )
 
 
@@ -239,10 +243,10 @@ def _free(*models):
     import gc
 
     gc.collect()
-    torch.cuda.empty_cache()
+    getattr(torch, dev, torch.cuda).empty_cache()
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, capsys):
     fp8_dir, deq_dir = dense_pair
@@ -260,7 +264,7 @@ def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, capsy
     _assert_same(ours, theirs)
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
     fp8_dir, deq_dir = moe_pair
@@ -270,7 +274,6 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
         for name, p in model.named_parameters()
         if ".experts." in name and type(p).__name__ == "Params4bit"
     ]
-    # gate_up_proj and down_proj stacks on both layers go through Unsloth's bnb expert path.
     assert len(experts) == 4, experts
     assert _count_fp8(model) == 0
     ours = _fingerprint(model)
@@ -281,7 +284,7 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
     _assert_same(ours, theirs)
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 def test_checkpoint_16bit_modules_stay_16bit(dense_pair):
     from safetensors.torch import load_file
@@ -322,7 +325,7 @@ def test_default_load_in_4bit_and_kill_switch_keep_fp8(dense_pair, monkeypatch):
     _free(model)
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
     """MTP layers ship in fp8 but transformers drops them as unexpected (DeepSeek-V3, GLM-4 MoE,
@@ -347,7 +350,7 @@ def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
     _assert_same(ours, theirs)
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 def test_quantize_16bit_switch_matches_plain_4bit_skip_list(dense_pair, monkeypatch):
     fp8_dir, deq_dir = dense_pair
@@ -370,7 +373,7 @@ def _zoo_reads_fp8_block_size_from_disk():
     return hasattr(saving_utils, "_fp8_block_size_on_disk")
 
 
-@needs_cuda
+@needs_gpu
 @needs_feature
 @pytest.mark.skipif(
     not _zoo_reads_fp8_block_size_from_disk(),
@@ -387,8 +390,7 @@ def test_moe_merged_16bit_save_equals_dequantized_checkpoint(moe_pair, tmp_path)
     model = FastModel.get_peft_model(
         model, r = 8, target_modules = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    # lora_B starts at zero, so the merge must give back the dequantized fp8 weights exactly,
-    # read from the fp8 shards on disk rather than the NF4 copy in memory.
+    # lora_B starts at zero, so the merge must equal the fp8 weights read from disk, not the NF4 copy.
     model.save_pretrained_merged(str(tmp_path / "merged"), tokenizer, save_method = "merged_16bit")
     _free(model)
     merged = {}
@@ -454,7 +456,6 @@ def test_arming_needs_an_explicit_request(monkeypatch):
     config = _fp8_config()
     assert from_pretrained("x", load_in_4bit = True)[:2] == (True, False)
     assert inside == {"armed": True, "stripped": True}
-    # The outermost from_pretrained hands the caller's config back as it was.
     assert config.quantization_config["quant_method"] == "fp8"
     assert not fp8_to_nf4.fp8_to_nf4_armed(config)
 
@@ -623,7 +624,7 @@ def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
         finally:
             fp8_to_nf4._ARMED_CONFIGS.reset(token)
     assert measured[False][0] and not measured[True][0]
-    assert measured[True][1] == measured[False][1]  # weights still sized as 4bit
+    assert measured[True][1] == measured[False][1]
     assert measured[True][2] == 4 * measured[False][2]  # bf16 stack, not packed nibbles
 
 

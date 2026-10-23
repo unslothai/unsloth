@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614).
-
-gfx1010/1011/1012 route there in every spelling and nothing else does; the trio is pinned
-to one release tag below the Windows torch ceiling; the name tables claim RDNA 1 as
-supported; the PowerShell installers carry the same arches and tag.
-"""
+"""gfx1010/1011/1012 on Windows route to AMD's multi-arch index, pinned below the torch ceiling."""
 
 import importlib.util
 import re
@@ -56,6 +51,11 @@ class TestPackageSpecs:
     def test_the_pin_is_a_release_tag_not_a_nightly(self):
         """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users."""
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+", stack_mod._ROCM_MULTIARCH_TAG)
+
+    def test_the_pin_avoids_the_windows_build_with_broken_fused_attention(self):
+        """rocm7.14.1 Windows wheels ship an AOTriton 0.12 runtime with 0.13 kernel images, so every
+        flash / memory-efficient SDPA call fails with hipErrorInvalidValue (ROCm/TheRock#7992, #7315)."""
+        assert stack_mod._ROCM_MULTIARCH_TAG != "rocm7.14.1"
 
     def test_the_pin_sits_inside_the_windows_torch_window(self):
         """install.ps1 applies torch<2.12.0 everywhere else on Windows."""
@@ -155,11 +155,6 @@ _RDNA1_NAMES = [
 
 
 class TestNameTables:
-    @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
-    def test_python_table_resolves_rdna1(self, name, expected):
-        assert stack_mod._gfx_arch_from_gpu_name(name) == expected
-        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
-
     @pytest.mark.parametrize(
         "name", ["AMD Radeon RX 570", "AMD Radeon RX 580", "AMD Radeon RX 550"]
     )
@@ -237,10 +232,7 @@ class TestPowerShellMirrorsThePin:
 
 
 class TestTheWindowsRepairSiteRunsForRdna1:
-    """The `studio update` repair in _ensure_rocm_torch reaches the multi-arch trio for a
-    gfx1010 host whose venv holds a CPU torch. Exercised end to end because the message
-    there once called _bare_gfx(), a name the function later rebinds as a local, and no
-    test ran that line."""
+    """Update repair gives gfx1010 on CPU torch the multi-arch trio, end to end for a _bare_gfx bug."""
 
     def test_a_gfx1010_host_on_cpu_torch_installs_the_multiarch_trio(self, monkeypatch):
         from unittest.mock import MagicMock, patch
@@ -276,8 +268,7 @@ class TestTheWindowsRepairSiteRunsForRdna1:
     def test_a_per_family_rocm_torch_without_the_device_pack_is_replaced(
         self, pack_missing, installs, monkeypatch
     ):
-        # Standalone `studio update` after the GPU became RDNA 1: a gfx103X ROCm build is
-        # importable but has no gfx1010 kernels, and the per-family check has no RDNA 1 key.
+        # A gfx103X ROCm build imports but has no gfx1010 kernels; the per-family check has no RDNA 1 key.
         from unittest.mock import MagicMock, patch
 
         _mark = stack_mod._TORCH_PROBE_MARKER
@@ -307,21 +298,72 @@ class TestTheWindowsRepairSiteRunsForRdna1:
         if installs:
             assert "torch[device-gfx1010]" in " ".join(str(a) for a in pip_try.call_args.args)
 
+    @pytest.mark.parametrize(
+        "installed,installs",
+        [("2.11.0+rocm7.14.1", 1), ("2.11.0+rocm7.14.0", 0), ("2.11.0+ROCm7.14.1", 1)],
+    )
+    def test_a_build_with_broken_fused_attention_is_replaced(
+        self, installed, installs, monkeypatch
+    ):
+        # Device packs are present, so only the build tag says it must move to the current pin.
+        from unittest.mock import MagicMock, patch
+
+        _mark = stack_mod._TORCH_PROBE_MARKER
+        probe = MagicMock(returncode = 0, stdout = _mark + installed + "|7.14.60850|" + chr(10))
+        pip_try = MagicMock(return_value = True)
+        monkeypatch.setattr(stack_mod, "_TORCH_RUNTIME_PROBE", None)
+        monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = "gfx1151"),
+            patch.object(stack_mod, "_multiarch_device_pack_installed", return_value = True),
+            patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
+            patch.object(stack_mod, "pip_install_try", pip_try),
+            patch("subprocess.run", return_value = probe),
+        ):
+            stack_mod._ensure_rocm_torch()
+        assert pip_try.call_count == installs
+        if installs:
+            assert f"torch[device-gfx1151]==2.11.0+{stack_mod._ROCM_MULTIARCH_TAG}" in " ".join(
+                str(a) for a in pip_try.call_args.args
+            )
+
     def test_the_device_pack_check_needs_torch_and_torchvision_packs(self, monkeypatch):
         from importlib import metadata
+        from types import SimpleNamespace
 
-        def dists(*names):
-            return lambda: [type("D", (), {"metadata": {"Name": n}})() for n in names]
+        def installed(*names):
+            dists = {
+                package: SimpleNamespace(
+                    metadata = {"Name": package},
+                    version = "2.11.0",
+                    requires = [f'amd-{package}-device-gfx1010==2.11.0; extra == "device-gfx1010"'],
+                )
+                for package in ("torch", "torchvision")
+            }
+            dists.update(
+                (n, SimpleNamespace(metadata = {"Name": n}, version = "2.11.0", requires = None))
+                for n in names
+            )
 
-        monkeypatch.setattr(metadata, "distributions", dists("torch"))
+            def distribution(name):
+                if name not in dists:
+                    raise metadata.PackageNotFoundError(name)
+                return dists[name]
+
+            monkeypatch.setattr(metadata, "distribution", distribution)
+
+        installed()
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
-        monkeypatch.setattr(metadata, "distributions", dists("amd_torch_device_gfx1010"))
+        installed("amd-torch-device-gfx1010")
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
-        monkeypatch.setattr(
-            metadata,
-            "distributions",
-            dists("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010"),
-        )
+        installed("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010")
         assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is True
 
 

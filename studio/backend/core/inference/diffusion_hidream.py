@@ -68,6 +68,7 @@ def hidream_te4_kwargs(
     )
 
     fp8_engages = False
+    hosted_int8 = False
     if target is not None:
         try:
             from . import diffusion_precision as precision
@@ -76,22 +77,28 @@ def hidream_te4_kwargs(
                 normalize_te_quant,
                 te_quant_supported,
             )
+            from .diffusion_te_prequant import int8_convrot_te_runs_on
 
             mode = normalize_te_quant(te_quant_mode)
             denied = getattr(precision, "_te_family_denied", None)
+            allowed = not (callable(denied) and denied(getattr(fam, "name", None), mode))
+            # fp8 (the hosted fp8 file, else a dense load and cast) needs fp8 support; int8 takes the hosted int8
+            # ConvRot file, which Apple Silicon runs as plain tensors where fp8 does not.
             fp8_engages = (
-                mode == TE_QUANT_FP8
-                and te_quant_supported(target, mode)
-                and not (callable(denied) and denied(getattr(fam, "name", None), mode))
+                mode in (TE_QUANT_FP8, "int8")
+                and te_quant_supported(target, TE_QUANT_FP8)
+                and allowed
             )
+            hosted_int8 = mode == "int8" and allowed and int8_convrot_te_runs_on(target)
         except Exception:  # noqa: BLE001 -- quant probe failure keeps the dense bf16 path
-            fp8_engages = False
+            fp8_engages = hosted_int8 = False
 
-    if fp8_engages and fam is not None:
+    if (fp8_engages or hosted_int8) and fam is not None:
         from .diffusion_te_prequant import (
             load_prequant_text_encoder,
             te_prequant_sources_for_base,
         )
+
         source = te_prequant_sources_for_base(
             fam,
             HIDREAM_LLAMA_REPO,
@@ -101,14 +108,17 @@ def hidream_te4_kwargs(
             standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
         ).get("text_encoder_4")
         if source is not None:
+            scheme = "int8" if normalize_te_quant(te_quant_mode) == "int8" else "fp8"
             encoder = load_prequant_text_encoder(
                 HIDREAM_LLAMA_REPO,
                 "text_encoder_4",
                 source,
                 dtype = dtype,
                 hf_token = hf_token,
-                scheme = "fp8",
+                scheme = scheme,
                 logger = logger,
+                # The int8 file carries no lm_head; the pipeline reads hidden states only.
+                trim_lm_head = scheme == "int8",
                 # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
                 # states/attentions from its forward.
                 config_subfolder = "",
@@ -120,6 +130,17 @@ def hidream_te4_kwargs(
             )
             if encoder is not None:
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
+        if hosted_int8 and not fp8_engages:
+            from .diffusion_precision import te_quant_picked_automatically
+            if not te_quant_picked_automatically(te_quant_mode):
+                # Apple Silicon: the plan priced the hosted int8 TE4 and nothing else runs here, so the 16 GB dense
+                # Llama is not loaded in its place (as _te_prequant_pipe_kwargs refuses for the other encoders).
+                raise RuntimeError(
+                    f"The pre-quantized text_encoder_4 for {HIDREAM_LLAMA_REPO} could not be loaded "
+                    f"({'not available' if source is None else 'see the server log'}). The memory check sized "
+                    "this load for it, so the larger dense encoder is not loaded in its place. Set Text encoder "
+                    "precision to Dense (bf16) to load the dense encoder instead."
+                )
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
     text_encoder_4 = LlamaForCausalLM.from_pretrained(
@@ -141,6 +162,9 @@ def hidream_te4_kwargs(
             cast_target = _Target()
             cast_target.dtype = dtype
             _cast_fp8(text_encoder_4, cast_target)
+            from .diffusion_precision import TE_RUNTIME_SCHEME_ATTR
+
+            setattr(text_encoder_4, TE_RUNTIME_SCHEME_ATTR, "fp8")
             logger.info("diffusion.hidream: TE4 layerwise fp8 cast engaged")
         except Exception as exc:  # noqa: BLE001 -- best-effort like the generic TE pass
             # A mid-pass failure can leave fp8 storage / upcast hooks behind, and a half-cast encoder cannot run dense,

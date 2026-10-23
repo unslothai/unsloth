@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""UNSLOTH_STUDIO_PORT moves Studio off 8000 inside the container.
-
-Every place that named the port (the CLI launch, the JupyterLab port guard, the ready
-summary and its health probe, the in-place updater's health wait) reads the variable,
-and the image sets the default so a bare docker run keeps 8000.
-"""
+"""Each port reference (launch, Jupyter guard, summary, health probes) reads UNSLOTH_STUDIO_PORT."""
 
 from __future__ import annotations
 

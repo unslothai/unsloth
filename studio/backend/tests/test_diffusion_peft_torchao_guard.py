@@ -22,7 +22,7 @@ _PATCH_MODULE = Path(patches.__file__)
 
 _REMOVED = "cannot import name 'LinearActivationQuantizedTensor' from 'torchao.quantization'"
 
-# The Studio copy differs from unsloth's only in who the warning says is speaking.
+# the Studio copy differs from unsloth's only in the warning's speaker
 _WORDING = (("Unsloth Studio: ", "Unsloth: "), ("Studio now runs", "Unsloth now runs"))
 
 
@@ -46,6 +46,21 @@ def test_studio_copy_matches_unsloth_import_fixes(name):
     assert _function_dump(_PATCH_MODULE, name) == _function_dump(
         _IMPORT_FIXES, name
     ), f"{name} drifted from unsloth/import_fixes.py; port the change to both copies."
+
+
+def _assigned_value_dump(path: Path, name: str) -> str:
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.dump(node.value)
+    raise AssertionError(f"{path} has no top-level {name}")
+
+
+def test_studio_and_unsloth_match_the_same_torchao_removals():
+    """The matcher is shared state too: when unsloth patched first, its matcher is the one that runs."""
+    name = "_PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS"
+    assert _assigned_value_dump(_PATCH_MODULE, name) == _assigned_value_dump(_IMPORT_FIXES, name)
 
 
 @pytest.fixture(autouse = True)
@@ -108,12 +123,11 @@ def test_a_plain_linear_gets_no_torchao_layer_instead_of_an_import_error(fake_pe
         original(types.SimpleNamespace(weight = object()), "default", None)
 
     assert patches._patch_peft_torchao_dispatchers() is True
-    # Both bindings point at one wrapper, so the list peft actually walks is the patched one.
+    # both bindings share one wrapper, so the list peft walks is patched
     assert lora_model.dispatch_torchao is lora_torchao.dispatch_torchao is not original
     assert (
         lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None) is None
     )
-    # Idempotent: a second pass finds nothing left to wrap.
     assert patches._patch_peft_torchao_dispatchers() is False
 
 
@@ -139,6 +153,56 @@ def test_an_unrelated_import_error_still_surfaces(monkeypatch, fake_peft):
         lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None)
 
 
+def test_a_torchao_without_the_dtypes_package_gets_a_plain_lora_layer(monkeypatch, fake_peft):
+    """A removed torchao.dtypes package must fall back to peft's plain LoRA layer, not fail the load."""
+    lora_torchao, lora_model = fake_peft
+    monkeypatch.delitem(
+        sys.modules, "torchao.dtypes"
+    )  # fake torchao has no __path__, so the import fails
+    monkeypatch.delattr(sys.modules["torchao"], "dtypes")
+    monkeypatch.setattr(
+        sys.modules["torchao"], "__spec__", importlib.machinery.ModuleSpec("torchao", None)
+    )
+
+    # peft <= 0.18 torchao import, defined in the fake peft so the guard reads its globals
+    namespace = dict(lora_torchao.__dict__)
+    exec(
+        "def dispatch_torchao(target, adapter_name, lora_config, **kwargs):\n"
+        "    from torchao.dtypes import AffineQuantizedTensor\n",
+        namespace,
+    )
+    removed = namespace["dispatch_torchao"]
+    monkeypatch.setattr(lora_torchao, "dispatch_torchao", removed)
+    monkeypatch.setattr(lora_model, "dispatch_torchao", removed)
+    with pytest.raises(ModuleNotFoundError, match = "torchao.dtypes"):
+        removed(types.SimpleNamespace(weight = object()), "default", None)
+    patches._patch_peft_torchao_dispatchers()
+    assert (
+        lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "No module named 'torchao'",
+        "No module named 'torchao.dtypes.uintx'",
+        "No module named 'torchao.dtypesx'",
+    ),
+)
+def test_other_missing_modules_still_surface(monkeypatch, fake_peft, message):
+    lora_torchao, lora_model = fake_peft
+
+    def broken(target, adapter_name, lora_config, **kwargs):
+        raise ModuleNotFoundError(message)
+
+    monkeypatch.setattr(lora_torchao, "dispatch_torchao", broken)
+    monkeypatch.setattr(lora_model, "dispatch_torchao", broken)
+    patches._patch_peft_torchao_dispatchers()
+    with pytest.raises(ModuleNotFoundError):
+        lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None)
+
+
 def test_the_guard_waits_for_peft_instead_of_importing_it(monkeypatch):
     monkeypatch.delitem(sys.modules, patches._PEFT_LORA_DISPATCH_MODULE, raising = False)
     monkeypatch.setattr(
@@ -153,7 +217,7 @@ def test_the_guard_waits_for_peft_instead_of_importing_it(monkeypatch):
     assert patches._PEFT_LORA_DISPATCH_MODULE not in sys.modules
     finders = [f for f in sys.meta_path if getattr(f, patches._PEFT_TORCHAO_GUARD_SENTINEL, False)]
     assert len(finders) == 1 and sys.meta_path[0] is finders[0]
-    assert patches.install_peft_torchao_dispatch_guard() is False  # no second finder
+    assert patches.install_peft_torchao_dispatch_guard() is False
 
 
 def test_every_diffusion_entry_point_installs_the_guard(monkeypatch):

@@ -6,6 +6,7 @@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import {
   type ApiModelOverride,
   type ApiModelOverrides,
@@ -23,6 +24,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { forgetModelOverride } from "../forget-model-override";
+import { useSingleLine } from "../use-single-line";
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -39,6 +41,20 @@ function describeOverride(override: ApiModelOverride): string[] {
   }
   if (override.engine_parallelism && override.engine_parallelism !== "tensor") {
     parts.push(`${override.engine_parallelism} parallel`);
+  }
+  if (override.engine_kv_cache_dtype === "fp8") {
+    parts.push("FP8 KV cache");
+  }
+  if (override.engine_seed != null) {
+    parts.push(`seed ${override.engine_seed}`);
+  }
+  if (override.engine_gpu_memory_utilization != null) {
+    parts.push(
+      `${Math.round(override.engine_gpu_memory_utilization * 100)}% GPU memory`,
+    );
+  }
+  if (override.load_in_4bit === false && (override.engine ?? "auto") === "auto") {
+    parts.push("16-bit");
   }
   if (override.custom_context_length) {
     parts.push(`${override.custom_context_length.toLocaleString()} context`);
@@ -115,6 +131,8 @@ function describeOverride(override: ApiModelOverride): string[] {
 export function SavedModelSettingsPanel(): ReactElement {
   const [overrides, setOverrides] = useState<ApiModelOverrides | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorRef, errorSingle] = useSingleLine<HTMLDivElement>();
+  const [emptyRef, emptySingle] = useSingleLine<HTMLParagraphElement>();
   const [forgetting, setForgetting] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -177,22 +195,26 @@ export function SavedModelSettingsPanel(): ReactElement {
   const entries = Object.entries(overrides ?? {});
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-3 pt-2">
       <div className="flex flex-col gap-1">
         <h2 className="text-ui-16 font-semibold tracking-[-0.01em] text-foreground">
-          Settings applied on API load
+          Saved load settings
         </h2>
         <p className="text-sm text-muted-foreground">
-          When a request names one of these models, Unsloth loads it with these
-          settings, the same ones you saved in the model&apos;s settings page.
-          Models without an entry load with app defaults. Edit an entry from
-          that model&apos;s settings, or forget it here, which clears it from
-          the picker too.
+          A request that names one of these models loads it with the settings
+          saved in its Run settings. Other models load with app defaults.
+          Forgetting an entry also clears it from the picker.
         </p>
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
+        <div
+          ref={errorRef}
+          className={cn(
+            "border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400",
+            errorSingle ? "rounded-full" : "rounded-xl",
+          )}
+        >
           {error}
         </div>
       ) : overrides == null ? (
@@ -202,19 +224,24 @@ export function SavedModelSettingsPanel(): ReactElement {
           ))}
         </div>
       ) : entries.length === 0 ? (
-        <p className="rounded-xl border border-border/60 bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-          No saved model settings yet. Open a model&apos;s settings, turn on
-          &quot;Remember for this model&quot;, and it will be applied to API
-          loads too.
+        <p
+          ref={emptyRef}
+          className={cn(
+            "border border-dashed border-border/80 px-4 text-center text-sm text-muted-foreground",
+            emptySingle ? "rounded-full py-3" : "rounded-xl py-6",
+          )}
+        >
+          No saved settings yet. Turn on &quot;Remember for this model&quot; in
+          a model&apos;s Run settings and API loads will use them too.
         </p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className="elevated-card flex flex-col divide-y divide-border/60 overflow-hidden bg-card dark:divide-background">
           {entries.map(([modelId, override]) => {
             const summary = describeOverride(override);
             return (
               <li
                 key={modelId}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/60 bg-card px-4 py-3"
+                className="flex min-w-0 items-start gap-3 px-5 py-3.5"
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="min-w-0 break-all font-mono text-ui-12 font-medium text-foreground">

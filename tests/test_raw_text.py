@@ -30,8 +30,7 @@ class MockDataset:
         return cls(data_dict)
 
 
-# __spec__ must be set so importlib.util.find_spec doesn't raise ValueError when transformers' import_utils later probes
-# for the real `datasets` package.
+# __spec__ must be set or find_spec raises ValueError when transformers probes datasets.
 datasets_mock = type(sys)("datasets")
 datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset
@@ -42,9 +41,7 @@ raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep"
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
 
-# The mock is only in place while raw_text executes its `from datasets import Dataset`.
-# Leaving it in sys.modules poisoned every later test module in the same session: `from datasets import IterableDataset`
-# then raised ImportError and tests/utils/test_packing.py failed to collect.
+# Restore sys.modules after import; a leaked mock breaks later test modules' datasets imports.
 _real_datasets = sys.modules.get("datasets")
 sys.modules["datasets"] = datasets_mock
 try:
@@ -145,9 +142,7 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
-        # smart_chunk_text validation: called directly, chunk_size/stride are its own arguments and bypass the
-        # constructor guard, so it must guard itself or an invalid stride makes `start_idx += chunk_size - stride`
-        # non-positive and the chunking loop never terminates (hangs).
+        # smart_chunk_text bypasses the constructor guard, so a bad stride would loop forever.
         long_text = "This is a test file for raw text training. " * 10
         valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
         assert len(valid_chunks) > 0, "Valid stride should produce chunks"
@@ -172,8 +167,7 @@ def test_raw_text_loader():
             paragraph_text == "Line 1\n\nLine 2"
         ), "Should preserve paragraph breaks while normalizing newlines"
 
-        # Non-ASCII horizontal whitespace (NBSP, thin/em/ideographic space, VT, FF) must normalize to one ASCII space,
-        # not be deleted, or adjacent words fuse on HTML/PDF/OCR input.
+        # Non-ASCII whitespace must become one space, not be deleted, or adjacent words fuse.
         unicode_whitespace_cases = [
             ("hello\u00a0world", "hello world"),
             ("hello\u202fworld", "hello world"),
@@ -196,21 +190,16 @@ def test_raw_text_loader():
         assert preprocessor.clean_text("a\tb") == "a b"
         assert preprocessor.clean_text("a\t\tb") == "a b"
 
-        # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping an invisible character between spaces must not leave a double space.
         assert preprocessor.clean_text("word1 \u200b word2") == "word1 word2"
         assert preprocessor.clean_text("a \ue000 b") == "a b"
         assert preprocessor.clean_text("prefix \ufffd suffix") == "prefix suffix"
 
-        # Stripping an invisible character adjacent to a newline must not leave a stray space.
         assert preprocessor.clean_text("foo \u200b\nbar") == "foo\nbar"
         assert preprocessor.clean_text("foo\n\ue000 bar") == "foo\nbar"
-        # The double-space collapse must not swallow a paragraph break near an invisible character.
         assert preprocessor.clean_text("a \u200b\n\nb") == "a\n\nb"
 
-        # Idempotence: clean_text twice == once.
         idempotent_inputs = [
             "  messy   text  \n\n\n  ",
             "Line 1\r\n\r\n\r\nLine 2",
@@ -228,13 +217,11 @@ def test_raw_text_loader():
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
-        # Plain ASCII: a Windows console is cp1252 and cannot encode a check mark, so one
-        # here killed the driver mid-file. pytest hid it, capturing stdout as UTF-8.
+        # Plain ASCII: a cp1252 Windows console cannot encode a check mark.
         print("All tests passed!")
         return True
 
-    # No `except Exception: return False` here: it swallowed the failure and still reported a
-    # pass, so every assertion above ran in CI unable to fail it. That is how this shipped.
+    # No broad except here: swallowing failures made every assertion above unable to fail.
     finally:
         os.unlink(test_file)
 
@@ -261,7 +248,7 @@ def test_clean_text_keeps_text_in_any_script():
         "\u06dd\u0661\u0662 \u0600\u0663",
         "\U00013000\U00013430\U00013001",
         "f\u2061(x) = a\u2062b",
-        # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
+        # Garay (Unicode 16) is unassigned in older Unicode databases and must survive anyway.
         "\U00010d50\U00010d51",
     ]:
         assert (
@@ -289,17 +276,13 @@ def test_clean_text_drops_invisible_characters():
 
 
 def test_clean_text_decision_cannot_drift_between_interpreters():
-    """unicodedata ships with the interpreter (3.9 has Unicode 13.0, 3.14 has 16.0), and
-    Unicode freezes only Cc, Co and Cs. Keying on any other category would clean the same
-    corpus differently per Python. https://www.unicode.org/policies/property_value_stability_table.html
-    """
+    """Only Cc, Co and Cs are frozen by Unicode; other categories differ across Python versions."""
     immutable = {"Cc", "Co", "Cs"}
     assert set(raw_text_module._TextCharTable._DROP_CATEGORIES) <= immutable, (
         "clean_text may only key on the General_Category values Unicode has frozen "
         f"({sorted(immutable)}); the rest differ between Python versions."
     )
 
-    # Everything else dropped is named explicitly, not derived from the database.
     preprocessor = TextPreprocessor()
     for codepoint in (0x00AD, 0x200B, 0x200E, 0x2060, 0x2066, 0xFEFF, 0xFFFD, 0xE0001):
         assert preprocessor.clean_text(f"a{chr(codepoint)}b") == "ab", hex(codepoint)
@@ -395,7 +378,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
         ):
             return " ".join(f"word_{i}" for i in token_ids)
 
-    text = " ".join(f"w{i}" for i in range(37))  # 37 tokens: several full chunks + a short tail
+    text = " ".join(f"w{i}" for i in range(37))  # several full chunks plus a short tail
     loader = RawTextDataLoader(WordTokenizer(), chunk_size = 10, stride = 3)
 
     tokenized_chunks = loader.chunk_text(text, return_tokenized = True)
@@ -427,8 +410,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
 
 def test_load_from_file_skips_non_object_json_lines():
     """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
-    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
-    # would reach data[field] and raise TypeError without the isinstance guard.
+    # Each case would hit data[field] and raise TypeError without the isinstance guard.
     with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
         f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
         path = f.name
@@ -493,11 +475,7 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
 
 
 def test_negative_stride_is_rejected():
-    """chunk_size > 0 and stride < chunk_size both pass for a negative stride, but
-    `start_idx += chunk_size - stride` then advances by MORE than chunk_size, so the
-    tokens between one chunk's end and the next chunk's start are never emitted.
-    Nothing raises and nothing is logged, so the caller trains on a corpus with holes
-    in it: chunk_size = 10 with stride = -5 emits 70 of a 100 token document."""
+    """A negative stride passes both checks yet silently drops tokens between chunks; reject it."""
 
     class CharTokenizer:
         def __init__(self):
@@ -525,7 +503,6 @@ def test_negative_stride_is_rejected():
     tokenizer = CharTokenizer()
     text = "x" * 100
 
-    # Both entry points validate stride, so both need the lower bound.
     try:
         RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
         assert False, "the constructor should reject a negative stride"
@@ -539,7 +516,6 @@ def test_negative_stride_is_rejected():
     except ValueError as e:
         assert "stride" in str(e) and "non-negative" in str(e), str(e)
 
-    # stride = 0 stays valid: it just means the chunks do not overlap.
     chunks = loader.smart_chunk_text(text, chunk_size = 10, stride = 0)
     assert len(chunks) > 0, "stride = 0 should still produce chunks"
 
@@ -588,13 +564,7 @@ def test_load_from_files_all_empty_raises():
 
 
 def test_validate_dataset_handles_tokenized_and_text_columns():
-    """validate_dataset() must work for both dataset shapes:
-    - text-column datasets (return_tokenized=False), no tokenizer needed
-    - input_ids-column datasets (return_tokenized=True, the default), which
-      require a tokenizer to decode back to text for validation
-    Also asserts the clear ValueError when input_ids is present but no
-    tokenizer was passed, and when neither column exists.
-    """
+    """input_ids datasets need a tokenizer to decode for validation; without one it raises ValueError."""
 
     class MockTokenizer:
         def __init__(self):
@@ -682,18 +652,14 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
 
 
 def test_validate_dataset_accepts_objects_without_column_names():
-    """Dispatching on `column_names` must not narrow the accepted input types.
-
-    validate_dataset() read dataset["text"] directly, so it worked for any
-    mapping-like object: DataFrames, plain dicts, custom __getitem__ wrappers.
-    """
+    """Do not dispatch on column_names: it would reject mapping-like inputs that dataset['text'] accepts."""
 
     preprocessor = TextPreprocessor()
     texts = ["first sample with enough characters", "second sample with enough characters"]
     longest = max(len(t) for t in texts)
 
     class DuckTypedDataset:
-        # Only __len__ + __getitem__, i.e. the pre-existing implicit contract.
+        # Only __len__ + __getitem__, the pre-existing implicit contract.
         def __init__(self, data):
             self.data = data
 
@@ -726,11 +692,7 @@ def test_validate_dataset_accepts_objects_without_column_names():
 
 
 def test_validate_dataset_streams_instead_of_materialising_columns():
-    """Columns must be streamed via Dataset.iter(), not copied whole.
-
-    dataset[column] pulls every row into Python objects at once, which for token
-    ids is the bulk of peak memory and grows with the dataset.
-    """
+    """Stream via Dataset.iter(); dataset[column] materialises every row, which dominates peak memory."""
 
     class BatchedDataset:
         column_names = ["input_ids"]
@@ -770,18 +732,7 @@ def test_validate_dataset_streams_instead_of_materialising_columns():
 
 
 def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
-    """`min_length` must not come back as infinity.
-
-    It is seeded with float("inf") and only ever lowered inside the loop, on exactly
-    the iterations that also append to `text_lengths`. The inf->0 normalisation sat
-    inside `if text_lengths:`, so within that guard it could never see inf: the branch
-    was dead, and the case it existed for, a dataset where no sample has content,
-    skipped the line entirely and returned min_length = inf to the caller.
-
-    The warning guard has to move with it. With the normalisation hoisted, min_length
-    becomes 0 for an empty dataset, and `0 < 10` would newly claim "some samples are
-    very short" about zero measured samples.
-    """
+    """min_length must be 0, not inf, when no sample has content, so normalise it outside the guard."""
 
     preprocessor = TextPreprocessor()
 
@@ -791,7 +742,6 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
         assert stats["max_length"] == 0, (label, stats)
         assert not any("very short" in w for w in stats["warnings"]), (label, stats)
 
-    # a genuinely short sample must still be reported
     stats = preprocessor.validate_dataset({"text": ["hi", "a much longer sample of text"]})
     assert stats["min_length"] == 2, stats
     assert any("very short" in w for w in stats["warnings"]), stats
@@ -832,18 +782,17 @@ def test_tokenized_chunks_reserve_space_for_the_final_eos():
                 for chunk in chunks[1:]:
                     restored.extend(t for t in chunk["input_ids"] if t not in restored)
                 assert restored == list(range(count)) + [99]
-                # A chunk's first token is never a label: the last content token must still be one.
+                # A chunk's first token is never a label, so the last content token must still be one.
                 labelled = {t for chunk in chunks for t in chunk["input_ids"][1:]}
                 assert count < 2 or count - 1 in labelled
                 if stride == 0 and count % size == 0:
-                    # The EOS gets a full window of context, not a [token, EOS] row.
                     assert len(chunks[-1]["input_ids"]) == size
                 dataset = loader.create_causal_dataset(chunks)
                 assert dataset["labels"] == dataset["input_ids"]
 
 
 def test_text_chunks_reserve_space_for_the_final_eos():
-    # MLX trains on text chunks and truncates at max_seq_length, which would drop an overflowing EOS.
+    # MLX truncates chunks at max_seq_length, which would drop an overflowing EOS.
     for size in (2, 4):
         for stride in range(size):
             loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
@@ -864,7 +813,6 @@ def test_text_chunks_reserve_space_for_the_final_eos():
 
 
 def test_chunk_size_one_keeps_the_final_eos_overflow():
-    # Reserving here would only produce a lone-EOS chunk.
     loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = 1, stride = 0)
     for count in (1, 2, 3):
         chunks = loader.chunk_text(" ".join(map(str, range(count))))

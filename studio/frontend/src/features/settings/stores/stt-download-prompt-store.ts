@@ -6,19 +6,15 @@ import type { SttModel } from "./voice-settings-store";
 
 export interface SttDownloadRequest {
   model: SttModel;
-  /** Also switch dictation to local on confirm, for a browser whose speech
-   * service cannot work at all. Left alone if the user cancels. */
+  /** pinned quant for a package folder model. */
+  ggufVariant?: string | null;
+  /** switches dictation to local only after confirmation when browser speech is unavailable. */
   selectLocalEngine?: boolean;
 }
 
-/**
- * The one pending "download this dictation model?" confirmation.
- *
- * A store, not local state, so the mic can raise the dialog without Voice
- * settings being open.
- */
+/** pending download confirmation shared so the mic can open it without Voice settings mounted. */
 interface SttDownloadPromptState {
-  /** Request awaiting a yes/no, or null when nothing is asked. */
+  /** request awaiting confirmation, or null when idle. */
   pending: SttDownloadRequest | null;
   requestDownload: (request: SttDownloadRequest) => void;
   dismiss: () => void;

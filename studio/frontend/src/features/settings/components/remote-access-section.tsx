@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useLoginMode } from "@/features/auth/account-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,8 +10,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { LineBox } from "@/components/ui/line-box";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { useLoginMode } from "@/features/auth/account-session";
 import {
   loadRemoteAccess,
   startRemoteAccess,
@@ -23,6 +24,7 @@ import {
   type RemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
@@ -33,7 +35,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
-  InternetIcon,
+  HomeWifiIcon,
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -139,7 +141,7 @@ function RemoteUrlQrButton({ url }: { url: string }) {
             Scan to open the remote URL in your phone’s browser.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -173,6 +175,7 @@ function StatusMessage({
 }
 
 function RemoteUrlPanel({ url }: { url: string | null }) {
+  const multi = useLoginMode() === "multi";
   if (!url) {
     return null;
   }
@@ -185,11 +188,20 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
           <CopyRemoteUrlButton url={url} />
         </div>
       </div>
-      <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+      <LineBox
+        as="code"
+        className="block w-full break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground"
+      >
         {url}
-      </code>
+      </LineBox>
       <span className="text-xs text-muted-foreground leading-snug">
-        Anyone with this URL and the remote password can sign in.
+        {multi
+          ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
+          : "Anyone with this URL reaches the sign-in page. Signing in gives full control, including running code on this computer through tools. API keys also work here."}
+      </span>
+      <span className="text-xs text-muted-foreground leading-snug">
+        While remote access is on, MCP servers that run local commands are
+        paused.
       </span>
     </div>
   );
@@ -257,6 +269,10 @@ export function RemoteAccessSection() {
     };
     const poll = () => {
       if (pollSuppressed.current) {
+        return;
+      }
+      if (document.hidden) {
+        schedule(null);
         return;
       }
       const epoch = mutationEpoch.current;
@@ -359,13 +375,13 @@ export function RemoteAccessSection() {
   return (
     <section
       data-settings-label="Remote access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
             <HugeiconsIcon
-              icon={InternetIcon}
+              icon={HomeWifiIcon}
               className="size-4 text-foreground"
             />
           </div>
@@ -378,7 +394,7 @@ export function RemoteAccessSection() {
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Use Unsloth and its APIs from other devices through a secure,
-              temporary Cloudflare URL.
+              temporary public Cloudflare URL.
             </p>
           </div>
         </div>
@@ -395,9 +411,10 @@ export function RemoteAccessSection() {
       </div>
 
       <StatusMessage
-        message={blockMessage ?? status?.error}
-        destructive={!blockMessage}
+        message={remoteAccessErrorMessage(status?.error)}
+        destructive={true}
       />
+      <StatusMessage message={blockMessage} />
       <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">

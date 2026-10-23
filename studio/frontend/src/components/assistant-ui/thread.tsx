@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createPortal } from "react-dom";
+import {
+  canQueueTextAttachment,
+  normalizeQueuedPrompt,
+  prepareQueuedPromptFiles,
+  queuedPromptHasContent,
+  queuedPromptMessage,
+  snapshotQueuedTextPrompt,
+  type QueuedPrompt,
+} from "@/features/chat/utils/queued-text-attachments";
+import { getAuthSessionEpoch } from "@/features/auth";
+
 import {
   ComposerAttachments,
   UserMessageAttachments,
@@ -9,14 +21,26 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
-import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
+import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
-  compactionBoundary,
-  shouldShowCompactionNotice,
-  type ContextTruncation,
-} from "@/features/chat/utils/context-truncation";
+  compactionDividerRows,
+  compactionToolCallDividers,
+  memoOnArrayByKey,
+} from "@/components/assistant-ui/message-derived";
 import { downloadImagePart } from "@/components/assistant-ui/image";
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  highlightFenceSource,
+} from "@/components/assistant-ui/markdown-text";
+import { grammarWarmed } from "@/components/assistant-ui/code-fence-defer";
+import {
+  createGrammarPrewarm,
+  type GrammarPrewarm,
+} from "@/components/assistant-ui/grammar-prewarm";
+import { streamActive } from "@/components/assistant-ui/use-reasoning-highlight";
+import { scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import {
   MessageResponseDetailsSheet,
@@ -27,13 +51,20 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
+import {
+  composerColumnInset,
+  composerInsetFromColumn,
+  readViewportBox,
+} from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
+import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
+import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
@@ -48,10 +79,14 @@ import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmatio
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
-import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import {
+  ImageGenerationToolUI,
+  VideoGenerationToolUI,
+} from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
+import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -59,7 +94,6 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   ChatAudioUploadMount,
-  ChatSkillsDialog,
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
@@ -72,8 +106,13 @@ import {
   type ComposerSendShortcut,
   type ComposerSubmitIntent,
   type ComposerFollowUpBehavior,
+  type ContextTruncation,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
+  isCompactCommand,
+  isThreadIncognito,
+  requestThreadCompaction,
+  useCompactRequestStore,
   isPastedTextFile,
   pastedTextQueueKey,
   promptQueueActiveItemChanged,
@@ -88,11 +127,14 @@ import {
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
+  ChatComposerFocusableContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
   stopRecoveredRun,
+  pythonToolRunsInStudio,
+  withAttachmentOriginal,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -137,7 +179,10 @@ import {
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import {
+  sortProjectsByActivity,
+  useChatProjects,
+} from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
@@ -145,6 +190,7 @@ import {
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
 import {
+  NativeAttachmentDragContext,
   type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -169,6 +215,11 @@ import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
+  collectGeminiAnswerReplayParts,
+  collectGeminiThoughtReplayParts,
+  continuationGeminiReplayTurns,
+} from "@/features/chat/gemini-thought-replay";
+import {
   CONTINUATION_RUN_CONFIG_KEY,
   type ContinuationRequest,
   incompleteLabel,
@@ -176,6 +227,7 @@ import {
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
+  providerCompactionContinuationFields,
   readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -189,22 +241,30 @@ import {
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
-import { SkillsComposerButton } from "@/features/chat/skills-composer-button";
+import {
+  SkillsComposerButton,
+  useSkillsSwitch,
+} from "@/features/chat/skills-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
+  isModEnter,
   isSurfaceInForeground,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
+  useShortcutAvailable,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
+import type { TranslationKey } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   subscribeModelCatalog,
 } from "@/features/chat/provider-capabilities";
@@ -213,6 +273,8 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import {
   codeToolsOn,
+  imageToolAvailable,
+  localImagePillCount,
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -228,7 +290,7 @@ import {
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
@@ -245,11 +307,17 @@ import {
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
   claimThreadCreation,
   useChatProjectScope,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
+  resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
+  adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
@@ -272,6 +340,7 @@ import {
   subscribeForkCounts,
   useForkInFlight,
   showForkCreatedToast,
+  showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -304,12 +373,12 @@ import {
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
-import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
@@ -319,6 +388,15 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import {
+  BranchNextIcon,
+  BranchPrevIcon,
+  ContinueArrowIcon,
+  EditResponseIcon,
+  ReadAloudIcon,
+} from "@/lib/action-bar-icons";
+import { ForkIcon } from "@/lib/fork-icon";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -348,25 +426,21 @@ import {
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
-  PencilRulerIcon,
-  PlayIcon,
   Scroll01Icon,
   Telescope02Icon,
+  UndoIcon,
   VolumeMute02Icon,
+  WorkflowCircle05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Volume02Icon } from "@/lib/volume-icons";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  GitBranchIcon,
   HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -383,16 +457,20 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type PropsWithChildren,
   type ReactNode,
   type RefObject,
   Fragment,
+  Suspense,
   createContext,
+  lazy,
   memo,
   useCallback,
   useContext,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -401,6 +479,7 @@ import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/up
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { watchComposerClearance } from "@/lib/toast-offset";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -433,35 +512,31 @@ function followUpShortcutBehavior(event: {
   return id ? FOLLOW_UP_SHORTCUTS[id] : null;
 }
 
-// Prompt queues live at module level so they survive Composer remounts,
-// including the first queued message that creates a new thread. Each chat gets
-// its own queue run; completion detection subscribes to runningByThreadId
-// instead of aui.thread() so queues can keep advancing in the background.
+// module scope and runningByThreadId let queues survive Composer remounts and advance off-screen.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
-  /** The project this queue was started in, for a chat with no row to read. */
+  /** project captured when a new chat has no persisted row to read. */
   getQueueProjectId: () => string | null;
-  /** A knowledge base replaces every other scope, project sources included. */
-  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
-  append: (prompt: string) => void | Promise<void>;
+  append: (prompt: QueuedPrompt) => void | Promise<void>;
   complete: () => void;
   cancel: () => void;
   cancelActiveRun: () => void;
+  /** Forget the captured local model so a held prompt resolves the one loaded when it is sent. */
+  releaseModel: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
-  /** Whether a research run now holds this queue's thread. */
+  /** whether a research run now holds this queue's thread. */
   researchStarted: () => boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
 };
 
-type PromptQueueItem = {
+type PromptQueueItem = QueuedPrompt & {
   id: string;
-  prompt: string;
   target: PromptQueueTarget;
   dispatched: boolean;
   dispatchRetries: number;
@@ -625,7 +700,7 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   promptQueueActiveRunIds.add(run.id);
   syncPromptQueueUI();
   try {
-    const result = item.target.append(item.prompt);
+    const result = item.target.append(item);
     if (result && typeof result.catch === "function") {
       void result
         .then(() => consumePromptQueueDeepResearch(run, item))
@@ -655,11 +730,6 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       if (documents.some(indexingDocument)) {
         return true;
       }
-    }
-    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
-    // project's sources cannot reach this run and waiting on them only delays it.
-    if (item.target.usesKnowledgeBase) {
-      return false;
     }
     // Project sources are retrieved whatever the Docs pill says (chat-adapter's
     // rag_scope), and isIndexing() above only answers while the bar that watches
@@ -850,7 +920,7 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // Recheck loading after the document probe.
+  // recheck loading after the document probe.
   if (
     hasIndexingDocuments ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
@@ -865,22 +935,14 @@ async function dispatchQueuedPrompt(
   appendQueuedPrompt(run, item);
 }
 
-function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
+function createQueuedPrompt(prompt: QueuedPrompt, target: PromptQueueTarget) {
   return {
     id: createPromptQueueItemId(),
-    prompt,
+    ...prompt,
     target,
     dispatched: false,
     dispatchRetries: 0,
   };
-}
-
-function appendTextToThread(prompt: string) {
-  return {
-    role: "user",
-    content: [{ type: "text", text: prompt }],
-    createdAt: new Date(),
-  } as never;
 }
 
 function getPromptQueueTargetIds(target: PromptQueueTarget) {
@@ -1004,6 +1066,7 @@ function getPromptQueueUIItemsForRun(run: PromptQueueRun) {
       id: item.id,
       runId: run.id,
       prompt: item.prompt,
+      attachmentNames: item.attachments?.map((attachment) => attachment.name),
       position: index + 1,
       total,
       status: getPromptQueueItemStatus(run, index, activeItemIndex),
@@ -1068,15 +1131,12 @@ function syncPromptQueueUI() {
 
 function editPromptQueueItem(itemId: string, prompt: string) {
   const nextPrompt = prompt.trim();
-  if (!nextPrompt) {
-    return false;
-  }
   const match = findPromptQueueRunByItemId(itemId);
   if (!match) {
     return false;
   }
   const { item } = match;
-  if (!canEditPromptQueueItem(item)) {
+  if (!canEditPromptQueueItem(item) || !queuedPromptHasContent({ ...item, prompt: nextPrompt })) {
     return false;
   }
   item.prompt = nextPrompt;
@@ -1291,7 +1351,12 @@ function handlePromptQueueRunState(
   if (run.paused) {
     return;
   }
-  if (run.waitingForTargetIdle) {
+  // An idle edge before an unsent prompt dispatches belongs to the cancelled response (steering
+  // race with the dispatch timer); index -1 is the normal wait for the current response.
+  if (
+    run.waitingForTargetIdle ||
+    (run.index >= 0 && !getActivePromptQueueItem(run)?.dispatched)
+  ) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
     const activeItem = run.items[run.index];
@@ -1367,7 +1432,7 @@ function steerPromptQueueItem(itemId: string) {
     });
     return false;
   }
-  // Move the existing item so its captured settings and identity stay intact.
+  // move the item so its captured settings and identity stay intact.
   run.items.splice(itemIndex, 1);
   run.items.splice(steeringInsertionIndex(run.items, run.index), 0, item);
   steerPromptQueueTarget(item.target);
@@ -1375,12 +1440,12 @@ function steerPromptQueueItem(itemId: string) {
 }
 
 function startPromptQueue(
-  items: string[],
+  items: Array<string | QueuedPrompt>,
   target: PromptQueueTarget,
   waitForCurrentRun = false,
   behavior: ComposerFollowUpBehavior = "queue",
 ) {
-  const filtered = items.map((item) => item.trim()).filter(Boolean);
+  const filtered = items.map(normalizeQueuedPrompt).filter(queuedPromptHasContent);
   if (filtered.length === 0) {
     return;
   }
@@ -1577,44 +1642,53 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     })),
     run.index,
   );
-  if (plan.retainedItemIndexes.length === run.items.length) {
+  if (!plan.cancelActiveItem && plan.heldItemIndexes.length === 0) {
     return;
   }
 
+  const heldItems = plan.heldItemIndexes.map((index) => run.items[index]);
   run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+  for (const item of heldItems) {
+    // Held like a failed load: the row stays editable and Resume sends it to the model loaded then.
+    item.blockedByModelFailure = true;
+    item.target.releaseModel();
+  }
   if (!getActivePromptQueueItem(run)) {
     deletePromptQueueRun(run);
-    if (!plan.cancelActiveItem) {
-      return;
-    }
     try {
       activeItem?.target.cancel();
     } catch {
       // The active local run may have already ended.
     }
     return;
-  }
-  if (plan.activeItemRemoved) {
-    clearPromptQueueRetryTimer(run);
   }
   if (plan.cancelActiveItem) {
     waitForPromptQueueTargetIdle(run);
     try {
-      activeItem?.target.cancel();
+      // A permanent cancel would also void the held prompts that share this target.
+      if (run.items.some((item) => item.target === activeItem?.target)) {
+        activeItem?.target.cancelActiveRun();
+      } else {
+        activeItem?.target.cancel();
+      }
     } catch {
       // The active local run may have already ended.
     }
     refreshPromptQueueTargetIdleWait(run);
     return;
   }
+  if (getActivePromptQueueItem(run)?.blockedByModelFailure) {
+    // Invalidate an attempt already underway for the now-held item.
+    run.generation += 1;
+    clearPromptQueueRetryTimer(run);
+    promptQueueDispatchingRunIds.delete(run.id);
+    promptQueueActiveRunIds.delete(run.id);
+    // The cleared timer may be the poll that sees the run this queue waits behind end.
+    if (shouldPollPromptQueueTargetState(run)) {
+      refreshPromptQueueTargetIdleWait(run);
+    }
+  }
   syncPromptQueueUI();
-  if (plan.refreshTargetIdleWait) {
-    refreshPromptQueueTargetIdleWait(run);
-    return;
-  }
-  if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
-    requestPromptQueuePump(50);
-  }
 }
 
 function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
@@ -1804,10 +1878,35 @@ const ThreadMessage: FC = () => {
   }
   return (
     <>
+      <CompactionRowDivider />
       {body}
       <ForkContinuationRule />
+      <PendingCompactionRule />
     </>
   );
+};
+
+const PendingCompactionRule: FC = () => {
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const pending = useCompactRequestStore((s) =>
+    threadId === null ? false : s.requested[threadId] === true,
+  );
+  const endsWithReply = useAuiState(
+    ({ message }) => message.isLast && message.role === "assistant",
+  );
+  if (!pending || !endsWithReply) return null;
+  return <CompactionDivider pending={true} className="mt-6" />;
+};
+
+// The selector returns the persisted record, which keeps its identity between renders, so a
+// row re-renders only when a divider arrives or leaves above it.
+const CompactionRowDivider: FC = () => {
+  const truncation = useAuiState(
+    ({ thread, message }) =>
+      compactionDividerRows(thread.messages).get(message.id) ?? null,
+  );
+  if (!truncation) return null;
+  return <CompactionDivider truncation={truncation} />;
 };
 
 /**
@@ -1820,6 +1919,8 @@ const ThreadMessage: FC = () => {
  * The walk stops at the first message the fork did not inherit, so it costs the inherited
  * count rather than the thread length.
  */
+const FORK_BOUNDARY_NONE: readonly string[] = [];
+
 const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   const inherited = useForkBoundaryStore((s) =>
     threadId === null
@@ -1827,12 +1928,29 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
       : s.boundaryByThreadId[threadId]?.messageIds,
   );
   const anchor = useAuiState(({ thread }) =>
-    forkBoundaryAnchor(thread.messages, inherited),
+    memoOnArrayByKey(thread.messages, inherited ?? FORK_BOUNDARY_NONE, () =>
+      forkBoundaryAnchor(thread.messages, inherited),
+    ),
   );
   useEffect(() => {
     setForkBoundaryAnchor(threadId, anchor);
   }, [threadId, anchor]);
 };
+
+// One read per source chat for the divider's label; a failed read is dropped so a later mount retries.
+const forkSourceTitles = new Map<string, Promise<string | null>>();
+
+function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
+  let title = forkSourceTitles.get(sourceThreadId);
+  if (!title) {
+    title = readBackendChatThread(sourceThreadId).then((source) => {
+      if (source === undefined) forkSourceTitles.delete(sourceThreadId);
+      return source?.title?.trim() || null;
+    });
+    forkSourceTitles.set(sourceThreadId, title);
+  }
+  return title;
+}
 
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
@@ -1850,11 +1968,28 @@ const ForkContinuationRule: FC = () => {
       : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
+  const isAnchor = anchor !== undefined && anchor === messageId;
+  const [source, setSource] = useState<{ id: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!isAnchor || !sourceThreadId) return;
+    let live = true;
+    void forkSourceTitle(sourceThreadId).then((title) => {
+      if (live) setSource({ id: sourceThreadId, title });
+    });
+    return () => {
+      live = false;
+    };
+  }, [isAnchor, sourceThreadId]);
   if (anchor === undefined || anchor !== messageId) return null;
+  const sourceTitle = source?.id === sourceThreadId ? source.title : null;
   const label = (
     <>
-      <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
-      Continued from chat
+      <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
+      {sourceTitle ? (
+        <span className="max-w-80 truncate">Forked from {sourceTitle}</span>
+      ) : (
+        "Continued from chat"
+      )}
     </>
   );
   const labelClass =
@@ -1895,7 +2030,8 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+            // An answer link's colour, underlined on hover only.
+            "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
@@ -1907,6 +2043,43 @@ const ForkContinuationRule: FC = () => {
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
     </div>
   );
+};
+
+const PREWARM_INPUT_QUIET_MS = 1000;
+const PREWARM_INPUT_EVENTS = [
+  "scroll",
+  "wheel",
+  "pointerdown",
+  "keydown",
+  "touchmove",
+] as const;
+let grammarPrewarm: GrammarPrewarm | null = null;
+
+const startGrammarPrewarm = (): void => {
+  if (grammarPrewarm !== null) return;
+  let lastInputAt = Number.NEGATIVE_INFINITY;
+  const noteInput = () => {
+    lastInputAt = performance.now();
+  };
+  for (const type of PREWARM_INPUT_EVENTS) {
+    document.addEventListener(type, noteInput, { capture: true, passive: true });
+  }
+  grammarPrewarm = createGrammarPrewarm(
+    (code, language, late) => highlightFenceSource(code, language, late),
+    {
+      idle: scheduleQuietIdleTask,
+      wait: (callback, ms) => {
+        const timer = setTimeout(callback, ms);
+        return () => clearTimeout(timer);
+      },
+      quiet: () =>
+        !streamActive()
+        && !inputPointerHeld()
+        && performance.now() - lastInputAt >= PREWARM_INPUT_QUIET_MS,
+      skip: grammarWarmed,
+    },
+  );
+  grammarPrewarm.start();
 };
 
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
@@ -1921,11 +2094,17 @@ export const Thread: FC<{
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
+  useEffect(() => {
+    startGrammarPrewarm();
+  }, []);
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
-  const { ref: viewportRef, context: autoScrollContext } =
-    useIntentAwareAutoScroll();
+  const {
+    ref: viewportRef,
+    markerRef,
+    context: autoScrollContext,
+  } = useIntentAwareAutoScroll();
 
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
@@ -1950,7 +2129,14 @@ export const Thread: FC<{
   // Viewport element is owned by the autoscroll hook; mirror it locally for
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
-  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const [viewportSlot, setViewportSlot] = useState<{
+    el: HTMLElement;
+    threadId: string;
+  } | null>(null);
+  const viewportEl =
+    viewportSlot !== null && viewportSlot.threadId === runtimeThreadId
+      ? viewportSlot.el
+      : null;
   // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
   // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
   // because the Compare panes each mount their own Thread.
@@ -1958,30 +2144,27 @@ export const Thread: FC<{
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
       viewportElRef.current = node;
-      setViewportEl(node);
+      setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
     },
-    [viewportRef],
+    [viewportRef, runtimeThreadId],
   );
 
-  // Copying a selection out of the thread writes the plain text itself rather than letting the
-  // browser serialise the selection, which spends over 99% of a long thread's copy building the
-  // styled clipboard flavour. thread-fast-copy.ts holds the rule for when that substitution is
-  // provably invisible, and hands the event back to the browser whenever it is not.
+  // plain-text copy skips styled data that consumes over 99% of long-thread copy time.
+  // thread-fast-copy.ts falls back to browser copying unless the substitution is invisible.
   useEffect(() => {
     if (!viewportEl) return;
     return attachThreadFastCopy(viewportEl);
   }, [viewportEl]);
 
-  // Bottom spacer sizing. Invariant: chat never moves on its own on composer
-  // resize.
-  // - Grow (attachment added, multiline): grow at once; growth below the
-  //   scroll position is invisible and only adds room.
-  // - Shrink (attachment removed): shrinking scrollHeight near the bottom
-  //   clamps scrollTop and yanks the chat down. Defer until invisible (user
-  //   scrolled up) or a bottom-pinning moment.
-  // Applied imperatively so a remounted spacer can be sized from refs even
-  // when composerHeight did not change (e.g. thread switch).
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachWheelHoverSuppression(viewportEl);
+  }, [viewportEl]);
+
+  // composer growth applies immediately because content below the scroll position is invisible.
+  // composer shrink waits until clamping scrollTop is safe or a bottom pin owns the motion.
+  // imperative sizing restores remounted spacers even when composerHeight is unchanged.
   const spacerElRef = useRef<HTMLDivElement | null>(null);
   const desiredSpacerPxRef = useRef<number | null>(null);
   const appliedSpacerPxRef = useRef<number | null>(null);
@@ -2027,6 +2210,7 @@ export const Thread: FC<{
       desiredSpacerPxRef.current = null;
       appliedSpacerPxRef.current = null;
       spacerElRef.current?.style.removeProperty("height");
+      autoScrollContext.notifyContentResized();
       return;
     }
     const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
@@ -2062,6 +2246,7 @@ export const Thread: FC<{
         autoScrollContext.detachFromBottom();
       }
     }
+    autoScrollContext.notifyContentResized();
   }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
   // Drop deferred spacer excess once the user has scrolled far enough above
@@ -2141,11 +2326,97 @@ export const Thread: FC<{
     }
   };
 
+  const watchWidthSteps = useCallback(
+    (root: HTMLDivElement | null) =>
+      root ? observeThreadWidthSteps(root) : undefined,
+    [],
+  );
+
   return (
     <GeneratedImageOverlayProvider key={runtimeThreadId} threadId={threadId}>
       <PageDragContext.Provider value={pageDragging}>
+      <IntentAwareScrollProvider value={autoScrollContext}>
+        <ThreadPrimitive.Viewport
+          autoScroll={false}
+          scrollToBottomOnRunStart={false}
+          scrollToBottomOnInitialize={false}
+          scrollToBottomOnThreadSwitch={false}
+          ref={markerRef}
+          className="aui-thread-host hidden"
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          aria-hidden={true}
+        >
+          {viewportEl !== null &&
+            createPortal(
+              <>
+          {!hideWelcome && (
+            <AuiIf
+              condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+            >
+              <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+            </AuiIf>
+          )}
+
+          {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+          the tail and mounts the rest over the following frames. Nothing unmounts and the
+          document converges to the tree this rendered before; consumers that cannot wait call
+          completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+          reason: React's bail-out needs one shared element per row. See
+          progressive-mount-controller.ts. */}
+          <ProgressiveMessages
+            renderMessage={renderThreadMessage}
+            resetKey={runtimeThreadId}
+            viewportRef={viewportElRef}
+          />
+
+          {/* Bottom slack so the last message has room above the sticky
+          scroll-to-bottom button (and floating composer in single mode),
+          instead of butting against the footer. */}
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <div
+              ref={spacerRef}
+              className={cn(
+                "shrink-0",
+                hideComposer
+                  ? "h-16"
+                  : composerHeight == null
+                    ? "h-40"
+                    : undefined,
+              )}
+              aria-hidden={true}
+            />
+          </AuiIf>
+
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className={cn(
+                "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+                hideComposer
+                  ? "bottom-3"
+                  : footerBottomPx == null
+                    ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
+                    : undefined,
+              )}
+              style={
+                !hideComposer && footerBottomPx != null
+                  ? { bottom: footerBottomPx }
+                  : undefined
+              }
+            >
+              <ThreadScrollToBottom />
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
+              </>,
+              viewportEl,
+            )}
+        </ThreadPrimitive.Viewport>
+      </IntentAwareScrollProvider>
       <ThreadPrimitive.Root
-        className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+        ref={watchWidthSteps}
+        className="aui-root aui-thread-root relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [contain:style]"
         style={{
           ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
@@ -2156,83 +2427,17 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {!hideComposer && <AutoReadAloud />}
         <IntentAwareScrollProvider value={autoScrollContext}>
-          <ThreadPrimitive.Viewport
+          <div
             ref={composedViewportRef}
-            autoScroll={false}
-            scrollToBottomOnRunStart={false}
-            scrollToBottomOnInitialize={false}
-            scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : // + the chat-model notice, which is an opaque absolute bar
-                  // directly under the header. 0px whenever it is not showing,
-                  // so every other surface keeps the padding it had.
-                  "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
+                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
             )}
-          >
-            {!hideWelcome && (
-              <AuiIf
-                condition={({ thread }) => thread.isEmpty && !thread.isLoading}
-              >
-                <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
-              </AuiIf>
-            )}
-
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
-            <ProgressiveMessages
-              renderMessage={renderThreadMessage}
-              resetKey={runtimeThreadId}
-              viewportRef={viewportElRef}
-            />
-
-            {/* Bottom slack so the last message has room above the sticky
-            scroll-to-bottom button (and floating composer in single mode),
-            instead of butting against the footer. */}
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <div
-                ref={spacerRef}
-                className={cn(
-                  "shrink-0",
-                  hideComposer
-                    ? "h-16"
-                    : composerHeight == null
-                      ? "h-40"
-                      : undefined,
-                )}
-                aria-hidden={true}
-              />
-            </AuiIf>
-
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <ThreadPrimitive.ViewportFooter
-                className={cn(
-                  "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  // 150px (was 140px) to add a small gap above the composer
-                  hideComposer
-                    ? "bottom-3"
-                    : footerBottomPx == null
-                      ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
-                      : undefined,
-                )}
-                style={
-                  !hideComposer && footerBottomPx != null
-                    ? { bottom: footerBottomPx }
-                    : undefined
-                }
-              >
-                <ThreadScrollToBottom />
-              </ThreadPrimitive.ViewportFooter>
-            </AuiIf>
-          </ThreadPrimitive.Viewport>
-
+          />
           <GeneratedImageViewportOverlay
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
@@ -2249,8 +2454,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Document preview, opened by citation badges. */}
-      <DocumentPreviewMount />
+      <RewindDialogMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -2280,7 +2484,7 @@ const GeneratedImageViewportOverlay: FC<{
     <div className="pointer-events-none absolute inset-0 z-30">
       <button
         type="button"
-        className="pointer-events-auto absolute inset-0 bg-background/65 backdrop-blur-[1px] dark:bg-background/55"
+        className="pointer-events-auto absolute inset-0 bg-background/65 dark:bg-background/55"
         onClick={closeOverlay}
         aria-label="Close generated image preview"
       />
@@ -2361,6 +2565,23 @@ const GeneratedImageViewportOverlay: FC<{
   );
 };
 
+// From the end: the footer follows every message row, and a forward walk costs O(rows) where Chromium's `:scope >` is O(1).
+const childWithClass = (
+  parent: Element | null | undefined,
+  className: string,
+): HTMLElement | null => {
+  for (
+    let child = parent?.lastElementChild ?? null;
+    child;
+    child = child.previousElementSibling
+  ) {
+    if (child instanceof HTMLElement && child.classList.contains(className)) {
+      return child;
+    }
+  }
+  return null;
+};
+
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
@@ -2408,6 +2629,50 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
+  const composerColumnRef = useRef<HTMLDivElement | null>(null);
+  const uiSpaceScale = useUiSpaceScale();
+  useEffect(() => {
+    const column = composerColumnRef.current;
+    return column ? watchComposerClearance(column, uiSpaceScale) : undefined;
+  }, [uiSpaceScale]);
+
+  const dockInnerRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const inner = dockInnerRef.current;
+    const viewport = childWithClass(dock?.parentElement, "aui-thread-viewport");
+    if (!dock || !inner || !viewport) return;
+    const resizeObserver = new ResizeObserver(() => apply());
+    let observedFooter: Element | null = null;
+    const apply = () => {
+      // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
+      const footer = childWithClass(viewport, "aui-thread-viewport-footer");
+      if (footer && footer !== observedFooter) {
+        if (observedFooter) resizeObserver.unobserve(observedFooter);
+        resizeObserver.observe(footer);
+        observedFooter = footer;
+      }
+      const dockRect = dock.getBoundingClientRect();
+      const footerRect = footer?.getBoundingClientRect();
+      // The footer scrolls sideways with the content; the composer does not.
+      const inset = footerRect
+        ? composerInsetFromColumn(
+            {
+              left: footerRect.left + viewport.scrollLeft,
+              right: footerRect.right + viewport.scrollLeft,
+            },
+            dockRect,
+          )
+        : composerColumnInset(readViewportBox(viewport), dockRect);
+      inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
+      inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
+    };
+    apply();
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(dock);
+    return () => resizeObserver.disconnect();
+  }, []);
+
   return (
     <div
       ref={dockRef}
@@ -2428,10 +2693,11 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      {/* Narrow panes spend the gutter on the composer instead; index.css
-          trims it off the pane's width, not the window's. */}
-      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
-        <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
+      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
+        <div
+          ref={composerColumnRef}
+          className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
+        >
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}
@@ -2484,41 +2750,47 @@ const pickRandom = <T,>(arr: T[]): T =>
 
 // Each greeting carries its matching sloth picture so a line always shows the
 // same mascot. Greeting varies by local time; name-bearing lines drop the
-// name when none is set.
-type Welcome = { text: string; sloth: string };
+// name when none is set. Text is a message key, translated at render so a
+// language switch updates the open greeting.
+type Welcome = { key: TranslationKey; name?: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
-  text: "What’s on your mind today?",
+  key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
 };
 
 function buildWelcome(hour: number, name: string): Welcome {
-  const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  const g = (key: TranslationKey, sloth: string): Welcome => ({ key, sloth });
+  const named = (
+    key: TranslationKey,
+    namedKey: TranslationKey,
+    sloth: string,
+  ): Welcome => (name ? { key: namedKey, name, sloth } : { key, sloth });
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
-    g("Ready when you are", "large sloth thumbs.png"),
+    named("welcome.goodToSeeYou", "welcome.goodToSeeYouName", "large sloth wave.png"),
+    g("welcome.readyWhenYouAre", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
-    g("How can I help?", "sloth sir large.png"),
+    g("welcome.howCanIHelp", "sloth sir large.png"),
   ];
   if (hour >= 4 && hour < 9) {
-    const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
+    const morning = named("welcome.goodMorning", "welcome.goodMorningName", "large sloth drink.png");
     return pickRandom([...base, morning]);
   }
   if (hour >= 17 && hour < 23) {
     const evening: Welcome[] = [
-      g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
-      g("What’s on for tonight?", "large sloth glasses.png"),
+      named("welcome.goodEvening", "welcome.goodEveningName", "sloth shy large.png"),
+      g("welcome.tonight", "large sloth glasses.png"),
     ];
     // Lean toward an evening line, but a base greeting can still appear.
     return pickRandom(Math.random() < 0.75 ? evening : base);
   }
   if (hour >= 23 || hour < 4) {
     return pickRandom([
-      g("Night owl mode?", "large sloth glasses.png"),
-      g("Late night ideas?", "large sloth yay.png"),
-      g("Up late with an idea?", "large sloth heart.png"),
-      g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
+      g("welcome.nightOwl", "large sloth glasses.png"),
+      g("welcome.lateNightIdeas", "large sloth yay.png"),
+      g("welcome.upLate", "large sloth heart.png"),
+      named("welcome.nightShift", "welcome.nightShiftName", "large sloth drink.png"),
     ]);
   }
   return pickRandom(base);
@@ -2533,6 +2805,7 @@ const ThreadWelcome: FC<{
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
+  const t = useT();
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
@@ -2546,7 +2819,8 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
+      {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* Center the greeting (sloth + title) over the composer. */}
@@ -2559,13 +2833,14 @@ const ThreadWelcome: FC<{
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito ? "Temporary chat" : welcome.text}
+              {incognito
+                ? t("welcome.temporaryChat")
+                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
             </h1>
           </div>
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
-              This chat won't appear in your history and isn't saved. It
-              disappears when you leave.
+              {t("welcome.temporaryChatDescription")}
             </p>
           )}
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
@@ -2588,6 +2863,7 @@ export const ProjectComposer: FC<{
         placeholder={placeholder}
         disableQueue
       />
+      {/* Its file cards open previews; the thread's mount is not on this page. */}
     </GeneratedImageOverlayProvider>
   );
 };
@@ -2626,7 +2902,7 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
@@ -2652,6 +2928,9 @@ function claimPortaledDrop(event: ReactDragEvent): void {
   }
 }
 
+// Never a thread id, so entering or leaving a temporary chat counts as a chat switch.
+const INCOGNITO_DRAFT_SCOPE = "\u0000incognito";
+
 const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
@@ -2662,6 +2941,7 @@ const Composer: FC<{
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
+  const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -2674,7 +2954,8 @@ const Composer: FC<{
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  // The local Images pill counts only while it is on, like RAG.
+  const localImagePills = useChatRuntimeStore(localImagePillCount);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const deepResearchEnabled = useChatRuntimeStore(
@@ -2715,15 +2996,15 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas, MCP and Deep Research are conditional.
+  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
+  // always show; Images, RAG, MCP and Deep Research are conditional.
   // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
   const pillCount =
     3 +
     (ragEnabled ? 1 : 0) +
     (supportsBuiltinImageGeneration ? 1 : 0) +
-    (artifactsEnabled ? 1 : 0) +
+    localImagePills +
     (mcpEnabledForChat ? 1 : 0) +
     (effectiveDeepResearchEnabled ? 1 : 0);
   // Under the count threshold the row still overflows on long labels ("Run
@@ -2778,7 +3059,7 @@ const Composer: FC<{
   const setMentionOpen = useCallback((open: boolean) => {
     mentionOpenRef.current = open;
   }, []);
-  const { inputProps, isComposing, isComposingRef } =
+  const { inputProps, isComposing, isComposingRef, imeSessionOpenRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
       skipEnterRef: mentionConsumesEnterRef,
@@ -2979,7 +3260,6 @@ const Composer: FC<{
     },
     [],
   );
-  // Only once the draft outgrows the compact box: a hard break, or past row 3.
   const showWritingToggle = composerText.includes("\n") || editorRows > 3;
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
@@ -2989,16 +3269,15 @@ const Composer: FC<{
       (attachment) => attachment.status.type === "running",
     ),
   );
-  const attachmentsAreAllPastedText = useAuiState(
+  const attachmentsAreQueueableText = useAuiState(
     ({ composer }) =>
       composer.attachments.length > 0 &&
       composer.attachments.every((attachment) =>
+        canQueueTextAttachment(attachment) ||
         isPastedTextFile((attachment as { file?: File }).file),
       ),
   );
-  // Identities only: paste autosave keys off this, and the bodies behind it can
-  // be megabytes. Every attachment counts, not just pasted ones, so removing an
-  // ordinary file also releases the paste restore waiting on it.
+  // track every attachment id so removing any file releases paste restore without hashing bodies
   const composerAttachmentSignature = useAuiState(({ composer }) =>
     composer.attachments.map((attachment) => attachment.id).join(","),
   );
@@ -3638,6 +3917,26 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
+  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
+  // background chat, where Escape would then stop nothing), and not once rebound.
+  const declineMounted = useShortcutAvailable("declineToolRequest", true);
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
+  const composerFocusable = useContext(ChatComposerFocusableContext);
+  // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
+  // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
+  // a press and read as Chat being covered.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (composerFocusable || !input) return;
+    input.focus = () => {};
+    return () => {
+      Reflect.deleteProperty(input, "focus");
+    };
+  }, [composerFocusable, isDictating]);
   const readAudioUploadDraft = useCallback(
     () => aui.composer().getState().text,
     [aui],
@@ -3672,6 +3971,12 @@ const Composer: FC<{
     referenceThreadId,
   ]);
   const preStreamRunReservationRef = useRef<symbol | null>(null);
+  // Wakes a parked attachment when a preflight releases without ever streaming.
+  const preStreamRunActive = useSyncExternalStore(
+    subscribePreStreamRunReservations,
+    () => hasPreStreamRunReservation(preStreamThreadIds),
+    () => false,
+  );
   useEffect(() => {
     const token = preStreamRunReservationRef.current;
     if (!token) {
@@ -3698,36 +4003,43 @@ const Composer: FC<{
     !overlay;
   const canQueueCurrentPrompt =
     composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
-  // A long paste is text the composer parked in a chip, so it queues like the
-  // same text did before it attached, rather than being refused as a file.
-  const canQueuePastedTextPrompt =
-    attachmentsAreAllPastedText && composerAcceptsQueueing;
+  // validated text uploads and long pastes can join the per-chat queue
+  const canQueueTextAttachmentsPrompt =
+    attachmentsAreQueueableText && composerAcceptsQueueing;
+  // attachments without prepared text stay parked until the run and queue are idle
+  const canQueueAttachmentPrompt =
+    hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // Per-thread draft autosave: restore on mount, then mirror composer text
-  // into localStorage (debounced) so a half-typed message survives a
-  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
-  // text even when no draft exists keeps a thread from inheriting the
-  // previous thread's composer contents.
-  const draftThreadId = referenceThreadId;
-  const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
-  // A pasted attachment is a File held in memory only, so without its own slot
-  // an unsent paste is the one draft a reload throws away.
-  const pasteDraftKey = draftThreadId
-    ? composerPasteDraftKey(draftThreadId)
-    : null;
-  const lastDraftKeyRef = useRef(draftKey);
-  // Which key the paste restore has finished for. The save effect writes only
-  // for that key, so a draft is never cleared before it has been put back.
-  const restoredPasteKeyRef = useRef<string | null>(null);
+  // The shared draft, restored on every chat switch; a temporary chat never reads or writes it.
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
+  const draftKey = composerDraftKey();
+  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
+  const remoteDraftRef = useRef<string | null>(null);
+  const [draftSource] = useState(() => Symbol("chat composer"));
+  // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
+  const pasteScopeShownRef = useRef<string | null>(draftScope);
+  // unsent pasted File objects need a separate slot because they exist only in memory
+  const pasteDraftKey = composerPasteDraftKey();
+  const lastDraftScopeRef = useRef(draftScope);
+  // save only after this chat's paste restore finishes to avoid premature clearing
+  const restoredPasteScopeRef = useRef<string | null | undefined>(undefined);
+  const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // draftScope re-runs the restore on every chat switch, though the key stays the same.
   useEffect(() => {
-    const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) {
+      composer.setText("");
+      return;
+    }
+    const draft = adoptLegacyDraft(draftScope)
+      ? (readComposerDraft(draftKey) ?? "")
+      : latestDraft();
     // A save that raced the send still holds the sent text, so restoring it
-    // would undo the clear. Keyed on the sending thread, so another thread's
-    // identical draft still restores. Clear rather than return early, which
-    // would leave the previous thread's text on screen under this one.
+    // would undo the clear. Clear rather than return early, which would leave
+    // the previous thread's text on screen under this one.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
@@ -3735,16 +4047,25 @@ const Composer: FC<{
         clearTimeout(draftSaveTimerRef.current);
         draftSaveTimerRef.current = null;
       }
-      if (draftKey) writeComposerDraft(draftKey, "");
+      writeComposerDraft(draftKey, "");
       composer.setText("");
       return;
     }
     composer.setText(draft);
-  }, [draftKey, aui]);
+  }, [draftScope, draftKey, aui]);
+  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  useEffect(() => {
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    return subscribeDraft(draftSource, (text) => {
+      const composer = aui.composer();
+      if (!composer.getState().isEditing) return;
+      remoteDraftRef.current = text;
+      composer.setText(text);
+    });
+  }, [draftScope, draftSource, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
-  // directly, bypassing the guard. Text appearing while the sending thread is
-  // on screen was put there deliberately, so retire; the draftKey check keeps
-  // another thread's restored draft from doing the same. Read live, or a
+  // directly, bypassing the guard. Text appearing after the send was put there
+  // deliberately, so retire. Read live, or a
   // pending render retires it on stale text. Must stay after the restore
   // above, which clears the raced draft this would otherwise retire on.
   useEffect(() => {
@@ -3759,28 +4080,72 @@ const Composer: FC<{
   useEffect(() => {
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    if (restoredPasteKeyRef.current === pasteDraftKey) return;
-    // The composer outlives a thread switch, so restore only into an empty one
-    // rather than mixing this thread's draft with whatever the last one left.
-    // Changing attachments re-runs this effect, which is how the retry happens.
-    if (composer.getState().attachments.length > 0) return;
-    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
-    if (stored.length === 0) {
-      restoredPasteKeyRef.current = pasteDraftKey;
+    if (restoredPasteScopeRef.current === draftScope) return;
+    if (
+      (pasteScopeShownRef.current === INCOGNITO_DRAFT_SCOPE) !==
+      (draftScope === INCOGNITO_DRAFT_SCOPE)
+    ) {
+      const pasted = composer
+        .getState()
+        .attachments.filter(
+          (attachment) =>
+            pastedTextOf((attachment as { file?: File }).file) !== undefined,
+        );
+      if (pasted.length > 0) {
+        // Removing them changes the attachments, which runs this again.
+        for (const attachment of pasted) {
+          void composer.attachment({ id: attachment.id }).remove();
+        }
+        return;
+      }
+    }
+    pasteScopeShownRef.current = draftScope;
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) {
+      restoredPasteScopeRef.current = draftScope;
       return;
     }
-    // Claim the key only once the attachments are in, so the save effect
+    // Only the saved pastes not on screen: the composer can outlive a switch holding
+    // them, and another attachment (a handoff's image) is no sign they were restored.
+    const shown = composer
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+      const at = shown.indexOf(text);
+      if (at === -1) return true;
+      shown.splice(at, 1);
+      return false;
+    });
+    if (missing.length === 0) {
+      restoredPasteScopeRef.current = draftScope;
+      return;
+    }
+    // Its own additions re-run this; one pass per scope, or they double up.
+    if (restoringPasteScopeRef.current === draftScope) return;
+    restoringPasteScopeRef.current = draftScope;
+    // Claim the chat only once the attachments are in, so the save effect
     // cannot write an empty composer over the draft still being restored.
     void Promise.all(
-      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+      missing.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
-      restoredPasteKeyRef.current = pasteDraftKey;
+      restoringPasteScopeRef.current = undefined;
+      // A switch while these were added re-runs the restore for the new scope instead.
+      if (draftScopeRef.current === draftScope) {
+        restoredPasteScopeRef.current = draftScope;
+      }
     });
-  }, [pasteDraftKey, composerAttachmentSignature, aui]);
+  }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
-    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
+    if (
+      draftScope === INCOGNITO_DRAFT_SCOPE ||
+      restoredPasteScopeRef.current !== draftScope
+    ) {
+      return;
+    }
     const pastes = aui
       .composer()
       .getState()
@@ -3789,47 +4154,49 @@ const Composer: FC<{
         return text === undefined ? [] : [text];
       });
     writePasteDraft(pasteDraftKey, pastes);
-  }, [composerAttachmentSignature, pasteDraftKey, aui]);
+  }, [composerAttachmentSignature, draftScope, pasteDraftKey, aui]);
   useEffect(() => {
-    // After a thread switch composerText can still hold the previous
-    // thread's text; skip that cycle so it isn't saved under the new key.
-    if (lastDraftKeyRef.current !== draftKey) {
-      lastDraftKeyRef.current = draftKey;
+    // After a thread switch composerText can still hold what was on screen
+    // before the restore; skip that cycle so it can't overwrite the draft.
+    if (lastDraftScopeRef.current !== draftScope) {
+      lastDraftScopeRef.current = draftScope;
       return;
     }
-    if (!draftKey) {
-      return;
-    }
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
+    if (composerText === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(composerText, draftSource);
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftKey]);
-  const pasteDraftKeyRef = useRef(pasteDraftKey);
+  }, [composerText, draftScope, draftKey, draftSource]);
+  const draftScopeRef = useRef(draftScope);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-    pasteDraftKeyRef.current = pasteDraftKey;
-  }, [draftKey, pasteDraftKey]);
+    draftScopeRef.current = draftScope;
+  }, [draftKey, draftScope]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
-    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    justSentRef.current = armSentTextGuard(
+      texts,
+      draftKeyRef.current,
+      imeSessionOpenRef.current,
+    );
     // Here, not beside send(): handleSubmit returns early on the three queueing
     // paths, which empty the composer too.
     setIsWritingExpanded(false);
-  }, []);
+  }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
       draftSaveTimerRef.current = null;
     }
-    const key = draftKeyRef.current;
-    if (key) {
-      writeComposerDraft(key, "");
-    }
-    const pasteKey = pasteDraftKeyRef.current;
-    if (pasteKey) {
-      writePasteDraft(pasteKey, []);
-    }
-  }, []);
+    // A temporary chat's send was never the stored draft.
+    if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    publishDraft("", draftSource);
+    writeComposerDraft(composerDraftKey(), "");
+    writePasteDraft(composerPasteDraftKey(), []);
+  }, [draftSource]);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -3996,22 +4363,17 @@ const Composer: FC<{
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
-    const usesKnowledgeBaseAtQueueStart =
-      chatStateAtQueueStart.ragEnabled &&
-      chatStateAtQueueStart.ragSource.type === "kb";
+    let deferModelResolution =
+      chatStateAtQueueStart.modelLoading &&
+      parseExternalModelId(
+        chatStateAtQueueStart.loadingModelPick &&
+        !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
+          ? chatStateAtQueueStart.loadingModelPick.id
+          : chatStateAtQueueStart.params.checkpoint,
+      ) === null;
     const runSettingsAtQueueStart = snapshotQueuedChatRunSettings(
       chatStateAtQueueStart,
-      {
-        // Resolve the incoming model at dispatch; retain the prompt's settings.
-        deferModelResolution:
-          chatStateAtQueueStart.modelLoading &&
-          parseExternalModelId(
-            chatStateAtQueueStart.loadingModelPick &&
-            !chatStateAtQueueStart.loadingModelPick.selectionSuperseded
-              ? chatStateAtQueueStart.loadingModelPick.id
-              : chatStateAtQueueStart.params.checkpoint,
-          ) === null,
-      },
+      { deferModelResolution },
     );
     const getThreadListItemState = () => {
       const runtime =
@@ -4191,17 +4553,44 @@ const Composer: FC<{
               return;
             }
           }
-          // Initialization can replace a fresh thread's local id with a remote
-          // id. Refresh queue aliases before the run begins so stop dialogs
-          // deduplicate the two identities.
+          // refresh aliases after initialization replaces a local id so stop dialogs deduplicate it
           syncPromptQueueUI();
+          const resolvedRunSettings = deferModelResolution
+            ? resolveDeferredQueuedModelSettings(
+                runSettingsAtQueueStart,
+                useChatRuntimeStore.getState(),
+              )
+            : runSettingsAtQueueStart;
+          const keepQueuedFilesForPython = pythonToolRunsInStudio(
+            resolvedRunSettings,
+          );
+          const authSessionEpoch = getAuthSessionEpoch();
+          const readyPrompt = await prepareQueuedPromptFiles(
+            prompt,
+            (file, attachment) =>
+              withAttachmentOriginal(
+                { file },
+                attachment,
+                incognitoAtQueueStart,
+                authSessionEpoch,
+                keepQueuedFilesForPython,
+              ),
+          );
+          prompt.attachments = readyPrompt.attachments;
+          prompt.attachmentFiles = readyPrompt.attachmentFiles;
+          if (
+            removeFreshThreadPersistedAfterAbort() ||
+            cancelled ||
+            epoch !== appendEpoch ||
+            !pendingSettingsIds.has(settingsId)
+          ) {
+            return;
+          }
           const appendResult = thread.append(
-            appendTextToThread(prompt),
+            queuedPromptMessage(readyPrompt),
           ) as unknown;
           freshThreadAppendAccepted = true;
-          // Calling append synchronously accepts the user turn; its promise
-          // follows the whole provider run. Do not turn a later paid/streaming
-          // failure into an automatic duplicate dispatch.
+          // thread.append accepts synchronously; later provider failures must not dispatch a duplicate
           if (
             appendResult &&
             typeof (appendResult as Promise<void>).catch === "function"
@@ -4209,8 +4598,7 @@ const Composer: FC<{
             void (appendResult as Promise<void>).catch(() => undefined);
           }
         } catch (error) {
-          // A setup failure is retryable. Keep the initialized record unless a
-          // concurrent stop or Clear all explicitly invalidated this queue.
+          // retry setup failures unless stop or Clear all invalidated this queue
           removeFreshThreadPersistedAfterAbort();
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
@@ -4232,13 +4620,18 @@ const Composer: FC<{
         discardOldestPendingSettings();
         getThreadRuntime()?.cancelRun();
       },
+      releaseModel: () => {
+        // The same snapshot a queue started during a model load takes.
+        deferModelResolution = true;
+        runSettingsAtQueueStart.params.checkpoint = "";
+        runSettingsAtQueueStart.activeGgufVariant = null;
+      },
       isIndexing: () =>
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
-      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
@@ -4286,12 +4679,11 @@ const Composer: FC<{
 
   const startHydratedPromptQueue = useCallback(
     (
-      items: string[],
+      items: Array<string | QueuedPrompt>,
       waitForCurrentRun = false,
       onStarted?: () => void,
       onAborted?: () => void,
-      // Captured before an awaited step that precedes this call, so a boundary
-      // or setting changed during that step still invalidates the queue.
+      // capture before awaiting so intervening boundary or setting changes invalidate the queue
       capturedAt?: {
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
@@ -4300,8 +4692,7 @@ const Composer: FC<{
       behavior: ComposerFollowUpBehavior = "queue",
     ) => {
       const reservationKey = JSON.stringify([referenceThreadId, items]);
-      // A reservation that is still going to start owns this prompt. One that
-      // is already invalid is replaced, so the retry is the one that queues.
+      // replace only invalid reservations so one attempt owns each prompt
       const existing = promptQueueStartPendingRef.current.get(reservationKey);
       if (existing && !pendingQueueStartIsStale(existing)) {
         // A new shortcut updates the pending draft instead of sending it twice.
@@ -4391,15 +4782,47 @@ const Composer: FC<{
     ],
   );
 
-  // The queue carries text, and a long paste is text the composer parked in a
-  // chip, so fold it back in rather than refusing to queue it as a file.
-  const queuePastedTextPrompt = useCallback(
+  // preserve pure pastes as editable text while snapshotting uploaded text files
+  const queueTextAttachmentsPrompt = useCallback(
     (
       waitForCurrentRun: boolean,
       behavior: ComposerFollowUpBehavior = "queue",
     ): boolean => {
       const composer = aui.composer();
       const attachments = composer.getState().attachments;
+      // keep validated decoded file payloads separate from the editable prompt
+      if (!attachments.every((attachment) => isPastedTextFile(attachment.file))) {
+        const text = composer.getState().text;
+        const prepared = snapshotQueuedTextPrompt(text, attachments);
+        if (!prepared) return false;
+        const ids = attachments.map((attachment) => attachment.id);
+        startHydratedPromptQueue(
+          [prepared],
+          waitForCurrentRun,
+          () => {
+            const state = composer.getState();
+            if (
+              state.text !== text ||
+              state.attachments.length !== ids.length ||
+              !state.attachments.every((attachment, index) => attachment.id === ids[index])
+            ) {
+              return;
+            }
+            void composer.clearAttachments();
+            flushResourcesSync(() => composer.setText(""));
+            clearStoredDraft();
+            armJustSent(text);
+          },
+          () => {
+            toast.info("Text attachments were not queued", {
+              description: "The chat or settings changed. Send them again.",
+            });
+          },
+          undefined,
+          behavior,
+        );
+        return true;
+      }
       const files: File[] = [];
       for (const attachment of attachments) {
         const file = (attachment as { file?: File }).file;
@@ -4597,23 +5020,26 @@ const Composer: FC<{
         | "images"
         | "audio"
         | "video"
+        | "running"
         | "settings" = "indexing",
     ) => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
       const title =
-        waitingOn === "images"
-          ? "Waiting for dropped images"
-          : waitingOn === "audio"
-            ? "Waiting for dropped audio"
-            : waitingOn === "video"
-              ? "Waiting for dropped video"
-              : waitingOn === "settings"
-                ? "Loading this chat's settings"
-                : "Waiting for documents to finish indexing";
+        waitingOn === "running"
+          ? "Waiting for the current response to finish"
+          : waitingOn === "images"
+            ? "Waiting for dropped images"
+            : waitingOn === "audio"
+              ? "Waiting for dropped audio"
+              : waitingOn === "video"
+                ? "Waiting for dropped video"
+                : waitingOn === "settings"
+                  ? "Loading this chat's settings"
+                  : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
-        description: "Your message will send automatically once they are ready.",
+        description: "Your message will send automatically once it is ready.",
         duration: Infinity,
         cancel: { label: "Cancel", onClick: cancelQueuedSend },
       });
@@ -4778,18 +5204,29 @@ const Composer: FC<{
     ],
   );
 
-  // Fire the parked send once indexing clears, unless the user emptied the
+  // Fire the parked send once all waits clear, unless the user emptied the
   // composer while waiting (then drop it quietly). An image dropped after the
   // send was parked has to land first, or indexing finishing early sends the
   // text without it and the image attaches to the next draft.
   useEffect(() => {
-    // pendingSendRef too: a cancel earlier in this same commit has already
-    // dropped the send, while `pendingSend` still reads true from this render.
+    const liveThreadIsRunning =
+      threadIsRunning || aui.thread().getState().isRunning;
+    const livePromptQueueActive = Boolean(
+      findPromptQueueEntry(usePromptQueueUI.getState(), promptQueueThreadIds),
+    );
+    const livePreStreamRunActive =
+      hasPreStreamRunReservation(preStreamThreadIds);
+    // pendingSendRef is authoritative because pendingSend still reflects the pre-cancel render.
     if (
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
       threadScopedSettingsPending ||
+      (hasAttachments &&
+        !attachmentsAreQueueableText &&
+        (liveThreadIsRunning ||
+          livePromptQueueActive ||
+          livePreStreamRunActive)) ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments ||
       hasMaterializingVideoAttachments
@@ -4825,28 +5262,24 @@ const Composer: FC<{
         findPromptQueueEntry(usePromptQueueUI.getState(), preStreamThreadIds),
       );
       if (waitForCurrentRun || queueAlreadyActive) {
-        // Queueing on the project new-chat composer binds the follow-up to a
-        // thread that does not exist yet.
+        // queueing here would bind the follow-up to a nonexistent project new-chat thread.
         if (disableQueue) {
           toast.error("Wait for the current response to finish");
           return;
         }
-        // queueComposerText clears the draft from its onStarted callback, so a
-        // queue that never starts leaves the text recoverable.
+        // queueComposerText preserves the draft until the queue starts.
         if (canQueueCurrentPrompt) {
           queueComposerText(waitForCurrentRun, behavior);
           return;
         }
-        // A long paste lives in an attachment, so queueing the text alone
-        // queues nothing when that is all there is.
+        // a long paste has no separate prompt text to queue.
         if (
-          canQueuePastedTextPrompt &&
-          queuePastedTextPrompt(waitForCurrentRun, behavior)
+          canQueueTextAttachmentsPrompt &&
+          queueTextAttachmentsPrompt(waitForCurrentRun, behavior)
         ) {
           return;
         }
-        // Nothing queueable while a run is live: keep it and say why. Sending
-        // would push the attachment into the running thread.
+        // sending here would add the attachment to the active thread.
         if (overlay || hasAttachments || hasPendingAudio) {
           toast.error("Wait for the current response to finish", {
             description:
@@ -4856,8 +5289,7 @@ const Composer: FC<{
         return;
       }
       clearStoredDraft();
-      // Stays synchronous: deferring lets the run state above go stale, and the
-      // send is then refused after the wait toast is already gone.
+      // keep this synchronous so stale run state cannot drop the send after dismissing the toast.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
       sendReservedComposer();
     }
@@ -4865,16 +5297,21 @@ const Composer: FC<{
     pendingSend,
     indexingActive,
     threadScopedSettingsPending,
+    preStreamRunActive,
+    threadIsRunning,
+    promptQueueActive,
+    promptQueueThreadIds,
+    attachmentsAreQueueableText,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
     hasMaterializingVideoAttachments,
     aui,
     canQueueCurrentPrompt,
-    canQueuePastedTextPrompt,
+    canQueueTextAttachmentsPrompt,
     clearStoredDraft,
     dismissWaitToast,
     queueComposerText,
-    queuePastedTextPrompt,
+    queueTextAttachmentsPrompt,
     sendReservedComposer,
     preStreamThreadIds,
     disableQueue,
@@ -4884,7 +5321,6 @@ const Composer: FC<{
     hasPendingAudio,
   ]);
 
-  // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
     () => () => {
       pendingSendRef.current = false;
@@ -5125,6 +5561,55 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
+      // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
+      if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
+        event.preventDefault();
+        if (threadIsRunning || aui.thread().getState().isRunning) {
+          toast.error(translate("rewind.waitForResponse"));
+          return;
+        }
+        aui.composer().setText("");
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId: null,
+        });
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
+        isCompactCommand(composerText)
+      ) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        if (!referenceThreadId || aui.thread().getState().messages.length === 0) {
+          toast.info("Nothing to compact yet");
+          return;
+        }
+        if (runtime.incognito || isThreadIncognito(referenceThreadId)) {
+          toast.info("Temporary chats are not saved, so they cannot be compacted");
+          return;
+        }
+        // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        if (
+          !runtime.supportsTools ||
+          !resumesThought({
+            loadedIsGguf: runtime.loadedIsGguf,
+            loadedIsMlx: runtime.loadedIsMlx,
+            activeGgufVariant: runtime.activeGgufVariant,
+            activeNativePathToken: runtime.activeNativePathToken,
+            checkpoint: runtime.params.checkpoint,
+          })
+        ) {
+          toast.info("/compact works with GGUF and MLX models that support tools");
+          return;
+        }
+        requestThreadCompaction(referenceThreadId);
+        clearStoredDraft();
+        aui.composer().setText("");
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
@@ -5169,19 +5654,23 @@ const Composer: FC<{
         livePreStreamRunActive
       ) {
         event.preventDefault();
-        // Project new-chat composer: never queue, just ask the user to wait.
+        // the project new-chat composer has no thread to bind a queue to.
         if (disableQueue) {
           toast.error("Wait for the current response to finish");
           return;
         }
         if (!canQueueCurrentPrompt) {
           if (
-            canQueuePastedTextPrompt &&
-            queuePastedTextPrompt(
+            canQueueTextAttachmentsPrompt &&
+            queueTextAttachmentsPrompt(
               liveThreadIsRunning || livePreStreamRunActive,
               behavior,
             )
           ) {
+            return;
+          }
+          if (canQueueAttachmentPrompt) {
+            enqueueSend("running");
             return;
           }
           if (overlay || hasAttachments || hasPendingAudio) {
@@ -5191,7 +5680,7 @@ const Composer: FC<{
                 : "Wait for the prompt queue to finish",
               {
                 description:
-                  "Only text prompts can be queued while a response is running or the prompt queue is active.",
+                  "Only text prompts and ready attachments can be queued while a response is running or the prompt queue is active.",
               },
             );
           }
@@ -5268,10 +5757,11 @@ const Composer: FC<{
     },
     [
       aui,
+      canQueueAttachmentPrompt,
       canQueueCurrentPrompt,
-      canQueuePastedTextPrompt,
+      canQueueTextAttachmentsPrompt,
       queueComposerText,
-      queuePastedTextPrompt,
+      queueTextAttachmentsPrompt,
       clearStoredDraft,
       closeOverlay,
       composerText,
@@ -5307,15 +5797,14 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (
-      items: string[],
+      items: Array<string | QueuedPrompt>,
       waitForCurrentRun =
         threadIsRunning || aui.thread().getState().isRunning,
       onAborted?: () => void,
     ) => {
-      // Saved-prompt Run-list calls this directly, so honour disableQueue here
-      // too: queuing from the project new-chat composer misbinds the thread.
+      // saved-prompt calls bypass the button, so project new-chat must still refuse queues.
       if (disableQueue) return false;
-      // false here only means an identical start is already pending and will run: not a refusal.
+      // false means an identical start is pending, not refused.
       startHydratedPromptQueue(items, waitForCurrentRun, undefined, onAborted);
       return true;
     },
@@ -5323,23 +5812,17 @@ const Composer: FC<{
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
+  // Skills off sends no read_skill, so a mention would load nothing.
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const composerContent = (
     <>
       {!isDictating ? (
         <>
-          <ComposerAttachments />
+          <ComposerAttachments oneRowInChat={true} />
           <PendingAudioChip />
         </>
       ) : null}
-      {/* Keep indexing state subscribed while dictating, but hide its chips so
-          the waveform stays the composer's only status indicator. */}
-      <div className={isDictating ? "hidden" : "contents"}>
-        <ThreadDocumentsBar
-          threadId={referenceThreadId}
-          onIndexingChange={handleIndexingChange}
-        />
-      </div>
       {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
       {!isDictating ? <ToolStatusDisplay /> : null}
       <div
@@ -5372,9 +5855,9 @@ const Composer: FC<{
               ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
+              <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
               <ImagesToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {artifactsEnabled ? <ArtifactsToggle /> : null}
               {mcpEnabledForChat ? (
                 <McpComposerButton side={effectiveMenuSide} />
               ) : null}
@@ -5410,6 +5893,7 @@ const Composer: FC<{
                   overlay ? "Type your edits for your image" : "Ask anything"
                 }
                 ref={inputRef}
+                data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
                 maxRows={12}
@@ -5421,6 +5905,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
+                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -5437,7 +5922,7 @@ const Composer: FC<{
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -5470,15 +5955,17 @@ const Composer: FC<{
                 hasPendingAttachments
               }
               dictationDisabled={dictationEntryDisabled}
-              // disableQueue (project new-chat composer) also blocks the queue
-              // button, so a running thread shows Stop instead of Queue.
+              // disableQueue makes running threads show Stop instead of Queue.
               queueDisabled={
                 disableQueue ||
-                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+                !(
+                  canQueueCurrentPrompt ||
+                  canQueueTextAttachmentsPrompt ||
+                  canQueueAttachmentPrompt
+                )
               }
               onQueueClick={() => formRef.current?.requestSubmit()}
-              // ComposerPrimitive.Send handles clicks itself rather than
-              // submitting the form, so run the complete queue/capacity path.
+              // ComposerPrimitive.Send skips form submit, so run the full queue and capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}
@@ -5499,19 +5986,37 @@ const Composer: FC<{
     </>
   );
 
+  const dropOverlay = (
+    <div
+      className={cn(
+        "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+        (pageDragging || nativeDragging) && "opacity-100",
+      )}
+    >
+      <HugeiconsIcon
+        icon={AttachmentIcon}
+        strokeWidth={2}
+        className="size-6 text-primary"
+      />
+      <span className="text-sm font-medium text-primary">
+        Drop files here
+      </span>
+    </div>
+  );
+
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
-        enabled={supportsTools}
+        // mentions remain available without Code because each one offers read_skill.
+        enabled={supportsTools && skillsSwitchOn}
+        composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}
       />
     <ComposerPrimitive.Root
       ref={attachComposer}
-      // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
-      // all this leaves to find are the pill labels, and a search for "code" or "images" would land
-      // on the toolbar instead of on the conversation.
+      // skip find-in-page because it cannot index the textarea and would match toolbar pills.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
@@ -5521,6 +6026,13 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
       {youtubeOfferUrl && !isDictating && !disabled ? (
         // Keyed by URL: pasting a second link while the first is still fetching
         // remounts the prompt, so its cleanup aborts the request that is no
@@ -5532,10 +6044,9 @@ const Composer: FC<{
         />
       ) : null}
       {isTauri ? (
-        // Phase 1 native model owns Tauri local-path drops. Restore browser
-        // attachment drops in Tauri once Phase 1d adds token bridging.
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
+          {dropOverlay}
         </div>
       ) : (
         <ComposerPrimitive.AttachmentDropzone
@@ -5545,24 +6056,7 @@ const Composer: FC<{
           onDropCapture={claimPortaledDrop}
         >
           {composerContent}
-          {/* Gemini-style drop affordance, shown while a file is dragged over
-              the composer. Absolute + pointer-events-none so the outline adds
-              no layout shift and the drop still lands. */}
-          <div
-            className={cn(
-              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
-              pageDragging && "opacity-100",
-            )}
-          >
-            <HugeiconsIcon
-              icon={AttachmentIcon}
-              strokeWidth={2}
-              className="size-6 text-primary"
-            />
-            <span className="text-sm font-medium text-primary">
-              Drop files here
-            </span>
-          </div>
+          {dropOverlay}
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
@@ -5853,6 +6347,7 @@ function useImeComposerInputHandlers({
     },
     isComposing,
     isComposingRef: composingRef,
+    imeSessionOpenRef,
   };
 }
 
@@ -5905,7 +6400,10 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const supportsPreserveThinking = useChatRuntimeStore(
@@ -5926,6 +6424,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
             apiType: selectedExternalProvider?.apiType,
+            reasoningConfig: selectedExternalProvider?.reasoningConfig,
           },
         )
       : null;
@@ -6027,15 +6526,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   setPreserveThinking(false);
                 }}
               >
+                None
                 <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                   className={cn(
-                    "unsloth-tick size-4",
+                    "unsloth-tick ms-auto size-4",
                     effectiveReasoningVisualEnabled && "opacity-0",
                   )}
                 />
-                None
               </DropdownMenuItem>
             )}
             {effectiveReasoningEffortLevels
@@ -6060,18 +6559,18 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     }
                   }}
                 >
+                  {formatEffortLabel(level)}
                   <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                     className={cn(
-                      "unsloth-tick size-4",
+                      "unsloth-tick ms-auto size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
                         displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />
-                  {formatEffortLabel(level)}
                 </DropdownMenuItem>
               ))}
           </>
@@ -6091,15 +6590,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 }
               }}
             >
+              Thinking
               <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                 className={cn(
-                  "unsloth-tick size-4",
+                  "unsloth-tick ms-auto size-4",
                   !effectiveReasoningEnabled && "opacity-0",
                 )}
               />
-              Thinking
             </DropdownMenuItem>
           )
         )}
@@ -6117,15 +6616,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               }
             }}
           >
+            Preserve thinking
             <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
               className={cn(
-                "unsloth-tick size-4",
+                "unsloth-tick ms-auto size-4",
                 !preserveThinking && "opacity-0",
               )}
             />
-            Preserve thinking
           </DropdownMenuItem>
         )}
       </NonModalDropdownMenu>
@@ -6205,7 +6704,10 @@ const WebSearchToggle: FC = () => {
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
@@ -6262,10 +6764,10 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
-      data-pill-label="Code"
+      data-pill-label="Tools"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+        codeToolsEnabled ? "Disable tools" : "Enable tools"
       }
     >
       <PillGlyph>
@@ -6275,7 +6777,7 @@ const CodeToolsToggle: FC = () => {
           strokeWidth={2}
         />
       </PillGlyph>
-      <span>Code</span>
+      <span>Tools</span>
     </button>
   );
 };
@@ -6284,17 +6786,15 @@ const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  // OpenAI cloud Responses-API models advertise image_generation as a
-  // server-side tool; no local runtime fallback. Mirror of shared-composer's
-  // imageDisabled / showImagePill so this composer matches the empty state.
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  // The provider's own image_generation, or the image or video model loaded in
+  // Unsloth for a model that calls Unsloth tools. Mirror of
+  // shared-composer's imageDisabled / showImagePill so this composer matches the empty state.
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  if (!supportsBuiltinImageGeneration) {
+  if (!imageToolShown) {
     return null;
   }
   const disabled = !modelLoaded;
@@ -6316,33 +6816,6 @@ const ImagesToggle: FC = () => {
         <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
       </PillGlyph>
       <span>Images</span>
-    </button>
-  );
-};
-
-const ArtifactsToggle: FC = () => {
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  // Canvas is opt-in; the pill only shows once it is toggled on from the menu.
-  if (!artifactsEnabled) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => setArtifactsEnabled(false)}
-      className="composer-pill-btn"
-      data-pill-label="Canvas"
-      data-active="true"
-      aria-label="Disable canvas"
-    >
-      <PillGlyph>
-        <HugeiconsIcon
-          icon={PencilRulerIcon}
-          className="size-[calc(15.5px*var(--ui-space-scale,1))]"
-          strokeWidth={2}
-        />
-      </PillGlyph>
-      <span>Canvas</span>
     </button>
   );
 };
@@ -6440,7 +6913,7 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr|m4b|weba|mka)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
   const enabledAccept =
@@ -6454,6 +6927,30 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
+function usePickComposerAttachment(): () => void {
+  const aui = useAui();
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
+    if (!activeCheckpoint || s.modelLoading) {
+      return true;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
+  return useCallback(() => {
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    openFilePicker(attachmentAccept, (files) => {
+      for (const file of files) {
+        void aui.composer().addAttachment(file);
+      }
+    });
+  }, [aui, audioAttachmentsEnabled]);
+}
+
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
@@ -6465,9 +6962,6 @@ const ComposerToolsMenu: FC<{
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -6486,15 +6980,6 @@ const ComposerToolsMenu: FC<{
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
-    const activeCheckpoint = s.params.checkpoint;
-    // No model yet: offer audio too, since files attached now wait for the model loaded next.
-    if (!activeCheckpoint || s.modelLoading) {
-      return true;
-    }
-    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
-    return Boolean(activeModel?.hasAudioInput);
-  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -6503,9 +6988,7 @@ const ComposerToolsMenu: FC<{
   const supportsBuiltinCodeExecution = useChatRuntimeStore(
     (s) => s.supportsBuiltinCodeExecution,
   );
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
+  const imageToolShown = useChatRuntimeStore(imageToolAvailable);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -6521,7 +7004,10 @@ const ComposerToolsMenu: FC<{
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
@@ -6534,17 +7020,15 @@ const ComposerToolsMenu: FC<{
   // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
     !researchAvailable ||
+    (modelLoaded && !externalSelection && !supportsTools) ||
     (Boolean(externalSelection) &&
       providerModelSupportsStudioTools(
         selectedExternalProvider?.providerType,
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
-  const recentProjects = [...projects]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 3);
+  const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -6563,44 +7047,14 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
   );
-  const pickAttachment = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.hidden = true;
-
-    const attachmentAccept = attachmentAcceptForPicker(
-      aui.composer().getState().attachmentAccept,
-      audioAttachmentsEnabled,
-    );
-    if (attachmentAccept !== "*") {
-      input.accept = attachmentAccept;
-    }
-
-    document.body.appendChild(input);
-    input.onchange = (event) => {
-      const files = (event.target as HTMLInputElement).files;
-      if (files) {
-        for (const file of files) {
-          void aui.composer().addAttachment(file);
-        }
-      }
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [aui, audioAttachmentsEnabled]);
+  const pickAttachment = usePickComposerAttachment();
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
@@ -6624,6 +7078,7 @@ const ComposerToolsMenu: FC<{
   const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -6653,6 +7108,22 @@ const ComposerToolsMenu: FC<{
       if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
+
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
 
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
@@ -6696,13 +7167,43 @@ const ComposerToolsMenu: FC<{
   // (photos, web search, code) and "More" itself are always shown and live
   // outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    deepResearch: researchAvailable ? (
+      <DropdownMenuItem
+        disabled={researchDisabled && !deepResearchEnabled}
+        className={
+          deepResearchEnabled && !researchDisabled
+            ? "text-primary font-medium"
+            : undefined
+        }
+        onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+      >
+        <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+        Deep research
+        {deepResearchEnabled && !researchDisabled ? (
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
+        ) : null}
+      </DropdownMenuItem>
+    ) : null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
         className={
           ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
         }
-        onSelect={() => setRagEnabled(!ragEnabled)}
+        onSelect={() => {
+          // With the files panel hidden, the item brings it back rather than turning RAG off.
+          const { ragPanelHidden, setRagPanelHidden } = useChatRuntimeStore.getState();
+          if (ragEnabled && ragPanelHidden) {
+            setRagPanelHidden(false);
+            return;
+          }
+          setRagEnabled(!ragEnabled);
+        }}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
@@ -6729,9 +7230,15 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -6836,19 +7343,6 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    // Hidden by default; enabled from Settings > Chat > Canvas.
-    canvas: showCanvasMenuItem ? (
-      <DropdownMenuItem
-        className={artifactsEnabled ? "text-primary font-medium" : undefined}
-        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-      >
-        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-        Canvas
-        {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
-        ) : null}
-      </DropdownMenuItem>
-    ) : null,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -6880,12 +7374,12 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
+  const deepResearchWithTools = pinnedPlusItems.includes("deepResearch");
 
   return (
     <>
-    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -6894,15 +7388,12 @@ const ComposerToolsMenu: FC<{
       }}
       onRunList={(items) => runPromptList(items, true)}
     />
-    <DropdownMenu
-      onOpenChange={(open) => {
-        if (open) void refreshRecentPrompts();
-      }}
-    >
+    <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
           aria-label="Tools and attachments"
+          data-pill-label="Add files and more"
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >
@@ -6967,7 +7458,7 @@ const ComposerToolsMenu: FC<{
             strokeWidth={2}
             className="scale-[1.12]"
           />
-          Code
+          Tools
           {codeToolsEnabled && !codeDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
@@ -6976,28 +7467,8 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
-        {researchAvailable ? (
-          <DropdownMenuItem
-            disabled={researchDisabled && !deepResearchEnabled}
-            className={
-              deepResearchEnabled && !researchDisabled
-                ? "text-primary font-medium"
-                : undefined
-            }
-            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
-          >
-            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
-            Deep research
-            {deepResearchEnabled && !researchDisabled ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-        ) : null}
-        {supportsBuiltinImageGeneration && (
+        {deepResearchWithTools ? plusMenuNodes.deepResearch : null}
+        {imageToolShown && (
           <DropdownMenuItem
             disabled={imageDisabled}
             className={
@@ -7020,9 +7491,11 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
-        {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-        ))}
+        {pinnedPlusItems
+          .filter((id) => id !== "deepResearch")
+          .map((id) => (
+            <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
@@ -7195,8 +7668,32 @@ const ComposerRightControls: FC<{
     // A reply replayed after a reload has no adapter run for Cancel to abort.
     stopRecoveredRun(threadRemoteId);
   };
+  const aui = useAui();
+  const chatActive = useChatActive();
+  const threadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
+  useShortcut(
+    "stopGeneration",
+    () => {
+      const research = isResearchActive;
+      stop();
+      if (research) return;
+      const composer = aui.composer();
+      if (composer.getState().canCancel) composer.cancel();
+    },
+    {
+      enabled: chatActive && (threadRunning || isResearchActive),
+      claims: () =>
+        controlsRef.current !== null &&
+        !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
+    },
+  );
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+    <div
+      ref={controlsRef}
+      className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5"
+    >
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -7365,14 +7862,14 @@ const MessageError: FC = () => {
   const researchActive = useThreadResearchActive();
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
-              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+              className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
               <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry
@@ -7392,7 +7889,11 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span className="generating-glint text-sm text-muted-foreground">
+      Working...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -7443,18 +7944,49 @@ function useContinuation() {
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
-  const reasoning = useAuiState(
-    ({ message }) => readContinuationSource(message.content).reasoning,
+  const reasoning = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? ""
+      : readContinuationSource(message.content).reasoning,
   );
-  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
-  // call and its result would be missing from the outbound history.
-  const continuable = useAuiState(({ message }) =>
-    isContinuableContent(message.content, { thought: thoughtResumable }),
-  );
-  // Gemini signs its text parts, and the resumed turn is replayed from this branch,
-  // so the signature travels with the partial.
+  // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
+  // so both kinds of replay metadata travel with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
+  );
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? undefined
+      : message.content,
+  );
+  const thoughtParts = useMemo(
+    () => collectGeminiThoughtReplayParts(messageContent),
+    [messageContent],
+  );
+  const answerParts = useMemo(
+    () => collectGeminiAnswerReplayParts(messageContent),
+    [messageContent],
+  );
+  const geminiReplayTurns = useMemo(
+    () =>
+      continuationGeminiReplayTurns(metadata, {
+        text: partial,
+        ...(thoughtSignature ? { thoughtSignature } : {}),
+        ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+        ...(answerParts.length > 0 ? { answerParts } : {}),
+      }),
+    [metadata, partial, thoughtSignature, thoughtParts, answerParts],
+  );
+  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
+  // call and its result would be missing from the outbound history. A Gemini ledger is
+  // independently replayable even when its signed thought produced no visible text.
+  const continuable = useMemo(
+    () =>
+      isContinuableContent(messageContent, {
+        thought: thoughtResumable,
+        replay: geminiReplayTurns.length > 0,
+      }),
+    [messageContent, thoughtResumable, geminiReplayTurns],
   );
   // Audio input re-listens to the recording and answers afresh rather than resuming,
   // so continuing there would append a second answer.
@@ -7488,7 +8020,11 @@ function useContinuation() {
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim() || carriedReasoning.trim());
+    Boolean(
+      partial.trim() ||
+        carriedReasoning.trim() ||
+        geminiReplayTurns.length > 0,
+    );
 
   const reasoningDuration = readThoughtDuration(metadata);
   // Hands the started run back, untyped: the only handle identified with THIS run.
@@ -7504,6 +8040,10 @@ function useContinuation() {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
+      ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
+      ...(answerParts.length > 0 ? { answerParts } : {}),
+      ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
+      ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({
       parentId: parent,
@@ -7511,7 +8051,18 @@ function useContinuation() {
         custom: { [CONTINUATION_RUN_CONFIG_KEY]: request },
       },
     });
-  }, [aui, messageId, partial, carriedReasoning, reasoningDuration, thoughtSignature]);
+  }, [
+    aui,
+    messageId,
+    partial,
+    carriedReasoning,
+    reasoningDuration,
+    thoughtSignature,
+    thoughtParts,
+    answerParts,
+    geminiReplayTurns,
+    metadata,
+  ]);
 
   return {
     messageId,
@@ -7688,7 +8239,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
     // The run is starting this tick; showing the bar first would flash a question that is
     // already being answered.
     return (
-      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
+      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-lg border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
         <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
         Continuing automatically.
       </div>
@@ -7696,7 +8247,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
   }
 
   return (
-    <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
+    <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
         {incompleteLabel(reason)}.{remedy ? ` ${remedy}.` : ""}
       </span>
@@ -7718,6 +8269,33 @@ const ContinueMessageBarForLastMessage: FC = () => {
   );
 };
 
+const ToolGroupThenCompaction = memo<
+  PropsWithChildren<{ startIndex: number; endIndex: number }>
+>(({ startIndex, endIndex, children }) => {
+  const truncation = useAuiState(({ thread, message }) => {
+    const marker = compactionToolCallDividers(thread.messages).get(message.id);
+    if (!marker) return null;
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const part = message.parts[index];
+      if (part?.type === "tool-call" && part.toolCallId === marker.afterToolCallId) {
+        return marker.truncation;
+      }
+    }
+    return null;
+  });
+  return (
+    <>
+      <ToolGroup startIndex={startIndex} endIndex={endIndex}>
+        {children}
+      </ToolGroup>
+      {truncation && (
+        <CompactionDivider truncation={truncation} className="my-6" />
+      )}
+    </>
+  );
+});
+ToolGroupThenCompaction.displayName = "ToolGroupThenCompaction";
+
 const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
 const KnowledgeBaseToolUIConfirmable =
   withToolConfirmation(KnowledgeBaseToolUI);
@@ -7727,6 +8305,9 @@ const CodeExecutionToolUIConfirmable =
   withToolConfirmation(CodeExecutionToolUI);
 const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
+);
+const VideoGenerationToolUIConfirmable = withToolConfirmation(
+  VideoGenerationToolUI,
 );
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 // Read at render time, not module scope: the skill modules reach the chat barrel.
@@ -7749,16 +8330,19 @@ const ASSISTANT_PART_COMPONENTS = {
   Reasoning: Reasoning,
   ReasoningGroup: ReasoningGroup,
   Source: Sources,
-  ToolGroup: ToolGroup,
+  ToolGroup: ToolGroupThenCompaction,
   tools: {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
       read_skill: ReadSkillToolUIConfirmable,
+      studio_load_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
+      generate_image: ImageGenerationToolUIConfirmable,
+      generate_video: VideoGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
     },
     Fallback: ToolFallbackConfirmable,
@@ -7817,7 +8401,11 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
-  const messageContent = useAuiState(({ message }) => message.content);
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? null
+      : message.content,
+  );
   const metadataResearchRunId = useAuiState(({ message }) =>
     getResearchRunId(message.metadata),
   );
@@ -7831,42 +8419,6 @@ const AssistantMessage: FC = () => {
     researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
       ? metadataResearchRunId
       : null;
-  // Persisted on the assistant turn that compacted, so the notice survives a reload.
-  const contextTruncation = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { contextTruncation?: unknown } }
-        | undefined
-    )?.custom;
-    const value = custom?.contextTruncation;
-    return value && typeof value === "object"
-      ? (value as ContextTruncation)
-      : null;
-  });
-  // Once a thread outgrows the window every request runs the fit, so "this turn
-  // compacted" is true of every later reply and would put a notice on all of them. What
-  // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one, or a checkpoint starting inside a tool
-  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
-  const showsNotice = useAuiState(({ thread }) => {
-    let previousDropped = 0;
-    for (const message of thread.messages) {
-      if (message.role !== "assistant") continue;
-      const value = (
-        message.metadata as
-          | { custom?: { contextTruncation?: unknown } }
-          | undefined
-      )?.custom?.contextTruncation as ContextTruncation | undefined;
-      const dropped = compactionBoundary(value);
-      if (shouldShowCompactionNotice(value, previousDropped)) {
-        if (message.id === messageId) return true;
-        previousDropped = Math.max(previousDropped, dropped);
-      } else if (message.id === messageId) {
-        return false;
-      }
-    }
-    return false;
-  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -7941,34 +8493,30 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        {contextTruncation && showsNotice && !isEditing && (
-          <CompactionNotice truncation={contextTruncation} />
-        )}
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
-          <div className="flex flex-col gap-2 w-full">
-            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
-            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
-              <textarea
-                ref={textareaRef}
-                defaultValue={extractTaggedText(messageContent)}
-                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-                autoFocus
-                onInput={adjustHeight}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                    handleSave();
-                  }
-                  if (e.key === 'Escape') {
-                    setEditingId(null); // UX: Close editor on Escape
-                  }
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
-              <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+          // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
+          // index.css zeroes the margin-bottom of the reply's last descendants.
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-3xl bg-muted pb-3">
+            <textarea
+              ref={textareaRef}
+              defaultValue={extractTaggedText(messageContent ?? [])}
+              className="block min-h-14 w-full max-h-[70dvh] resize-none overflow-y-auto bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+              autoFocus
+              onInput={adjustHeight}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (isModEnter(e)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
+              }}
+            />
+            <div className="mx-3 flex items-center gap-2 self-end">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>
           </div>
         ) : (
@@ -7991,7 +8539,6 @@ const AssistantMessage: FC = () => {
             */}
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
-                <RagSourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
               </>
@@ -8001,7 +8548,9 @@ const AssistantMessage: FC = () => {
         )}
       </div>
 
-      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+        {/* First, so the action bar mounting on hover never moves it. */}
+        <AssistantMessageTime />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
@@ -8083,10 +8632,10 @@ const ForkCountBadge: FC = () => {
   if (count <= 0) return null;
   return (
     <span
-      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
+      className="mx-1 inline-flex items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
-      <GitBranchIcon strokeWidth={1.75} className="size-3" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-3" />
       {count}
     </span>
   );
@@ -8138,12 +8687,10 @@ const useForkMessageAction = () => {
         search: { thread: result.thread.id },
         replace: false,
       });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
       console.error("Failed to fork", error);
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      showForkFailedToast(error);
     } finally {
       setPending(false);
     }
@@ -8195,7 +8742,7 @@ const ForkMessageButton: FC = () => {
       disabled={forkDisabled}
       onClick={forkMessage}
     >
-      <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
     </TooltipIconButton>
   );
 };
@@ -8260,7 +8807,8 @@ const useThreadResearchActive = (): boolean => {
   });
 };
 
-const DeleteMessageButton: FC = () => {
+/** Deletes this message (a prompt with its replies); `hidden` for research messages. */
+function useDeleteMessage() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -8310,22 +8858,67 @@ const DeleteMessageButton: FC = () => {
     }
   };
 
-  if (researchRunId || ownsResearchMessage) {
+  return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
+}
+
+const DeleteMessageButton: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
     return null;
   }
-
   return (
     <TooltipIconButton
-      tooltip="Delete message"
+      tooltip="Delete"
       disabled={isRunning}
-      onClick={handleDelete}
-      className="text-chat-icon-fg hover:text-destructive"
+      onClick={() => void handleDelete()}
+      className="hover:!text-destructive"
     >
-      <HugeiconsIcon
-        icon={Delete02Icon}
-        strokeWidth={1.75}
-        className="size-icon"
-      />
+      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
+};
+
+const MORE_MENU_CONTENT_CLASS =
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+
+// Loaded on first use: the dialog is not part of the first screen.
+const LazyRewindDialog = lazy(() =>
+  import("@/components/assistant-ui/rewind-dialog").then((module) => ({
+    default: module.RewindDialog,
+  })),
+);
+
+const RewindDialogMount: FC = () => {
+  const requested = useRewindDialogStore((s) => s.request !== null);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (requested) setLoaded(true);
+  }, [requested]);
+  // Stays mounted once loaded so closing keeps its animation.
+  return requested || loaded ? (
+    <Suspense fallback={null}>
+      <LazyRewindDialog />
+    </Suspense>
+  ) : null;
+};
+
+const RewindMessageButton: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  return (
+    <TooltipIconButton
+      tooltip={t("rewind.title")}
+      disabled={isRunning}
+      onClick={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };
@@ -8382,7 +8975,7 @@ const EditAssistantMessageButton: FC = () => {
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
-        icon={Edit03Icon}
+        icon={EditResponseIcon}
         strokeWidth={1.75}
         className="size-icon"
       />
@@ -8390,16 +8983,17 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
-/** Continue the newest finished reply; incomplete replies use the Resume bar. */
-const ContinueResponseButton: FC = () => {
+/** The More menu's Continue response, for the newest finished reply; incomplete replies use the
+ *  Resume bar. */
+const ContinueResponseMenuItem: FC = () => {
   const isLast = useAuiState(({ message }) => message.isLast);
   if (!isLast) {
     return null;
   }
-  return <ContinueResponseButtonForLastMessage />;
+  return <ContinueResponseMenuItemForLastMessage />;
 };
 
-const ContinueResponseButtonForLastMessage: FC = () => {
+const ContinueResponseMenuItemForLastMessage: FC = () => {
   const { messageId, reason, completed, canResume, startContinuation } =
     useContinuation();
   const editing = useChatRuntimeStore((s) => s.editingMessageId === messageId);
@@ -8411,14 +9005,15 @@ const ContinueResponseButtonForLastMessage: FC = () => {
     return null;
   }
   return (
-    <TooltipIconButton
-      tooltip="Continue response"
-      onClick={() => {
+    <ActionBarMorePrimitive.Item
+      onSelect={() => {
         startContinuation();
       }}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-icon" />
-    </TooltipIconButton>
+      <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
+      Continue response
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -8436,9 +9031,9 @@ const EditAssistantMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
       Edit response
     </ActionBarMorePrimitive.Item>
   );
@@ -8466,14 +9061,12 @@ const AssistantActionBar: FC = () => {
   const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
   // Not built on DropdownMenuContent, so clear the titlebar and cap the height here.
   const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
-  const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Read aloud and Edit response live in the More menu.
-  const inlineReadAloud = useChatPreferencesStore((s) => s.showInlineReadAloud);
+  // On by default; off moves Edit response into the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8498,11 +9091,10 @@ const AssistantActionBar: FC = () => {
         // remounts a bar when focus enters that message, so tabbing brings back what hovering
         // brings back and the controls return to the accessibility tree with it.
         autohide={speaking ? "never" : "not-last"}
-        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
-        <ContinueResponseButton />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
@@ -8510,13 +9102,11 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}
-        <ForkCountBadge />
-        <DeleteMessageButton />
-        {inlineReadAloud && ttsEnabled && (
+        {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                <HugeiconsIcon icon={Volume02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={ReadAloudIcon} strokeWidth={1.75} className="size-icon" />
               </TooltipIconButton>
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
@@ -8534,6 +9124,9 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
+        <ForkCountBadge />
+        <ForkMessageButton />
+        <DeleteMessageButton />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -8552,42 +9145,21 @@ const AssistantActionBar: FC = () => {
             align="start"
             collisionPadding={moreMenuCollisionPadding}
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className={MORE_MENU_CONTENT_CLASS}
           >
             {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
                 The surface padding insets it clear of the curve. */}
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-              {/* Prevent an outside dismissal from triggering Delete. */}
+              {/* Keep the click that dismisses the menu off the bar's buttons. */}
               <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
               <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-              {!inlineReadAloud && ttsEnabled && (
-                <MessagePrimitive.If speaking={false}>
-                  <ActionBarPrimitive.Speak asChild={true}>
-                    <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                      <HugeiconsIcon
-                        icon={Volume02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      Read aloud
-                    </ActionBarMorePrimitive.Item>
-                  </ActionBarPrimitive.Speak>
-                </MessagePrimitive.If>
-              )}
+              <ContinueResponseMenuItem />
               {!inlineEdit && <EditAssistantMessageMenuItem />}
-              <ActionBarMorePrimitive.Item
-                disabled={forkDisabled}
-                onSelect={() => void forkMessage()}
-                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-              >
-                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-                Fork in new chat
-              </ActionBarMorePrimitive.Item>
               <ActionBarPrimitive.ExportMarkdown
                 asChild={true}
                 onExport={exportMessageMarkdown}
               >
-                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                   <HugeiconsIcon
                     icon={Download01Icon}
                     strokeWidth={1.75}
@@ -8639,7 +9211,7 @@ const AssistantActionBar: FC = () => {
                       );
                     })();
                   }}
-                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                 >
                   <HugeiconsIcon
                     icon={FolderAttachmentIcon}
@@ -8671,7 +9243,7 @@ const UserMessageAudio: FC = () => {
   }
   return (
     <div className="col-start-2 flex justify-end">
-      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
@@ -8681,6 +9253,10 @@ const UserMessageAudio: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  // Attachments alone (annotations, images) get no empty bubble under them.
+  const hasContent = useAuiState(({ message }) =>
+    message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
+  );
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
@@ -8692,12 +9268,14 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
-          <MessagePrimitive.Parts />
-        </div>
+        {hasContent ? (
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+            <MessagePrimitive.Parts />
+          </div>
+        ) : null}
         <UserMessageFooter>
           <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-0.5 shrink-0" />
+          <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
       {/* The other half of the pair: last is a user message while a reply is
@@ -8706,7 +9284,7 @@ const UserMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters Delete
+          mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
       <span
         className="aui-user-reveal-sentinel"
@@ -8734,6 +9312,7 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <RewindMessageButton />
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
@@ -8776,7 +9355,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root
-        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted"
+        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
           submitEdit();
@@ -8829,10 +9408,10 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchPrevIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
+      <span className="aui-branch-picker-state text-ui-13 leading-none tabular-nums">
         <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
@@ -8841,7 +9420,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchNextIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>

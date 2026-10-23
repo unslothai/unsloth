@@ -11,12 +11,6 @@ import re
 from collections.abc import Callable
 from typing import Any, Optional
 
-from utils.current_date_prompt_settings import (
-    CURRENT_DATE_PROMPT_LINE_RE,
-    CURRENT_DATE_UPDATE_NOTE_RE,
-    CURRENT_DATE_UPDATE_PREFIX,
-)
-
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
 _UNPRICED_MEDIA_TYPES = frozenset(
     ("image_url", "input_audio", "audio", "input_image", "input_video", "video_url")
@@ -139,95 +133,6 @@ def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
     byte-identical."""
     kept = {id(message) for message in after}
     return [message for message in before if id(message) not in kept]
-
-
-_DATE_NOTE_SEARCH_RE = re.compile(
-    rf"{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\]"
-)
-
-
-def _first_text_index(content: Any) -> Optional[int]:
-    if isinstance(content, str):
-        return -1 if content.strip() else None
-    if isinstance(content, list):
-        return next(
-            (
-                index
-                for index, part in enumerate(content)
-                if isinstance(part, dict)
-                and isinstance(part.get("text"), str)
-                and part["text"].strip()
-            ),
-            None,
-        )
-    return None
-
-
-def _texts(message: dict) -> list[str]:
-    content = message.get("content")
-    if isinstance(content, str):
-        return [content]
-    if isinstance(content, list):
-        return [
-            p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
-        ]
-    return []
-
-
-def _is_folded_tool_text(text: str) -> bool:
-    if not text.lstrip().startswith("{"):
-        return False
-    try:
-        parsed = json.loads(text)
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "tool_response" in parsed
-
-
-def keep_date_note(messages: list[dict], fitted: list[dict]) -> Optional[tuple[dict, Any]]:
-    """Move the evicted first turn's date note onto the oldest kept user turn."""
-    first = next(
-        (
-            message
-            for message in messages
-            if isinstance(message, dict)
-            and message.get("role") == "user"
-            and _first_text_index(message.get("content")) is not None
-        ),
-        None,
-    )
-    if first is None or any(message is first for message in fitted):
-        return None
-    index = _first_text_index(first["content"])
-    note = CURRENT_DATE_UPDATE_NOTE_RE.match(
-        first["content"] if index == -1 else first["content"][index]["text"]
-    )
-    if note is None or any(
-        CURRENT_DATE_PROMPT_LINE_RE.search(text) or _DATE_NOTE_SEARCH_RE.search(text)
-        for message in fitted
-        for text in _texts(message)
-    ):
-        return None
-    for message in fitted:
-        index = _first_text_index(message.get("content")) if message.get("role") == "user" else None
-        if index is None:
-            continue
-        content = message["content"]
-        text = content if index == -1 else content[index]["text"]
-        if _is_folded_tool_text(text):
-            continue
-        noted = f"{note.group(0).strip()}\n\n{text}"
-        # in place, so identity-based eviction bookkeeping still sees the same turn.
-        if index == -1:
-            message["content"] = noted
-        else:
-            message["content"] = [
-                *content[:index],
-                {**content[index], "text": noted},
-                *content[index + 1 :],
-            ]
-        return message, content
-    return None
 
 
 def truncate_oldest_messages(
@@ -926,6 +831,7 @@ def fit_rolling_context(
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
+    replay_only: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its context by dropping oldest complete turns; the current turn is never
     clipped.
@@ -958,6 +864,15 @@ def fit_rolling_context(
             fitted = candidate
             dropped_total = dropped
             current_tokens = count_tokens(fitted)
+
+    if replay_only:
+        return fitted, {
+            "dropped_messages": dropped_total,
+            "prompt_tokens_before": initial_tokens,
+            "prompt_tokens_after": current_tokens,
+            "context_length": context_length,
+            "fits": current_tokens <= prompt_target,
+        }
 
     # Phase two: take a chunk out rather than skimming to the brim, so the boundary can stay put.
     trim_target = prompt_target
@@ -1025,3 +940,151 @@ def fit_rolling_context(
         "context_length": context_length,
         "fits": True,
     }
+
+
+# withSandboxAttachmentPaths' note (sandbox-attachments.ts): only these attachments have a copy to point at.
+_SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
+    r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
+    r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
+)
+# The frontend's wrapper tag (attachment, pasted_text, document_annotations); the cut goes inside it.
+_ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
+# Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
+_ATTACHMENT_FIT_MARGIN = 0.125
+# No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
+_MAX_CHARS_PER_TOKEN = 16
+
+
+def _attachment_spans(text: str):
+    """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
+    notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
+    for index, note in enumerate(notes):
+        end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+        body = text[note.end() : end]
+        opened = _ATTACHMENT_OPEN_RE.match(body)
+        closing = f"\n</{opened.group('tag')}>" if opened else ""
+        close = body.rfind(closing) if opened else -1
+        if opened and close >= opened.end():
+            yield (
+                note,
+                opened.group(0),
+                body[opened.end() : close],
+                closing,
+                body[close + len(closing) :],
+            )
+        else:
+            yield note, "", body, "", ""
+
+
+def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
+    """Attachments longer than ``keep_chars`` keep their first whole lines (``excerpt``) or only their path."""
+    first = _SANDBOX_ATTACHMENT_NOTE_RE.search(text)
+    if not first:
+        return text
+    out = [text[: first.start()]]
+    for note, opened, inner, close, tail in _attachment_spans(text):
+        name, path = note.group("name"), note.group("path")
+        if len(inner) <= keep_chars:
+            out.append(note.group(0) + opened + inner + close + tail)
+            continue
+        total = inner.count("\n") + (0 if inner.endswith("\n") else 1)
+        kept = inner[:keep_chars] if excerpt else ""
+        kept = kept[: kept.rindex("\n") + 1] if "\n" in kept else ""
+        where = (
+            f"The whole file is at path = {path} in the python tool's working directory, so read the part you "
+            "need with python"
+        )
+        if kept:
+            out.append(
+                f"{note.group(0)}{opened}{kept[:-1]}{close}\n[{name} is too long for the context window: "
+                f"only its first {kept.count(chr(10))} of {total} lines are above. {where} instead of answering "
+                f"from this excerpt.]{tail}"
+            )
+        else:
+            out.append(
+                f"[{name} ({total} lines) is too long for the context window to show. {where}.]{tail}"
+            )
+    return "".join(out)
+
+
+def _cut_content(content: Any, keep_chars: int, *, excerpt: bool) -> Any:
+    if isinstance(content, str):
+        return _cut_attachment_bodies(content, keep_chars, excerpt = excerpt)
+    if isinstance(content, list):
+        return [
+            {**part, "text": _cut_attachment_bodies(part["text"], keep_chars, excerpt = excerpt)}
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            else part
+            for part in content
+        ]
+    return content
+
+
+def _attachment_body_chars(message: dict) -> int:
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+    else:
+        return 0
+    return max((len(span[2]) for text in texts for span in _attachment_spans(text)), default = 0)
+
+
+def fit_oversized_attachments(
+    messages: list[dict],
+    *,
+    context_length: int,
+    max_tokens: Optional[int],
+    count_tokens: Callable[[list[dict]], int],
+) -> list[dict]:
+    """Cut sandbox-backed attachments too big for the window: the newest turn keeps the start, older turns the path.
+
+    Decided per message, so a turn renders the same on every later request. Rewrites ``content`` in place:
+    eviction matches messages by identity, and a copy of the newest turn was archived as evicted.
+    """
+    if not context_length or context_length <= 1:
+        return messages
+    attached = [
+        index
+        for index, message in enumerate(messages)
+        if message.get("role") == "user" and _attachment_body_chars(message)
+    ]
+    if not attached:
+        return messages
+    budget = prompt_budget(context_length, max_tokens)
+    # The margin sizes a cut; it never decides one, or a file that fits would lose its end.
+    target = int(budget * (1 - _ATTACHMENT_FIT_MARGIN))
+    if count_tokens(messages) <= budget:
+        return messages
+    latest = max(index for index, message in enumerate(messages) if message.get("role") == "user")
+    base = [message for message in messages if message.get("role") == "system"]
+    for index in attached:
+        message = messages[index]
+        excerpt = index == latest
+        longest = _attachment_body_chars(message)
+
+        def fits(keep_chars: int, limit: int = target) -> bool:
+            content = _cut_content(message["content"], keep_chars, excerpt = excerpt)
+            return count_tokens([*base, {**message, "content": content}]) <= limit
+
+        cap = target * _MAX_CHARS_PER_TOKEN
+        if (longest <= budget * _MAX_CHARS_PER_TOKEN and fits(longest, budget)) or (
+            excerpt and not fits(0, budget)
+        ):
+            continue
+        low, high = 0, min(longest, cap) if fits(0) else 0
+        while high - low > 64:
+            middle = (low + high) // 2
+            if fits(middle):
+                low = middle
+            else:
+                high = middle
+        message["content"] = _cut_content(message["content"], low, excerpt = excerpt)
+    return messages

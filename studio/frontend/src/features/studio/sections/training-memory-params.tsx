@@ -27,6 +27,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
+import { OffloadLayersParams } from "./training-offload-params";
+import { offloadHardwareSupported, offloadSupported } from "@/features/training/api/mappers";
+import { useSystemInfo } from "@/hooks/use-system";
 
 const VISION_IMAGE_SIZE_PRESETS = [256, 384, 512, 768, 1024, 1536, 2048];
 
@@ -114,6 +117,7 @@ function TrainOnCompletionsOption({
 export function TrainingMemoryParams(): ReactElement {
   const t = useT();
   const isMac = usePlatformStore((state) => state.deviceType === "mac");
+  const system = useSystemInfo();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
@@ -125,6 +129,9 @@ export function TrainingMemoryParams(): ReactElement {
       gradientCheckpointing: state.gradientCheckpointing,
       isVisionModel: state.isVisionModel,
       isEmbeddingModel: state.isEmbeddingModel,
+      isAudioModel: state.isAudioModel,
+      isDecision: state.modelType === "decision",
+      modelType: state.modelType,
       isDatasetImage: state.isDatasetImage,
       visionImageSize: state.visionImageSize,
       setVisionImageSize: state.setVisionImageSize,
@@ -141,9 +148,14 @@ export function TrainingMemoryParams(): ReactElement {
       selectedModelLower.includes("deepseek") &&
       selectedModelLower.includes("ocr")
     );
-  const showPacking = !(showVisionLora || store.isEmbeddingModel);
+  const showPacking = !(
+    showVisionLora ||
+    store.isEmbeddingModel ||
+    store.isDecision
+  );
   const showTrainOnCompletions = !(
     store.isEmbeddingModel ||
+    store.isDecision ||
     store.trainingMethod === "cpt" ||
     isRawTextDatasetFormat(store.datasetFormat)
   );
@@ -237,6 +249,9 @@ export function TrainingMemoryParams(): ReactElement {
           </SelectContent>
         </Select>
       </ParamsRow>
+      {!isMac && offloadHardwareSupported(system) && offloadSupported(store) && (
+        <OffloadLayersParams />
+      )}
       {showPacking && (
         <PackingOption
           isMac={isMac}

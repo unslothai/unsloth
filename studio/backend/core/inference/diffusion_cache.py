@@ -24,7 +24,7 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-# Fixed-schedule step skip (diffusion_step_skip.py); explicit opt-in only, auto never picks it.
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit, or auto for the measured families below.
 TC_STATIC = "static"
 TC_MODES = (TC_FBCACHE, TC_STATIC)
 
@@ -40,13 +40,112 @@ FBCACHE_MIN_STEPS = 20
 # == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
 AUTO_STEP_CACHE_TIER = "max"
 
+# == diffusion_speed.REDUCTION_FILTER_OPTION, spelled out to keep this module import-free.
+_REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
+
+
+_TIER_DEFAULT = "default"
+_TIER_MAX = "max"
+
+
+# Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
+# needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
+# Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
+# The rows are ``FamilyProfile.auto_static_skip`` on the registry; the registries are torch-free, so this stays light.
+def _auto_static_skip_table() -> dict:
+    from .family_profile import profile_table
+    return {
+        repo.strip().lower(): dict(entry)
+        for rows in profile_table("auto_static_skip").values()
+        for repo, entry in rows
+    }
+
+
+AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
+
+AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
+
+# Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
+AUTO_STATIC_MIN_STEPS = 20
+
+# Kill switch: auto never picks static (explicit requests still honoured).
+ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
+
+
+def auto_step_skip_disabled(env: Optional[dict] = None) -> bool:
+    import os
+    raw = (
+        str((os.environ if env is None else env).get(ENV_AUTO_STEP_SKIP, "") or "").strip().lower()
+    )
+    return raw in ("0", "false", "off", "no", "none")
+
+
+def auto_static_skip_entry(*identifiers: Optional[str]) -> Optional[dict]:
+    """The AUTO_STATIC_SKIP row for the first identifier (repo id, then resolved base) naming a listed checkpoint."""
+    from .diffusion_families import canonical_base
+
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        entry = AUTO_STATIC_SKIP.get(canonical_base(str(identifier)).strip().lower())
+        if entry is not None:
+            return entry
+    return None
+
+
+def skip_tier(requested: Optional[str], effective: Optional[str]) -> Optional[str]:
+    """The tier the skip policy reads: an explicit off / eager stays lossless even when quant forces a compile."""
+    asked = str(requested or "").strip().lower()
+    return asked if asked in ("off", "eager") else effective
+
+
+def auto_static_skip_plan(
+    identifiers: Any,
+    speed_mode: Optional[str],
+    default_steps: Optional[int],
+    env: Optional[dict] = None,
+) -> Optional[dict]:
+    """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
+
+    ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
+    skip costs in quality). Only ``max`` skips automatically: the skip is lossy (mean LPIPS up to 0.05 on the
+    ``default`` interval, 0.10 on ``max``, PR #12652) and ComfyUI never skips steps by default, so ``default``, an
+    unset speed and the deferred profile render every step. An explicit ``static`` request is still honoured."""
+    if auto_step_skip_disabled(env):
+        return None
+    if isinstance(identifiers, str) or identifiers is None:
+        identifiers = (identifiers,)
+    entry = auto_static_skip_entry(*identifiers)
+    if not entry or speed_mode not in AUTO_STATIC_SKIP_TIERS:
+        return None
+    every = entry.get(_TIER_MAX)
+    try:
+        steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
+    except (TypeError, ValueError):
+        steps_ok = False
+    if not every or not steps_ok:
+        return None
+    return {
+        "every": int(every),
+        "min_steps": max(AUTO_STATIC_MIN_STEPS, int(entry.get("steps") or 0)),
+    }
+
 
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
     """Takes the EFFECTIVE speed tier."""
     return speed_mode == AUTO_STEP_CACHE_TIER
 
 
-def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Optional[str]:
+def resolve_auto_step_cache(
+    speed_mode: Optional[str],
+    default_steps: int,
+    *,
+    static_plan: Optional[dict] = None,
+) -> Optional[str]:
+    """``static_plan`` (from auto_static_skip_plan) wins: a family measured for the fixed schedule takes it on every
+    tier the plan allows, FBCache stays the max-tier fallback for the rest."""
+    if static_plan:
+        return TC_STATIC
     if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
         return TC_FBCACHE
     return None
@@ -201,7 +300,11 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
-                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic)
+                # Same reduction-config filter as the blocks (diffusion_speed.pin_reduction_configs).
+                block_kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None) or {}
+                pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
+                extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
+                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
                 # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
                 # restores the eager inner instead of failing the render.
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
@@ -333,6 +436,7 @@ def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool
     if not callable(named_children):
         return True
     register_unregistered_transformer_blocks(logger)
+    _register_layer_split_blocks(transformer)
     blocks = [
         getattr(block, "_orig_mod", block)
         for name, child in named_children()
@@ -399,6 +503,211 @@ def install_fbcache_length_guard() -> bool:
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _register_layer_split_blocks(transformer: Any) -> bool:
+    """Register a layer split's block classes (same-named subclasses of the real blocks) with their base's metadata,
+    so the cache finds them. A copy, never the base's own object: ``register`` writes ``_cls`` into it. True when
+    every split block class is registered."""
+    try:
+        import dataclasses
+
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry: enable_cache decides
+        return True
+    ok = True
+    for cls in {type(m) for m in transformer.modules()}:
+        base = cls.__dict__.get("_unsloth_layer_split_base")
+        if base is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(cls)
+            continue
+        except Exception:  # noqa: BLE001 - not registered yet
+            pass
+        try:
+            meta = TransformerBlockRegistry.get(base)
+        except Exception:  # noqa: BLE001 - the base is not a cacheable block either
+            continue
+        try:
+            TransformerBlockRegistry.register(
+                model_class = cls,
+                metadata = dataclasses.replace(meta, _cls = None, _cached_parameter_indices = None),
+            )
+        except Exception:  # noqa: BLE001
+            ok = False
+    return ok
+
+
+def _tensors_to(obj: Any, device: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_tensors_to(x, device) for x in obj)
+    to = getattr(obj, "to", None)
+    return to(device) if callable(to) else obj
+
+
+def _first_device(obj: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        for x in obj:
+            dev = _first_device(x)
+            if dev is not None:
+                return dev
+        return None
+    return getattr(obj, "device", None)
+
+
+def install_fbcache_split_guard() -> bool:
+    """Make First-Block-Cache's tail hook work when the tail block runs on another card than the head block (a layer
+    split): the head block's output is copied to the tail's card for the residual, and the residual goes back to the
+    head's card, where the head hook adds it on a cached step. Copies are exact, so the cache decides and renders as
+    on one card. Calls whose tensors share a card take the original path unchanged. Process-wide and idempotent;
+    must run before ``enable_cache`` (diffusers binds ``new_forward`` when it registers the hook). False when this
+    diffusers has no FBCache block hook."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    install_fbcache_mixed_stream_tail()
+    original = getattr(FBCBlockHook, "new_forward", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_split_guard", False):
+        return True
+
+    def new_forward(self, module, *args, **kwargs):
+        if not getattr(self, "is_tail", False):
+            return original(self, module, *args, **kwargs)
+        state = self.state_manager.get_state()
+        head = state.head_block_output
+        home = _first_device(head)
+        try:
+            here = self._metadata._get_parameter_from_args_kwargs(
+                "hidden_states", args, kwargs
+            ).device
+        except Exception:  # noqa: BLE001 - the original raises the same way
+            here = None
+        if not state.should_compute or home is None or here is None or here == home:
+            return original(self, module, *args, **kwargs)
+        state.head_block_output = _tensors_to(head, here)
+        try:
+            out = original(self, module, *args, **kwargs)
+        finally:
+            state.head_block_output = head
+        residuals = state.tail_block_residuals
+        if residuals is not None:
+            state.tail_block_residuals = tuple(
+                r.to(home) if r is not None else None for r in residuals
+            )
+        return out
+
+    new_forward._unsloth_split_guard = True
+    new_forward._unsloth_mixed_stream_tail = getattr(original, "_unsloth_mixed_stream_tail", False)
+    FBCBlockHook.new_forward = new_forward
+    return True
+
+
+def _split_mixed_stream_tail_residuals(tail_hidden: Any, head_output: Any) -> Optional[tuple]:
+    """Tail residuals for a dual-stream head and a single-stream tail, or None when unmappable.
+
+    The tail ran over ``cat([encoder, hidden], dim=1)``; splitting at the text length gives
+    residuals shaped like the head's ``[hidden, encoder]`` outputs, which the skip branch adds to.
+    """
+    head_hidden, head_encoder = head_output[0], head_output[1]
+    if head_encoder is None or getattr(tail_hidden, "ndim", 0) < 2:
+        return None
+    text_len = head_encoder.shape[1]
+    if (
+        tail_hidden.shape[1] != text_len + head_hidden.shape[1]
+        or tail_hidden.shape[:1] != head_hidden.shape[:1]
+        or tail_hidden.shape[2:] != head_hidden.shape[2:]
+        or head_encoder.shape[2:] != head_hidden.shape[2:]
+    ):
+        return None
+    return (
+        tail_hidden[:, text_len:] - head_hidden,
+        tail_hidden[:, :text_len] - head_encoder,
+    )
+
+
+def _rebind_fbcache_block_hooks(transformer: Any) -> None:
+    """Point already-registered FBCache block hooks at the current ``FBCBlockHook.new_forward``.
+
+    ``HookRegistry.register_hook`` keeps ``partial(hook.new_forward, module)``, the method as it was
+    at registration, so hooks installed before ``install_fbcache_mixed_stream_tail`` (an FBCache we
+    adopt instead of re-enabling) would still run the stock tail and crash FLUX.2. Best-effort."""
+    try:
+        import functools
+
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return
+    current = getattr(FBCBlockHook, "new_forward", None)
+    if current is None:
+        return
+    for module in transformer.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) if registry is not None else None
+        hook = hooks.get(_FBC_BLOCK_HOOK) if isinstance(hooks, dict) else None
+        fn_ref = getattr(hook, "fn_ref", None) if hook is not None else None
+        bound = getattr(fn_ref, "forward", None)
+        if not isinstance(hook, FBCBlockHook) or not isinstance(bound, functools.partial):
+            continue
+        if getattr(bound.func, "__func__", None) is current:
+            continue
+        try:
+            fn_ref.forward = functools.update_wrapper(
+                functools.partial(hook.new_forward, *bound.args), hook.new_forward
+            )
+        except Exception:  # noqa: BLE001 - diffusers internals moved; leave this hook as it is
+            pass
+
+
+def install_fbcache_mixed_stream_tail() -> bool:
+    """Make First-Block-Cache work when the head block is dual-stream and the tail single-stream.
+
+    diffusers' tail hook picks its branch from the TAIL's output type, so on FLUX.2 (dual-stream
+    head, single-stream tail) it subtracts the head's ``[hidden, encoder]`` list from a tensor and
+    crashes on the first step. Only that combination takes the new path; every other family calls
+    the original hook unchanged. An unmappable tail drops the head residual so the next step
+    computes in full. Process-wide and idempotent; False when diffusers has no FBCache block hook."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCBlockHook, "new_forward", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_mixed_stream_tail", False):
+        return True
+
+    def new_forward(self, module, *args, **kwargs):
+        metadata = self._metadata
+        if (
+            not self.is_tail
+            or getattr(metadata, "return_encoder_hidden_states_index", 0) is not None
+        ):
+            return original(self, module, *args, **kwargs)
+        shared_state = self.state_manager.get_state()
+        head_output = shared_state.head_block_output
+        if not shared_state.should_compute or not isinstance(head_output, (list, tuple)):
+            return original(self, module, *args, **kwargs)
+        output = self.fn_ref.original_forward(*args, **kwargs)
+        tail_hidden = (
+            output[metadata.return_hidden_states_index]
+            if isinstance(output, (list, tuple))
+            else output
+        )
+        residuals = _split_mixed_stream_tail_residuals(tail_hidden, head_output)
+        if residuals is None:
+            # No skip may use these residuals: with no head residual the next step computes.
+            shared_state.head_block_residual = None
+        shared_state.tail_block_residuals = residuals
+        return output
+
+    new_forward._unsloth_mixed_stream_tail = True
+    new_forward._unsloth_original = original
+    FBCBlockHook.new_forward = new_forward
     return True
 
 
@@ -472,8 +781,18 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    from .diffusion_layer_split import is_layer_split
+
+    if is_layer_split(transformer) and not (
+        install_fbcache_split_guard() and _register_layer_split_blocks(transformer)
+    ):
+        # without the guard the tail hook subtracts the head block's output (primary) from its own (another card)
+        _warn(logger, mode, RuntimeError("denoiser is split across cards; running uncached"))
+        return None
     # Before enable_cache, which is what raises on a block class the registry has never seen.
     register_unregistered_transformer_blocks(logger)
+    # FLUX.2's dual-stream head + single-stream tail crashes the stock tail hook on the first step.
+    install_fbcache_mixed_stream_tail()
     thr = (
         threshold
         if threshold is not None
@@ -523,6 +842,7 @@ def apply_step_cache(
             # May not be a cache we installed, so the post-enable integration cannot be assumed
             # done. Both idempotent; skipping the first strands the child-registry list.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             try:
                 transformer._unsloth_step_cache = f"{mode}@{thr}"
@@ -576,6 +896,7 @@ def apply_step_cache(
             # _cache_config was None. register_hook refuses a duplicate name BEFORE changing
             # anything, so those hooks are intact and tearing them down would cost a healthy cache.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             # The marker MUST be set before reporting success: it is what keeps the CUDA graph
             # wrapper eager over these live hooks. Mode only; the threshold is its installer's.
@@ -642,6 +963,12 @@ def effective_request_strength(
     return pipe_default_strength if isinstance(pipe_default_strength, (int, float)) else None
 
 
+def auto_step_cache_mode(steps: int) -> Optional[str]:
+    """The cache mode an AUTO decision runs for ``steps`` (before the runner check): FBCache at
+    ``FBCACHE_MIN_STEPS``+, else uncached. The single rule ``maybe_toggle_step_cache`` applies."""
+    return TC_FBCACHE if int(steps) >= FBCACHE_MIN_STEPS else None
+
+
 def maybe_toggle_step_cache(
     pipe: Any,
     *,
@@ -657,7 +984,7 @@ def maybe_toggle_step_cache(
     if transformer is None:
         return None
     engaged = getattr(transformer, "_unsloth_step_cache", None)
-    want = int(steps) >= FBCACHE_MIN_STEPS
+    want = auto_step_cache_mode(steps) is not None
     if want and not engaged:
         return apply_step_cache(
             pipe,

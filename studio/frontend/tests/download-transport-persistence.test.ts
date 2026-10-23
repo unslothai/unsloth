@@ -52,6 +52,10 @@ store.set(
         invalid: persistedJob("org/auto-model", "auto"),
         fallback: persistedJob("org/fallback-model", "http", "xet"),
         badMarker: persistedJob("org/bad-marker-model", "http", "auto"),
+        pinned: {
+          ...persistedJob("org/pinned-model", "http"),
+          downloadDir: "/mnt/e/AI/Models",
+        },
         presented: {
           ...persistedJob("org/presented-model", "http"),
           presentation: {
@@ -121,8 +125,6 @@ test("the active transport is written with the persisted job", () => {
 });
 
 test("a fallback run's cancel marker survives the reload too", () => {
-  // Without it the restored job reads as plain HTTP and offers Pause for a
-  // stop that leaves a restart-only partial.
   const jobs = getState().jobs;
   const job = jobs[jobKeyOf("model", "org/fallback-model", null)];
   assert.equal(job?.transport, "http");
@@ -271,7 +273,6 @@ test("the first known plan total stabilizes an adopted companion", () => {
 });
 
 test("a running job is the activity the desktop quit path asks about", () => {
-  // What set_renderer_activity mirrors into Rust, so the close button warns first.
   assert.equal(hasActiveDownloadJob(getState().jobs), true);
 });
 
@@ -299,7 +300,6 @@ test("an external job counts too, since a quit kills its transfer as well", () =
     }),
     true,
   );
-  // A settled job is not activity, whoever owns it.
   assert.equal(
     hasActiveDownloadJob({
       done: {
@@ -321,4 +321,15 @@ test("an external job counts too, since a quit kills its transfer as well", () =
     }),
     false,
   );
+});
+
+test("a Download to folder survives the reload and is written back", () => {
+  // Lost, a cancel after the reload would resume into whatever folder is picked now.
+  const key = jobKeyOf("model", "org/pinned-model", null);
+  assert.equal(getState().jobs[key]?.downloadDir, "/mnt/e/AI/Models");
+  putJob({ ...getState().jobs[key], downloadedBytes: 30 });
+  assert.ok(flushPersistedState);
+  flushPersistedState();
+  const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
+  assert.equal(persisted.state.jobs[key].downloadDir, "/mnt/e/AI/Models");
 });

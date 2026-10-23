@@ -3,6 +3,9 @@
 
 export type DocumentKind = "pdf" | "docx" | "sheet" | "slides";
 
+/** A 1-based PDF page to scroll to; each new object scrolls again. */
+export type PageTarget = { page: number };
+
 const EXTENSION_KINDS: Record<string, DocumentKind> = {
   pdf: "pdf",
   docx: "docx",

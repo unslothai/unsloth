@@ -17,6 +17,7 @@ import contextvars
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from loggers import get_logger
 
@@ -403,6 +404,24 @@ def mark_current_response_failed() -> None:
     mark_response_failed(_current_response_scope.get())
 
 
+_MEDIA_TRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_owner"
+_MEDIA_UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_untracked"
+
+
+def untrack_current_media_request(scope) -> None:
+    """Drop this request from its media tracker once the route knows it won't use the local
+    engine, so a call to a saved connection can't hold off a media swap or idle unload."""
+    if not isinstance(scope, dict) or scope.get(_MEDIA_UNTRACKED_SCOPE_KEY):
+        return
+    owner = scope.get(_MEDIA_TRACKED_SCOPE_KEY)
+    if owner is None:
+        return
+    from core.inference import media_keepwarm
+
+    scope[_MEDIA_UNTRACKED_SCOPE_KEY] = True
+    media_keepwarm.end_request(owner, counted = False)
+
+
 def untrack_current_request(scope) -> None:
     """Drop this request from the in-flight count once the route knows it won't use the
     local GGUF, so external-provider traffic can't trip the swap busy guard. Idempotent;
@@ -574,8 +593,15 @@ def take_kv_resume():
         return manifest
 
 
-def purge_kv_resume() -> None:
-    resume = take_kv_resume()
+def purge_kv_resume(*, origin: Optional[str] = None) -> None:
+    """Drop the stash; with ``origin``, only one of that origin (an untagged stash is "idle")."""
+    global _kv_resume
+    with _lock:
+        resume = _kv_resume
+        if resume is not None and (origin is None or (resume.get("origin") or "idle") == origin):
+            _kv_resume = None
+        else:
+            resume = None
     if resume:
         _delete_resume_files(resume)
 
@@ -711,6 +737,8 @@ class LlamaKeepWarmMiddleware:
                 if chat_tracked:
                     _note_untracked_end(is_preview)
                 raise
+            if isinstance(scope, dict):
+                scope[_MEDIA_TRACKED_SCOPE_KEY] = media_owner
         ended = {"done": False}
         status = {"code": None}
         # Set once the terminal body frame (more_body False) is sent: only a response that completed cleanly adopts
@@ -725,7 +753,9 @@ class LlamaKeepWarmMiddleware:
                 return
             ended["done"] = True
             code = status["code"]
-            if media_owner is not None:
+            if media_owner is not None and not (
+                isinstance(scope, dict) and scope.get(_MEDIA_UNTRACKED_SCOPE_KEY)
+            ):
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
             if not chat_tracked:
                 return
@@ -801,9 +831,9 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
-def _note_idle_unload_event(freed) -> None:
-    """Monitor row for an idle auto-unload. Best-effort; uses the stash's
-    advertised repo id so the row never shows the on-disk load path."""
+def _note_idle_unload_event(freed, reason: str = "idle") -> None:
+    """Monitor row for an idle auto-unload (or a swap, via ``reason``). Best-effort; uses the
+    stash's advertised repo id so the row never shows the on-disk load path."""
     try:
         from core.inference.api_monitor import api_monitor
         from core.inference.model_ids import public_model_id
@@ -812,7 +842,7 @@ def _note_idle_unload_event(freed) -> None:
         label = public_model_id(advertised or identifier) or "model"
         if variant and ":" not in label:
             label = f"{label}:{variant}"
-        api_monitor.record_lifecycle(event = "unload", model = label, reason = "idle")
+        api_monitor.record_lifecycle(event = "unload", model = label, reason = reason)
     except Exception as exc:
         logger.debug("idle unload monitor event failed: %s", exc)
 
@@ -903,7 +933,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         raise
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
-                        _set_kv_resume({"identity": freed, **manifest})
+                        _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)

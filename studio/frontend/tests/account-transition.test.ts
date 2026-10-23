@@ -161,7 +161,6 @@ test("switch removes every content prefix and preserves only listed chrome and u
     b.browser,
   );
   assert.equal(changed, true);
-  // The fence is written before the tokens and lifted after the marker.
   assert.deepEqual(b.removed.sort(), [...content, BROWSER_ACCOUNT_FENCE_KEY].sort());
   for (const key of ACCOUNT_CHROME_KEYS)
     assert.equal(b.data.get(key), "chrome");
@@ -170,6 +169,25 @@ test("switch removes every content prefix and preserves only listed chrome and u
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);
+});
+
+test("only a switch clears the desktop browser's site data, before the new session", async () => {
+  const events: string[] = [];
+  const clear = async () => {
+    events.push("clear");
+  };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "alice" });
+  await transitionBrowserAccount("alice", "/chat", () => events.push("same"), b.browser, clear);
+  await transitionBrowserAccount("bob", "/chat", () => events.push("bob"), b.browser, clear);
+  assert.deepEqual(events, ["same", "clear", "bob"]);
+  const failing = browserWith({ [BROWSER_ACCOUNT_KEY]: "bob", "unsloth-draft": "kept" });
+  await assert.rejects(
+    transitionBrowserAccount("carol", "/chat", () => events.push("carol"), failing.browser, () =>
+      Promise.reject(new Error("clear failed")),
+    ),
+  );
+  assert.equal(events.includes("carol"), false);
+  assert.equal(failing.browser.localStorage.getItem("unsloth-draft"), "kept");
 });
 
 test("a switch keeps the machine's llama.cpp runtime repair record", async () => {
@@ -509,7 +527,7 @@ test("switching accounts clears session content and keeps neutral session flags"
     }),
     "unsloth.reload-snapshot.v1": "<div>alice</div>",
     "data-recipes:open-learning-recipes": "1",
-    // USER_STOPPED_KEY: neutral, and clearing it would restart a server the user stopped.
+    // USER_STOPPED_KEY is neutral: clearing it would restart a server the user stopped.
     unsloth_server_user_stopped: "1",
   });
   assert.equal(

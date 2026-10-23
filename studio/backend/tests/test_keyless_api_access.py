@@ -117,7 +117,7 @@ INFERENCE_POST_PATHS = "/v1/chat/completions /v1/chat/count_tokens /v1/completio
 def test_exact_route_matrix_matches_registered_topology():
     from routes.inference import router
 
-    denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
+    denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/audio/run /v1/audio/inputs /v1/audio/voices /v1/audio/translations /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
     allowed = {("POST", path) for path in INFERENCE_POST_PATHS} | {
         ("GET", "/v1/models"), ("GET", "/v1/models/unsloth/model")}
     denied = {("POST", path) for path in denied_posts} | {
@@ -137,8 +137,7 @@ def test_exact_route_matrix_matches_registered_topology():
 
 
 def test_the_allowlisted_studio_paths_name_routes_that_exist():
-    # The matrix above pins the /v1 router. This one covers the studio router, whose
-    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    # Covers the studio router, whose paths carry a mount prefix.
     from routes.inference import studio_router
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
@@ -307,7 +306,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
     for t in threads:
         t.start()
     entered.wait(timeout = 10)
-    time.sleep(0.2)  # let followers queue
+    time.sleep(0.2)
     clock[0] = keyless._SETTINGS_CACHE_TTL_S + 1.0
     release.set()
     for t in threads:
@@ -350,7 +349,7 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
     with ThreadPoolExecutor(max_workers = pool_workers) as pool:
         futures = [pool.submit(asgi_request_is_keyless, scope) for _ in range(n_requests)]
-        time.sleep(0.2)  # fill the pool
+        time.sleep(0.2)
         late_future = pool.submit(asgi_request_is_keyless, scope)
         release.set()
         results = [f.result(timeout = 10) for f in futures]
@@ -971,7 +970,6 @@ def test_tool_policy_and_api_identity(monkeypatch):
     assert request.state.keyless_api_admitted is True
     assert admitted_without_credential(resolve(request)) is True
     assert admitted_without_session(request) is True
-    # Same verdict before one is recorded: read as credentialed, it would skip the keyless guards.
     assert admitted_without_session(request_for(headers = {"Authorization": "Bearer "})) is True
     assert inference._request_has_api_key(request) is True
     assert inference._request_used_api_key(request) is True
@@ -1039,11 +1037,7 @@ def test_desktop_password_setup_does_not_block_keyless_access(monkeypatch):
 
 
 def test_setup_is_still_owed_after_keyless_access():
-    """Admitting a keyless caller must not settle the password setup it skipped.
-
-    The UI routes to /change-password off ``/api/auth/status``, which takes no auth
-    dependency, and off the 403 a browser session still gets. Keyless reaches neither.
-    """
+    """Keyless admission must not settle the password setup; the UI finds it via /api/auth/status."""
     from routes.auth import auth_status
 
     seed_user(must_change_password = True)
@@ -1063,11 +1057,7 @@ def test_setup_is_still_owed_after_keyless_access():
 
 
 def test_browser_guards_hold_before_password_setup():
-    """A page on another site stays out while the seeded password is still in place.
-
-    The gate that no longer applies to keyless callers was incidentally doubling for
-    these, so they are pinned here on their own footing.
-    """
+    """Browser guards must hold before password setup on their own, not via the gate keyless now skips."""
     seed_user(must_change_password = True)
     set_keyless_api_access("inference")
     for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "none"},
@@ -1100,7 +1090,12 @@ def test_protected_side_effect_guards_remain_wired():
     )
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (video.get_gallery_video_signed_url, rag.document_file_url)
+        for handler in (
+            video.get_gallery_video_signed_url,
+            rag.document_file_url,
+            inference.get_gallery_image_signed_url,
+            inference.get_gallery_audio_signed_url,
+        )
     )
     assert "request_admitted_without_credential" in inspect.getsource(
         inference.openai_image_generations
@@ -1170,7 +1165,6 @@ def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
     seed_user(); set_keyless_api_access("full")
     request = request_for(headers = {"Host": "localhost:8888"})
     assert admitted_without_session(request)
-    # as the middleware leaves it, so the admission fallback skips the predicate
     keyless.mark_keyless_admission(request, True)
     threads: list[int] = []
     real = keyless._keyless_request_allowed_for_scope
@@ -1206,4 +1200,18 @@ def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
     finally:
         refresher.join()
     assert held_back is False
+
+
+def test_settings_report_keyless_suspended_while_a_managed_account_exists(monkeypatch):
+    from auth import policy
+    from routes import settings as settings_routes
+
+    seed_user()
+    set_keyless_api_access("inference")
+    request = SimpleNamespace(app = SimpleNamespace(state = app_state()))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
+    assert settings_routes._keyless_api_access_response(request).suspended_by_accounts is False
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    response = settings_routes._keyless_api_access_response(request)
+    assert (response.scope, response.suspended_by_accounts) == ("inference", True)
 # fmt: on

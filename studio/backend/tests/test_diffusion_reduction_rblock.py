@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion compiles pin inductor's dynamic_scale_rblock off, so one seed renders one image in every server process.
-
-With it on, a register-heavy looped reduction (FLUX's LayerNorm + int8 activation-quant kernel) gets a second launcher
-with half the R0_BLOCK, benchmarked on first use in every process and never cached; the two block sizes give different
-bits, so FLUX.1-schnell renders differed between Studio servers on a B200 (4 of 15). The CUDA test reproduces that
-kernel and checks no runtime autotune is left once the knob is set."""
+"""Left on, dynamic_scale_rblock benchmarks a second launcher per process, changing the bits."""
 
 from __future__ import annotations
 
@@ -29,11 +24,15 @@ _KILL_SWITCH = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     before = (_INDUCTOR.dynamic_scale_rblock, _INDUCTOR.emulate_precision_casts)
+    test_cfg = _INDUCTOR.test_configs
+    before_filter = getattr(test_cfg, "force_filter_reduction_configs", None)
     monkeypatch.delenv(_KILL_SWITCH, raising = False)
     cc._reset_for_tests()
     yield
     cc._reset_for_tests()
     _INDUCTOR.dynamic_scale_rblock, _INDUCTOR.emulate_precision_casts = before
+    if before_filter is not None:
+        test_cfg.force_filter_reduction_configs = before_filter
 
 
 class _Transformer:
@@ -98,7 +97,7 @@ def test_bundle_key_tracks_the_pin(monkeypatch):
     assert pinned["inductor"] == {"dynamic_scale_rblock": False}
     monkeypatch.setenv(_KILL_SWITCH, "1")
     unpinned = _fingerprint()
-    # Kill switch = the pre-pin key, so bundles compiled with inductor's default still hit under it.
+    # kill switch = pre-pin key, so bundles compiled with inductor's default still hit
     assert "inductor" not in unpinned
     env = cache.environment_fingerprint()
     assert cache.cache_key(env, pinned) != cache.cache_key(env, unpinned)
@@ -194,7 +193,6 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
         pytest.skip(
             "this GPU does not give the fused norm kernel a second R0_BLOCK (register budget not exceeded)"
         )
-    # The second launcher is the same tile with half the reduction block.
     assert any(len(b) == 2 and b[1] == 2 * b[0] for b in default_seen), default_seen
     small, large = next(b for b in default_seen if len(b) == 2)
     _, sha_small = _run_counting_reduction_autotunes(
@@ -203,9 +201,267 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
     _, sha_large = _run_counting_reduction_autotunes(
         monkeypatch, tmp_path / "large", force_r0_block = large
     )
-    # Which one wins the per-process benchmark changes the bits: that is the cross-server drift.
+    # the per-process benchmark winner changes the bits: the cross-server drift
     assert sha_small != sha_large
     _compile()
     pinned_seen, sha_pinned = _run_counting_reduction_autotunes(monkeypatch, tmp_path / "pinned")
     assert pinned_seen == []
     assert sha_pinned in (sha_small, sha_large)
+
+
+# per compile only, never the global inductor knob
+
+_FILTER = "test_configs.force_filter_reduction_configs"
+_HAS_FILTER = hasattr(_INDUCTOR.test_configs, "force_filter_reduction_configs")
+_needs_filter = pytest.mark.skipif(
+    not _HAS_FILTER, reason = "torch has no inductor reduction-config filter"
+)
+
+
+def _family(name):
+    from core.inference import diffusion_families, video_families
+    for fam in (*video_families._FAMILIES, *diffusion_families._FAMILIES):
+        if fam.name == name:
+            return fam
+    raise AssertionError(f"no family {name}")
+
+
+def _filter_reaching_compile(monkeypatch, family):
+    """What apply_speed_optims hands the regional compile for ``family`` on a bf16 CUDA target, default tier."""
+    seen = {}
+
+    def fake_compile(pipe, logger, **kwargs):
+        seen.update(kwargs)
+        return False
+
+    monkeypatch.setattr(ds, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(ds, "_compile_repeated_blocks", fake_compile)
+    target = types.SimpleNamespace(device = "cpu", dtype = torch.bfloat16, backend = "cuda")
+    ds.apply_speed_optims(
+        types.SimpleNamespace(), target, is_gguf = False, family = family, speed_mode = ds.SPEED_DEFAULT
+    )
+    return seen["filter_reductions"]
+
+
+def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
+    # B200: of the video families only LTX-2 opts in
+    monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
+    assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
+    for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b"):
+        assert _filter_reaching_compile(monkeypatch, _family(name)) is False, name
+
+
+def _compiled_kwargs(max_autotune = False, filter_reductions = False):
+    pipe = types.SimpleNamespace(transformer = _Transformer())
+    assert (
+        ds._compile_repeated_blocks(
+            pipe, None, max_autotune = max_autotune, filter_reductions = filter_reductions
+        )
+        is True
+    )
+    return pipe.transformer.kwargs
+
+
+@_needs_filter
+@pytest.mark.parametrize("max_autotune", [False, True])
+def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_autotune):
+    _INDUCTOR.test_configs.force_filter_reduction_configs = False
+    kwargs = _compiled_kwargs(max_autotune, filter_reductions = True)
+    assert kwargs["options"][_FILTER] is True
+    # torch.compile takes mode or options, so max's mode is folded into options
+    assert "mode" not in kwargs
+    if max_autotune:
+        assert kwargs["options"]["max_autotune"] is True
+    assert _INDUCTOR.test_configs.force_filter_reduction_configs is False
+    assert not cc.is_recorded(
+        "torch._inductor.config.test_configs", "force_filter_reduction_configs"
+    )
+
+
+@pytest.mark.parametrize("max_autotune", [False, True])
+def test_other_families_compile_with_inductor_default(max_autotune):
+    kwargs = _compiled_kwargs(max_autotune, filter_reductions = False)
+    assert "options" not in kwargs
+    assert ("mode" in kwargs) is max_autotune
+
+
+@_needs_filter
+def test_kill_switch_drops_the_filter(monkeypatch):
+    monkeypatch.setenv(_KILL_SWITCH, "1")
+    kwargs = _compiled_kwargs(filter_reductions = True)
+    assert "options" not in kwargs
+
+
+@_needs_filter
+def test_bundle_key_carries_the_filter_only_when_set(monkeypatch):
+    plain = _fingerprint()
+    assert plain["inductor"] == {"dynamic_scale_rblock": False}
+    filtered = cache.model_fingerprint(
+        family = "ltx-2",
+        transformer = None,
+        dtype = "torch.bfloat16",
+        quant = "int8",
+        attention_backend = "_native_cudnn",
+        compile_kwargs = {"fullgraph": True, "dynamic": None, "mode": "default"},
+        reduction_filter = True,
+    )
+    assert filtered["inductor"] == {
+        "dynamic_scale_rblock": False,
+        "force_filter_reduction_configs": True,
+    }
+    monkeypatch.setenv(_KILL_SWITCH, "1")
+    assert "inductor" not in cache.model_fingerprint(
+        family = "ltx-2",
+        transformer = None,
+        dtype = "torch.bfloat16",
+        quant = "int8",
+        attention_backend = "_native_cudnn",
+        compile_kwargs = {"fullgraph": True, "dynamic": None, "mode": "default"},
+        reduction_filter = True,
+    )
+
+
+def _wan_like_block_head():
+    """Wan TI2V-5B block head: fp32 LayerNorm of the bf16 stream, per-token AdaLN modulation, then a Linear."""
+
+    class Head(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(3072, elementwise_affine = False, eps = 1e-6)
+            self.table = torch.nn.Parameter(torch.randn(1, 6, 3072) / 3072**0.5)
+            self.proj = torch.nn.Linear(3072, 3072)
+
+        def forward(self, x, temb):
+            shift, scale, *_ = (self.table.unsqueeze(0) + temb.float()).chunk(6, dim = 2)
+            h = (self.norm(x.float()) * (1 + scale.squeeze(2)) + shift.squeeze(2)).type_as(x)
+            return self.proj(h)
+
+    torch.manual_seed(0)
+    head = Head().cuda()
+    head.proj.to(torch.bfloat16)
+    x = (torch.randn(1, 6160, 3072, device = "cuda") * 4 + 0.3).to(torch.bfloat16)
+    temb = (torch.randn(1, 6160, 6, 3072, device = "cuda") * 0.5).to(torch.bfloat16)
+    return head, (x, temb)
+
+
+def _ltx_like_block_norm():
+    """LTX-2.3 block head at 768x512x121: fp32-stat RMSNorm over hidden 4096, per-token AdaLN modulation, a Linear.
+    The norm weight keeps both summation orders visible in the output on every torch."""
+
+    class Head(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.table = torch.nn.Parameter(torch.randn(6, 4096) / 64)
+            self.weight = torch.nn.Parameter(1 + 0.1 * torch.randn(4096))
+            self.proj = torch.nn.Linear(4096, 4096)
+
+        def forward(self, x, temb):
+            shift, scale, *_ = (
+                self.table[None, None] + temb.reshape(1, temb.shape[1], 6, -1)
+            ).unbind(dim = 2)
+            h = x.float()
+            normed = (
+                h * torch.rsqrt(h.pow(2).mean(-1, keepdim = True) + 1e-6) * self.weight.float()
+            ).to(x.dtype)
+            return self.proj(normed * (1 + scale) + shift)
+
+    torch.manual_seed(0)
+    head = Head().cuda().to(torch.bfloat16)
+    x = (torch.randn(1, 6144, 4096, device = "cuda") * 3 + 0.2).to(torch.bfloat16)
+    temb = (torch.randn(1, 6144, 6 * 4096, device = "cuda") * 0.5).to(torch.bfloat16)
+    return head, (x, temb)
+
+
+def _qwen_like_text_norm():
+    """The modulated output stays fp32 so the two statistics orders show on every GPU."""
+
+    class Head(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(3072, elementwise_affine = False, eps = 1e-6)
+
+        def forward(self, x, mod):
+            shift, scale = mod.float().chunk(2, dim = -1)
+            return torch.addcmul(shift.unsqueeze(1), self.norm(x.float()), 1 + scale.unsqueeze(1))
+
+    torch.manual_seed(0)
+    head = Head().cuda()
+    x = (torch.randn(1, 64, 3072, device = "cuda") * 3 + 0.2).to(torch.bfloat16)
+    mod = (torch.randn(1, 6144, device = "cuda") * 0.5).to(torch.bfloat16)
+    return head, (x, mod)
+
+
+def _run_norm(
+    monkeypatch,
+    tmp_path,
+    *,
+    force_r0_block = None,
+    build = None,
+    compile_kwargs = None,
+):
+    from torch._inductor.runtime import triton_heuristics
+
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "inductor"))
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "triton"))
+    from torch._inductor.codecache import PyCodeCache
+
+    torch._dynamo.reset()
+    PyCodeCache.cache_clear()
+    seen = []
+    real = triton_heuristics.CachingAutotuner.autotune_to_one_config
+
+    def autotune(self, *args, **kwargs):
+        blocks = sorted(
+            {launcher.config.kwargs.get("R0_BLOCK") for launcher in self.launchers} - {None}
+        )
+        if len(blocks) > 1:
+            seen.append(blocks)
+            if force_r0_block in blocks:
+                self.launchers = [
+                    l for l in self.launchers if l.config.kwargs.get("R0_BLOCK") == force_r0_block
+                ]
+                return None
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(triton_heuristics.CachingAutotuner, "autotune_to_one_config", autotune)
+    head, inputs = (build or _wan_like_block_head)()
+    with torch.no_grad():
+        out = torch.compile(head, **(compile_kwargs or {"fullgraph": True, "dynamic": False}))(
+            *inputs
+        )
+    torch.cuda.synchronize()
+    torch._dynamo.reset()
+    return seen, hashlib.sha256(out.float().cpu().numpy().tobytes()).hexdigest()
+
+
+@pytest.mark.gpu
+@_needs_filter
+@pytest.mark.parametrize(
+    "build",
+    [_wan_like_block_head, _ltx_like_block_norm, _qwen_like_text_norm],
+    ids = ["wan_layernorm", "ltx23_rmsnorm", "qwen_image_text_layernorm"],
+)
+def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("needs an sm80+ CUDA GPU")
+    pytest.importorskip("triton")
+    _INDUCTOR.emulate_precision_casts = True
+    _INDUCTOR.dynamic_scale_rblock = False
+    _INDUCTOR.test_configs.force_filter_reduction_configs = False
+    default_seen, _ = _run_norm(monkeypatch, tmp_path / "default", build = build)
+    if not default_seen:
+        pytest.skip("the reduction heuristic gives this GPU's norm a single config")
+    small, large = min(default_seen[0]), max(default_seen[0])
+    _, sha_small = _run_norm(monkeypatch, tmp_path / "small", force_r0_block = small, build = build)
+    _, sha_large = _run_norm(monkeypatch, tmp_path / "large", force_r0_block = large, build = build)
+    assert sha_small != sha_large
+    kwargs = {"fullgraph": True, "dynamic": False}
+    assert ds.pin_reduction_configs(kwargs) is True
+    pinned_seen, sha_pinned = _run_norm(
+        monkeypatch, tmp_path / "pinned", build = build, compile_kwargs = kwargs
+    )
+    assert pinned_seen == []
+    assert sha_pinned in (sha_small, sha_large)
+    assert _INDUCTOR.test_configs.force_filter_reduction_configs is False
+    after_seen, _ = _run_norm(monkeypatch, tmp_path / "after", build = build)
+    assert after_seen == default_seen

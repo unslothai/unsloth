@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""ORPO / CPO rows must fit max_length after the Unsloth tokenize_row patch.
-
-TRL 0.29+ never truncates the prompt and cuts answers to `max_length - longer_response_length`,
-so prompt + answer can exceed max_length; the fast forward then cuts input_ids but not labels.
-"""
+"""TRL 0.29+ leaves prompts untruncated, and the fast forward then cuts input_ids but not labels."""
 
 from __future__ import annotations
 
@@ -41,7 +37,7 @@ def _row_cap():
 
 
 def _trainer(name):
-    # Importing unsloth (the test conftest does) swaps the exported class for the patched copy, so read TRL's module source.
+    # Importing unsloth swaps the exported class for the patched copy, so read TRL's module source.
     for mod in (f"trl.experimental.{name}.{name}_trainer", f"trl.trainer.{name}_trainer"):
         try:
             module = importlib.import_module(mod)
@@ -88,6 +84,8 @@ def _tokenize_row(trainer, patched):
             assert new != src, "row cap anchor not found in this TRL tokenize_row"
         src = new
     ns = dict(vars(module))
+    # TRL 1.15+ warns through accelerate's logger, which needs a PartialState this harness never builds.
+    ns["logger"] = SimpleNamespace(warning_once = lambda *a, **k: None, warning = lambda *a, **k: None)
     exec(src, ns)
     exec(textwrap.dedent(methods["build_tokenized_answer"]), ns)
     fake = SimpleNamespace(
@@ -147,10 +145,17 @@ def test_rows_that_fit_are_unchanged(name):
 
 @pytest.mark.parametrize("name", ["orpo", "cpo"])
 def test_unpatched_trl_row_overflows(name):
-    # Control: without the cap, TRL 0.29+ really emits rows past max_length for these inputs.
     trainer = _trainer(name)
     if "max_prompt_length" in trainer[1]["tokenize_row"]:
         pytest.skip("this TRL truncates the prompt itself")
     prompt, chosen, rejected = LONG_ROWS["long_prompt"]
     out = _tokenize_row(trainer, False)({"prompt": prompt, "chosen": chosen, "rejected": rejected})
     assert len(out["chosen_input_ids"]) > 32
+
+
+@pytest.mark.parametrize("name", ["orpo", "cpo"])
+def test_the_row_cap_anchors_on_this_trl(name):
+    src = textwrap.dedent(_trainer(name)[1]["tokenize_row"])
+    if "max_prompt_length" in src:
+        pytest.skip("this TRL truncates the prompt itself")
+    assert "_unsloth_ul" in _row_cap()("tokenize_row", src)

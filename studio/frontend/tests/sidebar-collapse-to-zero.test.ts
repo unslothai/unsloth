@@ -5,10 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-// The desktop sidebar collapses to nothing, so it never shows the web build's
-// icon rail, but it used to wear that rail's styling on the way there: a frame
-// with the labels hidden, the buttons centred and the panel white but the width
-// not yet gone drew a bare column of icons. That is the reported collapse ghost.
+// The desktop sidebar collapses to zero, so it must not wear the icon rail's styling mid-way.
 
 async function source(path: string): Promise<string> {
   return readFile(new URL(path, import.meta.url), "utf8");
@@ -28,8 +25,6 @@ test("a sidebar that collapses to zero never enters icon-rail mode", async () =>
 });
 
 test("no styling keys off the zero-width collapse value", async () => {
-  // The point of "zero" is that it is inert; anything matching it puts the rail
-  // styling back into a state that is never the destination.
   for (const path of [
     "../src/components/ui/sidebar.tsx",
     "../src/components/app-sidebar.tsx",

@@ -9,7 +9,9 @@ import { math } from "micromark-extension-math";
 import remend from "remend";
 import type { Definition, RootContent } from "mdast";
 import { markdownBlockFallback } from "./markdown-block-fallback.ts";
+import { ownString } from "./own-string.ts";
 import { ReasoningCodeIndex } from "./reasoning-code-index.ts";
+import { hasPrefix } from "./streaming-render-schedule.ts";
 
 export const REASONING_TRANSCRIPT_THRESHOLD = 16_384;
 export const REASONING_FRAGMENT_CHARACTERS = 8_192;
@@ -312,7 +314,7 @@ class DocumentIndex {
 
   update(source: string): void {
     if (source === this.source) return;
-    if (!source.startsWith(this.source)) {
+    if (!hasPrefix(source, this.source)) {
       this.committed = [];
       this.offset = 0;
       this.fence = null;
@@ -359,6 +361,7 @@ class DocumentIndex {
           pending.push(block);
           break;
         }
+        block.text = ownString(block.text);
         this.committed.push(block);
         this.offset = end;
         this.fence = null;
@@ -398,7 +401,7 @@ class DocumentIndex {
           this.committed.push({
             start: this.offset,
             end: this.offset + lastStart,
-            text: tail.slice(0, lastStart),
+            text: ownString(tail.slice(0, lastStart)),
             continued: this.continued,
             prefix: this.prefix,
             listContinuationDepth: this.listContinuationDepth,
@@ -420,7 +423,7 @@ class DocumentIndex {
           this.committed.push({
             start: this.offset + start,
             end: this.offset + stop,
-            text: tail.slice(start, stop),
+            text: ownString(tail.slice(start, stop)),
             continued: n === 0 && this.continued,
             prefix: n === 0 ? this.prefix : "",
             listContinuationDepth: n === 0 ? this.listContinuationDepth : 0,
@@ -445,7 +448,7 @@ class DocumentIndex {
         this.committed.push({
           start: this.offset,
           end: this.offset + cut,
-          text: tail.slice(0, cut),
+          text: ownString(tail.slice(0, cut)),
           continued: this.continued,
           prefix: this.prefix,
           listContinuationDepth: this.listContinuationDepth,
@@ -512,6 +515,7 @@ function fragmentsOf(
 
 /** Stored Markdown documents never share fence or paragraph state. */
 export class ReasoningTranscriptIndex {
+  generation = 0;
   private documents: DocumentIndex[] = [];
   private fragments = new WeakMap<
     Block,
@@ -524,10 +528,13 @@ export class ReasoningTranscriptIndex {
   >();
 
   update(sources: readonly string[]): ReasoningFragment[] {
+    if (sources.length < this.documents.length) this.generation += 1;
     this.documents.length = sources.length;
     return sources.flatMap((source, document) => {
       const index = (this.documents[document] ??= new DocumentIndex());
+      const generation = index.generation;
       index.update(source);
+      if (index.generation !== generation) this.generation += 1;
       return index.blocks.flatMap((block) => {
         // Preview-capable fences retain the established renderer and its settings.
         // Ordinary code keeps the same incremental renderer and scroll geometry.
@@ -597,4 +604,24 @@ export class ReasoningTranscriptIndex {
       });
     });
   }
+}
+
+const INDEX_CACHE_ENTRIES = 8;
+const indices = new Map<string, ReasoningTranscriptIndex>();
+
+export function cachedReasoningTranscriptIndex(
+  key: string,
+): ReasoningTranscriptIndex {
+  const known = indices.get(key);
+  if (known !== undefined) {
+    indices.delete(key);
+    indices.set(key, known);
+    return known;
+  }
+  const index = new ReasoningTranscriptIndex();
+  indices.set(key, index);
+  if (indices.size > INDEX_CACHE_ENTRIES) {
+    indices.delete(indices.keys().next().value as string);
+  }
+  return index;
 }

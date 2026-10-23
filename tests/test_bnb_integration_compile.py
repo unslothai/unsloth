@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""The 4bit paths in unsloth.kernels.utils (fast_dequantize, fast_gemv, matmul_lora and the
-fast_lora autograd functions) must match bitsandbytes byte for byte, run on whatever stream is
-current, survive CUDA graph capture, and trace under torch.compile without graph breaks.
-
-Every correctness test runs twice: on the NF4 kernels and on the bitsandbytes ctypes fallback
-(UNSLOTH_BNB_TRITON=0).
-"""
+"""4bit kernels must match bitsandbytes byte for byte and trace with no graph breaks, on both paths."""
 
 import pytest
 import torch
@@ -30,8 +24,7 @@ from unsloth.kernels.fast_lora import (
 
 _NF4_KERNELS_AVAILABLE = U._USE_NF4_KERNELS
 DEVICE = "cuda"
-# Unsloth runs fp16 on GPUs without native bf16 (pre-Ampere, e.g. T4), and Inductor cannot re-emit a
-# bf16 Triton kernel there, so the single-graph checks use the dtype Unsloth would.
+# Inductor cannot emit bf16 Triton kernels on pre-Ampere GPUs, so use Unsloth's dtype.
 CDTYPE = (
     torch.bfloat16
     if torch.version.hip or torch.cuda.get_device_capability()[0] >= 8
@@ -120,10 +113,8 @@ def _(x):
 
 
 def _dynamo_traces_params4bit():
-    """Older Dynamo (torch 2.7) cannot hand a Params4bit weight to any torch.library op (nor call
-    some of its methods) without a graph break, whatever the op does. There the fast_lora paths
-    can only be checked for correctness under torch.compile, not for a single graph. Probed with
-    a throwaway op so a regression in the 4bit ops cannot turn the full-graph checks off."""
+    """Dynamo in torch 2.7 graph-breaks on Params4bit, so fast_lora is only checked for correctness
+    there."""
     if not _TRACES_PARAMS4BIT:
         lin = bnb.nn.Linear4bit(64, 64, bias = False, quant_type = "nf4").to(DEVICE)
         fn = lambda x: x + _passthrough(lin.weight)[0, 0] + lin.weight.t()[0, 0]
@@ -257,7 +248,7 @@ def test_gemv_side_stream_and_cuda_graph(path):
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side):
-        x = X.clone() * 1  # produced on the side stream, consumed there, no host sync
+        x = X.clone() * 1
         results = [U.fast_gemv(x, q, s) for _ in range(10)]
         for _ in range(2):
             U.fast_gemv(x, q, s)
@@ -288,7 +279,6 @@ def test_kernel_failure_falls_back_to_bitsandbytes(nf4_kernels, monkeypatch):
     X = torch.randn(1, 1, 256, dtype = torch.bfloat16, device = DEVICE)
     assert U.fast_gemv(X, q, s).shape == (1, 1, 512)
     assert U._USE_NF4_KERNELS is False
-    # Batch > 1 decode dequantizes into the scratch buffer through the planned launch.
     monkeypatch.setattr(U, "_USE_NF4_KERNELS", True)
     got = U.fast_dequantize(q.t(), s, use_global_buffer = True).t()
     assert torch.equal(_bits(got), _bits(F.dequantize_4bit(q, s)))
@@ -430,14 +420,13 @@ def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
     fn = _LORA_FNS[which](block)
     X = torch.randn(2, 16, 256, dtype = CDTYPE, device = DEVICE)
     eager = _fwd_bwd(model, fn, X)
-    # Before torch 2.11 the LoRA Functions stay opaque to torch.compile (fast_lora.TRACE_LORA_FUNCTIONS).
+    # Before torch 2.11 the LoRA Functions stay opaque to torch.compile.
     fullgraph = _dynamo_traces_params4bit() and fast_lora.TRACE_LORA_FUNCTIONS
     if fullgraph:
         explained = torch._dynamo.explain(fn)(X.clone().requires_grad_())
         assert explained.graph_break_count == 0, explained.break_reasons
     torch._dynamo.reset()
     compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = fullgraph), X)
-    # The dequant is exact under compile; the plain torch LoRA matmuls around it need not be.
     assert len(compiled) == len(eager)
     for a, b in zip(eager, compiled):
         _assert_compiled_matches(b, a, exact = False)
@@ -470,7 +459,8 @@ def test_primitives_compile_fullgraph(nf4_kernels):
         torch._dynamo.reset()
 
 
-@pytest.mark.parametrize("bsz", [1, 2])
+# 2 and 8 take the multi-row NF4 GEMV, 9 the dequantize path.
+@pytest.mark.parametrize("bsz", [1, 2, 8, 9])
 def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     _, block = _lora_block(dtype = CDTYPE)
     fn = lambda x: U.fast_linear_forward(block.o_proj, x)
@@ -487,9 +477,107 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
     _assert_compiled_matches(compiled, eager, backend = "aot_eager")
 
 
+# No eager warmup: the GEMM gate's first call must not run its lazy setup while tracing.
+@pytest.mark.parametrize("bsz", [8, 16])
+def test_fast_linear_forward_cold_compile_fullgraph(nf4_kernels, monkeypatch, bsz):
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", None)
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
+    _, block = _lora_block(dtype = torch.float16)
+    fn = lambda x: U.fast_linear_forward(block.o_proj, x)
+    X = torch.randn(bsz, 1, 256, dtype = torch.float16, device = DEVICE)
+    torch._dynamo.reset()
+    with torch.no_grad():
+        compiled = torch.compile(fn, fullgraph = _dynamo_traces_params4bit(), backend = "aot_eager")(X)
+        eager = fn(X)
+    torch._dynamo.reset()
+    _assert_compiled_matches(compiled, eager, backend = "aot_eager")
+
+
+def test_fast_linear_forward_eager_setup_does_not_recompile(nf4_kernels, monkeypatch):
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", None)
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
+    _, block = _lora_block(dtype = torch.float16)
+    fn = lambda x: U.fast_linear_forward(block.o_proj, x)
+    X = torch.randn(8, 1, 256, dtype = torch.float16, device = DEVICE)
+    torch._dynamo.reset()
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    compiled = torch.compile(fn, backend = counter)
+    with torch.no_grad():
+        first = compiled(X)
+        fn(X)
+        again = compiled(X)
+    torch._dynamo.reset()
+    assert U._BNB_GEMM_4BIT is not None
+    assert counter.frame_count == 1, counter.frame_count
+    torch.testing.assert_close(first, again, rtol = 0, atol = 0)
+
+
+def test_fast_linear_forward_sees_lora_updates(nf4_kernels):
+    _, block = _lora_block(dtype = torch.float16)
+    proj = block.o_proj
+    X = torch.randn(8, 1, 256, dtype = torch.float16, device = DEVICE)
+    lora_B = proj.lora_B["default"].weight
+    assert lora_B.dtype == torch.float32
+    with torch.no_grad():
+        U.fast_linear_forward(proj, X)
+        lora_B.add_(0.5)
+        after = U.fast_linear_forward(proj, X)
+        for name in ("lora_A", "lora_B"):
+            getattr(proj, name)["default"].weight.__dict__.pop("_fast_lora", None)
+        fresh = U.fast_linear_forward(proj, X)
+    torch.testing.assert_close(after, fresh, rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("bnb_gemm", [True, False])
+def test_fast_linear_forward_lora_under_a_different_autocast_dtype(
+    nf4_kernels, monkeypatch, bnb_gemm
+):
+    # fp16 activations under bf16 autocast: every base path must hand the LoRA update X.dtype.
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("needs bf16")
+    monkeypatch.setattr(U, "_TRITON_GEMV_EAGER", False)
+    monkeypatch.setattr(U, "_BNB_GEMM_4BIT", bnb_gemm)
+    calls = []
+    if bnb_gemm:
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DTYPES", (torch.float16, torch.bfloat16))
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
+        monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
+        matmul_4bit = U.bnb.matmul_4bit
+        monkeypatch.setattr(
+            U.bnb, "matmul_4bit", lambda *a, **k: calls.append(1) or matmul_4bit(*a, **k)
+        )
+    _, block = _lora_block(dtype = torch.float16)
+    proj = block.o_proj
+    X = torch.randn(4, 1, 256, dtype = torch.float16, device = DEVICE)
+    with torch.no_grad():
+        expected = U.fast_linear_forward(proj, X)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            got = U.fast_linear_forward(proj, X)
+    assert len(calls) == (2 if bnb_gemm else 0)
+    assert got.dtype == torch.float16
+    torch.testing.assert_close(got, expected, rtol = 2e-2, atol = 2e-2)
+
+
+def test_fast_linear_forward_lora_cast_with_inference_tensors(nf4_kernels):
+    # Inference tensors have no version counter; the cast cache must not read one.
+    with torch.inference_mode():
+        _, block = _lora_block(dtype = torch.float16)
+    proj = block.o_proj
+    assert proj.lora_A["default"].weight.is_inference()
+    X = torch.randn(4, 1, 256, dtype = torch.float16, device = DEVICE)
+    with torch.no_grad():
+        first = U.fast_linear_forward(proj, X)
+        again = U.fast_linear_forward(proj, X)
+    torch.testing.assert_close(first, again, rtol = 0, atol = 0)
+
+
 def test_eager_gemv_gate_off_takes_bitsandbytes(monkeypatch):
-    """Where the Triton GEMV is not the eager choice (HIP before Triton 3.7), eager decode takes
-    bitsandbytes' GEMV, on the live stream. On CUDA the Triton GEMV is the eager choice."""
+    """Where the Triton GEMV is not the eager choice (HIP before Triton 3.6, or
+    UNSLOTH_TRITON_GEMV_EAGER=0), eager decode takes bitsandbytes' GEMV, on the live stream.
+    On CUDA the Triton GEMV is the eager choice."""
     from unsloth.kernels import nf4_gemv
 
     if torch.version.hip is None and _NF4_KERNELS_AVAILABLE:

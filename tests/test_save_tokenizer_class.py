@@ -13,7 +13,7 @@ import pytest
 
 MODEL_DIR = Path(os.environ.get("UNSLOTH_TEST_LOCAL_MODEL", "unsloth/gemma-3-270m-it"))
 
-# Must be MULTIMODAL: a text-only repo's AutoProcessor returns a plain tokenizer.
+# Must be multimodal: a text-only repo's AutoProcessor returns a plain tokenizer.
 PROCESSOR_DIR = os.environ.get("UNSLOTH_TEST_LOCAL_PROCESSOR")
 
 
@@ -38,7 +38,7 @@ def _recorded_class(directory, filename_prefix = None):
     with path.open("r", encoding = "utf-8") as handle:
         config = json.load(handle)
     if "tokenizer_class" not in config:
-        # Not a failure: a config may omit the key so AutoTokenizer resolves by model_type.
+        # A config may omit the key so AutoTokenizer resolves by model_type.
         pytest.skip(f"{name} records no tokenizer_class")
     return config["tokenizer_class"]
 

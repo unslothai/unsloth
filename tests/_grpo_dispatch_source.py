@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Load the GRPO hidden-states dispatch helpers straight out of the live source.
-
-``_unsloth_grpo_returns_hidden_states`` and ``_unsloth_grpo_hidden_states_signal``
-are shipped to the generated trainer as text (``RL_PRE_ITEMS``), so the tests
-that ``exec`` a block of ``_get_per_token_logps_and_entropies`` need them in the
-namespace exactly as the generated module would have them.
-
-Lifting them with ``ast`` instead of importing ``unsloth`` keeps these tests
-CPU-only and import-free, and keeps them tracking the shipped code rather than a
-copy of it.
-"""
+"""Lift the GRPO hidden-states helpers with ast so tests stay CPU-only and track the shipped code."""
 
 from __future__ import annotations
 
@@ -51,12 +41,7 @@ def load_dispatch_helpers():
 
 
 def load_padded_loop_source():
-    """Dedented source of the padded logprob loop, located structurally.
-
-    The one ``with`` statement inside ``_get_per_token_logps_and_entropies``
-    whose direct body holds ``for ... in zipped_inputs``. No text search, so a
-    comment quoting the same code cannot match.
-    """
+    """Dedented source of the padded logprob loop, found by AST structure, not text search."""
     text = SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text, filename = str(SOURCE_PATH))
     functions = [

@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One ChatRuntimeProvider spans the project and single views, so switching between them is
-a prop change rather than a remount (#8908).
-
-That keeps a project chat's run attached, and it also breaks the guards the old shape got for
-free: a remounted provider had a fresh ref and composer every time, so a shared one has to
-decide for itself whether a nonce is new (``activeNonce``), whether the composer still holds
-someone else's staged attachment (``hasSwitched``), and whether it is on screen (``paused``).
-``ThreadAutoSwitch`` takes ``paused`` too, since the stop it requests names every temporary
-queue on the page rather than its own provider's.
-
-The five effects that decide those -- ``ThreadAutoSwitch``'s two, ``ThreadNewChatSwitch``'s two
-and the implicit-new-chat marker -- are sliced VERBATIM out of ``runtime-provider.tsx`` and
-replayed through a React-effect emulator (per-effect dependency arrays, re-run only on change,
-memo cleared on unmount). ``requestTemporaryPromptQueueStop`` is sliced verbatim too, because
-whose queue it stops is one of the questions here.
-
-Stubbed: the JSX wiring the props onto the two children (pinned by
-``test_the_provider_wires_the_pause_and_the_shared_ref``), assistant-ui's thread runtime, and
-``refreshContextUsage`` (a counter; the recount itself is pinned by
-``test_new_chat_context_recount.py``). ``ActiveThreadSync`` is not modelled: it is off whenever
-either child is rendered.
-"""
+"""A shared provider keeps its own nonce, composer and pause guards, since nothing remounts it."""
 
 from __future__ import annotations
 
@@ -139,7 +118,6 @@ def _set_active_thread_id_reducer() -> str:
     ).strip()
 
 
-# `export { X } from "./y"` and `import type { X } from "./y"`, at the top level.
 _REEXPORT = re.compile(
     r"^(?:export|import)\s+(?:type\s+)?\{[^}]*\}\s+from\s+[\"'][^\"']+[\"'];\s*$",
     re.MULTILINE,
@@ -147,13 +125,7 @@ _REEXPORT = re.compile(
 
 
 def _prompt_queue_boundary_body() -> str:
-    """Everything in prompt-queue-boundary.ts after its import block, verbatim.
-
-    Re-export statements are dropped rather than replayed. They are module
-    plumbing, not body, and the slice marker is only the last plain import, so a
-    re-export written below it would otherwise be inlined into the harness and
-    fail to resolve.
-    """
+    """Body after the import marker, minus re-export lines, which the harness cannot resolve."""
     text = read(QUEUE)
     marker = 'from "./prompt-queue-model-boundary";'
     body = text[text.index(marker) + len(marker) :]
@@ -580,8 +552,7 @@ def _harness_source() -> str:
     return prelude + _prompt_queue_boundary_body() + render
 
 
-# A rejected switchToNewThread() is only caught on the deferred path, so node would abort the whole process on the
-# immediate one. Recorded here instead, and asserted on.
+# A rejected switchToNewThread() is uncaught on the immediate path and would abort node.
 SCRIPT_HEADER = """
 const unhandled: string[] = [];
 process.on("unhandledRejection", (reason: any) => {
@@ -604,31 +575,20 @@ def _run(imports: str, body: str) -> dict:
     return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
-# A resident GGUF, so the second effect has something it could price.
 LOADED_MODEL = """
     seed({ params: { checkpoint: "unsloth/gguf-model" }, loadedContextLength: 8192 });
 """
 
 
-# ---------------------------------------------------------------------------
-# Structural guards for what the emulator restates rather than replays.
-# ---------------------------------------------------------------------------
-
-
 def test_the_provider_wires_the_pause_and_the_shared_ref():
-    """Structural. ``renderProvider`` restates the provider's JSX, so the JSX has to say what
-    it restates: one ref handed to both children, ``paused`` driven by ``backgrounded``, and
-    ``syncActiveThreadId`` stood down while backgrounded. Without this guard the behavioural
-    tests below would keep passing against wiring that no longer exists."""
+    """Checks the JSX wiring directly, since renderProvider restates it and would pass without it."""
     jsx = _provider_jsx()
     assert "{initialThreadId && (" in jsx, "ThreadAutoSwitch must render only for a saved thread"
     assert "{!initialThreadId && newThreadNonce && (" in jsx, (
         "ThreadNewChatSwitch must render only for a new-chat nonce, and never alongside "
         "ThreadAutoSwitch: both write the same shared switch state"
     )
-    # Three, not two: ThreadBackendAutosave reads the same ref so its active-thread publication can tell "this pane is
-    # on screen" from "a switch away from it has not landed yet". Both switch children still share it, which is what the
-    # count protects.
+    # Three: ThreadBackendAutosave reads the same ref as both switch children.
     assert jsx.count("newThreadSwitchStateRef={newThreadSwitchStateRef}") == 3, (
         "both switch children must share ONE ref, or leaving a new chat for a saved one "
         "cannot tell the next new chat that the composer is no longer fresh -- and the "
@@ -652,10 +612,7 @@ def test_the_provider_wires_the_pause_and_the_shared_ref():
 
 
 def test_the_harness_stubs_every_name_the_queue_boundary_imports():
-    """Structural. ``_prompt_queue_boundary_body()`` replays that module with its imports
-    stripped, so an import this harness does not define becomes a ReferenceError the moment
-    a stop is requested -- and that reads as "the switch never fired" rather than as a
-    missing stub."""
+    """Every name prompt-queue-boundary imports must be stubbed, or a ReferenceError reads as no stop."""
     text = read(QUEUE)
     imported = re.findall(r"import \{ ([^}]+) \} from", text)
     names = [name.strip() for block in imported for name in block.split(",") if name.strip()]
@@ -664,9 +621,6 @@ def test_the_harness_stubs_every_name_the_queue_boundary_imports():
         harness = handle.read()
     missing = [name for name in names if f"const {name}" not in harness]
     assert not missing, f"prompt-queue-boundary.ts imports {missing}, which this harness omits"
-
-
-# ---------------------------------------------------------------------------
 
 
 def test_a_first_new_chat_switches_once_and_clears_nothing():
@@ -852,10 +806,7 @@ def test_a_paused_new_chat_does_not_touch_the_visible_views_thread():
 
 
 def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
-    """The pause gate is on the recount effect too. Nothing else would hold it back here --
-    a resident model, no active thread and a blank bar are exactly its firing conditions --
-    so without it a view hidden behind compare would put its own empty prompt on the bar the
-    visible one owns. Deferred, not skipped: the count is owed once the pause lifts."""
+    """A paused view must not price onto the shared bar; the count is deferred until the pause lifts."""
     out = _run(
         "renderSettled, seed, world",
         f"""
@@ -879,16 +830,8 @@ def test_a_paused_new_chat_does_not_price_the_shared_context_bar():
     assert out["switched"] == 1
 
 
-# ---------------------------------------------------------------------------
-# (b) Staged attachments, immediate and deferred.
-# ---------------------------------------------------------------------------
-
-
 def test_an_implicit_new_chat_defers_the_clear_until_the_new_thread_arrives():
-    """``/chat`` with no thread and no nonce is a new chat too, so the provider marks the
-    composer used. When a nonce then appears there is no ``activeNonce`` to switch away
-    from, so the clear is deferred: the composer that has to be emptied is the one the new
-    thread brings, and clearing before the switch would empty the outgoing one instead."""
+    """Clearing early would empty the outgoing composer, so an implicit new chat defers it."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -958,21 +901,16 @@ def test_a_composer_that_is_not_mounted_yet_does_not_break_the_switch():
 @pytest.mark.parametrize(
     ("setup", "path", "attempts"),
     [
-        # activeNonce is non-null when the second nonce arrives, so the clear is the synchronous one, outside any
-        # promise chain of its own.
+        # activeNonce is non-null, so the clear is the synchronous one.
         pytest.param(
             'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id = "immediate"
         ),
-        # activeNonce is null, so the clear is the one the switch's success arm calls.
+        # activeNonce is null, so the switch's success arm does the clear.
         pytest.param("await renderSettled({});", "deferred", 1, id = "deferred"),
     ],
 )
 def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, path, attempts):
-    """``clearAttachments()`` is not a bare call: it removes each staged file through the
-    attachment adapter, so a remove() that fails rejects the promise it returns. The
-    surrounding try/catch cannot see that -- it only guards the synchronous reach for the
-    composer -- so the call has to be chained. The switch itself must still complete either
-    way: an attachment that would not delete is not a reason to strand the view."""
+    """A failing remove() rejects clearAttachments(), which try/catch cannot see, so it must be chained."""
     nonce = "n1"
     out = _run(
         "renderSettled, snapshot, switchState, world",
@@ -1003,11 +941,6 @@ def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, pa
         "pendingSavedThreadIds": [],
     }
     assert out["activeThreadId"] is None, "and the switch below it still ran"
-
-
-# ---------------------------------------------------------------------------
-# (c) ThreadAutoSwitch resets the shared nonce.
-# ---------------------------------------------------------------------------
 
 
 def test_opening_a_saved_thread_releases_the_nonce_so_the_same_one_switches_again():
@@ -1078,10 +1011,7 @@ def test_new_chat_then_a_saved_thread_then_new_chat_clears_the_staged_attachment
 
 
 def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
-    """Coming back to the chat whose run was left going: assistant-ui already holds it as
-    main, so the switch branch is skipped entirely. The nonce reset has to sit ABOVE that
-    branch or this route back leaves the stale nonce marked active and the next New Chat
-    silently does nothing."""
+    """The nonce reset must sit above the already-main early return, or a stale nonce stays active."""
     out = _run(
         "renderSettled, seedMainThread, switchState, world",
         """
@@ -1113,11 +1043,6 @@ def test_a_saved_thread_that_is_already_the_main_one_still_releases_the_nonce():
     }, "the nonce reset must not sit behind the mainThreadId guard"
     assert out["switched"] == 2, "the returning New Chat must still open a fresh thread"
     assert out["cleared"] == 1
-
-
-# ---------------------------------------------------------------------------
-# (d) Rapid switching, faster than switchToNewThread resolves.
-# ---------------------------------------------------------------------------
 
 
 def test_a_deferred_clear_for_a_nonce_that_moved_on_is_dropped():
@@ -1218,21 +1143,8 @@ def test_three_nonces_faster_than_the_switch_resolves_clear_once_each_at_most():
     assert out["pending"] == 0
 
 
-# ---------------------------------------------------------------------------
-# (e) A switchToNewThread() that rejects.
-# ---------------------------------------------------------------------------
-
-
 def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
-    """The state is mutated before the switch is attempted, so a rejection would otherwise
-    leave the guard believing a nonce that never opened a thread is the live one -- and the
-    nonce is the only thing that marks a New Chat, so the same New Chat could never be
-    served again. The rejection arm puts ``activeNonce`` back.
-
-    Retried at the next commit that re-runs the effect, not at the next render: React
-    re-runs an effect only when one of its dependencies changed, which is as true of this
-    effect as of any other. ``paused`` flipping on a compare round trip is one such commit,
-    and it is the one exercised here."""
+    """A rejection must restore activeNonce, or the same New Chat can never be served again."""
     out = _run(
         "renderProvider, renderSettled, snapshot, switchState, world",
         """
@@ -1294,10 +1206,7 @@ def test_a_rejected_switch_releases_the_nonce_so_the_same_one_can_be_retried():
 
 
 def test_a_rejected_switch_on_the_deferred_path_keeps_the_draft_and_releases_the_nonce():
-    """The deferred clear exists to empty the composer the new thread brings. A switch that
-    failed brought none, so the user is still looking at the outgoing composer and its
-    staged file has to survive -- while the nonce is still released, or the retry that would
-    finally move them off it can never run."""
+    """A failed deferred switch keeps the staged draft but still releases the nonce, so a retry can run."""
     out = _run(
         "renderSettled, switchState, world",
         """
@@ -1348,10 +1257,7 @@ def test_a_rejected_switch_on_the_deferred_path_keeps_the_draft_and_releases_the
 
 
 def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
-    """The rejection arm writes to shared state after an await, so it has the same staleness
-    problem the deferred clear has and the same guard: it only releases the nonce it was
-    started for. A failure for n1 arriving after the user reached n2 must leave n2 alone,
-    or the next commit would throw away the thread they are already typing in."""
+    """A late rejection releases only the nonce its own switch started for, not a later one."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1400,14 +1306,7 @@ def test_a_late_rejection_cannot_disturb_a_nonce_that_has_since_moved_on():
 
 
 def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
-    """Two switches for the SAME nonce can be in flight, so the nonce cannot identify an
-    attempt. New Chat starts a switch, a saved chat opens while it runs (releasing the nonce
-    without ending the switch), then the same New Chat starts a second switch that succeeds.
-    When the first fails, a rejection arm keyed on the nonce alone reads its own nonce back and
-    releases it, switching away from the thread the second attempt opened.
-
-    The complement is asserted on the same shared state: a lone failure with nothing overlapping
-    must still release, or a New Chat that failed once could never be served again."""
+    """Two switches can share one nonce, so the rejection must match the attempt, not just the nonce."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1517,14 +1416,7 @@ def test_a_late_failure_cannot_release_a_nonce_a_newer_attempt_owns():
 
 
 def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged():
-    """The success arm has the same two-in-flight problem. The deferred clear is armed only
-    once the nonce was released, so: a switch, a detour releasing the nonce, a New Chat held open
-    with the clear armed, then a second detour and return starting a newer attempt for the same
-    nonce. When the older switch resolves, a success arm keyed on the nonce alone clears the
-    composer the newer attempt is using, taking an attachment staged in it.
-
-    The complement is asserted on the same shared state: a detour nulls the nonce and must still
-    cancel a pending clear, so the nonce check cannot simply become the attempt check."""
+    """A late success must not clear the attachment a newer attempt staged; key the clear on the attempt."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1579,14 +1471,7 @@ def test_a_late_deferred_clear_cannot_wipe_an_attachment_a_newer_attempt_staged(
 
 
 def test_every_switch_the_effect_starts_bumps_the_attempt_exactly_once():
-    """``attempt`` is what tells two in-flight switches apart, so it has to advance once
-    per switch actually started and never on a render that returned at a guard. Driven
-    across the whole mix: a first mount, a repeat render, a rotation, a pause, a resume, a
-    saved-thread detour and a return.
-
-    Saved-thread switches count too. They used not to, which left two of them sharing one
-    token, so a first saved chat rejecting after a second had settled read as current and
-    detached the chat on screen."""
+    """Attempt advances once per switch started, saved-thread ones included, or two share a token."""
     out = _run(
         "renderSettled, switchState, world",
         """
@@ -1652,11 +1537,6 @@ def test_a_rejected_saved_thread_switch_blanks_the_bar_only_while_visible():
     assert out["unhandled"] == 0, "ThreadAutoSwitch catches its own rejection"
 
 
-# ---------------------------------------------------------------------------
-# (f) requestTemporaryPromptQueueStop: how often, and whose queue.
-# ---------------------------------------------------------------------------
-
-
 def test_a_full_compare_round_trip_stops_the_temporary_queue_once():
     """The stop discards an incognito queue that is about to become unreachable. Pausing and
     resuming abandons nothing, so the only stop in the whole cycle is the one the New Chat
@@ -1680,10 +1560,7 @@ def test_a_full_compare_round_trip_stops_the_temporary_queue_once():
 
 
 def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
-    """requestTemporaryPromptQueueStop names every materialized temporary queue on the page,
-    not this provider's, so an off-screen caller stops a queue the visible view owns. The
-    pause gate on the first effect is what keeps a backgrounded provider away from it -- and
-    it is a dependency, so the stop and the switch are deferred to the resume, not skipped."""
+    """requestTemporaryPromptQueueStop hits every queue on the page; a paused view defers it to resume."""
     out = _run(
         "renderSettled, seedMainThread, snapshot, switchState, world",
         """
@@ -1735,11 +1612,7 @@ def test_a_backgrounded_saved_thread_switch_stops_nothing_and_pays_on_resume():
 
 
 def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen():
-    """The route that reaches the gate above without a synthetic mount. A switch that fails
-    leaves mainThreadId pointing elsewhere, so the guard the effect would otherwise return
-    at stays open, and ``syncActiveThreadId`` flips on every compare open and close -- a
-    dependency, so each toggle re-runs the effect. Only the on-screen half of that toggle
-    may act: the compare half would be stopping a queue in the pane the user is using."""
+    """A failed switch retries only on screen: the compare half of the toggle would stop a queue."""
     out = _run(
         "renderSettled, seedMainThread, world",
         """
@@ -1780,16 +1653,8 @@ def test_a_failed_saved_thread_switch_retries_only_while_the_view_is_on_screen()
     assert out["unhandled"] == 0
 
 
-# ---------------------------------------------------------------------------
-# (g) Bounded work across many view switches.
-# ---------------------------------------------------------------------------
-
-
 def test_a_hundred_and_twenty_view_switches_stay_bounded():
-    """The provider now outlives every view switch, so anything it accumulates accumulates
-    for the session: a per-switch listener, a callback left waiting on a switch that already
-    resolved, a second stop per pass. Each switch is allowed a fixed, small amount of work
-    and nothing else."""
+    """The provider outlives every switch, so each switch may leave only a fixed, small amount behind."""
     out = _run(
         "renderSettled, switchState, world",
         """
@@ -1856,14 +1721,7 @@ def test_the_work_per_view_switch_does_not_grow_with_the_session(switches):
 
 
 def test_a_saved_switch_that_lands_after_the_route_moved_does_not_take_the_view():
-    """The provider is shared now, so a stale switchToThread has nothing to remount into.
-
-    Project landing, then a saved chat, then back before its switch settles. assistant-ui
-    assigns mainThreadId when the promise resolves and cannot know the route moved, so the
-    project landing's composer ended up pointed at the saved chat and the next message went
-    to the wrong conversation. The nonce view recognises that exact id -- the one
-    ThreadAutoSwitch recorded as pending -- and reasserts a fresh thread.
-    """
+    """A late saved switch is corrected by the nonce view, since assistant-ui cannot see the route move."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -1902,7 +1760,7 @@ def test_a_saved_switch_that_lands_after_the_route_moved_does_not_take_the_view(
         }));
         """,
     )
-    # switchedToThread also carries the correction's reattach, so name the saved ones.
+    # switchedToThread also carries the correction's reattach.
     assert out["savedSwitches"] == ["thread-a"], "the saved switch really was started"
     assert out["mainThreadId"] != "thread-a", (
         "a switch that landed after the user returned must not leave the visible project "
@@ -1936,10 +1794,7 @@ def test_a_saved_switch_that_lands_in_time_is_left_alone():
 
 
 def test_a_saved_switch_that_fails_late_does_not_detach_the_view_that_replaced_it():
-    """The rejection arm writes shared state after an await, so it needs the same staleness
-    guard the other arms have. Unguarded, a saved switch failing after the user returned to
-    the project landing cleared the active id that landing had just set, detaching a chat
-    the failure has nothing to do with."""
+    """The rejection arm needs the staleness guard, or a late saved failure clears the new active id."""
     out = _run(
         "renderProvider, renderSettled, seed, snapshot, world",
         """
@@ -1975,14 +1830,7 @@ def test_a_saved_switch_that_fails_late_does_not_detach_the_view_that_replaced_i
 
 
 def test_two_saved_switches_in_flight_are_both_corrected():
-    """One scalar claim cannot speak for two outstanding switches.
-
-    Open A, open B before A settles, then return to the project landing. If B lands first
-    the correction spends the claim, and A landing afterwards finds nothing recorded: the
-    nonce view leaves assistant-ui pointed at A and the next project-composer message is
-    appended to a chat the user is not looking at. Every switch this view starts has to be
-    tracked, not just the most recent one.
-    """
+    """A single scalar claim is spent by the first landing, so each in-flight saved switch needs its own."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -2074,13 +1922,7 @@ def test_outstanding_claims_stay_bounded():
 
 
 def test_the_same_saved_thread_opened_twice_is_corrected_twice():
-    """Deduplicating the claim by id loses one of two outstanding switches for that id.
-
-    A, then B, then A again before any settles: both A switches are really started, so both
-    can land. The first stale A arrival spends the single claim and the second is accepted
-    beneath the project composer, which is the same wrong-conversation bug one layer down.
-    A claim belongs to a switch, not to a thread id.
-    """
+    """A claim belongs to a switch, not a thread id, so the same saved thread opened twice needs two."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -2129,12 +1971,7 @@ def test_the_same_saved_thread_opened_twice_is_corrected_twice():
 
 
 def test_a_saved_switch_failing_late_does_not_detach_the_saved_chat_that_replaced_it():
-    """Only new-chat switches advanced the attempt, so two saved switches shared one token.
-
-    A is still loading when the user opens B. B settles and owns the view. A then rejects,
-    finds the attempt unchanged, passes the staleness guard and clears the active thread id
-    -- detaching the visible B chat from its thread-scoped settings and context state.
-    """
+    """Saved-thread switches must advance the attempt too, or a late failure passes the staleness guard."""
     out = _run(
         "renderProvider, renderSettled, snapshot, world",
         """
@@ -2179,16 +2016,7 @@ def test_a_saved_switch_failing_late_does_not_detach_the_saved_chat_that_replace
 
 
 def test_a_claim_whose_switch_settled_off_view_does_not_outlive_it():
-    """A claim has to be retired by its own switch settling, not by a view happening to
-    notice that thread.
-
-    A is delayed, B becomes visible, A settles anyway: the B view reasserts B and spends a
-    B claim, and A's claim stays armed with nothing left to correct. Opening A normally
-    later spends the stale claim instead of the new one, so returning to a project composer
-    reads the legitimate A as a stale arrival and starts a SECOND switchToNewThread
-    alongside the landing's own -- which can switch away from a thread the user has already
-    sent a message on.
-    """
+    """A claim must retire when its own switch settles, not when a view happens to notice that thread."""
     out = _run(
         "renderProvider, renderSettled, switchState, world",
         """
@@ -2243,15 +2071,7 @@ def test_a_claim_whose_switch_settled_off_view_does_not_outlive_it():
 
 
 def test_a_stale_arrival_reattaches_the_chat_the_user_started():
-    """Correcting a stale arrival with switchToNewThread() is only right while the nonce's
-    thread is still blank.
-
-    Once the user has sent a message that thread is materialized and assistant-ui's
-    newThreadId has been cleared, so asking for "a new thread" mints a SECOND blank one:
-    the composer walks off the conversation they just started, it looks lost, and the next
-    message lands in the blank thread. The correction has to reattach the thread this view
-    actually owns.
-    """
+    """Once sent to, a stale arrival must reattach the owned thread, not mint a second blank one."""
     out = _run(
         "renderProvider, renderSettled, nonceThreadId, world",
         """
@@ -2310,15 +2130,7 @@ def test_a_stale_arrival_reattaches_the_chat_the_user_started():
 
 
 def test_a_superseded_failure_still_releases_the_reload_shell():
-    """#9251 holds a retained shell over a reload until the initial switch reports in, and
-    releases it from ThreadAutoSwitch's rejection arm. This PR added a staleness guard to
-    that arm, so the signal has to sit AHEAD of it: a switch that lost the race is still a
-    switch that ended, and returning early would leave the shell showing its snapshot for
-    ever.
-
-    Cross-PR, and the reason it is asserted here: nothing in #9251's own tests exercises a
-    superseded switch, because before this PR there was no guard to be superseded by.
-    """
+    """Release the reload shell before the staleness guard, or a superseded switch leaves it up forever."""
     out = _run(
         "renderProvider, renderSettled, snapshot, world",
         """
@@ -2358,14 +2170,7 @@ def test_a_superseded_failure_still_releases_the_reload_shell():
 
 
 def test_returning_to_a_nonce_reopens_the_chat_started_under_it():
-    """A ?new= URL does not change when its chat materializes, so Back from a saved chat
-    lands on the same nonce -- and a saved-chat detour released it, so the switch effect
-    runs again and used to mint a fresh blank thread. The conversation the user started is
-    then hidden and their next message opens yet another chat.
-
-    Only for a nonce whose thread was actually sent to. A blank placeholder is still
-    replaced, which is the behaviour the detour test above pins.
-    """
+    """A ?new= URL stays the same after its chat materializes, so Back reopens a sent-to chat."""
     out = _run(
         "renderProvider, renderSettled, world",
         """
@@ -2398,14 +2203,7 @@ def test_returning_to_a_nonce_reopens_the_chat_started_under_it():
 
 
 def test_a_reopen_that_lands_after_the_nonce_rotated_does_not_take_the_view():
-    """The returning-nonce reopen has to be as cancellable as a saved-thread switch.
-
-    A project landing remounts when the user comes back from a saved chat, and its mount
-    effect rotates the nonce -- but the first render still carries the OLD one, so the
-    reopen starts before the rotation. Two switches are then in flight, and if the reopen
-    resolves last the overview's composer is left on the old conversation and the next
-    prompt appends there.
-    """
+    """The reopen starts on the old nonce before rotation, so it must be cancellable like a saved switch."""
     out = _run(
         "renderProvider, renderSettled, world",
         """
@@ -2451,15 +2249,7 @@ def test_a_reopen_that_lands_after_the_nonce_rotated_does_not_take_the_view():
 
 
 def test_a_nonce_does_not_adopt_the_chat_the_user_came_from():
-    """Ownership is only recorded from a thread the nonce's OWN switch opened.
-
-    Entering New Chat from a saved chat leaves that saved chat as ``mainThreadId`` until
-    switchToNewThread() resolves, and its claim was already retired while it was on screen,
-    so it is unclaimed too. Treating "unclaimed and current" as ownership recorded the chat
-    the user had just LEFT: a detour before the fresh switch settled kept that record, and
-    coming back to the same ?new= URL reopened it, so the next prompt appended to the wrong
-    conversation.
-    """
+    """Ownership comes only from the nonce's own switch, never from the saved chat the user came from."""
     out = _run(
         "renderProvider, renderSettled, nonceThreadId, nonceOwnershipIsSettled, world",
         """
@@ -2587,15 +2377,7 @@ def test_a_superseded_landing_does_not_hand_ownership_to_a_newer_attempt():
 
 
 def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
-    """``nonceThread`` is a REMEMBERED id, in a ref that outlives every view switch now, and
-    the reopen looks it up with ``getItemById``. That call does not return undefined for an
-    unknown id -- assistant-ui throws "Entry not available in the store" out of
-    ``ShallowMemoizeSubject``'s constructor -- so the optional chain around it catches
-    nothing, and an effect that throws with no error boundary above it blanks the app.
-
-    Unsloth deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
-    so nothing evicts an entry today. The reopen must not be the thing that depends on that.
-    """
+    """getItemById throws for an unknown id, not undefined, so the optional chain cannot catch it."""
     out = _run(
         "renderSettled, world",
         """
@@ -2631,16 +2413,7 @@ def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
 
 
 def test_back_from_a_nonce_chats_own_row_keeps_that_chat():
-    """The reopen's claim is this view's OWN, and must not read as a stale arrival.
-
-    A materialized ?new= chat can be opened through its own sidebar row, and the ?new= URL
-    never changed, so Back returns to the nonce with that chat already current. The switch
-    effect still pushes a reopen claim for it, and ``switchToThread()`` early-returns when
-    its target is already the main thread, so the claim is still outstanding when the
-    correction effect runs in the same commit. Treating it as somebody else's late arrival
-    fell through to ``switchToNewThread()`` and replaced the conversation the user had just
-    come back to with a blank chat.
-    """
+    """A reopen claim for the already-current chat must not be read as a stale arrival."""
     out = _run(
         "renderSettled, world",
         """

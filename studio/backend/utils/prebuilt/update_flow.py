@@ -185,7 +185,7 @@ def install_dir_for(binary_path: Optional[str], *, marker_name: str) -> Optional
     if not binary_path:
         return None
     p = Path(binary_path)
-    for parent in p.parents[:5]:
+    for parent in list(p.parents)[:5]:
         if (parent / marker_name).is_file():
             return parent
     return None
@@ -579,7 +579,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
             # The legacy job-level to_tag means "the llama build now installed"
-            if primary_to_tag is None:
+            if primary_to_tag is None and phase.get("reports_job_tag", True):
                 primary_to_tag = result.get("to_tag")
 
     with job_lock:
