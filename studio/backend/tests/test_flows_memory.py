@@ -354,3 +354,11 @@ def test_a_plan_given_as_one_object_is_kept():
     entry = {"start": "09:00", "minutes": 60, "activity": "Open the cafe", "place": ""}
     assert len(nodes.clean_plan({"plan": entry}, [], 6)) == 1
     assert nodes.clean_plan({"plan": "not a plan"}, [], 6) == []
+
+
+def test_plan_caps_valid_entries_not_raw_ones():
+    bad = {"start": "nope", "minutes": 30, "activity": "x", "place": "park"}
+    good = {"start": "09:00", "minutes": 30, "activity": "walk", "place": "park"}
+    later = {"start": "10:00", "minutes": 30, "activity": "read", "place": "park"}
+    plan = nodes.clean_plan({"plan": [bad, bad, good, later]}, ["park"], 2)
+    assert [e["activity"] for e in plan] == ["walk", "read"]
