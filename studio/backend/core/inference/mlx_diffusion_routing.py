@@ -270,7 +270,17 @@ def _diffusers_capabilities(family: Any) -> dict[str, Any]:
         "workflows": workflows,
         "conditioning": conditioning_capabilities(family, workflows),
         **diffusers_module._hires_status(family),
+        # A request with guidance routes to diffusers when MLX drops CFG, so the Images page offers its controls.
+        "supports_guidance": bool(getattr(family, "uses_guidance", False)),
+        "supports_negative_prompt": bool(getattr(family, "uses_negative_prompt", False)),
+        "negative_prompt_min_guidance": diffusers_module._negative_prompt_guidance_threshold(
+            family
+        ),
     }
+
+
+# Taken from the fallback only when the MLX variant drops CFG; one that applies it keeps its own thresholds.
+_GUIDANCE_KEYS = ("supports_guidance", "supports_negative_prompt", "negative_prompt_min_guidance")
 
 
 def _parameters(fn: Any) -> dict[str, inspect.Parameter]:
@@ -476,6 +486,10 @@ class RoutedMlxEngine:
         """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit.
         Returns the diffusers copy's identity, read while ``epoch`` was still current."""
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+        from core.inference.diffusion_memory import (
+            UNIFIED_OVERSIZE_REFUSAL_CODE,
+            UnifiedMemoryShortfallError,
+        )
 
         mlx, diffusers = self._mlx(), self._diffusers()
         cancel, done = threading.Event(), threading.Event()
@@ -515,10 +529,14 @@ class RoutedMlxEngine:
                 if phase == "ready" and getattr(diffusers, "_state", None) is not None:
                     break
                 if phase == "error":
-                    raise RuntimeError(
+                    message = (
                         "Could not load the diffusers engine this request needs: "
                         f"{progress.get('error') or 'unknown error'}"
                     )
+                    if progress.get("error_code") == UNIFIED_OVERSIZE_REFUSAL_CODE:
+                        # Typed so the route answers with the structured refusal, not a 500.
+                        raise UnifiedMemoryShortfallError(message)
+                    raise RuntimeError(message)
                 if phase is None:
                     diffusers.unload()
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -688,23 +706,29 @@ class RoutedMlxEngine:
         return self._mlx().cancel_generate(expected_account = expected_account)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
-        if expected_account is None:
-            self._mlx().unload()
-        else:
-            self._mlx().unload(expected_account = expected_account)
-        # An in-flight fallback finishes tearing down before this returns: the caller reads it as memory freed.
-        ours = self._drain_fallback()
-        if ours:
+        # The fallback drains first and stays fenced until the teardown ends: one failing after MLX was freed would
+        # otherwise see its own epoch and reload MLX, and none may register while both engines are torn down.
+        ours = self._drain_fallback(replacing = True)
+        try:
             if expected_account is None:
-                self._diffusers().unload()
+                self._mlx().unload()
             else:
-                self._diffusers().unload(expected_account = expected_account)
-        with self._lock:
-            self._diffusers_ours = False
-            self._mlx_dropped = False
-            self._origin_identity = None
-            self._coexist = None
-            self._load_kwargs = None
+                self._mlx().unload(expected_account = expected_account)
+            if ours:
+                if expected_account is None:
+                    self._diffusers().unload()
+                else:
+                    self._diffusers().unload(expected_account = expected_account)
+            with self._lock:
+                self._diffusers_ours = False
+                self._mlx_dropped = False
+                self._origin_identity = None
+                self._coexist = None
+                self._load_kwargs = None
+        finally:
+            with self._lock:
+                self._epoch += 1
+                self._replacing -= 1
         return self.status()
 
     def load_progress(self) -> dict[str, Any]:
@@ -780,7 +804,11 @@ class RoutedMlxEngine:
         else:
             out = dict(self._mlx().status())
             if out.get("loaded"):
-                out.update(self._fallback_capabilities(self._family()))
+                caps = self._fallback_capabilities(self._family())
+                if out.get("supports_guidance"):
+                    for key in _GUIDANCE_KEYS:
+                        caps.pop(key, None)
+                out.update(caps)
         out["engine_routing"] = self.routing_status()
         return out
 

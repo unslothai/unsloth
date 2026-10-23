@@ -52681,6 +52681,7 @@ async def _generate_diffusion_image_run(
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
         ImageActivationShortfallError,
+        unified_memory_refusal_code,
     )
 
     backend = get_active_diffusion_engine()
@@ -52812,6 +52813,15 @@ async def _generate_diffusion_image_run(
             msg = str(exc)
             if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
+            refusal = unified_memory_refusal_code(exc)
+            if refusal is not None:
+                # A fallback engine this request needed was refused by the unified-memory load guard: tagged with
+                # the load path's error code, not reported as a generation failure.
+                raise HTTPException(
+                    status_code = 400,
+                    detail = msg,
+                    headers = {IMAGE_REFUSAL_HEADER: refusal},
+                )
             logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
         except Exception as exc:

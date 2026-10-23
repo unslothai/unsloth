@@ -739,6 +739,27 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
     assert IMAGE_REFUSAL_HEADER not in other.headers
 
 
+def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monkeypatch):
+    # A fallback engine the request needed (MLX routing on a Mac) refused by the unified-memory load guard.
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        UnifiedMemoryShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise UnifiedMemoryShortfallError("Could not load the diffusers engine: needs about 30 GB")
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 400
+    assert resp.headers.get(IMAGE_REFUSAL_HEADER) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    assert "30 GB" in resp.json()["detail"]
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True

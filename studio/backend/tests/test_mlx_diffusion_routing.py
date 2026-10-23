@@ -866,3 +866,87 @@ def test_explicit_guidance_without_a_fallback_is_refused_not_dropped(rig, monkey
         _txt2img(rig.engine, guidance = 4.0)
     assert ("mlx", "generate") not in rig.log
     assert _txt2img(rig.engine, guidance = 0.0)["engine"] == "mlx"
+
+
+def test_status_offers_the_fallback_guidance_controls_over_a_turbo_mlx_variant(rig, monkeypatch):
+    # The Images page hides the guidance slider and negative prompt on supports_guidance / supports_negative_prompt
+    # False: a guided request routes to diffusers, so the routed status advertises what diffusers serves.
+    _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = False)
+    z_image = next(f for f in families._FAMILIES if f.name == "z-image")
+    monkeypatch.setattr(rig.engine, "_family", lambda: z_image)
+    monkeypatch.setattr(rig.engine, "_capabilities_fn", routing._diffusers_capabilities)
+    status = rig.engine.status()
+    assert status["engine"] == "mlx"
+    assert status["supports_guidance"] is True
+    assert status["supports_negative_prompt"] is True
+    assert status["negative_prompt_min_guidance"] == 0.0
+    # The engine choice still reads the MLX variant itself.
+    assert rig.engine._mlx_guidance() is False
+    assert _txt2img(rig.engine, guidance = 4.0, negative_prompt = "blurry")["engine"] == "diffusers"
+
+
+def test_an_mlx_variant_that_applies_guidance_keeps_its_own_thresholds(rig, monkeypatch):
+    _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = True)
+    real_status = rig.mlx.status
+
+    def _status():
+        out = real_status()
+        out.update(supports_negative_prompt = True, negative_prompt_min_guidance = 1.0)
+        return out
+
+    monkeypatch.setattr(rig.mlx, "status", _status)
+    monkeypatch.setattr(
+        rig.engine,
+        "_capabilities_fn",
+        lambda fam: {"workflows": ["txt2img", "img2img"], "negative_prompt_min_guidance": 0.0},
+    )
+    assert rig.engine.status()["negative_prompt_min_guidance"] == 1.0
+
+
+def test_an_unload_racing_a_failing_fallback_never_leaves_mlx_resident(rig):
+    # The fallback dropped MLX and is loading diffusers; it fails just after unload freed MLX. It must not
+    # restore MLX: the unload returns with nothing resident.
+    rig.diffusers.hang_load = True
+    worker, outcome = _in_thread(lambda: _img2img(rig.engine))
+    deadline = time.time() + 5
+    while not rig.diffusers._loading and time.time() < deadline:
+        time.sleep(0.01)
+    assert rig.diffusers._loading and rig.mlx._state is None
+    real_unload = rig.mlx.unload
+
+    def _unload_then_fail_the_fallback(**kwargs):
+        result = real_unload(**kwargs)
+        rig.diffusers._load_error = "out of memory"
+        worker.join(5)
+        return result
+
+    rig.mlx.unload = _unload_then_fail_the_fallback
+    status = rig.engine.unload()
+    worker.join(5)
+    assert not worker.is_alive() and isinstance(outcome[0], RuntimeError), outcome
+    assert status["loaded"] is False
+    assert rig.mlx._state is None
+    assert rig.diffusers._state is None
+
+
+def test_a_unified_memory_refusal_of_the_fallback_keeps_its_error_code(rig):
+    from core.inference.diffusion_memory import (
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        unified_memory_refusal_code,
+    )
+
+    real_progress = rig.diffusers.load_progress
+
+    def _progress():
+        out = real_progress()
+        if out.get("phase") == "error":
+            out["error_code"] = UNIFIED_OVERSIZE_REFUSAL_CODE
+        return out
+
+    rig.diffusers.load_progress = _progress
+    rig.diffusers.fail_next_load = "needs about 30 GB of unified memory"
+    with pytest.raises(RuntimeError, match = "unified memory") as excinfo:
+        _img2img(rig.engine)
+    assert unified_memory_refusal_code(excinfo.value) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    # MLX is restored as for any other failed fallback.
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
