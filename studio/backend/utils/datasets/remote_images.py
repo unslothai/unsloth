@@ -42,7 +42,15 @@ _OPT_IN_HINT = f"Set {ALLOW_PRIVATE_ENV}=1 to load images from private hosts or 
 
 
 def private_sources_allowed():
-    return os.environ.get(ALLOW_PRIVATE_ENV) == "1"
+    """Single-user installs only: with managed accounts, a row one of them supplies must not reach
+    the owner's LAN. Fails closed if the account store cannot be read."""
+    if os.environ.get(ALLOW_PRIVATE_ENV) != "1":
+        return False
+    try:
+        from auth.policy import installation_has_managed_accounts
+        return not installation_has_managed_accounts()
+    except Exception:  # noqa: BLE001 - unreadable account store keeps the guard on
+        return False
 
 
 def _scheme(url):
@@ -75,9 +83,29 @@ def is_network_share(path):
 
 
 def guard_url(url):
-    """Percent-encode what a browser would (a raw space), so the guard sees a valid URL."""
-    from urllib.parse import quote
-    return quote(url.strip(), safe = ":/?#[]@!$&'()*+,;=%~")
+    """Percent-encode what a browser would (a raw space) in the path and query, so the guard sees a
+    valid URL; the host is left alone so an internationalized name still goes through IDNA."""
+    from urllib.parse import quote, urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url
+    keep = "/?#[]@!$&'()*+,;=%~:"
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            quote(parts.path, safe = keep),
+            quote(parts.query, safe = keep),
+            quote(parts.fragment, safe = keep),
+        )
+    )
+
+
+def _private_refusal(error):
+    lowered = error.lower()
+    return error.startswith("Blocked:") and ("non-public" in lowered or "local" in lowered)
 
 
 def fetch_untrusted_image_bytes(url):
@@ -94,7 +122,7 @@ def fetch_untrusted_image_bytes(url):
         raw_bytes_max = _MAX_IMAGE_BYTES,
     )
     if error is not None:
-        raise OSError(f"{error} {_OPT_IN_HINT}")
+        raise OSError(f"{error} {_OPT_IN_HINT}" if _private_refusal(error) else error)
     return body
 
 

@@ -421,10 +421,16 @@ def test_refusals_name_the_opt_in(monkeypatch):
         _decode_without_io(monkeypatch, "zip://a.png::https://attacker.example/x.zip")
 
 
+def _single_user(monkeypatch, single = True):
+    from auth import policy
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: not single)
+
+
 def test_the_opt_in_restores_private_hosts_and_archives(monkeypatch, loopback_server):
     # The owner's own LAN image server or non-Hub archive loads the way datasets loads it.
     base, hits = loopback_server
     monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    _single_user(monkeypatch)
     ds = Dataset.from_list([{"image": f"{base}/lan.png", "caption": "x"}])
     out = convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
     assert isinstance(out[0]["messages"][0]["content"][1]["image"], Image.Image)
@@ -438,3 +444,37 @@ def test_unencoded_spaces_are_quoted_before_the_guard(monkeypatch):
     calls = _recording_fetch(monkeypatch, _png())
     _typed_image_dataset("https://example.com/my images/a b.png")[0]
     assert calls == ["https://example.com/my%20images/a%20b.png"]
+
+
+def test_the_opt_in_is_ignored_once_managed_accounts_exist(monkeypatch, loopback_server):
+    # A managed account's row must not reach the owner's LAN through the owner's opt-in.
+    base, hits = loopback_server
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    _single_user(monkeypatch, single = False)
+    with pytest.raises(OSError):
+        _typed_image_dataset(f"{base}/typed.png")[0]
+    assert hits == []
+
+
+def test_an_internationalized_host_is_not_percent_encoded():
+    from utils.datasets.remote_images import guard_url
+    assert guard_url("https://例子.测试/my images/a.png") == "https://例子.测试/my%20images/a.png"
+    assert (
+        guard_url("https://example.com/a.png?x[]=1&b=c d")
+        == "https://example.com/a.png?x[]=1&b=c%20d"
+    )
+
+
+def test_only_private_refusals_suggest_the_opt_in(monkeypatch):
+    from core.inference import tools
+    from utils.datasets.remote_images import fetch_untrusted_image_bytes
+    for error, hinted in (
+        ("Blocked: refusing to fetch non-public address 10.0.0.1.", True),
+        ("Failed to fetch URL: HTTP 404", False),
+    ):
+        monkeypatch.setattr(
+            tools, "_fetch_url_raw", lambda url, error = error, **kwargs: (error, b"", "")
+        )
+        with pytest.raises(OSError) as refused:
+            fetch_untrusted_image_bytes("https://example.com/a.png")
+        assert ("UNSLOTH_ALLOW_PRIVATE_URL_FETCH" in str(refused.value)) is hinted

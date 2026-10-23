@@ -981,7 +981,14 @@ def detect_vlm_dataset_structure(dataset):
                 return False
             return os.path.exists(sample_value)
         if private_sources_allowed():
-            return True
+            # The owner opted out of the guard: still probe, so a broken column loses to a working one.
+            import urllib.request
+            try:
+                request = urllib.request.Request(sample_value, method = "HEAD")
+                with urllib.request.urlopen(request, timeout = 3) as response:
+                    return response.status < 400
+            except Exception:
+                return False
 
         try:
             import time

@@ -409,7 +409,7 @@ def _fetch_row_image(url):
 
     if private_sources_allowed():
         import fsspec
-        with fsspec.open(url, "rb", expand = True) as handle:
+        with fsspec.open(url, "rb") as handle:
             return Image.open(BytesIO(handle.read())).convert("RGB")
     return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
 
