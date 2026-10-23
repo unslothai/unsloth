@@ -43,6 +43,8 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CODEX_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
+    for name in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_HOME", "OPENCLAW_PROFILE"):
+        monkeypatch.delenv(name, raising = False)
     server = {"calls": [], "keys": {CLI_KEY, APP_KEY}, "minted": 0}
 
     def http_json(
@@ -374,6 +376,57 @@ def test_openclaw_app_adds_unsloth_and_joins_an_existing_allowlist(studio):
     assert data["gateway"] == user["gateway"]
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
     assert data["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
+
+
+@pytest.mark.parametrize("selector", ["config", "state", "both", "home", "profile"])
+def test_openclaw_app_updates_selected_config_only(studio, monkeypatch, tmp_path, selector):
+    default = studio["home"] / ".openclaw" / "openclaw.json"
+    default.parent.mkdir()
+    default.write_text('{"marker": "unrelated default"}\n')
+    if selector == "home":
+        monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "relocated-home"))
+        selected = tmp_path / "relocated-home" / ".openclaw" / "openclaw.json"
+    elif selector == "profile":
+        monkeypatch.setenv("OPENCLAW_PROFILE", "work")
+        selected = studio["home"] / ".openclaw-work" / "openclaw.json"
+    else:
+        selected = tmp_path / "selected" / "openclaw.json"
+        if selector in ("config", "both"):
+            monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(selected))
+        if selector in ("state", "both"):
+            # An explicit file wins over a different state directory.
+            state = selected.parent if selector == "state" else tmp_path / "other-state"
+            monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state))
+    selected.parent.mkdir(parents = True)
+    original = '{"marker": "selected", "agents": {"defaults": {}}}\n'
+    selected.write_text(original)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(selected.read_text())
+    assert data["marker"] == "selected"
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert selected.with_name("openclaw.json.unsloth-backup").read_text() == original
+    assert default.read_text() == '{"marker": "unrelated default"}\n'
+    state = json.loads(start._app_state_path("openclaw", selected).read_text())
+    assert state["path"] == str(selected)
+
+
+@pytest.mark.parametrize("override", ["~/custom/openclaw.json", "relative/openclaw.json"])
+def test_openclaw_app_resolves_user_paths(studio, monkeypatch, tmp_path, override):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", " " + override + " ")
+    expected = (
+        studio["home"] / "custom/openclaw.json" if override.startswith("~") else tmp_path / override
+    )
+    assert start._openclaw_app_target().path == expected
+
+
+def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "selected-home"))
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", "~/custom.json")
+    assert start._openclaw_app_target().path == tmp_path / "selected-home" / "custom.json"
 
 
 def test_openclaw_app_creates_no_allowlist(studio):

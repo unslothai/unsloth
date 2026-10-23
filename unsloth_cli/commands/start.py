@@ -6803,7 +6803,34 @@ def _openclaw_app_updates(
 
 
 def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
-    path = Path.home() / ".openclaw" / "openclaw.json"
+    home = Path.home()
+
+    def user_path(value: str) -> Path:
+        # OpenClaw expands only a leading home prefix, against OPENCLAW_HOME
+        # when set. abspath preserves symlinks for _read_app_file to refuse.
+        if value == "~":
+            value = str(home)
+        elif value.startswith(("~/", "~\\")):
+            value = os.path.join(str(home), value[2:])
+        return Path(os.path.abspath(value))
+
+    if override := os.environ.get("OPENCLAW_HOME", "").strip():
+        home = user_path(override)
+    if override := os.environ.get("OPENCLAW_CONFIG_PATH", "").strip():
+        path = user_path(override)
+    else:
+        if override := os.environ.get("OPENCLAW_STATE_DIR", "").strip():
+            state = user_path(override)
+        else:
+            profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
+            suffix = (
+                f"-{profile}"
+                if profile.lower() != "default"
+                and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", profile)
+                else ""
+            )
+            state = home / f".openclaw{suffix}"
+        path = state / "openclaw.json"
     updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
     return _AppTarget("openclaw", "OpenClaw app", path, updates)
 
