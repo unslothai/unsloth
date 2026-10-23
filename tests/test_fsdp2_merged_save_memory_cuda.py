@@ -53,12 +53,20 @@ def _model(device):
             super().__init__()
             torch.manual_seed(seed)
             self.q = bnb.nn.Linear4bit(
-                DIM, DIM, bias = False, compute_dtype = torch.bfloat16,
-                quant_type = "nf4", quant_storage = torch.bfloat16,
+                DIM,
+                DIM,
+                bias = False,
+                compute_dtype = torch.bfloat16,
+                quant_type = "nf4",
+                quant_storage = torch.bfloat16,
             )
             self.q.weight = bnb.nn.Params4bit(
-                torch.randn(DIM, DIM) * 0.02, requires_grad = False, quant_type = "nf4",
-                quant_storage = torch.bfloat16, blocksize = 64, module = self.q,
+                torch.randn(DIM, DIM) * 0.02,
+                requires_grad = False,
+                quant_type = "nf4",
+                quant_storage = torch.bfloat16,
+                blocksize = 64,
+                module = self.q,
             )
 
         def forward(self, x):
@@ -96,8 +104,10 @@ def _worker(rank, world_size, port, queue):
     try:
         torch.cuda.set_device(rank if torch.cuda.device_count() >= world_size else 0)
         os.environ.update(
-            MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port),
-            RANK = str(rank), WORLD_SIZE = str(world_size),
+            MASTER_ADDR = "127.0.0.1",
+            MASTER_PORT = str(port),
+            RANK = str(rank),
+            WORLD_SIZE = str(world_size),
         )
         import torch.distributed as dist
 
@@ -159,7 +169,6 @@ def _worker(rank, world_size, port, queue):
         queue.put((rank, out))
     except BaseException as error:
         import traceback
-
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
@@ -171,7 +180,9 @@ def test_merged_saves_hold_one_packed_layer_on_the_writer_gpu():
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     port = free_port()
-    procs = [ctx.Process(target = _worker, args = (r, world_size, port, queue)) for r in range(world_size)]
+    procs = [
+        ctx.Process(target = _worker, args = (r, world_size, port, queue)) for r in range(world_size)
+    ]
     for p in procs:
         p.start()
     results = dict(queue.get(timeout = 600) for _ in procs)

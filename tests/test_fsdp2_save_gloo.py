@@ -303,12 +303,20 @@ class _QLoraBlock(torch.nn.Module):
         bnb = pytest.importorskip("bitsandbytes")
         torch.manual_seed(seed)
         self.q = bnb.nn.Linear4bit(
-            128, 128, bias = False, compute_dtype = torch.bfloat16,
-            quant_type = "nf4", quant_storage = torch.bfloat16,
+            128,
+            128,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
         )
         self.q.weight = bnb.nn.Params4bit(
-            torch.randn(128, 128) * 0.05, requires_grad = False, quant_type = "nf4",
-            quant_storage = torch.bfloat16, blocksize = 64, module = self.q,
+            torch.randn(128, 128) * 0.05,
+            requires_grad = False,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = self.q,
         )
         self.o = torch.nn.Linear(128, 128, bias = False).requires_grad_(False)
 
@@ -398,9 +406,7 @@ def _case_merged_4bit_streamed(rank, world_size, m):
                 torch.Tensor.cpu = original_cpu
                 packed_moved = sum(len(s) == 2 and s[-1] == 1 for s in moved)
                 if writer:
-                    staged = (
-                        m.merge_4bit_lora_layer_by_layer(model) if mode == "streamed" else []
-                    )
+                    staged = m.merge_4bit_lora_layer_by_layer(model) if mode == "streamed" else []
                     on_cpu_before_unload = [
                         layer.q.base_layer.weight.quant_state.absmax.device.type
                         for layer in model.base_model.model.layers
@@ -415,7 +421,8 @@ def _case_merged_4bit_streamed(rank, world_size, m):
                         states_cpu = on_cpu_before_unload,
                         same_keys = sorted(sd) == sorted(reference),
                         same_bytes = all(
-                            torch.equal(sd[k], reference[k]) if isinstance(sd[k], torch.Tensor)
+                            torch.equal(sd[k], reference[k])
+                            if isinstance(sd[k], torch.Tensor)
                             else sd[k] == reference[k]
                             for k in reference
                         ),
@@ -1169,6 +1176,7 @@ def test_merged_4bit_save_streams_the_packed_base_one_layer_at_a_time():
     assert all(device == "cpu" for device in streamed["states_cpu"]), streamed
     # One layer on its device at a time: each merge is bracketed by its own two restages, and PEFT's
     # unload merges nothing more.
-    assert streamed["events"] == ["restage", "merge", "restage"] * N_LAYERS + ["unload"] + [
-        "merge"
-    ] * N_LAYERS, streamed["events"]
+    assert (
+        streamed["events"]
+        == ["restage", "merge", "restage"] * N_LAYERS + ["unload"] + ["merge"] * N_LAYERS
+    ), streamed["events"]

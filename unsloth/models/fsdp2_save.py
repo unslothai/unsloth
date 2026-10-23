@@ -376,7 +376,9 @@ def merge_4bit_lora_layer_by_layer(model):
     merged = []
     for module in model.modules():
         base_layer = getattr(module, "base_layer", None)
-        if not isinstance(base_layer, torch.nn.Module) or not callable(getattr(module, "merge", None)):
+        if not isinstance(base_layer, torch.nn.Module) or not callable(
+            getattr(module, "merge", None)
+        ):
             continue
         weight = base_layer._parameters.get("weight", None)
         home = staged.get(id(weight)) if weight is not None else None
