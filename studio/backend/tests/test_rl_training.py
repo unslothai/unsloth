@@ -1015,6 +1015,9 @@ def test_rendered_completions_end_at_eos_so_trl_adds_no_second_one():
     )
     row = render_preference_rows(ds, _ChatML())[0]
     assert row["chosen"] == "4<|im_end|>" and row["rejected"] == "5<|im_end|>"
+    # DPO before TRL 0.29 appends EOS unconditionally: the rendered one goes.
+    row = render_preference_rows(ds, _ChatML(), trl_appends_eos = True)[0]
+    assert row["chosen"] == "4" and row["rejected"] == "5"
 
 
 def test_tool_call_arguments_keep_their_nulls():

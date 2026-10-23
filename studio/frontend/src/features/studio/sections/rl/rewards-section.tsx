@@ -601,9 +601,11 @@ export function RewardsSection(): ReactElement {
         onOpenChange={setImportOpen}
         onImported={(record) => {
           refreshLibrary();
-          if (!selectedNames.has(record.name)) {
+          // Read now, not at submit: edits made while the import was pending must survive.
+          const current = useTrainingConfigStore.getState().grpoRewards;
+          if (!current.some((r) => r.name === record.name)) {
             setRewards(
-              [...rewards, { name: record.name, weight: 1 }].slice(0, 16),
+              [...current, { name: record.name, weight: 1 }].slice(0, 16),
             );
           }
         }}
