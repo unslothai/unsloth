@@ -13184,6 +13184,8 @@ class DiffusionBackend:
                 denoise_steps = effective_denoise_steps(steps, strength_applied)
                 # The AUTO cache toggle runs after the request guard; the guard prices the cache it will engage.
                 auto_step_cache_on = False
+                # (mode,) once the pre-guard disable ran: the re-check below reuses it instead of toggling twice
+                pre_guard_toggle = None
                 if state.cache_auto:
                     # Judged on the pipeline that RUNS: from_pipe workflows open no cache_context for FBCache.
                     from .diffusion_autoopt.runtime import auto_cache_steps
@@ -13192,12 +13194,14 @@ class DiffusionBackend:
                     auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
                     if not auto_step_cache_on:
                         # Disengage before the guard; a failed disable keeps the doubled price.
-                        maybe_toggle_step_cache(
-                            state.pipe,
-                            steps = cache_steps,
-                            quant_active = state.cache_quant_active,
-                            threshold = state.cache_threshold,
-                            logger = logger,
+                        pre_guard_toggle = (
+                            maybe_toggle_step_cache(
+                                state.pipe,
+                                steps = cache_steps,
+                                quant_active = state.cache_quant_active,
+                                threshold = state.cache_threshold,
+                                logger = logger,
+                            ),
                         )
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
@@ -13460,13 +13464,16 @@ class DiffusionBackend:
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
-                    toggled = maybe_toggle_step_cache(
-                        state.pipe,
-                        steps = cache_steps,
-                        quant_active = state.cache_quant_active,
-                        threshold = state.cache_threshold,
-                        logger = logger,
-                    )
+                    if pre_guard_toggle is not None:
+                        toggled = pre_guard_toggle[0]
+                    else:
+                        toggled = maybe_toggle_step_cache(
+                            state.pipe,
+                            steps = cache_steps,
+                            quant_active = state.cache_quant_active,
+                            threshold = state.cache_threshold,
+                            logger = logger,
+                        )
                     if toggled != state.transformer_cache:
                         # _LoadState is frozen; the one deliberate in-place update, so status() reports the pipe-level
                         # toggle.
