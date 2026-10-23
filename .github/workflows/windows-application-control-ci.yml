@@ -41,6 +41,9 @@ name: Windows Application Control CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
       - 'scripts/uninstall.ps1'
@@ -97,6 +100,7 @@ permissions:
 
 jobs:
   applocker-denied-launcher:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: installer survives a denied unsloth.exe
     runs-on: windows-latest
     timeout-minutes: 45

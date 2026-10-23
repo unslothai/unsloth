@@ -371,7 +371,7 @@ export function ChatSkillsDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="rounded-xl shadow-border ring-0 [--radius:1.1rem] max-sm:flex max-sm:flex-col max-sm:overflow-hidden sm:max-w-2xl">
+      <DialogContent className="rounded-3xl shadow-border ring-0 max-sm:flex max-sm:flex-col max-sm:overflow-hidden sm:max-w-2xl">
         {view.kind === "library" ? (
           <>
             <DialogHeader>
@@ -450,7 +450,7 @@ export function ChatSkillsDialog({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button type="button" size="sm" onClick={openNew}>
+              <Button variant="secondary" type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
               </Button>
@@ -646,7 +646,8 @@ export function ChatSkillsDialog({
                     <Button type="button" variant="ghost" disabled={creating} onClick={goLibrary}>
                       {t("common.cancel")}
                     </Button>
-                    <Button type="submit" form="skill-new-form" disabled={creating || !canCreate}>
+                    <Button variant="secondary" type="submit" form="skill-new-form" disabled={creating || !canCreate}>
+                      <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                       {creating ? <Spinner /> : null}
                       {t("skills.create")}
                     </Button>
@@ -655,7 +656,7 @@ export function ChatSkillsDialog({
                   <>
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="destructive"
                       disabled={pending !== null}
                       onClick={() => setConfirmingDelete(selected)}
                       aria-label={t("skills.delete", { name: selected.name })}
@@ -807,7 +808,7 @@ function SkillRow({
   return (
     <div
       className={cn(
-        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
@@ -817,7 +818,7 @@ function SkillRow({
         aria-label={skill.name}
         aria-describedby={descriptionId}
         title={(skill.valid ? skill.description : skill.error) ?? undefined}
-        className="pointer-events-auto absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="pointer-events-auto absolute inset-0 cursor-pointer rounded-xl focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
@@ -947,7 +948,7 @@ function Editor({
       {notice ? (
         <p
           className={cn(
-            "rounded-xl px-4 py-3 text-xs leading-relaxed",
+            "rounded-lg px-4 py-3 text-xs leading-relaxed",
             notice.tone === "error"
               ? "border border-destructive/30 bg-destructive/5 text-destructive"
               : "bg-muted/50 text-muted-foreground",

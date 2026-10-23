@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import {
   AlertDialog,
@@ -67,7 +68,7 @@ import {
   resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon, ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
@@ -235,9 +236,6 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -3942,7 +3940,8 @@ export function ModelConfigPage({
               className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <ChevronLeftIcon
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
                 className="size-4"
                 strokeWidth={1.75}
               />
@@ -4181,6 +4180,7 @@ export function ModelConfigPage({
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
+            variant="dark"
             type="button"
             size="sm"
             className={FOOTER_BUTTON_CLASS}
