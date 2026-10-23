@@ -441,41 +441,59 @@ def test_the_opt_in_restores_private_hosts_and_archives(monkeypatch, loopback_se
 
 
 @pytest.mark.parametrize("known_size", [True, False])
-def test_the_opt_in_keeps_the_image_size_cap(monkeypatch, loopback_server, known_size):
+def test_the_opt_in_keeps_the_image_size_cap(monkeypatch, known_size):
     from utils.datasets import remote_images
     from utils.datasets.format_conversion import _fetch_row_image
 
-    base, hits = loopback_server
-    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
-    _single_user(monkeypatch)
-    assert isinstance(_fetch_row_image(f"{base}/small.png"), Image.Image)
-    monkeypatch.setattr(remote_images, "_MAX_IMAGE_BYTES", 16)
-    reads = []
-    if not known_size:
-        # A server without Content-Length: the read itself has to stop at the cap.
-        import contextlib
+    body = _png()
 
-        import fsspec
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"  # no Content-Length: the body ends when the server closes
 
-        real_open = fsspec.open
+        def do_GET(self):
+            self.send_response(200)
+            if known_size:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-        class _Unsized:
-            def __init__(self, handle):
-                self._handle = handle
+        def log_message(self, *args):
+            pass
 
-            def read(self, n = -1):
-                reads.append(n)
-                return self._handle.read(n)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+        _single_user(monkeypatch)
+        assert isinstance(_fetch_row_image(f"{base}/small.png"), Image.Image)
+        monkeypatch.setattr(remote_images, "_MAX_IMAGE_BYTES", 16)
+        with pytest.raises(OSError, match = "larger than"):
+            _fetch_row_image(f"{base}/big.png")
+    finally:
+        server.shutdown()
+        server.server_close()
 
-        @contextlib.contextmanager
-        def unsized_open(url, mode):
-            with real_open(url, mode) as handle:
-                yield _Unsized(handle)
 
-        monkeypatch.setattr(fsspec, "open", unsized_open)
-    with pytest.raises(OSError, match = "larger than"):
-        _fetch_row_image(f"{base}/big.png")
-    assert reads == ([] if known_size else [17])
+def test_opted_in_requests_are_quoted_idna_encoded_and_time_bounded(monkeypatch):
+    import urllib.request
+
+    from utils.datasets.remote_images import open_opted_in_url
+
+    seen = []
+
+    def fake_urlopen(request, timeout):
+        seen.append((request.full_url, request.get_method(), timeout))
+        raise OSError("stop")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    for kwargs in ({}, {"method": "HEAD", "timeout": 3}):
+        with pytest.raises(OSError, match = "stop"):
+            open_opted_in_url("https://u@例子.测试:8443/my images/a.png", **kwargs)
+    assert seen == [
+        ("https://u@xn--fsqu00a.xn--0zwm56d:8443/my%20images/a.png", "GET", 30),
+        ("https://u@xn--fsqu00a.xn--0zwm56d:8443/my%20images/a.png", "HEAD", 3),
+    ]
 
 
 def test_unencoded_spaces_are_quoted_before_the_guard(monkeypatch):

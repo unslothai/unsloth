@@ -126,16 +126,45 @@ def fetch_untrusted_image_bytes(url):
     return body
 
 
-def fetch_opted_in_image_bytes(url):
-    """The owner's opt-in: fetched the way fsspec / datasets fetch it, but still size capped."""
-    import fsspec
+def open_opted_in_url(
+    url,
+    method = "GET",
+    timeout = _IMAGE_TIMEOUT_S,
+):
+    """The owner's opt-in: no address checks, but quoted, IDNA-encoded and time bounded."""
+    import urllib.request
+    from urllib.parse import urlsplit, urlunsplit
 
-    with fsspec.open(url, "rb") as handle:
-        size = getattr(handle, "size", None) or 0
-        body = handle.read(_MAX_IMAGE_BYTES + 1) if size <= _MAX_IMAGE_BYTES else None
-    if body is None or len(body) > _MAX_IMAGE_BYTES:
+    parts = urlsplit(guard_url(url))
+    userinfo, at, hostport = parts.netloc.rpartition("@")
+    if not hostport.isascii():  # never an IPv6 literal, so the first colon starts the port
+        name, colon, port = hostport.partition(":")
+        hostport = name.encode("idna").decode("ascii") + colon + port
+    url = urlunsplit(parts._replace(netloc = userinfo + at + hostport))
+    request = urllib.request.Request(url, method = method, headers = {"Accept": "image/*"})
+    return urllib.request.urlopen(request, timeout = timeout)
+
+
+def fetch_opted_in_image_bytes(url):
+    """The owner's opt-in fetch, with the guarded fetch's size cap and deadline."""
+    import time
+
+    deadline = time.monotonic() + _IMAGE_TIMEOUT_S * 2
+    chunks, total = [], 0
+    with open_opted_in_url(url) as response:
+        if int(response.headers.get("Content-Length") or 0) > _MAX_IMAGE_BYTES:
+            total = _MAX_IMAGE_BYTES + 1
+        while total <= _MAX_IMAGE_BYTES:
+            if time.monotonic() > deadline:
+                raise OSError(f"Timed out fetching image: {url}")
+            chunk = response.read1(1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    if total > _MAX_IMAGE_BYTES:
         raise OSError(f"Image is larger than {_MAX_IMAGE_BYTES >> 20} MB: {url}")
-    return body
+    return b"".join(chunks)
 
 
 def install_guarded_image_decode(hf_image = None):

@@ -974,7 +974,12 @@ def detect_vlm_dataset_structure(dataset):
         if not isinstance(sample_value, str):
             return True
 
-        from .remote_images import guard_url, is_network_share, private_sources_allowed
+        from .remote_images import (
+            guard_url,
+            is_network_share,
+            open_opted_in_url,
+            private_sources_allowed,
+        )
 
         if not sample_value.startswith(("http://", "https://")):
             if is_network_share(sample_value) and not private_sources_allowed():
@@ -982,10 +987,8 @@ def detect_vlm_dataset_structure(dataset):
             return os.path.exists(sample_value)
         if private_sources_allowed():
             # The owner opted out of the guard: still probe, so a broken column loses to a working one.
-            import urllib.request
             try:
-                request = urllib.request.Request(guard_url(sample_value), method = "HEAD")
-                with urllib.request.urlopen(request, timeout = 3) as response:
+                with open_opted_in_url(sample_value, method = "HEAD", timeout = 3) as response:
                     return response.status < 400
             except Exception:
                 return False
