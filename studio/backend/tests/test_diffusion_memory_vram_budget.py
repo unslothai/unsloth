@@ -274,3 +274,61 @@ def test_cfg_replica_picks_the_card_the_budget_leaves_room_on(fraction, monkeypa
         assert str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:2"
     finally:
         mg.uninstall_cfg_parallel(pipe)
+
+
+def test_measured_residency_promotion_keeps_the_budget_free(fraction, monkeypatch):
+    # the logged Qwen-Image-2.1 int8 auto load on a 12 GiB card, refined from its loaded weights
+    for env in (dm.MEASURED_ACTIVATION_ENV, dm.PARTIAL_RESIDENT_ENV, dm.RESIDENT_DIT_ENV):
+        monkeypatch.delenv(env, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMED_RESIDENCY", raising = False)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    loaded = {
+        "transformer": (6922, "dit"),
+        "text_encoder": (8960, "text_encoder"),
+        "vae": (645, "other"),
+    }
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(loaded))
+    monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 624, raising = False)
+    card = DeviceMemory("cuda", "cuda", "discrete_vram", 11_598, 12 * GiB)
+
+    def refined():
+        plan = plan_diffusion_memory(
+            target = types.SimpleNamespace(supports_model_cpu_offload = True),
+            device_memory = card,
+            model_dense_mib = 19630,
+            companion_dense_mib = 12182,
+            text_encoder_dense_mib = 10847,
+            runtime_headroom_mib = 8192,
+        )
+        if plan.offload_policy == dm.OFFLOAD_MODEL:
+            plan = dm.torchao_streaming_plan(plan)
+        return dm.refine_plan_from_loaded_weights(
+            object(), plan, family = "qwen-image-2.1", speed_mode = "default"
+        )
+
+    default = refined()
+    fraction["value"] = 0.50
+    capped = refined()
+    reserve = int(12 * GiB * 0.50)
+    resident = capped.resident_transformer_mib or 0
+    # whatever stays resident, the user's share of the card stays free beside it
+    assert resident + 645 + capped.estimates["measured_runtime_headroom_mib"] + reserve <= 11_598
+    assert resident < (default.resident_transformer_mib or 0)
+
+
+def test_companion_card_is_ranked_by_what_the_budget_leaves(fraction, monkeypatch):
+    import core.inference.diffusion_multigpu as mg
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "a", total_mib = 24 * GiB, free_mib = 23 * GiB),
+        1: mg.DeviceProbe(ordinal = 1, name = "b", total_mib = 192 * GiB, free_mib = 60 * GiB),
+        2: mg.DeviceProbe(ordinal = 2, name = "a", total_mib = 24 * GiB, free_mib = 23 * GiB),
+    }
+    selection = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))
+    assert mg.best_secondary(selection, probes) == 1  # default budget: most free wins, unchanged
+    fraction["value"] = 0.50  # cuda:1 keeps 96 GiB free (nothing usable), cuda:2 has 11 GiB usable
+    assert mg.best_secondary(selection, probes) == 2
+    readings = {1: (60 * GiB, 192 * GiB), 2: (23 * GiB, 24 * GiB)}
+    monkeypatch.setattr(mg, "_free_total_mib", lambda o: readings[o])
+    automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2), automatic = True)
+    assert mg.best_secondary(automatic) == 2

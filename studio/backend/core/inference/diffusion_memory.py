@@ -1281,7 +1281,7 @@ def _device_user_budget_reserve_mib(memory: DeviceMemory, base: Optional[int]) -
     backend = str(getattr(memory, "backend", "") or "").split(":")[0]
     if (
         backend in ("mps", "cpu")
-        or memory.memory_kind == "system_memory"
+        or getattr(memory, "memory_kind", None) == "system_memory"
         or getattr(memory, "metal_working_set_mib", None) is not None
     ):
         return 0
@@ -3117,8 +3117,13 @@ _RESIDENT_DIT_SLACK_MIN_MIB = 1024
 
 
 def _resident_dit_slack_mib(memory: Any) -> int:
+    """The measured-residency margin, or what the user's VRAM Budget keeps free when larger (as the planner reserve)."""
     base = getattr(memory, "total_mib", None) or getattr(memory, "free_mib", None) or 0
-    return max(_RESIDENT_DIT_SLACK_MIN_MIB, int(int(base) * _RESIDENT_DIT_SLACK_FRACTION))
+    return max(
+        _RESIDENT_DIT_SLACK_MIN_MIB,
+        int(int(base) * _RESIDENT_DIT_SLACK_FRACTION),
+        _device_user_budget_reserve_mib(memory, int(base)),
+    )
 
 
 def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: int) -> bool:

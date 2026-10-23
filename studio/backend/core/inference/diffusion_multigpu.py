@@ -309,17 +309,24 @@ def best_secondary(
 ) -> Optional[int]:
     if not selection.secondaries:
         return None
+    from .diffusion_memory import _user_budget_reserve_mib
+
+    def usable(free: Optional[int], total: Optional[int]) -> int:
+        # what the user's VRAM Budget leaves: a big, partly used card can hold less than a small idle one (raw free
+        # at the default budget, so the order is unchanged there)
+        if free is None:
+            return -1
+        return int(free) - _user_budget_reserve_mib(total or free)
+
     if probes is None and selection.automatic:
-        free = {o: _free_total_mib(o)[0] for o in selection.secondaries}
-        return max(
-            selection.secondaries, key = lambda o: (free[o] if free[o] is not None else -1, -o)
-        )
+        free = {o: _free_total_mib(o) for o in selection.secondaries}
+        return max(selection.secondaries, key = lambda o: (usable(*free[o]), -o))
     if probes is None:
         probes = probe_devices((selection.primary, *selection.secondaries))
 
     def key(o: int) -> tuple[int, int]:
         p = probes.get(o)
-        return (p.free_mib if p is not None and p.free_mib is not None else -1, -o)
+        return (usable(p.free_mib, p.total_mib) if p is not None else -1, -o)
 
     return max(selection.secondaries, key = key)
 
