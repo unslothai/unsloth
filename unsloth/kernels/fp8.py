@@ -753,16 +753,12 @@ def _fp8_device_lacks_kernel(device):
     return torch.cuda.get_device_capability(device) < (8, 9)
 
 
-# On gfx1151 (RDNA 3.5) the torch loop the ragged / rectangular / no-fp8e4nv cases take measured 7.5x slower
-# than the e4m3fn byte decoder, which is bit-identical to it for bf16 / fp32 output, so gfx11 takes the
-# byte decoder there (even tiles keep the fp8e4nv kernel, which it does not beat); 0 restores the old routes.
+# gfx11: byte decoder measured 7.5x faster than the torch loop on gfx1151, bit-identical for bf16 / fp32.
 _HIP_FP8_BYTES_DEQUANT = os.environ.get("UNSLOTH_FP8_HIP_BYTES_DEQUANT", "1") != "0"
 
 
 @functools.lru_cache(maxsize = None)
 def _rocm_bytes_dequant_arch(device):
-    # RDNA3 / 3.5 (gfx11): no OCP e4m3fn hardware, byte decode measured on gfx1151. Other archs
-    # (CDNA, RDNA2, gfx950 / gfx12 with native e4m3fn, unknown) keep their current route.
     try:
         arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
     except Exception:
@@ -771,8 +767,7 @@ def _rocm_bytes_dequant_arch(device):
 
 
 def _hip_bytes_dequant(device, out_dtype):
-    # fp16 output is left out: on gfx1151 the byte decoder and the fp8e4nv kernel both round fp16
-    # differently from the torch loop there, so the torch loop's fp16 result is kept.
+    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
     return (
         _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
     )
@@ -1464,9 +1459,6 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
             and weight_scale.ndim == 2
             and (torch.version.hip is None or _hip_bytes_dequant(weight.device, out_dtype))
         ):
-            # One triton pass over the e4m3fn bytes, bit-identical to the torch loop: NVIDIA on any arch
-            # (below sm89, or ragged / rectangular blocks), and on gfx11 every case the torch loop would
-            # take (bf16 / fp32 output).
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
             )
