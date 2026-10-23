@@ -45,7 +45,8 @@ def _get_cache_key(
     device_model: Optional[Tuple[Any, ...]] = None,
 ) -> str:
     """Generate a unique cache key based on model configuration. ``device_model`` (GPU name, capability,
-    SM count) separates GPU models sharing a capability; None gives the key older releases wrote."""
+    SM count) separates GPU models sharing a capability; None (properties unreadable) gives the
+    model-less key older releases wrote."""
     key_data = {
         "num_experts": num_experts,
         "hidden_dim": hidden_dim,
@@ -217,10 +218,10 @@ def get_or_autotune_moe_kernels(
         return _kernel_config_cache[cache_key]
 
     if not force_autotune:
+        # Entries written before the key carried the GPU model are never reused: nothing records which
+        # model tuned them (a shared ~/.cache or a swapped card), so this card retunes once and saves
+        # under its own key.
         cached_data = load_cached_config(cache_key, **dev_kw)
-        if cached_data is None and device_model is not None and _all_cards_match(device_model):
-            # Entries written before the key carried the GPU model; on a single-model host they are this card's.
-            cached_data = load_cached_config(_get_cache_key(*key_args), **dev_kw)
         if cached_data is not None:
             try:
                 from .grouped_gemm.kernels.tuning import (
@@ -322,15 +323,6 @@ def _device_model(index: int) -> Optional[Tuple[Any, ...]]:
             model = None
         _DEVICE_MODELS[index] = model
     return _DEVICE_MODELS[index]
-
-
-def _all_cards_match(model) -> bool:
-    """True when every visible card is the same GPU model, so a pre-model-key disk entry is this card's."""
-    try:
-        count = torch.cuda.device_count()
-    except Exception:
-        return False
-    return all(_device_model(i) == model for i in range(count))
 
 
 def _run_moe_autotuning(

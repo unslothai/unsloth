@@ -6,7 +6,7 @@
 The launcher enters X.device, so configs picked from the current card's capability, shared memory
 or disk cache entry could exceed the operand card's limit. The cache key also carries the GPU model
 (name, capability, SM count), so two models sharing a capability (L40S + RTX 4090) tune separately,
-while a pre-model-key disk entry still loads on a single-model host. CPU only: device properties
+and a pre-model-key disk entry is never reused (nothing records which model wrote it). CPU only: device properties
 are mocked."""
 
 import importlib
@@ -300,13 +300,22 @@ def _write_legacy_entry(ac, card):
     )
 
 
-def test_a_disk_entry_from_before_the_model_key_still_loads_on_a_single_model_host(ac, monkeypatch):
+def test_a_pre_model_key_entry_is_retuned_once_and_saved_under_the_model_key(ac, monkeypatch):
+    # Every visible card matching cannot prove which model wrote the entry (shared ~/.cache, swapped card).
     _gpus(monkeypatch, [L40S, L40S], current = 0)
+    real_save = ac.save_cached_config
     seen = _record_tuning(ac, monkeypatch)
+    monkeypatch.setattr(ac, "save_cached_config", real_save)
     _write_legacy_entry(ac, L40S)
     ac.get_or_autotune_moe_kernels(**DIMS)
     ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
-    assert seen == []
+    assert seen == [None]
+    assert Path(ac._get_cache_file_path(_key(ac, L40S, 0))).exists()
+    # A fresh process loads the model-keyed entry instead of retuning or reading the legacy file.
+    ac._kernel_config_cache.clear()
+    ac._autotune_completed.clear()
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
+    assert seen == [None]
 
 
 def test_a_pre_model_key_entry_is_not_trusted_on_a_mixed_model_host(ac, monkeypatch):
