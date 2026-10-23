@@ -521,4 +521,35 @@ def test_every_load_route_passes_its_loras_to_engine_selection():
     ]
     assert len(calls) >= 3
     for call in calls:
-        assert "with_loras" in {k.arg for k in call.keywords}, ast.unparse(call)[:120]
+        kw = {k.arg: k.value for k in call.keywords}
+        assert "with_loras" in kw, ast.unparse(call)[:120]
+        # A zero-weight entry is dropped before loading, so it must not count as a LoRA load.
+        assert getattr(kw["with_loras"].func, "id", None) == "_has_active_loras", ast.unparse(call)[
+            :120
+        ]
+
+
+@pytest.mark.parametrize(
+    "loras, active",
+    [
+        (None, False),
+        ([], False),
+        ([("a", 0.0)], False),
+        ([("a", 0), ("b", 0.0)], False),
+        ([SimpleNamespace(id = "a", weight = 0.0)], False),
+        ([("a", 0.0), ("b", 0.5)], True),
+        ([SimpleNamespace(id = "a", weight = 1.0)], True),
+        ([object()], True),
+    ],
+)
+def test_has_active_loras_ignores_zero_weight_entries(loras, active):
+    assert r.has_active_loras(loras) is active
+
+
+def test_a_zero_weight_lora_load_still_lands_on_mlx(monkeypatch):
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    gguf = "z-image-turbo-Q4_K_M.gguf"
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = r.has_active_loras([("a", 0.0)]))
+    assert r.predict_engine(fam, **kw) == ENGINE_MLX
