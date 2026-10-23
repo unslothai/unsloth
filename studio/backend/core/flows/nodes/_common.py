@@ -150,6 +150,34 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
     return value
 
 
+def gallery_media_present(value: Any) -> bool:
+    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted it)."""
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    owned = {
+        "image": image_gallery.owned_image_path,
+        "audio": audio_gallery.owned_audio_path,
+        "video": video_gallery.owned_video_path,
+    }
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            ref = item.get("ref")
+            kind, _, media_id = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+            if (
+                kind in owned
+                and media_id
+                and item.get("kind") == kind
+                and owned[kind](media_id) is None
+            ):
+                return False
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
 async def media_bytes(ctx: Any, media: Any) -> tuple[bytes, str]:
     if not isinstance(media, dict) or not isinstance(media.get("ref"), str):
         raise FlowNodeError("Expected an image, audio clip or video")

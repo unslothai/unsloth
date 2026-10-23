@@ -882,6 +882,11 @@ class FlowEngine:
                     flow_params = ctx.flow_params,
                 )
                 hit = flows_db.cache_get(key)
+                # A cached image, clip or video the user has since deleted is regenerated, not served as a 404.
+                if hit is not None:
+                    from core.flows.nodes._common import gallery_media_present
+                    if not await asyncio.to_thread(gallery_media_present, hit):
+                        hit = None
             except Exception:
                 logger.debug("flows: cache lookup failed", exc_info = True)
                 hit = None

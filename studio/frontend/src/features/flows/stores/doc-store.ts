@@ -273,7 +273,11 @@ export const useDocStore = create<DocState>((set, get) => {
     addNode: (node) =>
       commit((s) =>
         withGraph(s, {
-          nodes: { ...s.graph.nodes, [node.id]: node },
+          nodes: {
+            ...s.graph.nodes,
+            // A node dropped inside a frame belongs to it, as a drag or paste there would make it.
+            [node.id]: { ...node, group: node.group ?? frameAt(s.graph, node.pos) },
+          },
           nodeOrder: [...s.graph.nodeOrder, node.id],
         }),
       ),

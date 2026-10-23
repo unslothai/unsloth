@@ -270,6 +270,49 @@ def test_transcribe_retries_without_timestamps_on_501(monkeypatch):
     assert ctx.formats == ["verbose_json", "json"]
 
 
+def test_transcribe_downloads_a_missing_speech_model_once(monkeypatch):
+    from core.flows.nodes import audio
+    from core.flows.registry import FlowNodeError
+    from studio_mcp.tools import audio as mcp_audio
+
+    async def fake_bytes(ctx, media):
+        return b"RIFF", "audio/wav"
+
+    downloads = []
+
+    async def fake_download(caller, ctx, model):
+        downloads.append(model)
+
+    monkeypatch.setattr(audio, "media_bytes", fake_bytes)
+    monkeypatch.setattr(mcp_audio, "_download_then_retry", fake_download)
+
+    class Ctx:
+        params = {"translate": False, "speakers": False}
+        inputs = {"audio": {"kind": "audio", "ref": "audio:1"}}
+        caller = object()
+        calls = 0
+
+        def progress(self, *a, **kw):
+            pass
+
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            data = None,
+            **kw,
+        ):
+            self.calls += 1
+            if not downloads:
+                raise FlowNodeError("STT model 'x' is not downloaded yet.", status = 409)
+            return {"text": "hello"}
+
+    ctx = Ctx()
+    assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
+    assert downloads == [None] and ctx.calls == 2
+
+
 def test_finishing_an_item_quest_takes_that_item():
     from core.flows.world import validate_npc_reply
 
@@ -608,3 +651,22 @@ async def test_for_each_keeps_null_results_in_place():
 def test_captions_never_draw_missing_glyphs():
     from core.flows.nodes.image import _ASCII_PUNCT
     assert "first \u2014 even\u2026".translate(_ASCII_PUNCT) == "first - even..."
+
+
+def test_cached_media_the_user_deleted_is_not_served(monkeypatch):
+    from core.flows.nodes import _common
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    present = {"keep"}
+    for mod, fn in (
+        (image_gallery, "owned_image_path"),
+        (audio_gallery, "owned_audio_path"),
+        (video_gallery, "owned_video_path"),
+    ):
+        monkeypatch.setattr(mod, fn, lambda media_id: "/x" if media_id in present else None)
+    kept = {"images": [{"kind": "image", "ref": "image:keep"}], "text": "hi"}
+    gone = {"clip": {"kind": "audio", "ref": "audio:gone"}}
+    assert _common.gallery_media_present(kept)
+    assert not _common.gallery_media_present(gone)
+    # Embedded flow assets and plain values are not gallery entries.
+    assert _common.gallery_media_present({"image": {"kind": "image", "ref": "sha256:abc"}, "n": 3})

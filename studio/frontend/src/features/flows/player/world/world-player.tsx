@@ -336,8 +336,12 @@ export function WorldPlayer({
       if (generation !== loads.current) return;
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
-      const { state, notes } = applyReply(spec, wsRef.current, npcId, reply);
+      const prior = wsRef.current;
+      const { state, notes } = applyReply(spec, prior, npcId, reply);
       setWs(state);
+      // An item handed over in conversation leaves the map too, like one picked up by walking to it.
+      for (const id of state.picked)
+        if (!prior.picked.includes(id)) game.current?.removeItem(id);
       for (const n of notes) toast(n);
     } catch (e) {
       if (generation !== loads.current) return;
