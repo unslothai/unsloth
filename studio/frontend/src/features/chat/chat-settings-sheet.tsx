@@ -71,6 +71,8 @@ import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -131,6 +133,10 @@ import {
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
+
+const SaveForModelButton = lazy(
+  () => import("./components/save-for-model-button"),
+);
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -1736,6 +1742,12 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
             )}
+
+            {!isExternalModel && currentCheckpoint ? (
+          <Suspense fallback={null}>
+            <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
+          </Suspense>
+            ) : null}
       </div>
       </div>
       </div>
