@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import json
 from typing import Any, Optional
 
 from core.flows.schema import FlowDocument
@@ -3307,6 +3308,461 @@ def xy_plot() -> B:
     return b
 
 
+def release_notes() -> B:
+    b = B(
+        "release-notes",
+        "Release Notes from Changes",
+        "pipeline",
+        "Paste the merged changes: a local model sorts each one into features, fixes and breaking changes, drops "
+        "internal chores and writes release notes, with the breaking changes listed on their own.",
+        tags = ["text", "for each", "classify", "automation"],
+        seed = 2031,
+    ).need("chat")
+    b.n("version", "input.text", 0, 0.4, label = "Version", value = "2.4.0")
+    b.n(
+        "changes",
+        "input.list",
+        0,
+        1.4,
+        label = "Merged changes",
+        items = [
+            "Add dark mode to the settings page",
+            "Fix crash when exporting an empty playlist",
+            "Rename the --out flag to --output (old flag removed)",
+            "Bump the CI runner image",
+            "Speed up search by caching the index between queries",
+            "Fix the wrong total on invoices with discounts",
+            "Drop support for Python 3.8",
+            "Document the new webhook settings",
+        ],
+    )
+    b.n("each", "logic.for_each", 1, 1.4, group = "sort_loop", max_items = 32)
+    b.e("changes.items", "each.items")
+    b.n(
+        "sort",
+        "llm.extract",
+        2,
+        1.4,
+        group = "sort_loop",
+        label = "Sort the change",
+        model = CHAT,
+        instructions = "kind is breaking when users must change something to upgrade, internal for CI, build "
+        "and refactors users never notice. note is one short past-tense sentence a user understands.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["feature", "fix", "breaking", "docs", "internal"],
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["kind", "note"],
+        },
+    )
+    b.e("each.item", "sort.text")
+    b.e("sort.json", "each.collect")
+    b.group("sort_loop", "For each change", (1, 0.9, 2, 1.6), "#06b6d4")
+    b.n(
+        "for_users",
+        "list.filter",
+        3.2,
+        1,
+        label = "Users notice it",
+        condition = {"op": "!=", "args": [{"var": "item.kind"}, "internal"]},
+    )
+    b.e("each.results", "for_users.items")
+    b.n("left_out", "output.preview", 4.2, 2.2)
+    b.e("for_users.dropped", "left_out.value")
+    b.n("ask", "text.template", 3.2, 0, template = "Write the release notes for version {{values}}.")
+    b.e("version.text", "ask.values")
+    b.n(
+        "write",
+        "llm.generate",
+        4.2,
+        0.6,
+        label = "Write the notes",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 900,
+        system = "You write release notes in Markdown from the sorted changes in the context: a title with the "
+        "version, then Breaking changes, New features, Fixes and Docs sections (skip empty ones), one bullet per "
+        "change. Add a one-line upgrade hint under each breaking change.",
+        prompt = "{{prompt}}",
+    )
+    b.e("ask.text", "write.prompt")
+    b.e("for_users.items", "write.context")
+    b.n("notes", "output.result", 5.2, 0.6, name = "release_notes")
+    b.e("write.text", "notes.value")
+    b.n(
+        "breaking",
+        "list.filter",
+        4.2,
+        1.6,
+        label = "Breaking only",
+        condition = {"op": "==", "args": [{"var": "item.kind"}, "breaking"]},
+    )
+    b.e("for_users.items", "breaking.items")
+    b.n("lines", "list.map", 5.2, 1.6, label = "Their notes", expression = {"var": "item.note"})
+    b.e("breaking.items", "lines.items")
+    b.n("must_read", "output.result", 6.2, 1.6, name = "breaking")
+    b.e("lines.items", "must_read.value")
+    b.note(
+        "tip",
+        "Paste a changelog or merged PR titles, one per line. Change the kinds in Sort the change to match "
+        "your project's labels.",
+        0,
+        2.4,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+LOCALIZATION_STRINGS = {
+    "welcome": "Welcome back, {name}!",
+    "cart_count": "You have {count} items in your cart.",
+    "checkout": "Checkout",
+    "free_shipping": "Free shipping on orders over {amount}.",
+    "error_payment": "Your payment did not go through. Please try another card.",
+}
+
+
+def localization_kit() -> B:
+    b = B(
+        "localization-kit",
+        "Localization Kit",
+        "pipeline",
+        "Translate an app's UI strings into several languages at once with a local model, keeping every "
+        "{placeholder} and key unchanged.",
+        tags = ["text", "translate", "for each", "json"],
+        seed = 2032,
+    ).need("chat")
+    b.n(
+        "strings",
+        "input.param",
+        0,
+        0.5,
+        label = "UI strings",
+        name = "strings",
+        type = "json",
+        default = json.dumps(LOCALIZATION_STRINGS, indent = 2),
+    )
+    b.n(
+        "languages",
+        "input.list",
+        0,
+        1.5,
+        label = "Languages",
+        items = ["Spanish", "German", "Japanese", "Brazilian Portuguese"],
+    )
+    b.n("each", "logic.for_each", 1, 1.5, group = "lang_loop", max_items = 16)
+    b.e("languages.items", "each.items")
+    b.n(
+        "ask",
+        "text.template",
+        2,
+        1.5,
+        group = "lang_loop",
+        template = "Translate every string in the context into {{values}}.",
+    )
+    b.e("each.item", "ask.values")
+    b.n(
+        "translate",
+        "llm.generate",
+        3,
+        1.5,
+        group = "lang_loop",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 1500,
+        system = "You are a professional software translator. The context is a JSON object of UI strings by key. "
+        "Return every key exactly once with its translation. Keep placeholders in curly braces such as {name} "
+        "exactly as written, untranslated. Match the length and tone of a button or message.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string"},
+                "strings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"key": {"type": "string"}, "text": {"type": "string"}},
+                        "required": ["key", "text"],
+                    },
+                },
+            },
+            "required": ["language", "strings"],
+        },
+    )
+    b.e("ask.text", "translate.prompt")
+    b.e("strings.value", "translate.context")
+    b.e("translate.json", "each.collect")
+    b.group("lang_loop", "For each language", (1, 1, 3, 1.6), "#06b6d4")
+    b.n("kit", "output.result", 4.4, 1.5, name = "translations")
+    b.e("each.results", "kit.value")
+    b.note(
+        "tip",
+        "Paste your own strings as JSON (key: text) into UI strings, or fill it from the Run dialog or an MCP "
+        "agent. Add languages one per line.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+INVENTORY_STOCK = [
+    {"sku": "MUG-01", "item": "Sloth mug", "on_hand": 24, "unit_cost": 6.5},
+    {"sku": "TEE-M", "item": "T-shirt (M)", "on_hand": 40, "unit_cost": 9.0},
+    {"sku": "TEE-L", "item": "T-shirt (L)", "on_hand": 35, "unit_cost": 9.0},
+    {"sku": "CAP-01", "item": "Cap", "on_hand": 18, "unit_cost": 7.25},
+    {"sku": "STK-10", "item": "Sticker pack", "on_hand": 120, "unit_cost": 1.2},
+    {"sku": "BAG-01", "item": "Tote bag", "on_hand": 12, "unit_cost": 4.0},
+]
+INVENTORY_COUNT = [
+    {"sku": "MUG-01", "counted": 24},
+    {"sku": "TEE-M", "counted": 37},
+    {"sku": "TEE-L", "counted": 35},
+    {"sku": "CAP-01", "counted": 20},
+    {"sku": "STK-10", "counted": 96},
+    {"sku": "PIN-05", "counted": 15},
+]
+
+
+def _or_zero(field: str) -> dict:
+    return {"op": "if", "args": [{"var": f"item.{field}"}, {"var": f"item.{field}"}, 0]}
+
+
+def _missing(field: str) -> dict:
+    return {"op": "==", "args": [{"var": f"item.{field}"}, None]}
+
+
+def inventory_reconcile() -> B:
+    b = B(
+        "inventory-reconcile",
+        "Inventory Reconcile",
+        "pipeline",
+        "Match a stock count against the system's records by SKU and list every discrepancy, biggest cost "
+        "first. Plain data blocks, no model: it runs in a blink.",
+        tags = ["data", "json", "transform", "table"],
+        seed = 2033,
+    )
+    b.n(
+        "stock",
+        "input.param",
+        0,
+        0.5,
+        label = "System stock",
+        name = "stock",
+        type = "json",
+        default = json.dumps(INVENTORY_STOCK, indent = 2),
+    )
+    b.n(
+        "count",
+        "input.param",
+        0,
+        1.5,
+        label = "Shelf count",
+        name = "count",
+        type = "json",
+        default = json.dumps(INVENTORY_COUNT, indent = 2),
+    )
+    b.n("join", "json.merge", 1, 1, label = "Join on SKU", mode = "by_key", key = "sku")
+    b.e("stock.value", "join.a")
+    b.e("count.value", "join.b")
+    b.n(
+        "difference",
+        "json.set",
+        2,
+        1,
+        label = "Difference",
+        fields = {"difference": {"op": "-", "args": [_or_zero("counted"), _or_zero("on_hand")]}},
+    )
+    b.e("join.value", "difference.value")
+    b.n(
+        "status",
+        "json.set",
+        3,
+        1,
+        label = "Status and cost",
+        fields = {
+            "status": {
+                "op": "if",
+                "args": [
+                    _missing("on_hand"),
+                    "not in system",
+                    {
+                        "op": "if",
+                        "args": [
+                            _missing("counted"),
+                            "not counted",
+                            {
+                                "op": "if",
+                                "args": [
+                                    {"op": "<", "args": [{"var": "item.difference"}, 0]},
+                                    "short",
+                                    {
+                                        "op": "if",
+                                        "args": [
+                                            {"op": ">", "args": [{"var": "item.difference"}, 0]},
+                                            "over",
+                                            "ok",
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            "value": {
+                "op": "round",
+                "args": [
+                    {"op": "*", "args": [{"var": "item.difference"}, _or_zero("unit_cost")]},
+                    2,
+                ],
+            },
+        },
+    )
+    b.e("difference.value", "status.value")
+    b.n(
+        "off",
+        "list.filter",
+        4,
+        0.6,
+        label = "Discrepancies",
+        condition = {"op": "!=", "args": [{"var": "item.status"}, "ok"]},
+    )
+    b.e("status.value", "off.items")
+    b.n(
+        "worst",
+        "list.sort",
+        5,
+        0.6,
+        label = "Biggest cost first",
+        key = {"op": "abs", "args": [{"var": "item.value"}]},
+        descending = True,
+    )
+    b.e("off.items", "worst.items")
+    b.n("report", "output.result", 6, 0.6, name = "discrepancies")
+    b.e("worst.items", "report.value")
+    b.n(
+        "totals",
+        "table.aggregate",
+        4,
+        1.7,
+        label = "Totals by status",
+        group_by = ["status"],
+        metrics = ["difference", "value"],
+        stat = "sum",
+    )
+    b.e("status.value", "totals.table")
+    b.n("summary", "output.preview", 5, 1.7)
+    b.e("totals.table", "summary.value")
+    b.note(
+        "tip",
+        "Paste exports from your shop and your counting sheet as JSON lists with a sku field. Rows only on one "
+        "side show up as not counted or not in system.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def campaign_kit() -> B:
+    b = B(
+        "campaign-kit",
+        "Ad Campaign Kit",
+        "pipeline",
+        "Describe a product: a local model writes the headline and an image brief, one image is generated, then "
+        "cropped into square, portrait and landscape ads with the headline on each.",
+        tags = ["image", "marketing", "text", "resize"],
+        seed = 2034,
+    ).need("chat", "image")
+    b.n(
+        "brief",
+        "input.text",
+        0,
+        1,
+        label = "Product",
+        value = "Moss & Mist, a small-batch cold brew coffee in a frosted glass bottle, brewed for 20 hours, "
+        "for people who like slow mornings.",
+    )
+    b.n(
+        "copy",
+        "llm.generate",
+        1,
+        1,
+        label = "Write the copy",
+        model = CHAT,
+        temperature = 0.7,
+        max_tokens = 400,
+        system = "You write ad copy. headline: at most 6 words. tagline: one short sentence. image_prompt: a "
+        "photo brief for an image model with the product as the clear subject in the middle, soft natural light, "
+        "plenty of empty space above it for text, no words or logos in the image.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "headline": {"type": "string"},
+                "tagline": {"type": "string"},
+                "image_prompt": {"type": "string"},
+            },
+            "required": ["headline", "tagline", "image_prompt"],
+        },
+    )
+    b.e("brief.text", "copy.prompt")
+    b.n("headline", "json.get", 2, 0.3, path = "headline")
+    b.e("copy.json", "headline.json")
+    b.n("scene", "json.get", 2, 1.3, label = "Image brief", path = "image_prompt")
+    b.e("copy.json", "scene.json")
+    b.n("words", "output.result", 2, 2.3, name = "copy")
+    b.e("copy.json", "words.value")
+    b.n("photo", "image.generate", 3, 1.3, model = IMAGE, size = "1024x1024")
+    b.e("scene.value", "photo.prompt")
+    formats = [("square", "Square 1:1", 1080, 1080), ("portrait", "Portrait 4:5", 1080, 1350),
+               ("landscape", "Landscape 1.91:1", 1200, 628)]  # fmt: skip
+    for row, (fid, label, w, h) in enumerate(formats):
+        b.n(fid, "image.resize", 4, row, label = label, width = w, height = h, mode = "cover")
+        b.e("photo.image", f"{fid}.image")
+        b.n(f"{fid}_ad", "image.text", 5, row, label = "Headline", size = 72, position = "top", outline = 3)
+        b.e(f"{fid}.image", f"{fid}_ad.image")
+        b.e("headline.value", f"{fid}_ad.text")
+    b.n("ads", "logic.collect", 6, 1)
+    for fid, *_ in formats:
+        b.e(f"{fid}_ad.image", "ads.items")
+    b.n(
+        "board",
+        "image.grid",
+        7,
+        0.5,
+        columns = 3,
+        caption_style = "none",
+        cell_size = 512,
+        column_labels = [label for _, label, _, _ in formats],
+    )
+    b.e("ads.list", "board.images")
+    b.n("show", "output.preview", 8, 0.5)
+    b.e("board.image", "show.value")
+    b.n("save", "output.library", 7, 1.6, folder = "Campaigns")
+    b.e("ads.list", "save.value")
+    b.note(
+        "tip",
+        "One image is generated and reused for every format, so the set stays consistent. Change the sizes in "
+        "the Crop / Resize blocks for other placements.",
+        0,
+        2.2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -3351,6 +3807,10 @@ BUILDERS = (
     outpaint,
     controlnet_canny,
     xy_plot,
+    release_notes,
+    localization_kit,
+    inventory_reconcile,
+    campaign_kit,
 )
 
 
