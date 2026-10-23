@@ -100,13 +100,16 @@ def test_detect_family_from_repo_id():
     assert kontext.cfg_kwarg == "guidance_scale"
     assert detect_family("unsloth/FLUX.1-dev-GGUF").name == "flux.1"
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
+    # Krea 2 (diffusers >= 0.39): single-stream DiT; no-GPU hosts run its GGUFs on sd.cpp with Qwen3-VL-4B.
     krea2 = detect_family("krea/Krea-2-Turbo")
     assert krea2.name == "krea-2"
     assert krea2.pipeline_class == "Krea2Pipeline"
     assert krea2.transformer_class == "Krea2Transformer2DModel"
     assert krea2.cfg_kwarg == "guidance_scale"
     assert krea2.fp16_incompatible is True
-    assert krea2.sd_cpp_text_encoders == ()
+    assert krea2.sd_cpp_text_encoders == (
+        ("unsloth/Qwen3-VL-4B-Instruct-GGUF", "Qwen3-VL-4B-Instruct-Q8_0.gguf", "llm"),
+    )
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -200,7 +203,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 32
+    assert len(_MIRROR_PAIRS) == 34
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -220,7 +223,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 14
-    assert len(_UNGATED_MIRROR_PAIRS) == 18
+    assert len(_UNGATED_MIRROR_PAIRS) == 20
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -5512,7 +5515,8 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
         replan_calls.append(True)
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            # above the capacity margin, 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -5559,7 +5563,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
             return dataclasses.replace(real, offload_policy = "model")
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -11707,6 +11711,12 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+    from core.inference import diffusion_nvfp4_gate as gate
+    from core.inference.diffusion_nvfp4_install import FLASHINFER_VERSION
+
+    # The gate covers only the flashinfer its record was measured on; pin the version Studio installs so the
+    # answer does not depend on this host's flashinfer (CI runners have none).
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: FLASHINFER_VERSION)
 
     target = SimpleNamespace(device = "cuda", dtype = None)
     assert (
@@ -11716,6 +11726,17 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     assert (
         dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
         == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+
+    # An unreadable version is not covered: the plan and the load both drop the nvfp4 rung, so nothing fetches it.
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        != "unsloth/FLUX.1-schnell-NVFP4"
     )
 
 
@@ -14304,3 +14325,88 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_generate_holds_cudnn_benchmark_off_for_an_opted_out_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """cudnn.benchmark is process-wide: a family that opts out holds it off around its own render (decode included),
+    whatever a co-resident or earlier load left it at."""
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend(tmp_path)
+    assert backend._state.family.cudnn_benchmark is False  # z-image
+    object.__setattr__(backend._state, "device", "cuda")
+    events = []
+
+    @contextlib.contextmanager
+    def scope(family, device):
+        events.append(("enter", family.name, device))
+        yield
+        events.append(("exit",))
+
+    monkeypatch.setattr(dmod, "family_render_cudnn_scope", scope)
+    pipe_cls = type(backend._state.pipe)
+    stock_call = pipe_cls.__call__
+
+    def call(self, *args, **kwargs):
+        events.append(("pipe",))
+        return stock_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert events == [("enter", "z-image", "cuda"), ("pipe",), ("exit",)]
+
+
+def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
+        pytest.skip("torch without cudnn backend flags")
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    cudnn = torch.backends.cudnn
+    before = cudnn.benchmark
+    try:
+        cudnn.benchmark = True  # left on by another load in this process
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cuda:0"
+        ):
+            assert cudnn.benchmark is False
+        assert cudnn.benchmark is True
+        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
+            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
+        ):
+            assert cudnn.benchmark is True
+    finally:
+        cudnn.benchmark = before
+
+
+def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
+    # set_adapters / load / unload change the denoiser's weights: a CFG-parallel replica built before must be rebuilt.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+    dropped: list = []
+    monkeypatch.setattr(
+        dmod, "invalidate_cfg_replica", lambda pipe, reason, logger = None: dropped.append(pipe)
+    )
+    ev = threading.Event()
+    pipe = _BakePipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    pipe._unsloth_loras_baked = True
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 0.8)], ev)
+    assert dropped == []  # same set: the weights did not change
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.4)], ev)
+    assert dropped == [pipe]
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert dropped == [pipe, pipe]

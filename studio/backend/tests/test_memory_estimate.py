@@ -887,6 +887,21 @@ class TestEstimateMemoryRoute:
         )
         costless = [fit(None, *c) for c in (("fits", 4096), ("fits", 8192), ("unsizable", 4096))]
         assert costless == [(True, 4096), (False, 4096), (None, 4096)]
+        asked = {}
+        monkeypatch.setattr(
+            mlx_memory, "mlx_fit_outcome", lambda d, **kw: asked.update(kw) or ("fits", 4096)
+        )
+        source = DrafterSource("dflash", "/drafter", False)
+        mlx_inference.mlx_drafter_fit(
+            "/m",
+            32768,
+            None,
+            source,
+            load_in_4bit = False,
+            offload = (None, 0.6),
+            prefill_chunk = 8192,
+        )
+        assert (asked["offload"], asked["prefill_chunk"]) == ((None, 0.6), 8192)
 
     def test_mlx_model_not_on_disk_is_not_downloaded(self, monkeypatch):
         self._mlx_target(monkeypatch, None)
@@ -1118,21 +1133,30 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: object())
         monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda retains_history: 1 << 40)
         monkeypatch.setattr(
-            mlx_memory, "mlx_offload_plan", lambda d, **kw: planned.append(kw) or (kw["ple"], 0.6)
+            mlx_memory,
+            "mlx_offload_plan",
+            lambda d, **kw: planned.append(kw)
+            or (kw["ple"], 0.6 if kw["experts"] == "auto" else kw["experts"], 8192),
         )
         monkeypatch.setattr(
             mlx_memory,
             "mlx_memory_breakdown",
-            lambda model_dir, *, n_ctx, **kw: seen.append(kw.get("offload"))
+            lambda model_dir, *, n_ctx, **kw: seen.append(
+                (kw.get("offload"), kw.get("prefill_chunk"))
+            )
             or mlx_memory.MlxMemoryBreakdown(1, 1, 1, 3, 3, n_ctx),
         )
         estimate = lambda **knobs: _estimate(model_path = "org/model", max_seq_length = 4096, **knobs)
-        price = lambda **knobs: estimate(**knobs) and seen[-1]
+        price = lambda **knobs: estimate(**knobs) and seen[-1][0]
         (tmp_path / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
         assert price(mlx_ple_offload = "off", mlx_expert_offload = 0.5) == (None, 0.5)
+        assert (
+            seen[-1][1] is None and not planned
+        )  # a hand-set fraction prefills in the load's own chunk
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
-        assert off.mlx_offload.offloadable == ["experts"]
+        assert off.mlx_offload.offloadable == ["experts"] and seen[-1] == (None, None)
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
+        assert seen[-1][1] == 8192
         assert planned[-1]["vision"] is None
         with monkeypatch.context() as patch:
             patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
@@ -3649,11 +3673,20 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     plan = lambda **kw: mm.mlx_offload_plan(str(tmp_path), max_ctx = 512, **kw)
     asked, decide = {}, planner.plan_offload
     monkeypatch.setattr(planner, "plan_offload", lambda **kw: asked.update(kw) or decide(**kw))
-    assert plan(budget_bytes = 1 << 40) == (None, None)
+    assert plan(budget_bytes = 1 << 40) == (None, None, None)
     priced = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 512).total_bytes
     assert asked["resident"] + experts + asked["context_cost"](512, None) == priced
-    assert plan(budget_bytes = 1) == (None, 1.0)
-    assert plan(budget_bytes = 1 << 40, experts = 0.5) == (None, 0.5)
+    wide = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 512, prefill_chunk = 8192).total_bytes
+    assert wide > priced and asked["resident"] + experts + asked["context_cost"](512, 8192) == wide
+    assert plan(budget_bytes = 1) == (None, 1.0, None)
+    assert (
+        plan(budget_bytes = 1 << 40, experts = 0.5) == (None, 0.5, 2048)
+        and asked["prefill_step"] is None
+    )
+    assert (
+        plan(budget_bytes = 1 << 40, experts = None) == (None, None, None)
+        and asked["prefill_step"] == 2048
+    )
 
     mm.mlx_offload_planner.cache_clear()
     with monkeypatch.context() as patch:  # an unsloth_zoo that would not hand "auto" to Studio
@@ -3688,11 +3721,12 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
 
 def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
     routes = []
-    decide = lambda inventory, **kw: {
-        "context": 512,
+    decide = lambda inventory, context_cost, **kw: {
+        "context": context_cost(512, 8192) and 512,
         "ple": None if inventory["ple"] else 1.0,
         "experts": 0.5,
     }
+    monkeypatch.setattr(mm, "_priced_at", lambda sizing, tokens: SimpleNamespace(total_bytes = 11))
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: SimpleNamespace(plan_offload = decide))
     monkeypatch.setattr(
         mm, "_snapshot_config", lambda d: {"model_type": "qwen3_moe", "quantization": {"bits": 4}}
@@ -3718,10 +3752,14 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
     mm._clear_sizing_cache()
     for vision in (None, True):  # a speculative text load goes through mlx-vlm
         planned = mm.mlx_offload_plan("/x", budget_bytes = 1, max_ctx = 512, vision = vision)
-        assert planned == ((1.0, 0.5) if vision else (None, 0.5))
+        assert planned == ((1.0, 0.5, None) if vision else (None, 0.5, None))
         parts = mm.mlx_offloadable_parts("/x", vision)
         assert parts == (("ple", "experts") if vision else ("experts",))
-    assert routes == [("sized", None), ("inventory", False), ("sized", True), ("inventory", True)]
+    assert routes == [("sized", None), ("inventory", False), ("sized", None)] + [
+        ("sized", True),
+        ("inventory", True),
+        ("sized", True),
+    ]
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):

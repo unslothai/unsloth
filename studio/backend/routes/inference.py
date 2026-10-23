@@ -11692,8 +11692,14 @@ async def _maybe_auto_switch_model(
                 await asyncio.to_thread(account_access.require_model_access, resident)
             except HTTPException as refusal:
                 # A Hub resident the caller's own token can fetch is theirs to use as well.
-                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
-                    str(resident or ""), fastapi_request
+                if refusal.status_code != 404:
+                    raise
+                resident_reference = str(resident or "")
+                cached_repo = await asyncio.to_thread(
+                    account_access.cached_model_repo, resident_reference
+                )
+                if not await _caller_token_authorizes_download(
+                    cached_repo or resident_reference, fastapi_request
                 ):
                     raise
             return
@@ -16049,7 +16055,9 @@ def _mlx_estimate_offload(
         kv_bits = kv_bits,
         vision = vision,
     )
-    return ({"offload": offload} if any(offload) else {}), parts
+    *offload, step = offload
+    route = {"offload": tuple(offload)} if any(offload) else {}
+    return ({**route, "prefill_chunk": step} if step else route), parts
 
 
 def _mlx_offload_warning(info: dict) -> Optional[str]:
@@ -28760,8 +28768,11 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
+            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
+            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
+            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,
@@ -51454,6 +51465,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -51474,6 +51486,15 @@ async def diffusion_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+        )
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -51755,6 +51776,7 @@ async def load_diffusion_model_gated(
         selected_card_identity,
     )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -51775,6 +51797,17 @@ async def load_diffusion_model_gated(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+            # An automatic (API auto-switch) load is cache-only, like the rest of this path.
+            user_initiated,
+        )
         # Validate cheaply BEFORE touching the GPU: an unloadable pick must not evict a working chat model and then 400. The family also drives engine selection.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
@@ -52264,6 +52297,34 @@ def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
     return out
 
 
+def _hires_kwargs(generate: Any, request: Any) -> dict:
+    """Only the set Hires fix / upscaler kwargs; an engine that takes neither refuses (ValueError -> 400)."""
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        params = {}
+    out: dict = {}
+    hires = getattr(request, "hires", None)
+    if hires is not None:
+        if "hires" not in params:
+            raise ValueError("Hires fix is not available on this image engine.")
+        from core.inference.diffusion_hires import HiresParams
+        out["hires"] = HiresParams(
+            scale = float(hires.scale),
+            denoise = float(hires.denoise),
+            steps = hires.steps,
+            upscaler = hires.upscaler,
+            guidance = hires.guidance,
+        )
+    upscale_model = getattr(request, "upscale_model", None)
+    if upscale_model:
+        if "upscale_model" not in params:
+            raise ValueError("Model upscalers are not available on this image engine.")
+        out["upscale_model"] = upscale_model
+    return out
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -52373,6 +52434,8 @@ async def _external_image_generation(
         or body.mask_blur is not None
         or body.inpaint_only_masked is not None
         or body.inpaint_padding is not None
+        or body.hires is not None
+        or body.upscale_model
     ):
         raise HTTPException(
             status_code = 400,
@@ -52595,6 +52658,7 @@ async def _generate_diffusion_image_run(
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_hires import record_fields as hires_record_fields
     from core.inference.diffusion_families import (
         DIFFUSION_CANCELLED_MSG,
         DIFFUSION_NOT_LOADED_MSG,
@@ -52715,6 +52779,7 @@ async def _generate_diffusion_image_run(
                     **_sd_controls_kwargs(backend.generate, request),
                     **_shift_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
+                    **_hires_kwargs(backend.generate, request),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -52821,6 +52886,8 @@ async def _generate_diffusion_image_run(
                         ),
                         "strength": request.strength,
                         "upscale": request.upscale,
+                        "upscale_model": result.get("upscale_model"),
+                        **hires_record_fields(result.get("hires")),
                         "controlnet_guidance": (
                             f"{request.controlnet.guidance_start:g}:{request.controlnet.guidance_end:g}"
                             if request.controlnet and request.controlnet.strength > 0
