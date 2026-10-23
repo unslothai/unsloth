@@ -278,3 +278,24 @@ def test_declared_flow_params_are_passed_through():
     d = {"nodes": [], "params": [{"id": "topic", "type": "text"}]}
     _, params = apply_input_values(d, {"topic": "otters", "unknown": 1})
     assert params == {"topic": "otters"}
+
+
+@run_async
+async def test_run_flow_keeps_a_declared_params_default():
+    d = doc(
+        [
+            node("mood", "input.param", name = "mood", type = "text"),
+            node("t", "text.template", template = "feeling {}"),
+            node("out", "output.result", name = "answer"),
+        ],
+        [edge("mood", "value", "t", "values"), edge("t", "text", "out", "value")],
+        params = [{"id": "mood", "type": "text", "default": "calm"}],
+    )
+    d["id"] = "moody"
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    flows_db.save_flow(parsed)
+    eng = _engine(_handlers())
+    rs = await _run(eng, _caller_doc("moody", {}))
+    assert rs.status == "completed", rs.error
+    assert rs.outputs["got"] == {"answer": "feeling calm"}

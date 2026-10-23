@@ -801,6 +801,14 @@ class FlowEngine:
         from core.flows.nodes.inputs import apply_input_values
 
         doc, params = apply_input_values(record["doc"], values)
+        # A declared param the caller leaves out keeps its default, as in the Run dialog.
+        for declared in doc.get("params") or []:
+            if (
+                isinstance(declared, dict)
+                and declared.get("id")
+                and declared.get("default") is not None
+            ):
+                params.setdefault(str(declared["id"]), declared["default"])
         try:
             plan = compile_flow(doc)
         except CompileError as exc:
