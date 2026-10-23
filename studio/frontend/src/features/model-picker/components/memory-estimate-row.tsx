@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Tooltip,
@@ -260,7 +261,8 @@ export function MemoryEstimateRow({
             Beta
           </span>
         </span>
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           aria-hidden="true"
           className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:text-foreground motion-reduce:transition-none ${expanded ? "rotate-0" : "-rotate-90"}`}
         />

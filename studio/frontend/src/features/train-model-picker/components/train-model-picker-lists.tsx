@@ -145,7 +145,7 @@ export function TrainModelDeviceList({
                 {model.path}
               </TooltipContent>
             </Tooltip>
-            <span className="ml-2 shrink-0 rounded-[6px] border border-border/60 px-1.5 py-0.5 text-ui-10 font-medium leading-none text-muted-foreground">
+            <span className="ml-2 shrink-0 rounded-full border border-border/60 px-1.5 py-0.5 text-ui-10 font-medium leading-none text-muted-foreground">
               {model.sourceLabel}
             </span>
           </SelectablePickerItem>
@@ -272,7 +272,7 @@ export function TrainModelHubList({
                 </Tooltip>
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   {exceeds && (
-                    <span className="rounded bg-red-50 px-1.5 py-0.5 text-ui-9 font-semibold text-red-700 dark:bg-red-950 dark:text-red-400">
+                    <span className="rounded-full bg-red-50 px-1.5 py-0.5 text-ui-9 font-semibold text-red-700 dark:bg-red-950 dark:text-red-400">
                       {t("studio.modelPicker.vramOomBadge")}
                     </span>
                   )}

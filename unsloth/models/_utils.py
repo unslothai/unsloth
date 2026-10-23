@@ -9237,6 +9237,9 @@ class _AutoCheckpointSkip:
         return None
 
     def _model_pre_hook(self, module, args):
+        # Planning under torch.compile breaks fullgraph/dynamic tracing; compiled models stay fully checkpointed.
+        if torch.compiler.is_compiling():
+            return
         if not module.training or not torch.is_grad_enabled():
             return
         device = self._plan_device()
@@ -9255,6 +9258,8 @@ class _AutoCheckpointSkip:
             self.plan(device)
 
     def _probe_pre_hook(self, index, module, args):
+        if torch.compiler.is_compiling():
+            return
         if self.started is None or index in self.measured or not module.training:
             return
         if not torch.is_grad_enabled():
@@ -9274,6 +9279,8 @@ class _AutoCheckpointSkip:
             self.before = (index, torch.cuda.memory_allocated(hidden.device), hidden.device)
 
     def _probe_hook(self, index, module, args, output):
+        if torch.compiler.is_compiling():
+            return
         if self.before is None or self.before[0] != index or index in self.measured:
             return
         device = self.before[2]

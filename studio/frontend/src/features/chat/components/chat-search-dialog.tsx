@@ -468,7 +468,7 @@ export function ChatSearchDialog() {
             onKeyDown={(e) => {
               if (e.key === "Enter") e.stopPropagation();
             }}
-            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label={t("common.close")}
           >
             <HugeiconsIcon
@@ -762,7 +762,7 @@ function FooterHint({ label, children }: { label: string; children: ReactNode })
 
 function Key({ children }: { children: ReactNode }) {
   return (
-    <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-md border border-border/60 px-1 font-sans text-ui-11 text-muted-foreground">
+    <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-border/60 px-1 font-sans text-ui-11 text-muted-foreground">
       {children}
     </kbd>
   );
