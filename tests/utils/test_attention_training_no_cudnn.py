@@ -21,7 +21,11 @@ class _CudaLooking(torch.Tensor):
         return True
 
 
-def _run(training, monkeypatch, devices = frozenset({None})):
+def _run(
+    training,
+    monkeypatch,
+    devices = frozenset({None}),
+):
     seen = []
 
     def fake_sdpa(q, k, v, **kwargs):
@@ -33,8 +37,16 @@ def _run(training, monkeypatch, devices = frozenset({None})):
     Q = torch.randn(1, 2, 6, 8).as_subclass(_CudaLooking)
     config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 2, n_groups = 1)
     context = ad.AttentionContext(
-        bsz = 1, q_len = 6, kv_seq_len = 6, n_heads = 2, head_dim = 8, requires_grad = False,
-        seq_info = None, attention_mask = None, causal_mask = None, training = training,
+        bsz = 1,
+        q_len = 6,
+        kv_seq_len = 6,
+        n_heads = 2,
+        head_dim = 8,
+        requires_grad = False,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        training = training,
     )
     ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
     return seen

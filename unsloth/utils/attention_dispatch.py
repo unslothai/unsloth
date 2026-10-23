@@ -1328,9 +1328,7 @@ def _run_attention(
 
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
-            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
-                Q, K, V, **kwargs
-            )
+            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(Q, K, V, **kwargs)
             out = out.transpose(1, 2)
             return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
