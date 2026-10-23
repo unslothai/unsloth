@@ -118,6 +118,13 @@ test("a style statement after a semicolon cannot fetch either", () => {
   }
 });
 
+test("many unclosed `@{` markers are scanned in linear time", () => {
+  const source = `sequenceDiagram\n  Alice->>Bob: ${"@{ ".repeat(16000)}`;
+  const started = performance.now();
+  assert.equal(stripRemoteDiagramImages(source), source);
+  assert.ok(performance.now() - started < 1000);
+});
+
 test("a long line of style words is scanned in linear time", () => {
   const line = `flowchart LR\n  A["${"style ".repeat(20000)}"] --> B; style A fill:url(https://attacker.example/x)`;
   const started = performance.now();

@@ -60,20 +60,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
+  if (!source.includes("@{")) return blocks;
+  // The first `}` outside a string when a scan starts at i outside one (closeFrom) or inside one
+  // (quotedFrom), built once from the end so many unclosed openers still cost linear time.
+  const closeFrom = new Int32Array(source.length + 1).fill(-1);
+  const quotedFrom = new Int32Array(source.length + 1).fill(-1);
+  for (let index = source.length - 1; index >= 0; index--) {
+    const char = source[index];
+    if (char === '"') {
+      closeFrom[index] = quotedFrom[index + 1];
+      quotedFrom[index] = closeFrom[index + 1];
+    } else {
+      closeFrom[index] = char === "}" ? index : closeFrom[index + 1];
+      quotedFrom[index] = quotedFrom[index + 1];
+    }
+  }
   let from = 0;
   for (;;) {
     const open = source.indexOf("@{", from);
     if (open < 0) return blocks;
-    let inString = false;
-    let close = -1;
-    for (let index = open + 2; index < source.length; index++) {
-      const char = source[index];
-      if (char === '"') inString = !inString;
-      else if (char === "}" && !inString) {
-        close = index;
-        break;
-      }
-    }
+    const close = closeFrom[open + 2];
     if (close < 0) {
       from = open + 2;
       continue;
