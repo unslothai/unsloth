@@ -795,9 +795,7 @@ def test_lora_on_multihead_attention_raises(monkeypatch):
 def test_mixed_peft_model_raises(monkeypatch):
     peft = pytest.importorskip("peft")
     monkeypatch.delenv(_STALE_ENV, raising = False)
-    model = peft.get_peft_model(
-        _base_mlp(), peft.LoraConfig(r = 2, target_modules = ["0"]), mixed = True
-    )
+    model = peft.get_peft_model(_base_mlp(), peft.LoraConfig(r = 2, target_modules = ["0"]), mixed = True)
     model.add_adapter("loha", peft.LoHaConfig(r = 2, target_modules = ["0"]))
     model.set_adapter(["default", "loha"])
     trainer, rec = _peft_trainer(model)
@@ -818,7 +816,8 @@ def test_loha_rank_dropout_is_off_while_merging():
     # Training mode with rank dropout: the pushed weight is the full inference-time merge.
     peft = pytest.importorskip("peft")
     model = peft.get_peft_model(
-        _base_mlp(), peft.LoHaConfig(r = 4, target_modules = ["0"], rank_dropout = 0.5, init_weights = False)
+        _base_mlp(),
+        peft.LoHaConfig(r = 4, target_modules = ["0"], rank_dropout = 0.5, init_weights = False),
     )
     _perturb_trainable(model)
     model.eval()
