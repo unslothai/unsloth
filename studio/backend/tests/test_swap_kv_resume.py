@@ -558,3 +558,55 @@ def test_load_progress_reads_in_flight_through_the_load_preflight(
     # Released with the POST: the engine's own phase answers again.
     assert getattr(cs, "_preparing", {}) == {}
     assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+
+
+@pytest.mark.parametrize("phase", ["evidence", "chat_save"])
+def test_an_unload_during_the_preflight_cancels_the_load(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    phase,  # noqa: F811
+):
+    # A page reopened during the preflight reads "downloading" and offers Cancel, which sends this
+    # unload. The POST must then stop: no engine load, and chat neither evicted nor its save kept.
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    gate = threading.Event()
+    if phase == "evidence":
+        entered = threading.Event()
+
+        def _slow_prefetch(*args, **kwargs):
+            entered.set()
+            gate.wait(10)
+
+        monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    else:
+        env.gate, entered = gate, env.entered
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()["phase"]
+        stopped = client.post(f"{base}/unload")
+        after = client.get(f"{base}/load-progress").json()["phase"]
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert during == ("downloading" if phase == "evidence" else cs.SAVING_CHAT_CONTEXT)
+    assert stopped.status_code == 200
+    # The cancelled preflight no longer reads as a load in flight.
+    assert after not in ("downloading", "finalizing")
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert env.calls == [] and env.is_loaded and arb._owner == arb.CHAT
+    assert cs._pending is None and kw._kv_resume is None and _no_files(env)
+    assert cs._preparing == {} and cs._saving == {}

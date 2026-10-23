@@ -51653,6 +51653,11 @@ def _assert_native_precision_unset(
     )
 
 
+# The engine's own answer for a load an unload cancelled (DiffusionBackend._raise_if_load_cancelled),
+# raised as the same RuntimeError so the route answers it with the same 409.
+_DIFFUSION_LOAD_CANCELLED = "Diffusion load was cancelled."
+
+
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
 async def load_diffusion_model(
@@ -51979,6 +51984,11 @@ async def load_diffusion_model_gated(
             await asyncio.to_thread(
                 _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
             )
+        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
+
+        # An unload sent while this POST was still in its preflight (a page reopened then offers
+        # Cancel) stops it here, before the engine switch, chat's eviction or the acquire.
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
@@ -52118,14 +52128,25 @@ async def load_diffusion_model_gated(
             note_engine_pick(request.engine, engine, prior_state)
             return started
 
+        preflight = preparing_load_token()
+
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
-            return begin_load_on(
-                engine,
-                lambda: account_access.admit_media_load(
-                    "diffusion", _start_engine_load, request.model_path
-                ),
-            )
+            def _register():
+                return begin_load_on(
+                    engine,
+                    lambda: account_access.admit_media_load(
+                        "diffusion", _start_engine_load, request.model_path
+                    ),
+                )
+
+            if preflight is None:
+                return _register()
+            # Check and register under the token's lock: an unload's cancel then lands either
+            # before the check, or after the load is registered, where its engine unload stops it.
+            with preflight.lock:
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+                return _register()
 
         if needs_gpu:
             from core.inference.gpu_residency import media_fit_kwargs
@@ -52137,6 +52158,8 @@ async def load_diffusion_model_gated(
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
+                # Before the acquire evicts chat for a load nobody wants any more.
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
                 sink_token = eviction_sink.set(evicted_slots)
                 try:
                     with _diffusion_training_admission():
@@ -52153,6 +52176,12 @@ async def load_diffusion_model_gated(
             from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 
             swap = await save_chat_kv_before_swap(DIFFUSION, "image", **fit_kwargs)
+            try:
+                # Cancelled during the chat save: chat stays loaded, and close() drops the save.
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+            except BaseException:
+                swap.close()
+                raise
             status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
@@ -53701,6 +53730,17 @@ async def unload_diffusion_model(
         account_access.require_resident_control(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
+    from core.inference.chat_swap_kv import cancel_preparing_loads
+
+    # A load POST still in its preflight has no engine load to stop yet: cancel its token, with the
+    # engine unload's scope (the caller's own under account scope, any otherwise). Before the engine
+    # unload, so a load that registers meanwhile is registered by the time that unload runs.
+    await asyncio.to_thread(
+        cancel_preparing_loads,
+        "image",
+        current_account_id(),
+        any_account = account_access.account_scope() is None,
+    )
     unload = get_active_diffusion_engine().unload
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())

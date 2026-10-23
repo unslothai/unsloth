@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import threading
 import time
 from typing import Optional
@@ -66,32 +67,93 @@ def _leave_saving(key: tuple[str, Optional[str]]) -> None:
             _saving.pop(key, None)
 
 
-# (media, account id) -> how many load POSTs are still before their engine registers the load.
-_preparing: dict[tuple[str, Optional[str]], int] = {}
+class PreparingLoad:
+    """One load POST still before its engine registers the load. ``/<media>/unload`` cancels it,
+    and the POST checks it before every step that acts (engine activation, chat's eviction, the
+    acquire, begin_load), so a Cancel sent during the preflight really stops the load."""
+
+    def __init__(self, media: str):
+        self.media = media
+        self._cancelled = threading.Event()
+        # Held across a check and the step it guards (begin_load's registration), so a cancel lands
+        # either before the check or after the load is registered, where the engine unload stops it.
+        self.lock = threading.RLock()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        with self.lock:
+            self._cancelled.set()
+
+
+# (media, account id) -> the caller's load POSTs still before their engine registers the load.
+_preparing: dict[tuple[str, Optional[str]], list[PreparingLoad]] = {}
+_current_preparing: contextvars.ContextVar[Optional[PreparingLoad]] = contextvars.ContextVar(
+    "chat_swap_kv_preparing_load", default = None
+)
 
 
 def load_preparing(media: str) -> bool:
     """Whether one of the caller's load POSTs is still in its preflight (evidence, checks, acquire)."""
     with _lock:
-        return bool(_preparing.get((media, _account_id())))
+        return any(not t.cancelled for t in _preparing.get((media, _account_id()), ()))
+
+
+def cancel_preparing_loads(
+    media: str,
+    account: Optional[str],
+    *,
+    any_account: bool = False,
+) -> int:
+    """Cancel the ``media`` load POSTs still in their preflight: ``account``'s own, or every
+    account's when the unload is not account scoped (as the engine unload then stops any load)."""
+    with _lock:
+        tokens = [
+            t
+            for (m, a), held in _preparing.items()
+            if m == media and (any_account or a == account)
+            for t in held
+            if not t.cancelled
+        ]
+    for token in tokens:
+        # Outside _lock: this waits for a registration in flight under the token's own lock.
+        token.cancel()
+    return len(tokens)
+
+
+def preparing_load_token() -> Optional[PreparingLoad]:
+    """The preflight token of the load POST this context runs in, if any."""
+    return _current_preparing.get()
+
+
+def raise_if_load_cancelled(message: str) -> None:
+    """Raise the route's cancelled-load error once an unload cancelled this POST's preflight."""
+    token = _current_preparing.get()
+    if token is not None and token.cancelled:
+        raise RuntimeError(message)
 
 
 @contextlib.contextmanager
 def preparing_load(media: str):
     """Held around a load POST: until begin_load registers the load, load-progress still
     describes the previous model, and a page reopened then must not read its "ready" or null
-    as this load having ended."""
+    as this load having ended. Yields the token an unload cancels."""
     key = (media, _account_id())
+    token = PreparingLoad(media)
     with _lock:
-        _preparing[key] = _preparing.get(key, 0) + 1
+        _preparing.setdefault(key, []).append(token)
+    reset = _current_preparing.set(token)
     try:
-        yield
+        yield token
     finally:
+        _current_preparing.reset(reset)
         with _lock:
-            left = _preparing.get(key, 1) - 1
-            if left > 0:
-                _preparing[key] = left
-            else:
+            held = _preparing.get(key, [])
+            if token in held:
+                held.remove(token)
+            if not held:
                 _preparing.pop(key, None)
 
 
@@ -294,8 +356,15 @@ async def save_chat_kv_before_swap(
     abort = threading.Event()
     deadline = time.monotonic() + budget
 
+    preflight = _current_preparing.get()
+
     def should_abort() -> bool:
-        return abort.is_set() or time.monotonic() >= deadline or _chat_busy(counted)
+        return (
+            abort.is_set()
+            or time.monotonic() >= deadline
+            or (preflight is not None and preflight.cancelled)
+            or _chat_busy(counted)
+        )
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
@@ -330,7 +399,11 @@ async def save_chat_kv_before_swap(
         if cancelled is not None:
             raise cancelled
         try:
-            if manifest and (abort.is_set() or _chat_busy(counted)):
+            if manifest and (
+                abort.is_set()
+                or (preflight is not None and preflight.cancelled)
+                or _chat_busy(counted)
+            ):
                 _delete(manifest)
                 manifest = None
         except Exception:
