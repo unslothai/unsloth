@@ -531,7 +531,9 @@ def _rope_kind(kind):
 
 def _rope_cos_sin(rope, kind, device_index):
     if kind == "longrope":
-        return rope.multi_gpu_long_cos_cached[device_index], rope.multi_gpu_long_sin_cached[device_index]
+        return rope.multi_gpu_long_cos_cached[device_index], rope.multi_gpu_long_sin_cached[
+            device_index
+        ]
     return rope.multi_gpu_cos_cached[device_index], rope.multi_gpu_sin_cached[device_index]
 
 
