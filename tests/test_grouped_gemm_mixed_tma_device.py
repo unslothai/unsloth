@@ -380,7 +380,6 @@ def test_sm_count_is_read_once_per_card(monkeypatch):
     assert sorted(reads) == [0, 1]
 
 
-
 def _real_autotune_cache():
     spec = importlib.util.spec_from_file_location(
         "_unsloth_ac_spoof", ROOT / "unsloth" / "kernels" / "moe" / "autotune_cache.py"
@@ -394,7 +393,16 @@ SMEM = {H100: 232448, A100: 166912, L4: 101376}
 TILES = ("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "num_stages")
 
 
-def _launch_tiles(monkeypatch, caps, operand_index, M, N, K, stages, dtype = torch.bfloat16):
+def _launch_tiles(
+    monkeypatch,
+    caps,
+    operand_index,
+    M,
+    N,
+    K,
+    stages,
+    dtype = torch.bfloat16,
+):
     """Run the three non-autotuned impls on cuda:operand_index (current: cuda:0); return each launch's tiles."""
     module, _ = _load(monkeypatch, caps)
     real = torch.cuda.get_device_properties
@@ -431,7 +439,11 @@ def _launch_tiles(monkeypatch, caps, operand_index, M, N, K, stages, dtype = tor
         out["dX"] = kernels[1]._grouped_gemm_dX_kernel.last_kwargs
         module._grouped_gemm_dW_impl(X = X, dY = dY, **common)
         per_expert = module._use_per_expert_dW_kernel()
-        dw_kernel = kernels[1]._grouped_gemm_dW_per_expert_kernel if per_expert else kernels[1]._grouped_gemm_dW_kernel
+        dw_kernel = (
+            kernels[1]._grouped_gemm_dW_per_expert_kernel
+            if per_expert
+            else kernels[1]._grouped_gemm_dW_kernel
+        )
         out["dW"] = dw_kernel.last_kwargs
     return ac, {k: tuple(v[t] for t in TILES) for k, v in out.items()}
 
@@ -440,7 +452,12 @@ def test_caller_tiles_fitted_for_the_current_card_are_refit_for_the_operand_card
     # Released unsloth_zoo passes no device: an H100-fitted bf16 dX (64, 64, 256, 4) needs 122,880 B,
     # over the L4's 101,376 B. The launch on the L4 operand shrinks it to fit; the H100 copy is untouched.
     ac, got = _launch_tiles(monkeypatch, [H100, L4], 1, 64, 64, 256, 4)
-    assert ac._estimate_smem("dX", types.SimpleNamespace(**dict(zip(TILES, (64, 64, 256, 4)))), 2, 2, L4) > SMEM[L4]
+    assert (
+        ac._estimate_smem(
+            "dX", types.SimpleNamespace(**dict(zip(TILES, (64, 64, 256, 4)))), 2, 2, L4
+        )
+        > SMEM[L4]
+    )
     assert got["dX"] == (64, 64, 256, 3)
     for kind, tiles in got.items():
         config = types.SimpleNamespace(**dict(zip(TILES, tiles)))

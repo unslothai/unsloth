@@ -27,7 +27,11 @@ def F():
     return fp8
 
 
-def _weights(N, K, seed = 0):
+def _weights(
+    N,
+    K,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     W = torch.randn(N, K, device = "cuda", generator = g) * 0.02
     scale = (W.abs().amax(1, keepdim = True) / 448.0).float()
@@ -62,13 +66,16 @@ def test_rows_launch_widens_past_int32(F, monkeypatch, N, K, expected):
     assert rec.calls[0][2]["LONG_INDEXING"] is expected
 
 
-@pytest.mark.parametrize("dtype, N, K, split", [
-    (torch.bfloat16, 4096, 12288, 8),  # long K (down_proj)
-    (torch.float16, 1024, 4096, 8),  # narrow N (kv_proj)
-    (torch.bfloat16, 4096, 4096, 1),
-    (torch.float16, 12288, 4096, 1),
-    (torch.bfloat16, 512, 2048, 1),
-])
+@pytest.mark.parametrize(
+    "dtype, N, K, split",
+    [
+        (torch.bfloat16, 4096, 12288, 8),  # long K (down_proj)
+        (torch.float16, 1024, 4096, 8),  # narrow N (kv_proj)
+        (torch.bfloat16, 4096, 4096, 1),
+        (torch.float16, 12288, 4096, 1),
+        (torch.bfloat16, 512, 2048, 1),
+    ],
+)
 def test_split_k_rule(F, dtype, N, K, split):
     assert F._fp8_rows_config(N, K, dtype)[2] == split
 
@@ -150,5 +157,9 @@ def test_rows_off_where_triton_miscompiles_the_gemv(F, monkeypatch):
     monkeypatch.setattr(F, "_fp8_gemv_miscompiles", lambda device: True)
     monkeypatch.setattr(F, "_triton_builds_blackwell", lambda: True)
     Wq, scale = _weights(1024, 512)
-    assert not F.can_use_fp8_rowwise_gemv(torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale)
-    assert F.can_use_fp8_rowwise_gemv(torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale)
+    assert not F.can_use_fp8_rowwise_gemv(
+        torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale
+    )
+    assert F.can_use_fp8_rowwise_gemv(
+        torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale
+    )
