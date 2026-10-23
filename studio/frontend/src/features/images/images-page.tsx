@@ -1918,14 +1918,21 @@ export function ImagesPage({
   );
   // Once, on the first loaded status: the fields started on the remembered model's saved files before status was
   // known, and a resident build of that model without them (another client reloaded it) makes them stale.
+  // Opened mid-reload, the first status is the build being replaced: it decides nothing, and the resumed load's own
+  // finish reconciles against the new build (rememberLoadedImageComponents). "pending" until the mount probe reads it.
   const componentsReconciled = useRef(false);
+  const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
-      if (componentsReconciled.current) return;
+      if (componentsReconciled.current || initialLoadProbe === "pending") return;
       componentsReconciled.current = true;
-      if (rememberedModel && reconcileRememberedComponents(rememberedModel, loaded)) pickComponentFiles(rememberedModel);
+      if (initialLoadProbe === "loading" || !rememberedModel) return;
+      const bare = reconcileRememberedComponents(rememberedModel, loaded);
+      if (!bare) return;
+      setRememberedModel(bare);
+      pickComponentFiles(bare);
     },
-    [rememberedModel, pickComponentFiles],
+    [rememberedModel, pickComponentFiles, initialLoadProbe],
   );
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
@@ -3586,9 +3593,11 @@ export function ImagesPage({
     void (async () => {
       await refreshStatus();
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
+      let inFlight = false;
       try {
         const p = await getDiffusionLoadProgress();
-        if (p.phase === "downloading" || p.phase === "finalizing") {
+        inFlight = p.phase === "downloading" || p.phase === "finalizing";
+        if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
@@ -3598,6 +3607,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
         const g = await getGenerateProgress();

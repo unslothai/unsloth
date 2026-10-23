@@ -415,8 +415,21 @@ test("the first loaded status forgets the remembered model's stale files and cle
   rememberImageComponents(zImage, zFiles);
   const resident = { loaded: true, repo_id: zImage.repoId, model_kind: "gguf", gguf_filename: zImage.filename };
   // Same model, rebuilt on diffusers without the overrides: stale.
-  assert.equal(reconcileRememberedComponents(zImage, { ...resident, engine: "diffusers", component_files: {} }), true);
+  // The last-model slot still holds the paths too (seed and recall fall back to it): both go.
+  rememberImageModel({ ...zImage, ...zFiles, familyOverride: "z-image" });
+  assert.deepEqual(reconcileRememberedComponents({ ...zImage, ...zFiles, familyOverride: "z-image" }, { ...resident, engine: "diffusers", component_files: {} }), {
+    ...zImage,
+    familyOverride: "z-image",
+  });
   assert.equal(readImageComponents(zImage), null);
+  assert.deepEqual(readImageModel(), { ...zImage, familyOverride: "z-image" });
+  assert.deepEqual(seedImageComponents(readImageModel()!), {});
+  assert.deepEqual(recalledComponentFiles(readImageModel()!), {});
+  // A slot naming another model is not touched.
+  rememberImageComponents(zImage, zFiles);
+  rememberImageModel({ ...flux, vaeFile: "flux_ae.safetensors" });
+  assert.ok(reconcileRememberedComponents(zImage, { ...resident, engine: "diffusers", component_files: {} }));
+  assert.deepEqual(readImageModel(), { ...flux, vaeFile: "flux_ae.safetensors" });
   // Same model with the same files, a native build, another model, or nothing loaded: kept.
   const kept: Parameters<typeof reconcileRememberedComponents>[1][] = [
     { ...resident, component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" } },
@@ -426,7 +439,7 @@ test("the first loaded status forgets the remembered model's stale files and cle
   ];
   for (const status of kept) {
     rememberImageComponents(zImage, zFiles);
-    assert.equal(reconcileRememberedComponents(zImage, status), false);
+    assert.equal(reconcileRememberedComponents(zImage, status), null);
     assert.deepEqual(readImageComponents(zImage), zFiles);
   }
 
@@ -444,15 +457,17 @@ test("the first loaded status forgets the remembered model's stale files and cle
     `${declarations.pickComponentFiles}\n${declarations.reconcileInitialComponents}\nreturn reconcileInitialComponents;`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   );
-  const open = (fields: { te: string; vae: string }, status: object) => {
-    const state = { ...fields };
+  const open = (fields: { te: string; vae: string }, status: object, initialLoadProbe = "idle") => {
+    const state: { te: string; vae: string; remembered?: unknown } = { ...fields };
     const scope = {
       useCallback: (fn: unknown) => fn,
       textEncoderFiles: fields.te,
       vaeFile: fields.vae,
       componentFieldsOwner: { current: zFiles },
       componentsReconciled: { current: false },
-      rememberedModel: { ...zImage },
+      rememberedModel: { ...zImage, ...zFiles },
+      initialLoadProbe,
+      setRememberedModel: (m: unknown) => (state.remembered = m),
       splitComponentFileList,
       componentFilesForModel,
       reconcileRememberedComponents,
@@ -468,12 +483,24 @@ test("the first loaded status forgets the remembered model's stale files and cle
   store.clear();
   rememberImageComponents(zImage, zFiles);
   const untouched = open({ te: zFiles.textEncoderFiles[0], vae: zFiles.vaeFile }, stale);
-  assert.deepEqual(untouched.state, { te: "", vae: "" });
+  assert.deepEqual(untouched.state, { te: "", vae: "", remembered: { ...zImage } });
   assert.deepEqual(untouched.scope.componentFieldsOwner.current, {});
   assert.equal(untouched.scope.componentsReconciled.current, true);
   // A field the user already changed stays.
   rememberImageComponents(zImage, zFiles);
   const edited = open({ te: zFiles.textEncoderFiles[0], vae: "mine.safetensors" }, stale);
-  assert.deepEqual(edited.state, { te: "", vae: "mine.safetensors" });
+  assert.deepEqual(edited.state, { te: "", vae: "mine.safetensors", remembered: { ...zImage } });
+  // Opened mid-reload: the first status is the build being replaced, so it decides nothing (the resumed load's own
+  // finish reconciles against the new build), and the probe still pending waits for it.
+  rememberImageComponents(zImage, zFiles);
+  const midReload = open({ te: zFiles.textEncoderFiles[0], vae: zFiles.vaeFile }, stale, "loading");
+  assert.deepEqual(midReload.state, { te: zFiles.textEncoderFiles[0], vae: zFiles.vaeFile });
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  assert.equal(midReload.scope.componentsReconciled.current, true);
+  const pending = open({ te: zFiles.textEncoderFiles[0], vae: zFiles.vaeFile }, stale, "pending");
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  assert.equal(pending.scope.componentsReconciled.current, false);
+  // The probe settles only after the progress read, which runs after the first status refresh.
+  assert.match(source, /setInitialLoadProbe\(inFlight \? "loading" : "idle"\)/);
   assert.match(source, /useEffect\(\(\) => \{\s*if \(status\?\.loaded\) reconcileInitialComponents\(status\);\s*\}, \[status, reconcileInitialComponents\]\);/);
 });

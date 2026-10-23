@@ -208,9 +208,10 @@ export function forgetStaleImageComponents(
 
 /** On the first loaded status: forget the remembered model's saved files when that same model is resident on a
  *  build that does not use them (another client reloaded it without them), so the page does not reload them as
- *  untouched fields. True when an entry was dropped. */
-export function reconcileRememberedComponents(
-  model: ImageModelKey,
+ *  untouched fields. The last-model slot loses them too, since seed and recall fall back to it. Returns the model
+ *  without its files when they were dropped, else null. */
+export function reconcileRememberedComponents<T extends ImageModelKey & ImageComponentFiles>(
+  model: T,
   status: {
     loaded: boolean;
     repo_id?: string | null;
@@ -219,10 +220,17 @@ export function reconcileRememberedComponents(
     engine?: string | null;
     component_files?: Record<string, string> | null;
   },
-): boolean {
-  if (!status.loaded || !matchesRememberedModel(model, status) || !readImageComponents(model)) return false;
+): Omit<T, "textEncoderFiles" | "vaeFile"> | null {
+  if (!status.loaded || !matchesRememberedModel(model, status) || !readImageComponents(model)) return null;
   forgetStaleImageComponents(model, status);
-  return readImageComponents(model) === null;
+  if (readImageComponents(model) !== null) return null;
+  const slot = readImageModel();
+  if (slot && componentsKey(slot) === componentsKey(model)) {
+    const { textEncoderFiles: _te, vaeFile: _vae, ...bare } = slot;
+    rememberImageModel(bare);
+  }
+  const { textEncoderFiles: _te, vaeFile: _vae, ...rest } = model;
+  return rest;
 }
 
 /** Record a finished load's files: a load this page started stores what it asked for (`fieldFiles`, which a native
