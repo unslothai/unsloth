@@ -1629,53 +1629,6 @@ def xy_plot() -> B:
     return b
 
 
-def animate_photo() -> B:
-    b = B(
-        "animate-photo",
-        "Animate a Photo",
-        "pipeline",
-        "Bring your own photo to life with Wan 2.2 image-to-video, with steps, guidance and length set "
-        "on the block.",
-        tags = ["video", "image to video"],
-        seed = 37,
-    ).need("video")
-    b.n("photo", "input.image", 0, 0.5, label = "Your photo")
-    b.n(
-        "what",
-        "input.text",
-        0,
-        1.6,
-        value = "the camera slowly pushes in, hair and leaves move gently in the wind",
-    )
-    b.n(
-        "clip",
-        "video.generate",
-        1,
-        1,
-        model = VIDEO,
-        size = "1280x720",
-        steps = 20,
-        guidance = 5.0,
-        # Wan takes 4k+1 frames: 73 frames at 24 fps is a 3 second clip.
-        num_frames = 73,
-        fps = 24,
-        seed = 3,
-    )
-    b.e("photo.image", "clip.first_frame")
-    b.e("what.text", "clip.prompt")
-    b.n("show", "output.preview", 2, 1)
-    b.e("clip.video", "show.value")
-    b.note(
-        "tip",
-        "Upload a photo in the first block and describe the motion, then Run.",
-        0,
-        2.6,
-        1.6,
-        0.6,
-    )
-    return b
-
-
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1693,7 +1646,6 @@ BUILDERS = (
     outpaint,
     controlnet_canny,
     xy_plot,
-    animate_photo,
 )
 
 
