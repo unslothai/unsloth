@@ -7253,6 +7253,24 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
+    # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
+    if custom_graph_pass is None:
+        # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
+        inductor_config.fx_graph_cache = False
+        return
+
+    class ReadbackBarrierCacheKey(custom_graph_pass):
+        def __call__(self, graph):
+            return None
+
+        def uuid(self):
+            return "unsloth-inductor-readback-barrier-v1"
+
+    if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
+        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+
+
 def fix_inductor_reduction_readback_race():
     """torch < 2.14 Inductor reloads a buffer stored by an earlier loop of the same reduction kernel with no
     barrier, and Triton may give the store and the reload different warps: silently wrong gradients
@@ -7305,23 +7323,11 @@ def fix_inductor_reduction_readback_race():
     load._unsloth_readback_barrier = True
     kernel.load = load
     kernel.get_load_buffer = get_load_buffer
-    # Warm FX / AOTAutograd caches would return barrier-free kernels: this no-op pass's uuid keys them.
     try:
         from torch._inductor.custom_graph_pass import CustomGraphPass
-        class ReadbackBarrierCacheKey(CustomGraphPass):
-            def __call__(self, graph):
-                return None
-
-            def uuid(self):
-                return "unsloth-inductor-readback-barrier-v1"
-
-        if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
-            inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
     except ImportError:
-        # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
-        inductor_config.fx_graph_cache = False
-    except Exception:
-        pass
+        CustomGraphPass = None
+    _key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
     logger.info(
         "Unsloth: Patched Inductor to sync before re-reading a buffer stored in a reduction loop."
     )

@@ -167,15 +167,13 @@ def test_skips_a_torch_that_already_has_the_barrier(monkeypatch):
 
 def test_torch_without_custom_graph_pass_skips_the_fx_graph_cache(monkeypatch):
     from torch._inductor import config as inductor_config
-    from torch._inductor.codegen import triton as triton_codegen
 
-    fake = _fake_kernel_class()
-    monkeypatch.setattr(triton_codegen, "TritonKernel", fake)
     monkeypatch.setattr(inductor_config, "fx_graph_cache", True)
-    monkeypatch.setitem(sys.modules, "torch._inductor.custom_graph_pass", None)  # torch 2.4 / 2.5
-    _load_fixes("unsloth_import_fixes_readback_old").fix_inductor_reduction_readback_race()
-    assert fake.load._unsloth_readback_barrier
+    monkeypatch.setattr(inductor_config, "post_grad_custom_post_pass", None)
+    fixes = _load_fixes("unsloth_import_fixes_readback_old")
+    fixes._key_inductor_caches_on_readback_barrier(inductor_config, None)  # torch 2.4 / 2.5
     assert inductor_config.fx_graph_cache is False
+    assert inductor_config.post_grad_custom_post_pass is None
 
 
 _GPU_RUNNER = textwrap.dedent(
