@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The agent bar names the action in flight; a Back with nothing behind it says so instead of
-// reporting the same page as "moved to".
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
@@ -11,7 +9,6 @@ register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { agentChat, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
-// Actions without a scope act for the chat on screen.
 const CHAT = "new";
 
 const globals = globalThis as Record<string, unknown>;
@@ -44,7 +41,6 @@ test("the bar names each step: the host being opened, then the element's words o
   steps.length = 0;
   await runBrowserAction({ id: "s1", sessionId: "s", op: "click", ref: "r7", direction: "down", policy }, run);
   assert.equal(resultOf("s1")?.ok, true, resultOf("s1")?.error);
-  // Before the page answered: the ref. After: the button's label.
   assert.deepEqual(steps[0], { kind: "click", detail: "r7" });
   assert.ok(steps.some((step) => step?.kind === "click" && step.detail === "Search"), JSON.stringify(steps));
 });

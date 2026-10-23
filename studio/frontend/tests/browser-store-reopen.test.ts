@@ -189,7 +189,6 @@ test("a duplicated tab opens the page its links reached, not the one its entry s
   store.openUrl("https://a.example/", { newTab: true });
   const tab = useBrowserStore.getState().tabs.at(-1);
   assert.ok(tab);
-  // A native view's link clicks (and a router's moves) update only displayUrl.
   store.updateTab(tab.id, { displayUrl: "https://a.example/deep" });
   store.duplicateTab(tab.id);
   const tabs = useBrowserStore.getState().tabs;
@@ -197,7 +196,6 @@ test("a duplicated tab opens the page its links reached, not the one its entry s
   assert.ok(copy);
   const entry = currentEntry(copy);
   assert.equal(entry.kind === "web" && entry.url, "https://a.example/deep");
-  // The original is untouched.
   const original = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? copy);
   assert.equal(original.kind === "web" && original.url, "https://a.example/");
 });

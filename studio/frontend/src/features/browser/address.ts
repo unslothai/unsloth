@@ -90,7 +90,6 @@ export function fileNameFromUrl(url: string): string {
     try {
       last = decodeURIComponent(raw);
     } catch {
-      // A stray "%zz" in the name: kept as written rather than naming the file after the whole address.
     }
     return last || hostname;
   } catch {

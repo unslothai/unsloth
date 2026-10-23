@@ -127,7 +127,6 @@ def test_type_select_scroll_and_keys():
     assert _request("browser_select", {"ref": "r4", "value": 0})["value"] == "0"
     assert _request("browser_select", {"ref": "r4", "value": " Large "})["value"] == "Large"
     assert _request("browser_select", {"ref": "r4", "value": True})["value"] == "true"
-    # An empty value would land on the first option in the tab.
     for empty in (None, "", "   "):
         with pytest.raises(ValueError, match = "value is empty"):
             _request("browser_select", {"ref": "r4", "value": empty})

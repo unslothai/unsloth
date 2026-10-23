@@ -241,8 +241,7 @@ function copyTab(tab: BrowserTab): BrowserTab {
       if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
-      // The copy opens the page this tab got to by its links (a native view's clicks and a router's
-      // moves update only displayUrl), not where its entry started.
+      // Open where the tab got to: native-view clicks and router moves update only displayUrl.
       if (index === tab.index && copy.kind === "web" && copy.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl)) {
         copy.url = tab.displayUrl;
       }

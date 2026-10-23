@@ -64,7 +64,6 @@ test("a document without a title is named by its path", () => {
   assert.equal(fileNameFromUrl("https://arxiv.org/pdf/1706.03762"), "1706.03762");
   assert.equal(fileNameFromUrl("https://example.com/files/My%20Report.pdf"), "My Report.pdf");
   assert.equal(fileNameFromUrl("https://example.com/"), "example.com");
-  // A percent escape that isn't one keeps the name as written, not the whole address.
   assert.equal(fileNameFromUrl("https://cdn.example.com/files/report%zz.pdf"), "report%zz.pdf");
 });
 

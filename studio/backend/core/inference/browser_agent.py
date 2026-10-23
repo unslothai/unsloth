@@ -342,8 +342,7 @@ _LOCAL_SUFFIXES = (
 _STUDIO_PORTS = range(8888, 8909)
 _ASSIGNED_PORTS = 32768
 _FENCE = "untrusted_web_content"
-# Google's own country domains (google.com, google.de, google.co.uk, google.com.au), not
-# google.com.evil.example; mirrored in features/browser/address.ts.
+# Google's country domains, not google.com.evil.example; mirrored in features/browser/address.ts.
 _GOOGLE_HOST = r"google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})"
 
 
@@ -749,17 +748,14 @@ def execute_browser_tool(
                     "id": action_id,
                     "session_id": session_id or "",
                     **request,
-                    # The tab keeps clicks and form posts to the same limits a navigation is held to.
                     "allowed_domains": list(policy["allowedDomains"]),
                     "blocked_domains": list(policy["blockedDomains"]),
-                    # The tab drops a question still open when this side stops waiting, so a late
-                    # Allow can't run an action nobody is waiting for.
+                    # The tab drops an unanswered question once this side stops waiting, so a late Allow can't run.
                     "timeout_s": wait,
                 }
             }
         )
     except BaseException:
-        # A stream that is gone never answers: the slot would otherwise stay registered.
         discard_browser_action(action_id, slot)
         raise
     outcome, result = wait_browser_action(slot, action_id, cancel_event, wait)

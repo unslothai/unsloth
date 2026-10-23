@@ -8,8 +8,6 @@ import { useCallback, useState } from "react";
 import { useBrowserStore } from "../store";
 import { type AgentStep, IDLE_AGENT, answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
 
-// Steps whose line names something: without it (a click at a point before the page said what is
-// there) the generic line reads better than an empty quote.
 const NAMED_STEPS = new Set<AgentStep["kind"]>(["open", "find", "click", "type", "select", "press"]);
 
 /** Above the agent's tab while it works in the chat on screen: what it is doing, its questions, and Stop. */

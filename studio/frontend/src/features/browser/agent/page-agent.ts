@@ -1145,7 +1145,6 @@ export function installPageAgent(): PageAgent {
       // In a multi-line field Enter is a line break, as a synthetic key doesn't insert one.
       else if (tag === "textarea") {
         const area = target as HTMLTextAreaElement;
-        // As a real Enter: a read-only or disabled field stays as it is.
         if (area.readOnly || area.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
         const end = area.selectionEnd ?? area.value.length;
         const start = area.selectionStart ?? end;

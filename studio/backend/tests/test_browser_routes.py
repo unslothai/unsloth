@@ -337,8 +337,7 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
 
 
 def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
-    # Google and many apps ship a refresh for no-JS clients in <noscript>; a browser running
-    # scripts never follows it, and a base or meta in a comment, script string or textarea is text.
+    # A <noscript> refresh is never followed, and a base or meta in a comment, script string or textarea is text.
     page = (
         '<noscript><meta http-equiv="refresh" content="0; url=/nojs"></noscript>'
         '<!-- <meta http-equiv="refresh" content="0; url=/old"> -->'
@@ -354,7 +353,6 @@ def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
     assert "<base href='https://evil.example/'>" in html
     assert '<textarea><base href="https://evil.example/"></textarea>' in html
     assert "url=/live" not in html
-    # A live base after an inert one still applies, at its own offset once the inert text is kept.
     page = '<textarea><base href="https://evil.example/"></textarea><base href="/docs/"><p>y</p>'
     html, base, _ = browser_mod._prepare_page(page, "https://example.com/a/")
     assert base == "https://example.com/docs/"
@@ -378,10 +376,8 @@ def test_custom_elements_named_like_raw_text_ones_are_not_inert():
         '<script>const s = "<template>";</script>',
         "<!-- <template> -->",
         "<textarea><template></textarea>",
-        # Tag syntax in an ordinary element's quoted attribute is the attribute's text.
         '<div title="<script>"></div>',
         "<a data-x='<template>'>x</a><template-card></template-card>",
-        # A real nested template still nests.
         "<template><base href='https://evil.example/'></template>",
     ],
 )
@@ -538,7 +534,6 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
 @pytest.mark.parametrize(
     "body, text",
     [
-        # Unlabelled: UTF-8 when it decodes, else windows-1252, as a browser reads it.
         ("a,café\n".encode("utf-8"), "a,café\n"),
         ("a,caf\xe9\n".encode("cp1252"), "a,café\n"),
         (codecs.BOM_UTF8 + "a,café\n".encode("utf-8"), "a,café\n"),

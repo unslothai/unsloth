@@ -119,15 +119,13 @@ _INERT_START_RE = re.compile(
     # A tag-name end, not \b: <title-bar> and <template-card> are custom elements, not raw-text ones.
     r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)(?=[\s/>])"
     + _TAG_BODY
-    # The body takes the name too: a separate name pattern overlapping it made an unclosed "<abbb..."
-    # quadratic, every split of the name between the two being tried.
+    # The body takes the name too: a separate overlapping name pattern made unclosed "<abbb..." quadratic.
     + r"|<[a-z]"
     + _TAG_BODY,
     re.IGNORECASE,
 )
 _TEMPLATE_CLOSE_RE = re.compile(r"</template(?=[\s/>])", re.IGNORECASE)
-# Inside a template: its close, a nested one, what holds text (a comment, a raw-text element), or any
-# other tag, taken whole so "<script>" in a quoted attribute is not read as one.
+# Inside a template: close, nested open, comment/raw-text, or any whole tag (so "<script>" in an attribute is not one).
 _TEMPLATE_SCAN_RE = re.compile(
     r"<!--|</template(?=[\s/>])"
     r"|<(template|script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)(?=[\s/>])"
@@ -1696,7 +1694,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
             base_url = _join(url, href) or url
             break
     page = _BASE_TAG_RE.sub(lambda match: "" if live(match) else match.group(0), page)
-    # Offsets moved with the removals above.
+    # Again: the removals moved every offset.
     live = _live_tags(page)
 
     refresh = None
@@ -2073,8 +2071,7 @@ def _build_response(
         ("json", "xml", "javascript")
     )
     if textual and codec is None:
-        # The response is labelled UTF-8 below, so unlabelled text is read as a browser would
-        # (BOM, else UTF-8, else windows-1252) and re-encoded to match the label.
+        # Labelled UTF-8 below, so decode as a browser would (BOM, else UTF-8, else windows-1252).
         codec = next((bom_codec for bom, bom_codec in _BOMS if body.startswith(bom)), None)
         if codec is None:
             try:

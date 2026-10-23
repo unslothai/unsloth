@@ -22,8 +22,7 @@ export type AgentPrompt = Question & { id: number; always: boolean };
 /** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
 export type Answer = false | "once" | "always";
 
-/** What the action in flight does, for the agent bar: `detail` is a host, a query, a key, or an
- *  element's words (first its ref, then its name once the page described it). */
+/** Action in flight for the agent bar; `detail` is a host, query, key, or element ref then name. */
 export type AgentStep = {
   kind:
     | "open"

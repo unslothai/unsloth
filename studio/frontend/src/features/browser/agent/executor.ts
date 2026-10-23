@@ -210,8 +210,7 @@ function admit(url: string, gate: Gate, context: Run): void {
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
-// A replayed stream frame must not click twice. Ids are unguessable, so a replay is only ever
-// recent: the oldest go once the set is this big.
+// A replayed frame must not click twice; ids are unguessable, so only recent ones are kept.
 const seen = new Set<string>();
 const MAX_SEEN = 4_000;
 
@@ -642,7 +641,6 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   return waitForLoad(tabId, context.signal);
 }
 
-/** What the agent bar says the action is doing, before the page is asked anything about it. */
 function stepOf(action: BrowserAction): AgentStep {
   switch (action.op) {
     case "navigate":
@@ -671,7 +669,6 @@ function stepOf(action: BrowserAction): AgentStep {
   }
 }
 
-/** The element's words once the page described it: "Clicking “Search”" rather than "Clicking r12". */
 function nameStep(chat: string, info: ElementInfo): void {
   const current = agentChat(chat).step;
   if (!current) return;
@@ -804,11 +801,9 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
           : entry?.kind === "web"
             ? entry.url
             : "";
-    // Nowhere to go: the store's move is a no-op, which would read as the page it is on, "moved to".
     if (action.op !== "reload" && !nativeMove && !entry) {
       const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
       if (!ready) return { ok: false, error: "the browser tab closed." };
-      // The page it stays on may be one the user declined after a redirect, or one a site rule blocks.
       const refused = await stillAllowed(ready, action, context);
       if (refused) return { ok: false, error: refused };
       return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
