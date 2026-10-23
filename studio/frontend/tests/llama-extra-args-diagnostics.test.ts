@@ -14,9 +14,6 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The row is the backend's judgement shown early. Where these disagree, the panel
-// accepts an argument the load then refuses, or warns about one that works.
-
 const CATALOG: LlamaFlagCatalog = {
   flags: {
     "--top-k": "top-k sampling",
@@ -27,8 +24,7 @@ const CATALOG: LlamaFlagCatalog = {
     "-ngl": "layers to offload",
     "--batch-size": "logical batch size",
   },
-  // The names the backend actually returns, aliases included: --n-parallel is in
-  // its denylist, and leaving it out here would test a catalogue that cannot exist.
+  // --n-parallel is in the backend denylist, so aliases are included.
   managed: new Set([
     "--parallel",
     "--n-parallel",
@@ -38,8 +34,6 @@ const CATALOG: LlamaFlagCatalog = {
     "--agent",
     "--ctx-size",
   ]),
-  // What this build says takes no value, so "--verbose foo" reads as the typo
-  // llama-server calls it.
   switches: new Set(["--verbose"]),
   maxBytes: 32 * 1024,
   windowsCommandBudget: 0,
@@ -84,22 +78,19 @@ test("parallel aliases point at the supported control", () => {
 });
 
 test("a managed flag with no control says who owns it instead", () => {
-  // --api-key is not a row in this panel, so pointing at one would be a lie.
   const text = messages("--api-key secret");
   assert.match(text, /managed by Unsloth/);
   assert.doesNotMatch(text, /above/);
 });
 
 test("an attached or equals form is caught the same way", () => {
-  // The backend normalises these before checking, so the row has to as well.
   assert.equal(levels("-np8")[0], "error");
   assert.equal(levels("--parallel=8")[0], "error");
   assert.equal(levels("--n_parallel 8")[0], "error");
 });
 
 test("a flag a control also sets is a note, not a refusal", () => {
-  // Deliberate: the backend appends extras last and reconciles the ones that move
-  // its own sizing, and the CLI has always allowed this. Say who wins, do not block.
+  // The backend appends extras last, so this is a note about who wins, not a block.
   for (const catalog of [CATALOG, null]) {
     const diagnostics = diagnoseExtraArgs("--batch-size 512", catalog);
     assert.deepEqual(
@@ -123,12 +114,10 @@ test("a flag missing from this build warns but still loads", () => {
 });
 
 test("nothing is called unknown when the probe failed", () => {
-  // The failure mode this exists to prevent: an unverifiable build would mark every
-  // correct flag as a typo, which is worse than saying nothing.
+  // An unverifiable build must not mark every correct flag as a typo.
   const unverified: LlamaFlagCatalog = {
     flags: {},
     managed: CATALOG.managed,
-    // Nothing was read from the binary, so nothing is known to be a switch either.
     switches: new Set<string>(),
     maxBytes: 32 * 1024,
     windowsCommandBudget: 0,
@@ -140,7 +129,6 @@ test("nothing is called unknown when the probe failed", () => {
     diagnoseExtraArgs("--tempp 0.7 --numa distribute", unverified),
     [],
   );
-  // A managed flag is still refused: that judgement needs no binary.
   assert.equal(levels("--parallel 8", unverified)[0], "error");
 });
 
@@ -149,8 +137,7 @@ test("an older backend with no catalogue still refuses nothing and warns nothing
 });
 
 test("sampling flags are noted as launch defaults", () => {
-  // They work, but the chat settings send sampling per request, so a value set here
-  // is not what a conversation will use.
+  // Chat settings send sampling per request, so a value set here is not what a conversation uses.
   const text = messages("--top-k 20");
   assert.match(text, /chat settings/);
   assert.equal(levels("--top-k 20")[0], "note");
@@ -170,22 +157,18 @@ test("too many arguments is an error at the backend's own limit", () => {
 });
 
 test("a payload over the byte limit is an error, even within the token cap", () => {
-  // One long token is the realistic shape: a grammar or a JSON schema. The backend
-  // refuses this on size, so the row has to say so rather than let the load start.
   const huge = `--grammar ${"a".repeat(40_000)}`;
   const diagnostics = diagnoseExtraArgs(huge, CATALOG);
 
   assert.equal(diagnostics[0].level, "error");
   assert.match(diagnostics[0].message, /limit 32768/);
   assert.equal(extraArgsAreLoadable(diagnostics), false);
-  // Multi-byte characters count as their UTF-8 length, which is what the backend
-  // measures; counting characters would let a CJK grammar through.
+  // Counted as UTF-8 bytes, which is what the backend measures.
   const multibyte = `--grammar ${"\u65e5".repeat(11_000)}`;
   assert.equal(
     extraArgsAreLoadable(diagnoseExtraArgs(multibyte, CATALOG)),
     false,
   );
-  // And an ordinary line is nowhere near it.
   assert.deepEqual(diagnoseExtraArgs("--numa distribute", CATALOG), []);
 });
 
@@ -203,8 +186,7 @@ test("several unknown flags share one line", () => {
 });
 
 test("values are never mistaken for flags", () => {
-  // "-1" and "0.7" are values; treating them as flags would warn about every
-  // negative number the user types.
+  // "-1" and "0.7" are values, not flags.
   assert.deepEqual(
     diagnoseExtraArgs("--numa distribute --top-k -1", CATALOG).map(
       (d) => d.level,
@@ -214,21 +196,16 @@ test("values are never mistaken for flags", () => {
 });
 
 test("a device flag is called removed, not winning, when GPUs are picked", () => {
-  // The launch strips these whenever gpu_ids is set (_strip_device_extra_args), so
-  // the ordinary "passed last, yours wins" note would be a lie for them.
+  // The launch strips these whenever gpu_ids is set (_strip_device_extra_args).
   const withPick = diagnoseExtraArgs("--device CUDA0", CATALOG, { gpuSelectionActive: true });
   assert.equal(withPick[0].level, "warning");
   assert.match(withPick[0].message, /--device will be removed/);
   assert.match(withPick[0].message, /GPU selection/);
-  // With no GPU picked the flag is the user's own and nothing is stripped.
   assert.deepEqual(diagnoseExtraArgs("--device CUDA0", CATALOG, {}), []);
 });
 
 test("a flag that takes a number rejects a value that is not one", () => {
-  // parse_ctx_override and parse_gpu_layers_override raise before the load starts,
-  // so the row has to say so rather than enable a request that cannot succeed.
-  // -ngl rather than --ctx-size: this build's catalogue has --ctx-size on the
-  // managed list, and that refusal would fire first and prove nothing.
+  // -ngl rather than --ctx-size: --ctx-size is managed here, and that refusal would fire first.
   const bad = diagnoseExtraArgs("-ngl many", CATALOG);
   assert.equal(bad[0].level, "error");
   assert.match(bad[0].message, /takes a number/);
@@ -237,7 +214,6 @@ test("a flag that takes a number rejects a value that is not one", () => {
     extraArgsAreLoadable(diagnoseExtraArgs("--batch-size=abc", CATALOG)),
     false,
   );
-  // A real value is fine, negative included: -1 means every layer.
   assert.equal(
     extraArgsAreLoadable(diagnoseExtraArgs("-ngl -1", CATALOG)),
     true,
@@ -249,23 +225,18 @@ test("a flag that takes a number rejects a value that is not one", () => {
 });
 
 test("a control character is an error, as it is at the backend", () => {
-  // The usual way one arrives is a command copied out of coloured terminal output.
   const diagnostics = diagnoseExtraArgs("--grammar a\u001b[0mb", CATALOG);
   assert.equal(diagnostics[0].level, "error");
   assert.match(diagnostics[0].message, /control characters/);
   assert.equal(extraArgsAreLoadable(diagnostics), false);
-  // Tab and newline are separators here, not control characters to refuse.
   assert.equal(
     extraArgsAreLoadable(diagnoseExtraArgs("--top-k\t20", CATALOG)),
     true,
   );
 });
 
-// --- the panel wiring, asserted on source ------------------------------------
 test("a repeated numeric flag is checked at every occurrence", () => {
-  // llama.cpp reads the last one, and so does the backend's parse_gpu_layers_override,
-  // so a check that stopped at the first occurrence left Load enabled for a request
-  // that comes back 400.
+  // llama.cpp and parse_gpu_layers_override read the last occurrence.
   const out = diagnoseExtraArgs("-ngl 20 -ngl many", CATALOG);
   assert.ok(
     out.some(
@@ -284,8 +255,6 @@ test("the same bad value is reported once, not once per copy", () => {
 });
 
 test("a numeric flag with nothing after it is an error", () => {
-  // parse_ctx_override raises on a missing value rather than reading the next flag
-  // as one, so leaving Load enabled here only moves the failure to the backend.
   for (const input of ["--ctx-size", "--ctx-size=", "--ctx-size --numa"]) {
     const out = diagnoseExtraArgs(input, CATALOG);
     assert.ok(
@@ -296,8 +265,6 @@ test("a numeric flag with nothing after it is an error", () => {
 });
 
 test("a numeric flag outside its range is an error", () => {
-  // The two ranges the backend's parsers actually enforce: a context cannot be
-  // negative, and -1 is the lowest meaningful layer count (all of them).
   assert.ok(
     diagnoseExtraArgs("--ctx-size -1", CATALOG).some(
       (d) => d.level === "error" && d.message.includes("cannot be negative"),
@@ -308,17 +275,13 @@ test("a numeric flag outside its range is an error", () => {
       (d) => d.level === "error" && d.message.includes("-1 or more"),
     ),
   );
-  // And -1 itself is fine, or the editor would refuse the ordinary way of asking
-  // for every layer.
   assert.ok(
     !diagnoseExtraArgs("-ngl -1", CATALOG).some((d) => d.level === "error"),
   );
 });
 
 test("a stored flag this build refuses is dropped with its value", () => {
-  // Hydration turns a stored list into an explicit request, which /load validates
-  // strictly instead of dropping the flag the way the carry-over paths do. Leaving
-  // the value behind would hand llama.cpp a bare positional it reads as a model.
+  // /load validates an explicit list strictly; a leftover value becomes a bare positional (model).
   const managed = new Set(["--log-file", "--agent"]);
   assert.deepEqual(
     dropManagedExtraArgs(
@@ -335,15 +298,13 @@ test("a stored flag this build refuses is dropped with its value", () => {
     dropManagedExtraArgs(["--log-file=/x", "--top-k=20"], managed),
     ["--top-k=20"],
   );
-  // Nothing to drop is the list unchanged, and an empty denylist changes nothing.
   const clean = ["--numa", "distribute"];
   assert.deepEqual(dropManagedExtraArgs(clean, managed), clean);
   assert.deepEqual(dropManagedExtraArgs(clean, new Set<string>()), clean);
 });
 
 test("a value-taking flag with nothing after it is an error too", () => {
-  // _last_flag_value raises for these groups from inside validate_extra_args, so a
-  // shadowing note on its own left Load enabled for a request that 400s.
+  // _last_flag_value raises for these groups inside validate_extra_args.
   for (const input of ["--cache-type-k=", "--top-k 20 -sm", "--split-mode="]) {
     const out = diagnoseExtraArgs(input, CATALOG);
     assert.ok(
@@ -351,7 +312,6 @@ test("a value-taking flag with nothing after it is an error too", () => {
       `${input}: ${JSON.stringify(out)}`,
     );
   }
-  // A value that is there says nothing about presence.
   assert.ok(
     !diagnoseExtraArgs("--cache-type-k q8_0", CATALOG).some(
       (d) => d.level === "error",
@@ -360,10 +320,7 @@ test("a value-taking flag with nothing after it is an error too", () => {
 });
 
 test("the stored sanitizer removes everything this build would refuse", () => {
-  // Not only denied flags: the bounds, control characters and unpaired surrogates
-  // are all new refusals that a list saved by the previous release can trip, and
-  // hydration turns that list into an explicit request. Each of these mirrors a
-  // case pinned against drop_managed_flags in the backend suite.
+  // Each mirrors a case pinned against drop_managed_flags in the backend suite.
   const managed = new Set(["--log-file"]);
   const control = `${String.fromCharCode(0x1b)}[2Jx`;
   const surrogate = String.fromCharCode(0xd800);
@@ -375,8 +332,6 @@ test("the stored sanitizer removes everything this build would refuse", () => {
     ),
     ["--numa", "distribute"],
   );
-  // A poisoned value takes its flag with it, or the flag is left expecting one and
-  // eats the next token instead.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--chat-template", control, "--top-k", "20"], managed),
     ["--top-k", "20"],
@@ -388,26 +343,20 @@ test("the stored sanitizer removes everything this build would refuse", () => {
     ),
     ["--top-k", "20"],
   );
-  // And a poisoned flag takes its value, or the value is left as a bare positional
-  // that llama-server reads as a model path.
   assert.deepEqual(
     sanitizeStoredExtraArgs([`--grammar${control}`, "root", "--top-k", "20"], managed),
     ["--top-k", "20"],
   );
-  // The bounds, shed from the tail exactly as the backend sheds them.
   assert.equal(
     sanitizeStoredExtraArgs(new Array(300).fill("--verbose"), managed).length,
     256,
   );
-  // A clean list is untouched.
   const clean = ["--numa", "distribute"];
   assert.deepEqual(sanitizeStoredExtraArgs(clean, managed), clean);
 });
 
 test("the sanitizer trims to the HOST's bounds, not the constants", () => {
-  // A Windows server takes 24 KiB, not 32, and holds a quoted-command budget on top
-  // of it. Trimming to the wider constant leaves a list /load answers 400 on, which
-  // is the one outcome hydrating a stored override is supposed to prevent.
+  // A Windows server takes 24 KiB, not 32, plus a quoted-command budget.
   const managed = new Set<string>();
   const stored = ["--grammar", "x".repeat(30000), "--top-k", "20"];
   assert.deepEqual(sanitizeStoredExtraArgs(stored, managed), stored);
@@ -415,9 +364,7 @@ test("the sanitizer trims to the HOST's bounds, not the constants", () => {
     sanitizeStoredExtraArgs(stored, managed, { maxBytes: 24 * 1024 }),
     [],
   );
-  // The quoted length, not the byte count: a token needing quotes doubles the
-  // backslash runs before its quotes, so this passes the byte bound and fails the
-  // command-line one.
+  // The quoted length: quoting doubles backslash runs before quotes.
   const quoted = ["--grammar", `${"\\".repeat(10)}" `.repeat(400)];
   assert.deepEqual(sanitizeStoredExtraArgs(quoted, managed), quoted);
   assert.deepEqual(
@@ -427,8 +374,7 @@ test("the sanitizer trims to the HOST's bounds, not the constants", () => {
     }),
     [],
   );
-  // Zero means "not known", not "nothing fits": an older server answers the
-  // catalogue without either field.
+  // Zero means "not known": an older server answers without either field.
   assert.deepEqual(
     sanitizeStoredExtraArgs(stored, managed, {
       maxBytes: 0,
@@ -439,8 +385,7 @@ test("the sanitizer trims to the HOST's bounds, not the constants", () => {
 });
 
 test("a two-value flag is shed whole when the bounds bite", () => {
-  // Mirrors drop_managed_flags: dropping END alone leaves START looking like an
-  // ordinary value, and llama-server refuses the option outright.
+  // Mirrors drop_managed_flags: dropping END alone leaves START looking like a value.
   const managed = new Set<string>();
   assert.deepEqual(
     sanitizeStoredExtraArgs(
@@ -449,15 +394,12 @@ test("a two-value flag is shed whole when the bounds bite", () => {
     ),
     ["--top-k", "20"],
   );
-  // Intact, it survives.
   const whole = ["--control-vector-layer-range", "1", "10"];
   assert.deepEqual(sanitizeStoredExtraArgs(whole, managed), whole);
 });
 
 test("a whole surrogate pair is a character, not a fault", () => {
-  // The class-based check matched both units of every emoji, so a chat template or
-  // grammar carrying one was dropped on hydration even though Python encodes it
-  // without complaint. Only half a pair is refused.
+  // Only half a surrogate pair is refused; Python encodes a whole emoji fine.
   const emoji = String.fromCodePoint(0x1f600);
   const lone = String.fromCharCode(0xd800);
   const managed = new Set<string>();
@@ -470,7 +412,6 @@ test("a whole surrogate pair is a character, not a fault", () => {
     sanitizeStoredExtraArgs(["--chat-template", lone, "--top-k", "20"], managed),
     ["--top-k", "20"],
   );
-  // And the editor says the same about what is typed.
   assert.ok(
     !diagnoseExtraArgs(`--chat-template ${emoji}`, CATALOG).some(
       (d) => d.level === "error",
@@ -484,9 +425,7 @@ test("a whole surrogate pair is a character, not a fault", () => {
 });
 
 test("a multi-line quoted value is not a control-character fault", () => {
-  // _has_control_characters allows tab and newline on purpose: a grammar, a JSON
-  // schema or a chat template is routinely multi-line, and quoting one into a
-  // single argv token is what the box is for.
+  // _has_control_characters allows tab and newline: grammars and templates are multi-line.
   const grammar = "--grammar 'root ::= [0-9]+\n  | \"x\"'";
   assert.ok(
     !diagnoseExtraArgs(grammar, CATALOG).some((d) => d.level === "error"),
@@ -496,7 +435,6 @@ test("a multi-line quoted value is not a control-character fault", () => {
     sanitizeStoredExtraArgs(["--grammar", "a\nb\tc", "--top-k", "20"], new Set<string>()),
     ["--grammar", "a\nb\tc", "--top-k", "20"],
   );
-  // An escape sequence is still refused.
   assert.ok(
     diagnoseExtraArgs(`--grammar ${String.fromCharCode(0x1b)}x`, CATALOG).some(
       (d) => d.level === "error",
@@ -505,20 +443,16 @@ test("a multi-line quoted value is not a control-character fault", () => {
 });
 
 test("a value with no flag in front of it is an error", () => {
-  // validate_extra_args refuses it, and llama-server answers "invalid argument"
-  // and refuses to start, so without this the box looks fine and the load 400s.
   const out = diagnoseExtraArgs("--top-k 20 /models/other.gguf", CATALOG);
   assert.ok(
     out.some((d) => d.level === "error" && d.message.includes("belongs to no flag")),
     JSON.stringify(out),
   );
-  // The two-value option is not one of those.
   assert.ok(
     !diagnoseExtraArgs("--control-vector-layer-range 1 10", CATALOG).some(
       (d) => d.level === "error",
     ),
   );
-  // Nor is an ordinary value.
   assert.ok(
     !diagnoseExtraArgs("--numa distribute", CATALOG).some(
       (d) => d.level === "error",
@@ -527,15 +461,11 @@ test("a value with no flag in front of it is an error", () => {
 });
 
 test("a value after a switch is the typo llama-server calls it", () => {
-  // -v, --verbose, --log-verbose is declared with no value in this build's help, and
-  // "--verbose foo" exits with "error: invalid argument: foo".
   const out = diagnoseExtraArgs("--verbose foo", CATALOG);
   assert.ok(
     out.some((d) => d.level === "error" && d.message.includes("belongs to no flag")),
     JSON.stringify(out),
   );
-  // A flag that does take one is untouched, and an unverified build says nothing:
-  // only what the catalogue actually declares is acted on.
   assert.ok(
     !diagnoseExtraArgs("--numa distribute", CATALOG).some(
       (d) => d.level === "error",
@@ -544,8 +474,7 @@ test("a value after a switch is the typo llama-server calls it", () => {
 });
 
 test("the size limits are the host's, not this file's", () => {
-  // Windows caps extras lower, because the whole command line shares one 32767
-  // character budget, and the editor has to draw the same line the load does.
+  // Windows caps extras lower: the whole command line shares one 32767 character budget.
   const windows: LlamaFlagCatalog = {
     ...CATALOG,
     maxBytes: 24 * 1024,
@@ -557,13 +486,11 @@ test("the size limits are the host's, not this file's", () => {
       (d) => d.level === "error" && d.message.includes("24576"),
     ),
   );
-  // The same input is fine where the host allows 32 KiB.
   assert.ok(!diagnoseExtraArgs(big, CATALOG).some((d) => d.level === "error"));
 });
 
 test("what the quoting makes of an argument counts on Windows", () => {
-  // list2cmdline doubles a backslash run before a quote, so bytes alone do not say
-  // whether the launch fits. Same rule as the backend's own check.
+  // list2cmdline doubles a backslash run before a quote, so bytes alone do not decide fit.
   const windows: LlamaFlagCatalog = {
     ...CATALOG,
     maxBytes: 24 * 1024,
@@ -578,21 +505,18 @@ test("what the quoting makes of an argument counts on Windows", () => {
   );
 });
 
-// The harness has no DOM renderer, so the row's contract is pinned the way the
-// sibling model-config tests do it.
+// No DOM renderer, so the row's contract is pinned on source.
 
 const pageSource = readSrc("features/model-picker/components/model-config-page.tsx");
 
 test("the row stores argv tokens, not the typed string", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
-  // The wire format is one token per entry; storing the raw string would make the
-  // backend split it, which it does not do.
+  // The wire format is one token per entry; the backend does not split strings.
   assert.match(
     body,
     /update\(\{ llamaExtraArgs: tokens\.length > 0 \? tokens : null \}\)/,
   );
-  // Cleared reads as null here and becomes an explicit [] at the API boundary.
   assert.match(body, /const \{ tokens \} = parseExtraArgs\(next\)/);
 });
 
@@ -601,32 +525,18 @@ test("the box is filled from the stored flags, not left looking empty", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // The overrides API can set these with no UI involved, and this panel's config
-  // comes from local storage, so the only way the box can show what is actually
-  // set is to ask. An empty box would read as "no flags" and the first edit would
-  // submit a list that dropped them.
-  // Resolved by the backend, whose folding rules are the ones the load applies.
+  // The overrides API can set these without the UI, so the box must fetch what is actually set.
   assert.match(
     body,
     /fetchLoadModelOverride\(loadId, configId, target\.ggufVariant, keys\)/,
   );
-  // Through the resolver, not a literal lookup: the backend folds identities and
-  // falls back from repo:QUANT to the bare repo before it reads a row.
-  // The candidate keys still travel, as the fallback for a backend that predates
-  // the resolving parameter.
+  // Through the resolver: the backend folds identities and falls back from repo:QUANT to repo.
+  // Candidate keys still travel for backends predating the resolving parameter.
   assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\)/);
-  // And through the denylist first: hydrating makes the stored list an explicit
-  // request, which /load validates strictly rather than dropping a newly denied
-  // flag the way the carry-over paths do.
   assert.match(body, /sanitizeStoredExtraArgs\( resolvedArgs\.tokens,/);
-  // Into the config, not only the textarea. The load sends what the config holds,
-  // and the route's omission path inherits from a resident process rather than
-  // from this stored override, so a box that filled without the config would show
-  // flags the launch did not use.
+  // Into the config, not only the textarea: the load sends what the config holds.
   assert.match(body, /llamaExtraArgs: stored/);
-  // And the key is marked only once a response is in hand, or StrictMode's replayed
-  // effect cancels the first fetch and skips the second. The mark is on the shared draft, so
-  // the second host reads it rather than fetching again.
+  // Mark only once a response is in hand, or StrictMode's replayed effect skips the second fetch.
   const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey)");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
@@ -635,10 +545,7 @@ test("the box is filled from the stored flags, not left looking empty", () => {
 });
 
 test("hydration is not gated behind the advanced disclosure", () => {
-  // The row that displays these lives inside GgufAdvancedSettings, which is only
-  // rendered while the section is open. A panel opened with it collapsed would
-  // never fetch, and a cold load would then launch without the stored arguments,
-  // so the fetch belongs in the parent that always mounts.
+  // The row only renders while Advanced is open, so the fetch lives in the always-mounted parent.
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const rowBody = row.slice(0, row.indexOf("\n}\n"));
   assert.doesNotMatch(rowBody, /fetchLoadExtraArgs/);
@@ -652,15 +559,12 @@ test("hydration is not gated behind the advanced disclosure", () => {
 test("the row does not withdraw its objection when it unmounts", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
-  // Collapsing Advanced settings unmounts the row while its tokens stay in the
-  // config and still go out with the load, so a cleanup that reset the flag would
-  // re-enable Load for a request the backend refuses.
+  // Collapsing unmounts the row while its tokens still go out, so cleanup must not reset the flag.
   const effect = body.slice(body.indexOf("onLoadableChange(loadable)"));
   assert.doesNotMatch(
     effect.slice(0, effect.indexOf("const commit")),
     /return \(\) => onLoadableChange/,
   );
-  // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
     /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(!isDiffusion\); \}, \[configId, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
@@ -669,9 +573,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
 
 test("a config that never read the stored value is not sent as a clear", () => {
   const overrides = readSrc("features/model-picker/api/model-overrides.ts").replace(/\s+/g, " ");
-  // The route preserves llama_extra_args when omitted, which is what kept CLI-set
-  // flags alive while this panel had no control. Sending [] for a config that never
-  // loaded them would wipe them on the first save.
+  // The route preserves llama_extra_args when omitted; sending [] unloaded would wipe CLI flags.
   assert.match(
     overrides,
     /if \(config\.llamaExtraArgs !== undefined\) \{ payload\.llama_extra_args = config\.llamaExtraArgs \?\? \[\]; \}/,
@@ -687,9 +589,6 @@ test("the load sends the flags only once they are known", () => {
 });
 
 test("the panel's own Load goes through the runtime, which sends them too", () => {
-  // Found by loading a model from the panel and reading the emitted command: the
-  // flags were in the config and absent from the argv, because this hook is the
-  // path the Load button takes and it built the payload field by field.
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
   assert.match(
     runtime,
@@ -704,9 +603,7 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
 test("the box follows a config change it did not make", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
-  // Reset and the parent's hydration both replace llamaExtraArgs while this row is
-  // mounted. Without this the textarea keeps its old text and disagrees with what
-  // Load sends; with a plain re-seed on every change it re-quotes a half-typed line.
+  // Re-seed on external replacement, but not on every change, or a half-typed line gets re-quoted.
   assert.match(
     body,
     /const text = edit && edit\.source === external \? edit\.text : external;/,
@@ -717,8 +614,7 @@ test("the box follows a config change it did not make", () => {
 test("the two editors type into one box", () => {
   const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
   const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
-  // commit publishes tokens on every keystroke. Held per row, an unclosed quote left the
-  // OTHER editor showing a balanced re-quote of them and judging it loadable.
+  // Edits are shared per draft so the other editor does not judge a re-quoted line loadable.
   assert.match(body, /readExtraArgsEditForDraft\(draftKey\)/);
   assert.match(body, /setExtraArgsEditForDraft\(draftKey, \{/);
   assert.doesNotMatch(body, /useState\(\(\) => formatExtraArgs/);
@@ -729,17 +625,11 @@ test("load waits for the stored arguments to be read", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // A click that beats the fetch would launch a cold model without them, and /load
-  // cannot inherit from a process that is not running.
+  // /load cannot inherit from a process that is not running.
   assert.match(body, /extraArgsHydrating \|\|/);
-  // But never for good: a failed or hanging overrides read releases the gate.
   assert.match(body, /\.finally\(\(\) => \{ .*setExtraArgsHydrating\(false\)/);
   assert.match(body, /setTimeout\(\(\) => setExtraArgsHydrating\(false\), \d+\)/);
-  // And the short deadline is on the CATALOGUE, not on the gate: the first read of
-  // it runs --help on a cold binary, and releasing Load on that timer would let a
-  // click through while the stored arguments were already in hand.
-  // And it waits on the DENYLIST, which needs no binary, rather than on the
-  // catalogue behind a cold --help.
+  // The short deadline is on the catalogue, not the gate; the gate waits on the denylist.
   assert.match(body, /loadManagedLlamaFlags\(\)/);
   assert.doesNotMatch(body, /loadLlamaFlagCatalog\(\)[^;]*Promise\.all/);
 });
@@ -749,9 +639,7 @@ test("Load waits for the server row on every model but diffusion", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // Every non-diffusion model reads the row, and a Load sent before it lands with
-  // Remember unchecked forgets it. A diffusion model runs through the shim, which
-  // appends no llama-server flags, so it alone skips the wait.
+  // Diffusion models run through the shim, which appends no llama-server flags.
   assert.match(
     body,
     /if \(resolvedIsDiffusion\) \{ [^}]*setExtraArgsHydrating\(false\); return; \}/,
@@ -766,9 +654,6 @@ test("a diffusion classification retires the argument objection", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // withoutUnsupportedDiffusionSettings strips the arguments from what loads while
-  // the row keeps its objection (it deliberately has no cleanup), so Load would
-  // stay disabled over arguments the request no longer carries.
   assert.match(
     body,
     /if \(resolvedIsDiffusion\) \{ setExtraArgsLoadable\(true\); \}/,
@@ -780,27 +665,17 @@ test("hydration asks under the keys the load path uses", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // A cached GGUF outside the active HF cache loads by its snapshot path while
-  // configId is the repo id, and the auto-switch loader reads the path-qualified
-  // key first, so an override left there is the one API loads apply.
+  // The auto-switch loader reads the path-qualified key first for snapshot-path GGUFs.
   assert.match(body, /modelOverrideKey\(loadId, target\.ggufVariant\), modelOverrideKey\(configId, target\.ggufVariant\), loadId,/);
-  // Including the filename-label key an early build wrote for a loose .gguf.
   assert.match(body, /fileVariant \? \[`\$\{loadId\}:\$\{fileVariant\}`\] : \[\]/);
 });
 
 test("a rollback restores the previous model with its arguments", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
-  // By the time this runs the TARGET is resident, so an omitted field inherits
-  // across models, which the route refuses, and the previous model would come back
-  // without the arguments it had been running.
   assert.match(
     runtime,
     /rollbackState\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: rollbackState\.loadedLlamaExtraArgs \}/,
   );
-  // And the snapshot is kept on every successful load, not only an explicit one,
-  // taken from the server's own echo first: a reload that omits the field but sets
-  // max_seq_length has its inherited --ctx-size stripped before launch, and the
-  // status refresh that would notice runs while the load is still in flight.
   assert.match(
     runtime,
     /loadedLlamaExtraArgs: loadResponse\.requested_llama_extra_args !== undefined/,
@@ -813,15 +688,7 @@ test("a hydrated list is judged even when the row cannot be", () => {
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // With Advanced collapsed the row never mounts, so nothing objects to a stored
-  // list this build refuses (the overrides route only validates its shape), and
-  // Load would be live for a request that comes back 400.
-  //
-  // Judged on the list hydration ADOPTS, not on the row's: a row carrying no
-  // arguments leaves the local ones standing, and reading the verdict off the empty
-  // server list called them loadable. That one lands even with Advanced expanded,
-  // where the row has already refused the list and republishes only on a change of
-  // its own verdict, so nothing puts the objection back.
+  // With Advanced collapsed the row never mounts, so the adopted list must be judged here.
   assert.match(
     body,
     /const hydratedArgs = serverConfig\?\.llamaExtraArgs \?\? stored;/,
@@ -830,8 +697,6 @@ test("a hydrated list is judged even when the row cannot be", () => {
     body,
     /const hydratedIsLoadable = !target\.isGguf \|\| hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
   );
-  // But not over an edit made while the request was out: the row is judging that
-  // text, and replacing its verdict re-enabled Load for invalid input.
   assert.match(
     body,
     /if \(configRef\.current\.llamaExtraArgs !== undefined\) \{ .*return; \} setExtraArgsLoadable\(hydratedIsLoadable\)/,
@@ -840,9 +705,7 @@ test("a hydrated list is judged even when the row cannot be", () => {
 
 test("the runtime preflight is sized with the arguments the load sends", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts").replace(/\s+/g, " ");
-  // A --ctx-size or cache override changes the memory /validate estimates. During
-  // training an approval it did not size for means unloading the resident model and
-  // having /load refuse the target, which is a rollback the user never asked for.
+  // A --ctx-size or cache override changes the memory /validate estimates.
   const validateCall = runtime.slice(
     runtime.indexOf("await validateModel({"),
     runtime.indexOf("// Upgrade consent runs before"),
@@ -855,8 +718,6 @@ test("the runtime preflight is sized with the arguments the load sends", () => {
 
 test("a catalogue read from the previous binary is discarded", () => {
   const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
-  // A switch that completes mid-request must not have the old build's flags written
-  // back, and the next caller must not be handed that same promise.
   assert.match(flagsApi, /catalogGeneration \+= 1;/);
   assert.match(flagsApi, /inFlightCatalog = null;/);
   assert.match(
@@ -866,24 +727,16 @@ test("a catalogue read from the previous binary is discarded", () => {
 });
 
 test("a catalogued flag left without its value is refused", () => {
-  // The catalogue is the only place a flag's arity is known: the backend validator
-  // cannot ask the binary, so a text ending in "--rope-scaling" used to leave Load
-  // enabled and llama-server then exited during startup, which is a failed load
-  // instead of a red line under the box.
+  // The catalogue is the only place a flag's arity is known; the backend cannot ask the binary.
   assert.ok(levels("--rope-scaling").includes("error"));
   assert.ok(levels("--top-k 20 --numa").includes("error"));
   assert.deepEqual(
     diagnoseExtraArgs("--numa", CATALOG).map((d) => d.message),
     ["--numa needs a value after it."],
   );
-  // Given its value, it is fine, and so is a switch on its own.
   assert.deepEqual(diagnoseExtraArgs("--numa distribute", CATALOG), []);
-  // A switch on its own owes nothing (this fixture's help lists it as a switch
-  // without describing it, hence the unrelated unknown-flag warning).
   assert.ok(!levels("--verbose").includes("error"));
-  // The attached spelling is refused instead: llama.cpp looks the whole token up in
-  // its option map, so "--numa=distribute" is an argument it has never heard of
-  // (measured on b10342 and b10360, "error: invalid argument").
+  // llama.cpp looks the whole token up, so "--numa=distribute" is invalid (b10342, b10360).
   assert.deepEqual(
     diagnoseExtraArgs("--numa=distribute", CATALOG).map((d) => d.message),
     ['llama-server does not read "--numa=value". Write --numa and its value as two arguments.'],
@@ -891,8 +744,6 @@ test("a catalogued flag left without its value is refused", () => {
 });
 
 test("an unverified flag keeps the benefit of the doubt at the end", () => {
-  // A build this Unsloth could not probe, or a flag newer than the help it read:
-  // calling either a missing value would disable Load over a launch that works.
   const unverified: LlamaFlagCatalog = {
     flags: {},
     managed: new Set<string>(),
@@ -905,15 +756,11 @@ test("an unverified flag keeps the benefit of the doubt at the end", () => {
   };
   assert.deepEqual(diagnoseExtraArgs("--rope-scaling", unverified), []);
   assert.deepEqual(diagnoseExtraArgs("--rope-scaling", null), []);
-  // Catalogued build, flag it has never heard of: warned about as unknown, not
-  // refused for a value it may not even take.
   assert.deepEqual(levels("--tempp"), ["warning"]);
   assert.ok(!levels("--tempp").includes("error"));
 });
 
 test("a two-value flag left short is refused whatever the catalogue says", () => {
-  // Its arity is known without a probe, and it is the one the backend validator
-  // checks itself, so the two ends agree.
   const unverified: LlamaFlagCatalog = {
     flags: {},
     managed: new Set<string>(),
@@ -930,11 +777,7 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     diagnoseExtraArgs("--control-vector-layer-range 1 10", unverified),
     [],
   );
-  // The attached spelling is refused as such, rather than read as one of the two:
-  // llama.cpp has no such spelling to be half of.
-  // The attached spelling is refused as such, rather than read as one of the two:
-  // llama.cpp has no such spelling for this to be half of, whether an END follows
-  // it or not.
+  // llama.cpp has no attached spelling for this option to be half of.
   for (const text of [
     "--control-vector-layer-range=1",
     "--control-vector-layer-range=1 10",
@@ -949,10 +792,7 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
 });
 
 test("Manual GPU memory reports the offload flags it removes", () => {
-  // /load calls strip_shadowing_flags(strip_offload=True) in Manual mode. The layer
-  // count survives that, because the route translates it into the first-class field
-  // first; nothing does the same for the MoE count or the fitter, so saying they win
-  // was false and the model quietly ran the control's value instead.
+  // Manual mode strips offload flags (strip_shadowing_flags); only the layer count is translated.
   const manual = (input: string) =>
     diagnoseExtraArgs(input, CATALOG, { manualGpuMemory: true }).map((d) => d.message);
   assert.ok(
@@ -961,7 +801,6 @@ test("Manual GPU memory reports the offload flags it removes", () => {
   );
   assert.ok(manual("-ncmoe 10")[0].includes("-ncmoe will be removed"));
   assert.ok(manual("--fit on")[0].includes("will be removed"));
-  // Nothing is refused: the load still runs, just without them.
   assert.ok(!manual("--n-cpu-moe 10").includes("error"));
   assert.equal(
     diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, { manualGpuMemory: true }).every(
@@ -969,14 +808,12 @@ test("Manual GPU memory reports the offload flags it removes", () => {
     ),
     true,
   );
-  // In Default mode they are passed, and the note about who wins is the true one.
   assert.ok(
     diagnoseExtraArgs("--n-cpu-moe 10", CATALOG, {})
       .map((d) => d.message)
       .join(" ")
       .includes("wins"),
   );
-  // The layer count is translated, not dropped, so it still reads as winning.
   assert.ok(
     diagnoseExtraArgs("-ngl 20", CATALOG, { manualGpuMemory: true })
       .map((d) => d.message)
@@ -986,10 +823,8 @@ test("Manual GPU memory reports the offload flags it removes", () => {
 });
 
 test("a pass-through batch below the floor is refused", () => {
-  // The loader raises the --batch-size it emits itself (max(slots, 2), measured
-  // upstream: b1 aborts at any slot count, b4/p8 aborts, b8/p8 loads), but a
-  // pass-through -b is appended after it and wins, so the load starts and
-  // llama-server aborts on GGML_ASSERT instead.
+  // The loader raises --batch-size to max(slots, 2), but a pass-through -b is appended after it
+  // and wins, so llama-server aborts on GGML_ASSERT.
   const at = (input: string, batchFloor: number) =>
     diagnoseExtraArgs(input, CATALOG, { batchFloor });
   assert.ok(at("-b 1", 2).some((d) => d.level === "error"));
@@ -999,21 +834,16 @@ test("a pass-through batch below the floor is refused", () => {
     at("--batch-size 4", 8).filter((d) => d.level === "error")[0].message,
     /8 parallel slot/,
   );
-  // At or above the floor it passes (the note about shadowing the control stays),
-  // and the micro-batch is not policed here.
   const errors = (input: string, batchFloor: number) =>
     at(input, batchFloor).filter((d) => d.level === "error");
   assert.deepEqual(errors("--batch-size 8", 8), []);
   assert.deepEqual(errors("-b 2", 2), []);
   assert.deepEqual(errors("-ub 1", 2), []);
-  // A blank slot count leaves only the hard floor of 2, the same limit the batch
-  // control itself asserts.
   assert.deepEqual(errors("-b 2", 1), []);
 });
 
 test("Model Memory reports the flags its settings remove", () => {
-  // apply_model_memory_policy runs before the extras reach the command line, so an
-  // --mlock typed here was shown, saved, and never passed.
+  // apply_model_memory_policy runs before extras reach the command line.
   const keep = (input: string) =>
     diagnoseExtraArgs(input, CATALOG, { keepResident: true }).map(
       (d) => d.message,
@@ -1025,12 +855,10 @@ test("Model Memory reports the flags its settings remove", () => {
   assert.match(keep("--mlock")[0], /will be removed/);
   assert.match(keep("--load-mode mmap")[0], /Keep model in GPU memory/);
   assert.match(noReserve("--no-mmap")[0], /Don't reserve system RAM/);
-  // No-reserve leaves the loaders that hold no full host copy alone.
   assert.equal(
     noReserve("--direct-io").some((message) => /will be removed/.test(message)),
     false,
   );
-  // With both on, no-reserve is the one that runs, and it names itself.
   assert.match(
     diagnoseExtraArgs("--mlock", CATALOG, {
       keepResident: true,
@@ -1038,7 +866,6 @@ test("Model Memory reports the flags its settings remove", () => {
     })[0].message,
     /Don't reserve system RAM/,
   );
-  // With neither, nothing is stripped and a hand-typed flag still applies.
   assert.equal(
     diagnoseExtraArgs("--mlock", CATALOG, {}).some((d) =>
       /will be removed/.test(d.message),
@@ -1048,10 +875,7 @@ test("Model Memory reports the flags its settings remove", () => {
 });
 
 test("llama.cpp's underscore spelling is not read as an attached value", () => {
-  // _flag_name folds --ctx_size to --ctx-size, and the binary takes both (measured
-  // on b10360: `llama-server --ctx_size 4096 --help` prints its help). Deciding
-  // attachment by comparing the folded name against the raw token called the 4096 a
-  // bare value and disabled Load for a spelling that works.
+  // _flag_name folds --ctx_size to --ctx-size, and the binary takes both spellings.
   assert.deepEqual(
     diagnoseExtraArgs("--numa distribute", CATALOG).filter(
       (d) => d.level === "error",
@@ -1064,8 +888,6 @@ test("llama.cpp's underscore spelling is not read as an attached value", () => {
     ),
     [],
   );
-  // Still attached when it really is: an "=" form, or a short with its value glued
-  // on. --n_parallel folds onto the managed --n-parallel and stays refused.
   assert.ok(
     diagnoseExtraArgs("--rope_scaling yarn --numa", CATALOG).some(
       (d) => d.level === "error",
@@ -1079,9 +901,7 @@ test("llama.cpp's underscore spelling is not read as an attached value", () => {
 });
 
 test("a flag that interrupts another's value is refused", () => {
-  // "--numa --verbose" leaves --numa without the value this build's help says it
-  // takes, and llama-server exits during startup. The end-of-input check could not
-  // see it: the obligation was overwritten by the next flag first.
+  // --numa is left without its value; an end-of-input check misses it once the next flag lands.
   const messages = (input: string) =>
     diagnoseExtraArgs(input, CATALOG)
       .filter((d) => d.level === "error")
@@ -1092,15 +912,12 @@ test("a flag that interrupts another's value is refused", () => {
   assert.deepEqual(messages("--numa --numa distribute"), [
     "--numa needs a value after it.",
   ]);
-  // A switch owes nothing, and an unverified flag keeps the benefit of the doubt.
   assert.deepEqual(messages("--verbose --numa distribute"), []);
   assert.deepEqual(messages("--tempp --numa distribute"), []);
 });
 
 test("the batch floor follows the server-wide slot default", () => {
-  // With Slots blank the launch serves the server-wide --parallel (4 in run.py),
-  // so -b 2 aborts even though it clears the hard floor of 2. The catalogue
-  // publishes that number because the browser cannot see it.
+  // With Slots blank the launch uses the server-wide --parallel (4 in run.py).
   const withDefault = { ...CATALOG, defaultParallelSlots: 4 };
   assert.ok(
     diagnoseExtraArgs("-b 2", withDefault, { batchFloor: 4 }).some(
@@ -1116,12 +933,8 @@ test("the batch floor follows the server-wide slot default", () => {
 });
 
 test("the sanitizer drops what the validator refuses on shape", () => {
-  // The upgrade case this exists for: a list saved by an older build, hydrated into
-  // an EXPLICIT request that /load validates strictly. drop_managed_flags repairs
-  // these on the server by re-validating after every cut it makes; this mirror trims
-  // by size alone, so it has to know the same rules.
+  // This mirror trims by size only, so it must know drop_managed_flags' rules.
   const managed = new Set<string>();
-  // A token belonging to no flag: llama-server would read it as the model path.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--top-k", "20", "stray"], managed),
     ["--top-k", "20"],
@@ -1130,7 +943,6 @@ test("the sanitizer drops what the validator refuses on shape", () => {
     sanitizeStoredExtraArgs(["stray", "--top-k", "20"], managed),
     ["--top-k", "20"],
   );
-  // A two-value option left half-written, in both spellings.
   assert.deepEqual(
     sanitizeStoredExtraArgs(
       ["--top-k", "20", "--control-vector-layer-range", "1"],
@@ -1145,9 +957,6 @@ test("the sanitizer drops what the validator refuses on shape", () => {
     ),
     ["--top-k", "20"],
   );
-  // The attached spelling goes whether it is whole or not: the backend refuses it
-  // outright, so hydrating one into an explicit request would 400 the load. Only
-  // that token, the way drop_managed_flags sheds it, so the rest still loads.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--control-vector-layer-range=1", "10"], managed),
     [],
@@ -1156,14 +965,11 @@ test("the sanitizer drops what the validator refuses on shape", () => {
     sanitizeStoredExtraArgs(["--top-k=20", "--numa", "distribute"], managed),
     ["--numa", "distribute"],
   );
-  // A value the backend's own parser refuses takes its flag with it, and only it:
-  // the server sheds its whole tail instead, which costs whatever followed.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--ctx-size", "abc", "--top-k", "20"], managed),
     ["--top-k", "20"],
   );
   assert.deepEqual(sanitizeStoredExtraArgs(["--cache-type-k"], managed), []);
-  // Valid values are untouched, including the ones whose minimum is negative.
   for (const list of [
     ["--ctx-size", "0"],
     ["-ngl", "-1"],
@@ -1176,11 +982,7 @@ test("the sanitizer drops what the validator refuses on shape", () => {
 });
 
 test("a scaled sidecar may take its scale as a second token", () => {
-  // Today's llama.cpp writes it into the value ("--lora-scaled FNAME:SCALE") and
-  // older builds took it separately ("--lora-scaled FNAME SCALE"); the launcher
-  // reads both in _sidecar_weight_files. So the second token is allowed and never
-  // required: demanding it would refuse the current syntax, and refusing it broke a
-  // list that loaded before the positional check existed.
+  // The scale is optional: current llama.cpp writes FNAME:SCALE, older builds FNAME SCALE.
   const scaled: LlamaFlagCatalog = {
     ...CATALOG,
     flags: {
@@ -1195,9 +997,7 @@ test("a scaled sidecar may take its scale as a second token", () => {
   assert.deepEqual(errors("--lora-scaled /a.gguf:0.5"), []);
   assert.deepEqual(errors("--control-vector-scaled /v.gguf 0.8 --top-k 20"), []);
   assert.deepEqual(errors("--lora-scaled /a.gguf"), []);
-  // A third bare token still has no owner.
   assert.equal(errors("--lora-scaled /a.gguf 0.5 stray").length, 1);
-  // And the sanitizer keeps the pair rather than reading the scale as ownerless.
   const managed = new Set<string>();
   for (const list of [
     ["--lora-scaled", "/a.gguf", "0.5"],
@@ -1209,23 +1009,16 @@ test("a scaled sidecar may take its scale as a second token", () => {
 });
 
 test("a trimmed value never leaves its flag behind, whatever the spelling", () => {
-  // The bounds are shed from the tail, and the flag whose value has just gone must
-  // go with it: an orphan is a flag llama-server then rejects for want of a value,
-  // after the switch has already unloaded the resident model. The check used to
-  // compare the NORMALIZED name against the raw token, so llama.cpp's underscore
-  // spelling never matched and "--grammar_file" was left standing.
+  // The flag whose value was shed goes too, underscore spelling ("--grammar_file") included.
   const managed = new Set<string>();
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--numa", "distribute", "--grammar_file", "x".repeat(40000)], managed),
     ["--numa", "distribute"],
   );
-  // The hyphenated one behaved already, and still does.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--numa", "distribute", "--grammar-file", "x".repeat(40000)], managed),
     ["--numa", "distribute"],
   );
-  // A bare value at the tail takes nothing with it: it belongs to no flag, and the
-  // token before it is a value of its own.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--numa", "distribute", "x".repeat(40000)], managed),
     ["--numa", "distribute"],
@@ -1233,12 +1026,8 @@ test("a trimmed value never leaves its flag behind, whatever the spelling", () =
 });
 
 test("the attached spelling is refused wherever it is judged", () => {
-  // llama.cpp looks the whole token up in its option map and folds only underscores,
-  // so "--top-k=20" is an argument it has never heard of: measured on b10342 and
-  // b10360 as "error: invalid argument: --top-k=20". Accepting it left Load enabled
-  // for a switch that unloads the running model and then fails to start the next.
+  // llama.cpp folds only underscores, so "--top-k=20" is an invalid argument.
   const managed = new Set<string>();
-  // Not --ctx-size: a control owns it, and that message names the control instead.
   for (const text of ["--top-k=20", "--rope-scaling=yarn", "--flash-attn=on"]) {
     assert.ok(
       diagnoseExtraArgs(text, CATALOG).some(
@@ -1247,14 +1036,11 @@ test("the attached spelling is refused wherever it is judged", () => {
       text,
     );
   }
-  // A managed flag keeps the message that names the control owning it.
   assert.ok(
     diagnoseExtraArgs("--parallel=8", CATALOG).every(
       (d) => !d.message.includes("does not read"),
     ),
   );
-  // And an "=" inside a VALUE is the value's own syntax, not an attached one. This
-  // fixture's help does not list --override-kv, hence the unrelated warning.
   assert.ok(
     diagnoseExtraArgs("--override-kv a=int:2", CATALOG).every(
       (d) => d.level !== "error",
@@ -1268,38 +1054,24 @@ test("the attached spelling is refused wherever it is judged", () => {
 
 test("the managed answer is invalidated with the catalogue", () => {
   const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
-  // Its denylist is Unsloth's own, but it carries defaultParallelSlots beside it and
-  // that is the EFFECTIVE count: a build without --kv-unified serves one slot however
-  // many are configured. Updating llama.cpp from the banner left a tab that had
-  // already fetched it sizing the hidden hydration check's batch floor from the
-  // previous backend, so "--batch-size 2" passed on a build now serving four slots.
+  // defaultParallelSlots depends on the build, so a llama.cpp update must clear the cache.
   assert.match(flagsApi, /cachedManaged = null; inFlightManaged = null;/);
-  // The dynamic limits are what make it stale, so they have to be in that answer.
   assert.match(flagsApi, /defaultParallelSlots: number;/);
-  // parallelSlotsClamped goes stale the same way and for the same reason: it is
-  // read off the same probe, so a cached answer can outlive the build it describes.
   assert.match(flagsApi, /parallelSlotsClamped: boolean;/);
 });
 
 test("a flag quoted with stray spaces is refused, not silently sent", () => {
-  // parseExtraArgs keeps what was quoted, so "'--top-k ' 20" is the token
-  // "--top-k " with the space still on it. Every check here trims before it looks
-  // the name up, so it read as the supported --top-k and Load stayed enabled, while
-  // llama.cpp looks the WHOLE token up and answers "error: invalid argument:
-  // --top-k" (measured on b10342), naming a flag that looks correct in the log.
+  // parseExtraArgs keeps quoted whitespace; llama.cpp looks the whole "--top-k " token up.
   assert.ok(
     diagnoseExtraArgs("'--top-k ' 20", CATALOG).some(
       (d) => d.level === "error" && d.message.includes("Remove the spaces"),
     ),
   );
-  // A VALUE may legitimately end in whitespace: a grammar or a chat template does.
   assert.ok(
     diagnoseExtraArgs("--grammar 'root ::= [0-9] '", CATALOG).every(
       (d) => d.level !== "error",
     ),
   );
-  // And the stored sanitizer sheds it with its value, rather than hydrating a list
-  // that would 400 or start a launch that fails.
   const managed = new Set<string>();
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--top-k ", "20", "--numa", "distribute"], managed),
@@ -1316,26 +1088,18 @@ test("a flag quoted with stray spaces is refused, not silently sent", () => {
 });
 
 test("a quoted value that begins with a hyphen is a value, not a flag", () => {
-  // parseExtraArgs takes the quotes off, and "- hello" is flag-shaped, so the row
-  // called --chat-template's value missing and disabled Load over a list the backend
-  // accepts and llama.cpp reads correctly: it takes the next argv element for a
-  // value-taking option without looking at what it starts with.
-  // A control owns --chat-template, so the note about who wins stays; what must not
-  // be here is an error saying the value is missing.
+  // llama.cpp takes the next argv element as the value whatever it starts with.
   for (const text of ["--chat-template '- hello'", '--chat-template "- hello"']) {
     assert.ok(
       diagnoseExtraArgs(text, CATALOG).every((d) => d.level !== "error"),
       text,
     );
   }
-  // The quoted token is not reported as an unknown flag either.
   assert.ok(
     diagnoseExtraArgs("--grammar '-x'", CATALOG).every(
       (d) => !d.message.includes("-x"),
     ),
   );
-  // Position matters as much as the quotes: quoting a FLAG out of habit still reads
-  // as a flag, or a list that runs would be refused.
   assert.ok(
     diagnoseExtraArgs('"--top-k" 20', CATALOG).every((d) => d.level !== "error"),
   );
@@ -1344,14 +1108,9 @@ test("a quoted value that begins with a hyphen is a value, not a flag", () => {
       (d) => d.level === "error" && d.message.includes("needs a value"),
     ),
   );
-  // With no option in front of it there is nothing for it to be the value OF, so it
-  // is judged as written: flag-shaped, unknown to this build, warned about and still
-  // passed. The same answer the backend gives, which reads it as a flag too.
   const orphan = diagnoseExtraArgs("'- hello'", CATALOG);
   assert.ok(orphan.every((d) => d.level !== "error"));
   assert.ok(orphan.some((d) => d.level === "warning"));
-  // The tokeniser records which tokens were quoted; the token list itself is
-  // unchanged, since argv has no room for that distinction.
   const parsed = parseExtraArgs("--chat-template '- hello'");
   assert.deepEqual(parsed.tokens, ["--chat-template", "- hello"]);
   assert.deepEqual([...parsed.quotedIndices], [1]);
@@ -1359,12 +1118,7 @@ test("a quoted value that begins with a hyphen is a value, not a flag", () => {
 
 test("a managed answer from the previous binary is never published", () => {
   const flagsApi = readSrc("features/model-picker/api/llama-flags.ts").replace(/\s+/g, " ");
-  // Clearing the cache is not enough on its own: a managed request already on the
-  // wire when llama.cpp is replaced would resolve afterwards and put the old
-  // build's defaultParallelSlots back, where it would stay for the session. The
-  // full catalogue has read its generation before the request and checked it
-  // before publishing since the start; this path now does the same, including the
-  // finally, which used to clear a newer request's in-flight promise.
+  // A managed request in flight across a llama.cpp swap must not republish stale data.
   assert.match(
     flagsApi,
     /const generation = catalogGeneration; inFlightManaged \?\?=/,
@@ -1379,9 +1133,7 @@ test("a managed answer from the previous binary is never published", () => {
   );
 });
 
-// validate_extra_args parses -ts in EVERY gpu memory mode, so each case below is a 400 on
-// Load, on /validate and on saving an override; without the mirror the user sees only that
-// server error, with nothing inline first (#11330).
+// validate_extra_args parses -ts in every gpu memory mode.
 
 const _tsError = (input: string): string | null =>
   diagnoseExtraArgs(input, CATALOG).find((d) => d.level === "error")?.message ??
@@ -1402,15 +1154,12 @@ test("a tensor split the backend takes raises nothing here", () => {
 });
 
 test("a bare tensor split is refused rather than left to llama-server", () => {
-  // _last_flag_value raises on a missing value, unlike an ordinary flag whose arity
-  // this side does not know.
   assert.equal(_tsError("-ts"), "-ts needs a value after it.");
   assert.equal(_tsError("-ts --top-k 20"), "-ts needs a value after it.");
 });
 
 test("a tensor split that is not a list of numbers is refused", () => {
-  // std::stof throws on this, so llama-server would exit at startup: better a 400,
-  // and better still an inline error.
+  // std::stof throws on this, so llama-server would exit at startup.
   assert.match(_tsError("-ts abc") ?? "", /comma- or slash-separated list of numbers/);
 });
 
@@ -1430,17 +1179,12 @@ test("a split that totals nothing is refused", () => {
 });
 
 test("every tensor split occurrence is judged, not only the last", () => {
-  // Same rule the value check already applies to -ngl: llama.cpp reads the LAST
-  // occurrence, so a bad second one must be caught; this side then errs on the strict
-  // side and reports a bad FIRST one too, rather than modelling last-wins and leaving
-  // a typo invisible.
+  // llama.cpp reads the last occurrence; this side strictly reports a bad first one too.
   assert.match(_tsError("-ts 3,1 -ts abc") ?? "", /list of numbers/);
   assert.match(_tsError("-ts abc --tensor-split 3,1") ?? "", /list of numbers/);
 });
 
 test("a stored tensor split the backend now refuses is repaired, not shed", () => {
-  // drop_managed_flags would drop everything from the bad flag to the end of the
-  // list; removing just the option and its value keeps the rest working.
   assert.deepEqual(
     sanitizeStoredExtraArgs(["-ts", "abc", "--top-k", "20"], CATALOG.managed),
     ["--top-k", "20"],
@@ -1452,8 +1196,7 @@ test("a stored tensor split the backend now refuses is repaired, not shed", () =
 });
 
 test("the ratio mirror reads exactly what Python's float() reads", () => {
-  // Number() takes 0x/0b/0o literals float() refuses, and refuses the digit grouping PEP 515
-  // made valid, so a Number()-based check disagreed with /validate in BOTH directions.
+  // Number() accepts 0x/0b/0o and refuses PEP 515 grouping, unlike Python float().
   for (const bad of ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"]) {
     assert.match(_tsError(`-ts ${bad}`) ?? "", /list of numbers/, bad);
   }
@@ -1463,33 +1206,26 @@ test("the ratio mirror reads exactly what Python's float() reads", () => {
 });
 
 test("a share llama.cpp's float array cannot hold is refused", () => {
-  // std::stof throws std::out_of_range above FLT_MAX (verified: stof("1e+39") -> out_of_range),
-  // so without this the load reaches llama-server and the server dies during startup.
+  // std::stof throws out_of_range above FLT_MAX.
   assert.match(_tsError("-ts 1e39,1") ?? "", /32-bit float/);
   assert.equal(_tsError("-ts 3.4e38,1"), null);
-  // The shares are prefix-summed into that same float array.
   assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
 });
 
 test("a share that underflows std::stof is refused too", () => {
-  // libstdc++ throws out_of_range on any subnormal result, not only on a value that rounds to
-  // zero, so the floor is FLT_MIN and not the smallest denormal.
+  // libstdc++ throws out_of_range on any subnormal result, so the floor is FLT_MIN.
   for (const bad of ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"]) {
     assert.match(_tsError(`-ts ${bad}`) ?? "", /0 or at least/, bad);
   }
-  // 1.1754943508222874e-38 is NOT here: it rounds up to FLT_MIN as a float but is emitted at
-  // six significant digits as a subnormal, which the next test pins.
+  // 1.1754943508222874e-38 rounds up to FLT_MIN but is emitted at six digits as a subnormal.
   for (const good of ["0,1", "1.2e-38,1", "1e-30,1"]) {
     assert.equal(_tsError(`-ts ${good}`), null, good);
   }
 });
 
 test("the mirror judges the share the launcher will write, and totals it in float32", () => {
-  // Both halves of the round-3 review: six-significant-digit emission can move a value out of
-  // range after validation, and a single float64 reduction disagrees with llama.cpp's stepwise
-  // float32 prefix sum near the top of the range.
-  // gpuLayers: 49, because only a manual load with a resolved count of 0 or more rewrites the
-  // ratio, and the rewritten text is what these cases are about.
+  // Six-digit emission can move a value out of range, and float64 sums differ from float32.
+  // gpuLayers: 49, because only a manual load with a resolved count >= 0 rewrites the ratio.
   const manual = (input: string) =>
     diagnoseExtraArgs(input, CATALOG, {
       manualGpuMemory: true,
@@ -1497,7 +1233,7 @@ test("the mirror judges the share the launcher will write, and totals it in floa
     }).find((d) => d.level === "error")?.message ?? null;
   assert.match(manual("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
   assert.equal(manual("-ts 1.2e-38,1"), null);
-  // Real libstdc++ sums the emitted text to 3.40282e+38, which fits, so this must NOT be refused.
+  // Real libstdc++ sums the emitted text to 3.40282e+38, which fits.
   assert.equal(
     manual("-ts 2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"),
     null,
@@ -1510,8 +1246,7 @@ test("the ratio rounding follows the mode, and each share rounds before it is ad
     diagnoseExtraArgs(input, CATALOG, { manualGpuMemory, gpuLayers: 49 }).find(
       (d) => d.level === "error",
     )?.message ?? null;
-  // Pass-through hands llama-server the user's own text, which std::stof accepts; only the
-  // manual promotion rewrites it at six significant digits.
+  // Only the manual promotion rewrites the text at six significant digits.
   assert.equal(err("-ts 1.1754943508222874e-38,1", false), null);
   assert.match(err("-ts 1.1754943508222874e-38,1", true) ?? "", /0 or at least/);
   // Each share is a float before it joins the total, as `sum += std::stof(token)` does.
@@ -1524,8 +1259,7 @@ test("the ratio rounding follows the mode, and each share rounds before it is ad
 });
 
 test("only a manual load that will rewrite the split judges the rewritten text", () => {
-  // At Auto layers the launcher drops both copies rather than reserializing either, so the
-  // six-digit rendering is never produced and refusing it would 400 a flag with no effect.
+  // At Auto layers the launcher drops both copies, so the six-digit rendering never happens.
   const at = (input: string, ctx: object) =>
     diagnoseExtraArgs(input, CATALOG, ctx).find((d) => d.level === "error")
       ?.message ?? null;
@@ -1533,7 +1267,6 @@ test("only a manual load that will rewrite the split judges the rewritten text",
   assert.match(at(v, { manualGpuMemory: true, gpuLayers: 49 }) ?? "", /0 or at least/);
   assert.equal(at(v, { manualGpuMemory: true, gpuLayers: -1 }), null);
   assert.equal(at(v, { manualGpuMemory: false, gpuLayers: 49 }), null);
-  // The RESOLVED count decides, so an -ngl in the extras wins over the control either way.
   assert.equal(
     at(`-ngl -1 ${v}`, { manualGpuMemory: true, gpuLayers: 49 }),
     null,

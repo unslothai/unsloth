@@ -92,6 +92,28 @@ test('Mod and "-" on the Slash key zooms out, not the shortcuts list', () => {
   );
 });
 
+// Swiss Ctrl+Shift+1 and Turkish Ctrl+Shift+4 type "+" and are workspace chords off macOS.
+test("a digit chord that types + keeps its shortcut", () => {
+  for (const [code, key] of [
+    ["Digit1", "+"],
+    ["Digit4", "+"],
+  ] as const) {
+    const event = press(code, key, { ctrlKey: true, shiftKey: true });
+    assert.notEqual(zoomDirectionForKey(event, false), null);
+    assert.equal(zoomTypedOffZoomKey(event, code, false), false, code);
+    const value = `Mod+Shift+${code}`;
+    assert.equal(
+      zoomChordTaken(event, 1, false, (v) => v === value),
+      true,
+      code,
+    );
+  }
+  assert.equal(
+    defaultBindingFor(defOf("switchToChat"), "primary", false),
+    "Mod+Shift+Digit1",
+  );
+});
+
 test("stopGeneration ships on Mod+. and clashes with nothing", () => {
   const stop = defOf("stopGeneration");
   for (const mac of [true, false]) {
@@ -304,14 +326,29 @@ test("Mod+Enter is the platform's own modifier, and never mid-composition", () =
   );
 });
 
-test("Escape in the composer is left to a sole pending tool request", () => {
+// A request parked in a background chat has no card here; gating on the store left Escape dead.
+test("Escape in the composer is left to a mounted, keyboard-ready decline", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(
     thread,
-    /const soleToolRequest = useChatRuntimeStore\(\(s\) => \{/,
+    /const declineMounted = useShortcutAvailable\("declineToolRequest", true\);/,
   );
-  assert.match(thread, /cancelOnEscape=\{!\(soleToolRequest && declineOwnsEscape\)\}/);
-  assert.match(thread, /pending.length === 1 && !pending\[0\].imageDisclosure/);
+  assert.match(
+    thread,
+    /cancelOnEscape=\{!\(declineMounted && declineOwnsEscape\)\}/,
+  );
+  assert.doesNotMatch(thread, /Object\.values\(s\.toolConfirmations\)/);
+  const controls = readSrc(
+    "components/assistant-ui/tool-confirmation-controls.tsx",
+  );
+  assert.match(
+    controls,
+    /useShortcut\("declineToolRequest", [^\n]+\n\s*enabled: keyboardReady,/,
+  );
+  assert.match(
+    controls,
+    /const keyboardReady =\n\s*!disclosure &&\n\s*chatActive &&\n\s*soleRequest &&/,
+  );
 });
 
 test("search chats fires from the composer, and toggleSidebar not behind a modal", () => {

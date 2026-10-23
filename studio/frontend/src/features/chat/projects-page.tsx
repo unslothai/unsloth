@@ -98,7 +98,7 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
-import { isCoalescedHistoryEvent } from "./utils/chat-history-revision";
+import { createHistoryRefreshDebounce } from "./utils/chat-history-revision";
 import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
 import { ProjectMenuItems } from "./components/project-menu-items";
 import { SectionNameDialog } from "./components/section-name-dialog";
@@ -268,11 +268,8 @@ export function ProjectsPage() {
     openProjectIdsRef.current = openProjectIds;
   }, [openProjectIds]);
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const refresh = (event: Event) => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
+    const debounce = createHistoryRefreshDebounce(
+      () => {
         const open = openProjectIdsRef.current;
         // A closed project's load may still be in flight; its answer must not refill the cache.
         for (const [id, seq] of loadSeqRef.current) {
@@ -284,14 +281,14 @@ export function ProjectsPage() {
           return kept;
         });
         for (const id of open) loadProjectChats(id, true);
-      }, isCoalescedHistoryEvent(event)
-        ? PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS
-        : PROJECT_CHATS_REFRESH_DEBOUNCE_MS);
-    };
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      },
+      PROJECT_CHATS_REFRESH_DEBOUNCE_MS,
+      PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS,
+    );
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     return () => {
-      if (timer !== null) clearTimeout(timer);
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      debounce.cancel();
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     };
   }, [loadProjectChats]);
 

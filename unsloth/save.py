@@ -6416,10 +6416,16 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     return include
 
 
-def _fsdp2_collective_save(trainable_only, offload_to_cpu = None):
+def _fsdp2_collective_save(
+    trainable_only,
+    offload_to_cpu = None,
+    offload_4bit = False,
+):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
     `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
+    `offload_4bit`: the save only writes packed 4-bit weights (never merges them), so they go to
+    the CPU too.
     A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
 
     def decorate(fn):
@@ -6442,7 +6448,11 @@ def _fsdp2_collective_save(trainable_only, offload_to_cpu = None):
                 )
             offload = True if offload_to_cpu is None else offload_to_cpu(self, args, kwargs)
             with fsdp2_gathered(
-                self, trainable_only = only, include = include, offload_to_cpu = offload
+                self,
+                trainable_only = only,
+                include = include,
+                offload_to_cpu = offload,
+                offload_4bit = offload_4bit,
             ) as writer:
                 if writer is False:
                     return None
@@ -6644,7 +6654,8 @@ def unsloth_generic_save_pretrained_merged(
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
-    and _is_adapter_save_method(_merged_save_method(args, kwargs))
+    and _is_adapter_save_method(_merged_save_method(args, kwargs)),
+    offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
 )
 def unsloth_generic_push_to_hub_merged(
     self,
@@ -6822,12 +6833,35 @@ def _unsloth_save_torchao_with_attached_config(
     # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
 
-    if push_to_hub:
-        model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
-        tokenizer.push_to_hub(save_directory, token = token)
-    else:
-        model.save_pretrained(save_directory, safe_serialization = safe_serialization)
-        tokenizer.save_pretrained(save_directory)
+    with _torchao_hf_quantizer_attached(model):
+        if push_to_hub:
+            model.push_to_hub(save_directory, safe_serialization = safe_serialization, token = token)
+            tokenizer.push_to_hub(save_directory, token = token)
+        else:
+            model.save_pretrained(save_directory, safe_serialization = safe_serialization)
+            tokenizer.save_pretrained(save_directory)
+
+
+@contextmanager
+def _torchao_hf_quantizer_attached(model):
+    """Attach a torchao HfQuantizer for the save of a model quantized in place.
+
+    transformers 5 otherwise treats the torchao tensor subclasses as plain tensors and fails its tied-weight
+    storage check; 4.x pickles them with safe_serialization = False and needs nothing."""
+    if getattr(model, "hf_quantizer", None) is not None or Version(
+        importlib_version("transformers")
+    ) < Version("5.0.0"):
+        yield
+        return
+    from transformers.quantizers.auto import AutoHfQuantizer
+
+    model.hf_quantizer = AutoHfQuantizer.from_config(
+        model.config.quantization_config, pre_quantized = False
+    )
+    try:
+        yield
+    finally:
+        del model.hf_quantizer
 
 
 def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
@@ -8387,10 +8421,13 @@ def patch_saving_functions(model, vision = False):
     # Under FSDP2 every rank calls push_to_hub: the shards are gathered and rank 0 uploads. Inside,
     # the wrapped save_pretrained sees the gather already active and writes directly.
     globals()["unsloth_push_to_hub"] = _fsdp2_collective_save(
-        lambda self, args, kwargs: isinstance(self, PeftModel)
+        lambda self, args, kwargs: isinstance(self, PeftModel),
+        offload_4bit = True,
     )(globals()["unsloth_push_to_hub"])
 
-    @_fsdp2_collective_save(lambda self, args, kwargs: isinstance(self, PeftModel))
+    @_fsdp2_collective_save(
+        lambda self, args, kwargs: isinstance(self, PeftModel), offload_4bit = True
+    )
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 

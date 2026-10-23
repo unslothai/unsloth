@@ -16,6 +16,7 @@ import types
 from contextlib import nullcontext
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
@@ -1248,7 +1249,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if vae is not None:
         try:

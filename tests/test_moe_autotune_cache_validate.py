@@ -65,9 +65,10 @@ def _configs(fwd, dx, dw):
         KernelConfigBackward_dX,
         KernelConfigForward,
     )
-
     def kw(t):
-        return dict(zip(("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "num_warps", "num_stages"), t))
+        return dict(
+            zip(("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "num_warps", "num_stages"), t)
+        )
 
     return (
         KernelConfigForward(**kw(fwd)),
@@ -93,7 +94,12 @@ class _Autotune:
         return _configs(SMALL, SMALL, SMALL)
 
 
-def _legacy_key(dims, dtype = torch.bfloat16, capability = (8, 6), seq_len = 8192):
+def _legacy_key(
+    dims,
+    dtype = torch.bfloat16,
+    capability = (8, 6),
+    seq_len = 8192,
+):
     key_data = dict(
         num_experts = dims["num_experts"],
         hidden_dim = dims["hidden_dim"],
@@ -123,9 +129,7 @@ def test_legacy_unversioned_cache_file_is_ignored(ac, monkeypatch):
     payload = _legacy_payload(legacy)
     cache_dir = Path(ac._get_cache_file_path("x")).parent
     legacy_file = cache_dir / f"{_legacy_key(DIMS)}.json"
-    current_key = ac._get_cache_key(
-        dtype = torch.bfloat16, device_capability = (8, 6), **DIMS
-    )
+    current_key = ac._get_cache_key(dtype = torch.bfloat16, device_capability = (8, 6), **DIMS)
     for path in {legacy_file, Path(ac._get_cache_file_path(current_key))}:
         path.write_text(json.dumps(payload), encoding = "utf-8")
 

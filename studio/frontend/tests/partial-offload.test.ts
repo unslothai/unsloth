@@ -61,7 +61,6 @@ test("a split the user pinned themselves is not warned about", () => {
     offloadWarning({ offloaded: 20, total: 60, gpuMemoryMode: "auto" }),
     null,
   );
-  // Absent (an older backend) is treated as automatic, which is the default.
   assert.notEqual(offloadWarning({ offloaded: 20, total: 60 }), null);
 });
 
@@ -163,7 +162,6 @@ test("a known reason for the CPU wins over the counts", () => {
     assert.equal(other?.titleSuffix, " on CPU");
     assert.match(other?.description ?? "", text);
   }
-  // An unrecognised reason is still a reason: say nothing rather than guess.
   assert.equal(
     offloadWarning({ offloaded: 0, total: 60, cpuFallbackReason: "something" }),
     null,
@@ -183,7 +181,6 @@ test("a requested GPU split that got no GPU at all still warns", () => {
     });
     assert.match(warning?.description ?? "", /could not use it/);
   }
-  // Manual 0 layers asked for the CPU.
   assert.equal(
     offloadWarning({
       offloaded: 0,
