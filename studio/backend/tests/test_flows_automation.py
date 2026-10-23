@@ -612,3 +612,20 @@ def test_http_json_with_nan_is_not_parsed():
     assert automation._no_constant  # the HTTP block parses with the same strict constants
     import inspect
     assert "parse_constant = _no_constant" in inspect.getsource(automation.http_request)
+
+
+def test_export_drops_signed_url_credentials_and_approvals_bind_the_full_digest():
+    from core.flows.package import scrub
+
+    signed = (
+        "https://bucket.s3.amazonaws.com/a.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        "&X-Amz-Credential=AKIA%2F20261023&X-Amz-Signature=abc123&X-Goog-Signature=def&x-amz-security-token=tok"
+        "&response-content-type=text%2Fcsv"
+    )
+    assert scrub({"url": signed})["url"] == (
+        "https://bucket.s3.amazonaws.com/a.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        "&X-Amz-Credential=&X-Amz-Signature=&X-Goog-Signature=&x-amz-security-token="
+        "&response-content-type=text%2Fcsv"
+    )
+    # A truncated digest would let a crafted program collide with an approved one.
+    assert len(capabilities.code_hash("print(1)")) == len("sha256:") + 64

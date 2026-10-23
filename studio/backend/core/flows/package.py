@@ -85,11 +85,17 @@ def scrub(value: Any) -> Any:
 # Secrets in a URL: user:password@ and query values named like a credential (?api_key=, &token=, &sig=).
 _URL_USERINFO = re.compile(r"(https?://)[^/@\s?#]+@", re.I)
 _SECRET_QUERY = re.compile(r"([?&])([^=&#\s]+)=([^&#\s]*)")
+_SIGNED_QUERY = re.compile(r"(^|[_-]|%2d|%5f)(signature|credential|security[_-]?token)$", re.I)
 
 
 def _blank_query(match: "re.Match") -> str:
     name = match.group(2)
-    if _SECRET_KEY.search(name) or name.lower() in ("key", "sig", "signature", "code"):
+    # Signed URLs carry live credentials in X-Amz-Signature, X-Goog-Signature, X-Amz-Credential and the like.
+    if (
+        _SECRET_KEY.search(name)
+        or _SIGNED_QUERY.search(name)
+        or name.lower() in ("key", "sig", "signature", "code")
+    ):
         return f"{match.group(1)}{name}="
     return match.group(0)
 

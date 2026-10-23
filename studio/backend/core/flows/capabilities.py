@@ -21,7 +21,8 @@ TRUSTED_KINDS = ("ui", "trigger", "player")
 
 
 def code_hash(code: Any) -> str:
-    return "sha256:" + hashlib.sha256(str(code or "").encode()).hexdigest()[:16]
+    # The full digest: a truncated one lets a writer craft a colliding program and swap it in after approval.
+    return "sha256:" + hashlib.sha256(str(code or "").encode()).hexdigest()
 
 
 def url_host(url: Any) -> Optional[str]:
