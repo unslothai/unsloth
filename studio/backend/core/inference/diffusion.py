@@ -177,7 +177,6 @@ from .safetensors_pread import pread_available
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
-    ACTIVATION_RUN,
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
