@@ -4751,6 +4751,7 @@ class SdCppDiffusionBackend:
                 {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
                 for m in materialized
             ]
+
         # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
