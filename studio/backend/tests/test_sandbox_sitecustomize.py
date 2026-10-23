@@ -507,8 +507,9 @@ def test_host_packages_pep420_portion_joins_the_namespace_path(tmp_path):
         tmp_path,
         folder,
         f"import sys; sys.path.insert(0, {str(host)!r})\n"
-        "import pkgutil, chatns.host_mod, chatns.chat_mod\n"
-        "print('NS', chatns.chat_mod.V, [p.split('/')[-2] for p in chatns.__path__],"
+        "import os, pkgutil, chatns.host_mod, chatns.chat_mod\n"
+        "print('NS', chatns.chat_mod.V,"
+        " [os.path.basename(os.path.dirname(p)) for p in chatns.__path__],"
         " sorted(i.name for i in pkgutil.iter_modules(chatns.__path__)))\n",
     )
     assert "NS chat-data ['host', 'packages'] ['chat_mod', 'host_mod']" in out, out
