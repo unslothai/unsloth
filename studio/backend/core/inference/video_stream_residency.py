@@ -283,10 +283,15 @@ def _open_window(module: Any, dev: Any) -> Any:
     if stale is not None:
         close_window(stale[0], stale[1])
     module._unsloth_video_window = (dev, open_window(dev))
+    before = _capture_generation(dev)
     graphs = _live_graphs(dev)
     generation = _capture_generation(dev)
     accounted = getattr(module, "_unsloth_video_graphs", None)
-    if accounted is None or graphs < accounted:
+    # a capture counts its graph before its generation, so an unchanged generation around the count makes 0 consistent
+    if graphs == 0 and generation == before:
+        module._unsloth_video_graphs = accounted = 0
+        module._unsloth_video_graph_gen = generation
+    elif accounted is None or graphs < accounted:
         # the load's own graphs (every request starts above them), or fewer after a reset freed some
         first = accounted is None
         module._unsloth_video_graphs = accounted = graphs
@@ -343,6 +348,38 @@ def _failed_captures() -> int:
         return failed_capture_count()
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _graphs_off_for_load(handles: tuple) -> bool:
+    """True when every whole-step graph is off for good (declined or poisoned, no per-block fallback); per-call refusals keep the key."""
+    if not handles:
+        return False
+    for h in handles:
+        if (
+            getattr(h, "fallback", None) is not None
+            or getattr(h, "fallback_handle", None) is not None
+        ):
+            return False
+        # load-wide only: a per-key drop (probe OOM, unpaid replay) leaves other shapes free to capture
+        placement = getattr(h, "placement", None)
+        declined = placement is not None and getattr(placement, "_declined", None) is not None
+        dropped = declined and not getattr(h, "cache", None)
+        if not (dropped or getattr(h, "poisoned", False) is True):
+            return False
+    return True
+
+
+def live_speed_optims(pipe: Any, speed_optims: Any) -> tuple:
+    """``speed_optims`` minus ``cuda_graph`` once this load's graphs are off for good, so the key matches what runs."""
+    optims = tuple(speed_optims or ())
+    if "cuda_graph" not in optims:
+        return optims
+    try:
+        if _graphs_off_for_load(tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())):
+            return tuple(o for o in optims if o != "cuda_graph")
+        return optims
+    except Exception:  # noqa: BLE001 - unreadable: keep the load's record
+        return optims
 
 
 def _keyed_graphs_live(pipe: Any, key: Any) -> bool:

@@ -1361,7 +1361,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1384,7 +1384,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1737,7 +1737,7 @@ function PromptDetail({
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
-              ? "text-primary hover:bg-primary/10"
+              ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
@@ -2033,7 +2033,7 @@ function PromptListDetail({
               <button
                 type="button"
                 onClick={() => update({ items: [...items, ""] })}
-                className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
               >
                 <PlusIcon className="size-3.5" />Add prompt
               </button>
@@ -2056,7 +2056,7 @@ function PromptListDetail({
             <button
               type="button"
               onClick={() => setEditorMounted(true)}
-              className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
             >
               <PencilIcon className="size-3.5" />Edit all {items.length} prompts
             </button>
@@ -2081,7 +2081,7 @@ function PromptListDetail({
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
-              ? "text-primary hover:bg-primary/10"
+              ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
@@ -2222,7 +2222,7 @@ function NewPromptListForm({
         <button
           type="button"
           onClick={addItem}
-          className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+          className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
         >
           <PlusIcon className="size-3.5" />Add another prompt
         </button>

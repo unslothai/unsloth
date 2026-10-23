@@ -250,15 +250,51 @@ def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
 
 
 MPS_PREFILL_ATTENTION_OFF_ENV = "PYTORCH_MPS_DISABLE_PREFILL_ATTENTION"
+MPS_PREFILL_HEAD_DIMS = frozenset((32, 64, 72, 80, 96, 128, 256))
 
 
-def _mps_sdpa_kernels(torch: Any) -> tuple[str, ...]:
-    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel."""
-    if _version_tuple(torch.__version__)[:2] < (2, 13):
-        return (SDPA_MATH,)
+def mps_prefill_supported() -> bool:
+    import torch
     if os.environ.get(MPS_PREFILL_ATTENTION_OFF_ENV, "0") != "0":
-        return (SDPA_MATH,)
-    return (SDPA_FLASH, SDPA_MATH)
+        return False
+    return _version_tuple(torch.__version__)[:2] >= (2, 13)
+
+
+def mps_prefill_attention(
+    query: Any,
+    key: Any,
+    value: Any,
+    attn_mask: Any = None,
+    seq_dim: int = -2,
+) -> bool:
+    """Whether torch runs this SDPA call on the MPS prefill kernel rather than the MPSGraph path that materialises the
+    score matrix. ``seq_dim`` is the query's sequence axis (1 for diffusers' ``[B, S, H, D]``)."""
+    import torch
+
+    if (
+        getattr(getattr(query, "device", None), "type", None) != "mps"
+        or not mps_prefill_supported()
+    ):
+        return False
+    if query.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        return False
+    # torch converts a bool mask to an additive one in q's dtype; a float mask of another dtype falls back.
+    if attn_mask is not None and attn_mask.dtype not in (torch.bool, query.dtype):
+        return False
+    if torch.is_grad_enabled() and any(t.requires_grad for t in (query, key, value)):
+        return False
+    return (
+        query.shape[seq_dim] > 8
+        and key.shape[seq_dim] > 0
+        and query.shape[-1] == value.shape[-1]
+        and query.shape[-1] in MPS_PREFILL_HEAD_DIMS
+    )
+
+
+def _mps_sdpa_kernels() -> tuple[str, ...]:
+    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel. Shape-blind:
+    callers that know the family's head dims pass them to ``sdpa_math_only``."""
+    return (SDPA_FLASH, SDPA_MATH) if mps_prefill_supported() else (SDPA_MATH,)
 
 
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
@@ -275,7 +311,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     from core._torchao_stub import _module_is_rocm
 
     if device.split(":")[0] == "mps":
-        return _mps_sdpa_kernels(torch)
+        return _mps_sdpa_kernels()
     if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
         return _probe_rocm_sdpa_kernels(device, dtype)
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
@@ -346,19 +382,31 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         return _SDPA_PROBE_CACHE.setdefault(key, available)
 
 
-def sdpa_math_only(target: Any) -> bool:
+def _family_sdpa_kernels(target: Any, head_dims: Any = None) -> tuple[str, ...]:
+    kernels = available_sdpa_kernels(target)
+    if (
+        head_dims
+        and _target_device(target).split(":")[0] == "mps"
+        and not set(head_dims) <= MPS_PREFILL_HEAD_DIMS
+    ):
+        return tuple(k for k in kernels if k not in _SDPA_SUBQUADRATIC)
+    return kernels
+
+
+def sdpa_math_only(target: Any, head_dims: Any = None) -> bool:
     """True only when MATH ran and every sub-quadratic backend refused.
+    ``head_dims`` (the family's; empty = unknown) narrows the shape-blind MPS answer.
 
     A probe that answered nothing at all returns False: silence is not evidence."""
-    available = available_sdpa_kernels(target)
+    available = _family_sdpa_kernels(target, head_dims)
     if not available:
         return False
     return SDPA_MATH in available and not any(k in available for k in _SDPA_SUBQUADRATIC)
 
 
-def sdpa_subquadratic_confirmed(target: Any) -> bool:
+def sdpa_subquadratic_confirmed(target: Any, head_dims: Any = None) -> bool:
     """True only when a sub-quadratic SDPA kernel was seen to run; an unanswered probe is False."""
-    return any(k in _SDPA_SUBQUADRATIC for k in available_sdpa_kernels(target))
+    return any(k in _SDPA_SUBQUADRATIC for k in _family_sdpa_kernels(target, head_dims))
 
 
 SDPA_MATH_ONLY_MESSAGE = (
@@ -370,18 +418,22 @@ SDPA_MATH_ONLY_MESSAGE = (
 )
 
 
-def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
+def warn_if_sdpa_math_only(
+    target: Any,
+    logger: Any = None,
+    head_dims: Any = None,
+) -> bool:
     """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
 
     Returns whether the warning fired, so callers can carry it into their resolved controls."""
-    if not sdpa_math_only(target):
+    if not sdpa_math_only(target, head_dims):
         return False
     if logger is not None:
         logger.warning(
             "diffusion.attention.math_only: device=%s dtype=%s kernels=%s -- %s",
             getattr(target, "device", None),
             getattr(target, "dtype", None),
-            ",".join(available_sdpa_kernels(target)) or "none",
+            ",".join(_family_sdpa_kernels(target, head_dims)) or "none",
             SDPA_MATH_ONLY_MESSAGE,
         )
     return True
@@ -3346,7 +3398,7 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
                 return
         except Exception as exc:
             _warn(logger, "bounded Qwen-Image-2.1 math attention", exc)
-    warn_if_sdpa_math_only(target, logger)
+    warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
 def apply_attention_backend(

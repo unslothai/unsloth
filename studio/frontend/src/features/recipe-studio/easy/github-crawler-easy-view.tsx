@@ -231,7 +231,7 @@ export function GithubCrawlerEasyView({
         >
           Advanced (drag and drop canvas)
         </button>
-        <Button type="button" size="lg" onClick={onRun} disabled={runLoading}>
+        <Button variant="dark" type="button" size="lg" onClick={onRun} disabled={runLoading}>
           <HugeiconsIcon icon={PlayCircleIcon} className="size-4" />
           {runLoading ? "Running..." : "Run"}
         </Button>
