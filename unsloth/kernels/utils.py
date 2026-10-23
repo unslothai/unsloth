@@ -669,6 +669,22 @@ class _NF4Plan(list):
         return (_no_plan, ())
 
 
+# Set by unsloth.models.fsdp2_qlora on an FSDP2 all-gathered 4-bit weight.
+_FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
+
+
+def _gathered_plan_hit(plan, W):
+    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
+    all-gather: the same tensor at a new address, so a plan keyed on the address never hits. The
+    planned launch passes that tensor, whose address is read at launch time, so it still applies
+    while the 16 byte alignment the kernel was specialized on holds."""
+    return (
+        plan[6] is W
+        and getattr(W, _FSDP2_GATHERED, False)
+        and (W.data_ptr() & 15) == (plan[0] & 15)
+    )
+
+
 def _nf4_kernels_failed(error):
     """A Triton compile failure on an untested GPU switches to the bitsandbytes kernels for good.
     False (re-raise) while tracing, for Dynamo's own exceptions (a graph break is not a kernel
@@ -903,7 +919,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             plan = getattr(quant_state, "_unsloth_nf4_plan", None)
             if (
                 plan is not None
-                and plan[0] == W.data_ptr()
+                and (plan[0] == W.data_ptr() or _gathered_plan_hit(plan, W))
                 and plan[1] is quant_state.absmax
                 and plan[2] is quant_state.dtype
             ):
@@ -949,6 +965,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                             rerun,
                             _SCRATCH.get(("weight", device.index)),
                             out,
+                            W,
                         ]
                     )
             else:
