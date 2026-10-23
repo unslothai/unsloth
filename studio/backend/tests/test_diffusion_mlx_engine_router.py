@@ -462,7 +462,6 @@ def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
     fam = detect_family("z-image")
-    # Without adapters the opt-in still picks MLX for every convertible quant.
     assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_MLX
     kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = True)
     assert r.predict_engine(fam, **kw) == ENGINE_SD_CPP

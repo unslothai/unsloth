@@ -441,8 +441,7 @@ def mlx_selection(
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
     cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field);
-    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so an auto pick
-    keeps the engine it would have had without the opt-in instead of reaching the MLX LoRA refusal."""
+    ``with_loras``: MLX cannot apply LoRAs, so such a load keeps its non-MLX engine."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
