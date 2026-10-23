@@ -2066,6 +2066,9 @@ def _train_cli(monkeypatch):
     seen: list[list[str]] = []
 
     class _FakeCluster:
+        # The real shape check: train refuses the same shapes as estimate.
+        training_shape_error = staticmethod(_load("studio/spark_cluster.py").training_shape_error)
+
         def main(self, argv):
             seen.append(list(argv))
             return 0
@@ -2115,6 +2118,33 @@ def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
         assert result.exit_code == 2, result.output
         assert "different modes" in result.output
     assert seen == []
+
+
+def test_fsdp_is_rejected_outside_data_parallel(monkeypatch):
+    runner, app, seen = _train_cli(monkeypatch)
+    for argv in (
+        ["train", "--layer-split", "unsloth/Qwen3-4B", "--fsdp"],
+        ["train", "--script", "t.py", "--fsdp"],
+    ):
+        result = runner.invoke(app, argv)
+        assert result.exit_code == 2, result.output
+        assert "--fsdp only applies to --data-parallel" in result.output
+    assert seen == []
+
+    from unsloth_cli.commands import spark as spark_cmd
+
+    class _ShapedCluster:
+        def training_shape_error(self, *args):
+            return None
+
+        def main(self, argv):
+            seen.append(list(argv))
+            return 0
+
+    monkeypatch.setattr(spark_cmd, "_cluster_or_none", lambda: _ShapedCluster())
+    result = runner.invoke(app, ["train", "--data-parallel", "unsloth/Qwen3-4B", "--fsdp"])
+    assert result.exit_code == 0, result.output
+    assert "--fsdp" in seen[-1][seen[-1].index("--pipeline-args") + 1]
 
 
 def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
@@ -2209,7 +2239,8 @@ def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts
     )
     body = ast.get_source_segment(text, fn) or ""
     assert (
-        "find_unused_parameters = sparse_experts" in body
+        "find_unused_parameters = bool(may_skip)" in body
+        and "ddp_unused_parameters_reason(" in body
     ), "the flag must follow the architecture, not be hardcoded either way"
 
     helper = next(
