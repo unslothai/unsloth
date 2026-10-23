@@ -72,4 +72,6 @@ test("the approval banner never shows or approves another flow's report", async 
   );
   assert.match(source, /current\.current === flowId && setReport\(found\)/);
   assert.match(source, /setReport\(null\);\s*\}, \[flowId\]\)/);
+  // An approval that returns after the user opened another flow must not land on that flow's banner.
+  assert.match(source, /if \(current\.current === flowId\) setReport\(approved\)/);
 });

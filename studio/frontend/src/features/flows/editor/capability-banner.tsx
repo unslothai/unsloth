@@ -42,7 +42,9 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
   const approve = async () => {
     setBusy(true);
     try {
-      setReport(await approveCapabilities(flowId, report.pending));
+      const approved = await approveCapabilities(flowId, report.pending);
+      // The user may have opened another flow meanwhile; its banner must keep its own report.
+      if (current.current === flowId) setReport(approved);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not approve");
     } finally {
