@@ -2488,6 +2488,13 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+    if calibrated_activation is not None and "calibrated_headroom_mib" not in estimates:
+        from .diffusion_multigpu import current_selection
+        if current_selection() is not None:
+            # A multi-card load: the layer split prices the measured activations too (the companion split already
+            # reads them as phase headroom), untiled since a split keeps the VAE resident on the primary. Kept apart
+            # from calibrated_headroom_mib, which says the one-card plan itself was decided from them.
+            estimates["calibrated_split_headroom_mib"] = calibrated_activation.headroom(False)
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,
