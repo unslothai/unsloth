@@ -935,6 +935,13 @@ async def unload_video_model(
     from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
+    from core.inference import gpu_arbiter
+
+    # An operation holding the GPU lease keeps its model; the holder's own unloads pass.
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
+
     backend = get_video_backend()
     if account_access.managed_account():
         account_access.require_resident_control("video", backend.status().get("repo_id"))

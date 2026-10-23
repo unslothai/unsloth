@@ -207,7 +207,7 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 # Studio's status names a GGUF by repo only, so the variant Flows last loaded per slot is kept here.
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
 # The load settings of the model Flows last loaded per slot, (repo, settings hash); absent = Studio's defaults.
-_LOADED_OPTIONS: dict[str, tuple[str, str]] = {}
+_LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 
 
 def options_hash(options: Optional[dict]) -> Optional[str]:
@@ -256,13 +256,18 @@ async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None
 
     if MODEL_SLOT.get(model_kind, model_kind) != "llm":
         return
+    title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
     try:
         _slots, status = await loading._resident(_caller(ctx))
     except Exception:
-        return
-    backend = "gguf" if status.get("is_gguf") else "transformers"
+        status = None
+    # Unverified is not a pass: a GGUF behind a failed status read would break the step later, less clearly.
+    if not isinstance(status, dict) or not isinstance(status.get("is_gguf"), bool):
+        raise FlowNodeError(
+            f"{title} could not check which backend the model loaded on; try again", retryable = True
+        )
+    backend = "gguf" if status["is_gguf"] else "transformers"
     if backend not in requires:
-        title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
         want = " or ".join("a GGUF" if r == "gguf" else "a transformers" for r in requires)
         have = "GGUF" if backend == "gguf" else "transformers"
         raise FlowNodeError(f"{title} needs {want} model, not {have}")
@@ -293,12 +298,18 @@ async def _ensure_model(
     resident = await resident_name(ctx, model_kind)
     wanted = (repo.lower(), (variant or "").lower())
     settings = options_hash(options)
+    from core.inference import gpu_arbiter
+
     loaded_with = _LOADED_OPTIONS.get(slot)
+    # Any other load since then (another caller may have reloaded this repo with defaults) voids the record.
+    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count():
+        _LOADED_OPTIONS.pop(slot, None)
+        loaded_with = None
     # Without settings anything Studio loaded counts, as before; only a model Flows loaded with settings differs.
     same_settings = (
         loaded_with is None or loaded_with[0] != repo.lower()
         if settings is None
-        else loaded_with == (repo.lower(), settings)
+        else loaded_with is not None and loaded_with[:2] == (repo.lower(), settings)
     )
     if (
         resident
@@ -347,7 +358,7 @@ async def _ensure_model(
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
     else:
-        _LOADED_OPTIONS[slot] = (repo.lower(), settings)
+        _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count())
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
 

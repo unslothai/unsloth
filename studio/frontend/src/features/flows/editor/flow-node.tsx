@@ -105,7 +105,12 @@ function OutputPreview({
       </p>
     );
   }
-  if (!runtime.outputs && runtime.partial) {
+  // A partial is always from this run (queueing clears it), so it wins over the last run's kept outputs.
+  if (
+    runtime.partial &&
+    runtime.status !== "done" &&
+    runtime.status !== "cached"
+  ) {
     const at = runtime.partialStep;
     return (
       <div className="flex flex-col gap-1">
