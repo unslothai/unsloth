@@ -15,6 +15,21 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* A clickable button's fill: the segmented toggles' track (.hub-tab-toggle in hub.css), so a filled
+   button and a toggle are the same grey in both themes, panels included. No border. */
+@utility btn-fill {
+	background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
+	&:hover {
+		background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+	}
+	&:where(.dark *) {
+		background-color: var(--hub-tab-track);
+	}
+	&:where(.dark *):hover {
+		background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
+	}
+}
+
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
@@ -250,13 +265,13 @@
 	--background: #fefefd;
 	--foreground-base: #0f1114;
 	--card-base: oklch(1 0 0);
-	--card-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--card-foreground-base: oklch(0.1281 0 0);
 	--popover-base: oklch(1 0 0);
-	--popover-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--popover-foreground-base: oklch(0.1281 0 0);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary-base: oklch(0.9596 0.0275 167.8295);
-	--secondary-foreground-base: oklch(0.2868 0.0649 159.9823);
+	--secondary-base: #f2f2f2;
+	--secondary-foreground-base: #262626;
 	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Trace ink: muted, pulled toward the page so the answer stands apart. */
@@ -268,8 +283,8 @@
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
-	--border-base: oklch(0.9208 0.0101 164.8536);
-	--input-base: oklch(0.9208 0.0101 164.8536);
+	--border-base: oklch(0.9208 0 0);
+	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
 	/* Focus and selection indicators: the element's own border, darker.
 	   Derived from the live border/foreground tokens so every palette and
@@ -282,11 +297,10 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	--radius: 1.1rem;
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
-	--sidebar-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--sidebar-foreground-base: oklch(0.1281 0 0);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent-base: #ececec;
@@ -380,6 +394,10 @@
 	   References resolve at use, so .dark's --primary flows through. */
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
+
+	/* Black-button fill; the ink outside the stock light palettes. */
+	--action-base: #1a1c1f;
+	--action: var(--action-base);
 
 	/* Status color for meaning-carrying marks (verified badges, token
 	   indicators). Pinned to the brand green in every palette and mode so
@@ -520,8 +538,6 @@
 	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
-	/* Match light's radius so every rounded-* element is the same in both themes. */
-	--radius: 1.1rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -573,6 +589,7 @@
 	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #3a3a3a;
+	--action-base: var(--foreground);
 }
 
 /* ---------------------------------------------------------------------------
@@ -744,6 +761,7 @@
 :root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
+	--action-base: var(--foreground);
 	--card-base: var(--th-surface);
 	--card-foreground-base: var(--th-fg);
 	--popover-base: var(--th-surface);
@@ -1973,7 +1991,7 @@ html[data-chat-font] .aui-root {
 /* Settings search: brief highlight on the row a result jumped to. */
 .settings-search-hit {
 	animation: settings-search-hit 1.6s ease-out;
-	border-radius: 12px;
+	border-radius: var(--radius-md);
 }
 @keyframes settings-search-hit {
 	0%,
@@ -1983,6 +2001,27 @@ html[data-chat-font] .aui-root {
 	100% {
 		background-color: transparent;
 	}
+}
+
+@theme {
+	/* One radius scale for the whole app, fixed so no theme or region shifts it. Tiers nest
+	   concentrically (outer = inner + inset), as the composer (28px around an 18px send circle
+	   at a 10px inset) and the + menu (21px around 12px rows at a 9px gutter) do. Anything one
+	   line tall is rounded-full.
+	   sm   8px  tiny tiles and swatches
+	   md  12px  rows in menus and lists, tiles inside a card (bare `rounded` too)
+	   lg  16px  compact multi-line boxes: code blocks, thumbnails
+	   xl  21px  menus, popovers, textareas, boxes inside a card or dialog
+	   2xl 24px  cards and panels
+	   3xl 28px  composer, dialogs, sheets, large floating surfaces */
+	--radius-sm: 8px;
+	--radius-md: 12px;
+	--radius-lg: 16px;
+	--radius-xl: 21px;
+	--radius-2xl: 24px;
+	--radius-3xl: 28px;
+	--radius-4xl: 32px;
+	--radius: 12px;
 }
 
 @theme inline {
@@ -2085,6 +2124,7 @@ html[data-chat-font] .aui-root {
 	--color-primary-foreground: var(--primary-foreground);
 	--color-primary: var(--primary);
 	--color-control-accent: var(--control-accent);
+	--color-action: var(--action);
 	--color-control-accent-foreground: var(--control-accent-foreground);
 	--color-popover-foreground: var(--popover-foreground);
 	--color-popover: var(--popover);
@@ -2092,16 +2132,8 @@ html[data-chat-font] .aui-root {
 	--color-card: var(--card);
 	--color-foreground: var(--foreground);
 	--color-background: var(--background);
-	--radius-sm: calc(var(--radius) - 4px);
-	--radius-md: calc(var(--radius) - 2px);
-	--radius-lg: var(--radius);
-	--radius-xl: calc(var(--radius) + 4px);
-	--radius-2xl: calc(var(--radius) + 8px);
-	--radius-3xl: calc(var(--radius) + 12px);
-	--radius-4xl: calc(var(--radius) + 16px);
 	--font-mono: var(--font-mono);
 	--font-serif: var(--font-serif);
-	--radius: 1.1rem;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -2202,6 +2234,20 @@ html[data-chat-font] .aui-root {
 			background-position: 0% 0%;
 		}
 	}
+}
+
+/* bg-wash-N: N% ink, scaled by the contrast setting. */
+@utility bg-wash-* {
+	background-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-wash-gain, 1))), transparent);
+}
+@utility border-wash-* {
+	border-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
+}
+@utility ring-wash-* {
+	--tw-ring-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
+}
+@utility outline-wash-* {
+	outline-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
 }
 
 @layer base {
@@ -2396,7 +2442,7 @@ html[data-chat-font] .aui-root {
 	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
 	   not over a pill, so they reveal on the header's hover. */
 	.sidebar-header-action {
-		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full opacity-0 pointer-events-none outline-none transition-opacity duration-150;
 		color: inherit;
 	}
 	.group\/sidebar-header:hover .sidebar-header-action,
@@ -2568,7 +2614,7 @@ html[data-chat-font] .aui-root {
 	/* Larger panel text containers (system prompt preview button and
 	   chat-template textarea) share the same treatment. */
 	.panel-text-surface {
-		@apply rounded-[20px] transition-colors;
+		@apply rounded-xl transition-colors;
 		border: 1px solid var(--border);
 		background-color: var(--background);
 	}
@@ -2817,7 +2863,7 @@ html[data-chat-font] .aui-root {
 		height: calc(36px * var(--ui-space-scale, 1));
 		padding: 0 calc(0.75rem * var(--ui-space-scale, 1)) !important;
 		gap: calc(9.5px * var(--ui-space-scale, 1)) !important;
-		border-radius: 12px;
+		border-radius: var(--radius-md);
 		font-weight: 500;
 		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
 		line-height: calc(1.25rem * var(--ui-font-scale, 1));
@@ -2962,8 +3008,6 @@ html[data-chat-font] .aui-root {
 	/* Chat search box: borderless, soft Gemini-style elevation. */
 	.chat-search-surface {
 		border: none;
-		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
-		--radius: 0.625rem;
 		/* Prominent, wide ChatGPT-style elevation. */
 		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
 			0 8px 24px -12px rgba(0, 0, 0, 0.18);
@@ -3014,10 +3058,8 @@ html[data-chat-font] .aui-root {
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
 
-	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
-	   Pin --radius to the light value so the corners match in both themes. */
+	/* Model selector: drop the inset edge ring, keep the soft drop shadow. */
 	.unsloth-model-selector-menu.menu-soft-surface {
-		--radius: 1.25rem;
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
@@ -3063,18 +3105,48 @@ html[data-chat-font] .aui-root {
 		margin-block: 2px;
 	}
 
-	/* List menus: one radius in both themes, slightly tighter than --radius-lg
-	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
+	/* A menu's corner is its 12px row radius plus its gutter, so the hover nests in the corner:
+	   16px around the standard 4px gutter. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
 	[data-slot="dropdown-menu-sub-content"],
 	[data-slot="select-content"],
 	[data-slot="combobox-content"] {
-		border-radius: 14px !important;
+		border-radius: var(--radius-lg) !important;
 	}
 
-	/* Account menu: a touch rounder than standard list menus. */
+	/* The account menu's 10px gutter. */
 	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
-		border-radius: 18px !important;
+		border-radius: calc(var(--radius-md) + 10px) !important;
+	}
+
+	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
+	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
+	.unsloth-model-selector-menu {
+		--radius: 1.1rem;
+		--radius-sm: calc(1.25rem - 4px);
+		--radius-md: calc(1.25rem - 2px);
+		--radius-lg: 1.25rem;
+		--radius-xl: calc(1.25rem + 4px);
+		--radius-2xl: calc(1.25rem + 8px);
+		--radius-3xl: calc(1.25rem + 12px);
+		--radius-4xl: calc(1.25rem + 16px);
+	}
+	.unsloth-model-selector-menu[data-slot] {
+		border-radius: 1.25rem !important;
+	}
+	/* Its outline buttons keep their border. */
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
+		border-color: var(--border);
+		background-color: var(--background);
+	}
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill {
+		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -3190,7 +3262,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.chat-composer-surface {
-		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-3xl bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
@@ -3204,7 +3276,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3271,7 +3343,7 @@ html[data-chat-font] .aui-root {
 	}
 	/* A pill keeps its hover fill while its menu is open. */
 	.composer-pill-btn[data-state="open"] {
-		@apply bg-primary/10 dark:bg-accent;
+		@apply bg-accent;
 	}
 	/* Dark composer controls: softer hover and open state. */
 	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
@@ -3307,7 +3379,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
+		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-wash-10 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -3352,7 +3424,7 @@ html[data-chat-font] .aui-root {
 
 	/* 28px corner: the send circle sits at an even 10px inset inside it. */
 	.unsloth-composer-surface {
-		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card p-2.5 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-3xl bg-background dark:bg-card p-2.5 outline-none transition-shadow;
 		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
@@ -3581,7 +3653,7 @@ html[data-chat-font] .aui-root {
 
 
 		.unsloth-composer-surface {
-			border-radius: 1.5rem;
+			border-radius: var(--radius-2xl);
 		}
 
 		/* 32px to 28px for every control, and 36px to 28px for plus and send,
@@ -3754,7 +3826,7 @@ html[data-chat-font] .aui-root {
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem * var(--ui-space-scale, 1));
@@ -3803,9 +3875,8 @@ html[data-chat-font] .aui-root {
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
 		/* Concentric with the item hover boxes: container radius =
-		   item radius (12px) + side gutter (9px), so the curves run parallel.
-		   !important beats the global 14px dropdown radius. */
-		border-radius: 21px !important;
+		   item radius (12px) + side gutter (9px), so the curves run parallel. */
+		border-radius: var(--radius-xl) !important;
 		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
 		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
@@ -3815,14 +3886,6 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
-	/* Width does not change the concentric radius; the MCP menu uses the same
-	   item radius + gutter, so it keeps the same container radius. */
-	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 22px !important;
-	}
-
-	/* One-line menus keep the standard menu shape (same radius as multi-line),
-	   so a lone row doesn't balloon into a fully rounded pill. */
 
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: var(--card);
@@ -3901,9 +3964,7 @@ html[data-chat-font] .aui-root {
 		) {
 		@apply gap-3 pl-3 pr-3 py-2 text-ui-14;
 		cursor: pointer;
-		/* Pin hover-box radius so dark matches light (container radius minus the
-		   side gutter keeps the curves concentric). */
-		border-radius: 12px;
+		border-radius: var(--radius-md);
 	}
 
 	.unsloth-plus-menu :is(
@@ -3916,8 +3977,8 @@ html[data-chat-font] .aui-root {
 	/* A sidebar row's menu, one step down from the composer menus this shares a look with.
 	   It carries the most rows of any menu in the app and was running tall. */
 	.unsloth-plus-menu.sidebar-row-menu[data-slot] {
-		/* Concentric as above: item radius (10px) + side gutter (8px). */
-		border-radius: 18px !important;
+		/* 12px rows + this menu's 8px gutter. */
+		border-radius: calc(var(--radius-md) + 8px) !important;
 		padding-top: calc(0.375rem * var(--ui-space-scale, 1));
 		padding-bottom: calc(0.375rem * var(--ui-space-scale, 1));
 		padding-left: calc(8px * var(--ui-space-scale, 1));
@@ -3933,7 +3994,6 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-sub-trigger"]
 		) {
 		@apply gap-2.5 pl-2.5 pr-2.5 py-1.5 text-ui-13;
-		border-radius: 10px;
 	}
 
 	/* A heading opens its group: more room above it than below, so it reads with the rows under it
@@ -3952,7 +4012,6 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-radio-item"]
 		) {
 		@apply gap-2.5 pl-2.5 pr-9;
-		border-radius: 10px;
 	}
 
 	/* Tick rows hover like the rows beside them, not with the component's accent. */
@@ -4291,13 +4350,13 @@ html[data-chat-font] .aui-root {
 		margin-top: calc(1rem * var(--ui-space-scale, 1));
 		border-top: 1px solid var(--color-border);
 		padding-top: calc(0.75rem * var(--ui-space-scale, 1));
-		border-radius: 1.5rem 1.5rem 0 0;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 	}
 	.aui-reasoning-code-last {
 		border-bottom: 1px solid var(--color-border);
 		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1));
-		border-bottom-left-radius: 1.5rem;
-		border-bottom-right-radius: 1.5rem;
+		border-bottom-left-radius: var(--radius-lg);
+		border-bottom-right-radius: var(--radius-lg);
 	}
 	.aui-reasoning-code-fragment .aui-reasoning-code-lines,
 	.aui-reasoning-code-fragment code {
@@ -4337,7 +4396,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="code-block"] {
 		gap: calc(0.25rem * var(--ui-space-scale, 1));
 		padding: calc(0.75rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1));
-		border-radius: 1.5rem;
+		border-radius: var(--radius-lg);
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
 		min-width: 0;
@@ -5044,7 +5103,7 @@ html[data-chat-font] .aui-root {
 	z-index: 60;
 	display: flex;
 	align-items: center;
-	border-radius: 10px;
+	border-radius: 9999px;
 	pointer-events: none;
 	will-change: transform;
 }
@@ -5053,7 +5112,7 @@ html[data-chat-font] .aui-root {
 	--row-ghost-surface: var(--sidebar);
 	display: flex;
 	align-items: center;
-	border-radius: 10px;
+	border-radius: 9999px;
 	will-change: transform;
 }
 
@@ -5128,7 +5187,7 @@ html[data-chat-font] .aui-root {
 	position: fixed;
 	z-index: 60;
 	height: 0;
-	border-top: 1.5px solid var(--primary);
+	border-top: 1.5px solid var(--foreground);
 	border-radius: 1px;
 	opacity: 0;
 	pointer-events: none;
@@ -5234,12 +5293,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
 }
 
-/* Video tabs: the clip sits on a soft brand-tinted band. */
 .browser-video-band {
 	background:
-		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--primary) 30%, transparent), transparent 70%),
-		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--primary) 24%, transparent), transparent 70%),
-		color-mix(in oklab, var(--primary) 9%, var(--background));
+		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--foreground) 12%, transparent), transparent 70%),
+		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--foreground) 9%, transparent), transparent 70%),
+		color-mix(in oklab, var(--foreground) 4%, var(--background));
 }
 
 /* Whole screen pixels at any zoom (--device-px, set in public/theme-boot.js): a
@@ -5770,14 +5828,14 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	gap: calc(14px * var(--ui-space-scale, 1));
 	width: min(66%, 18rem);
 	padding: calc(1.5rem * var(--ui-space-scale, 1));
-	border-radius: 1.5rem;
+	border-radius: var(--radius-2xl);
 }
 
 .generated-image-loading-dot {
 	width: 7px;
 	height: 7px;
 	border-radius: 9999px;
-	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	background: var(--muted-foreground);
 	opacity: 0.12;
 	transform: translate3d(0, 4px, 0) scale(0.72);
 	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
@@ -6038,21 +6096,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 @layer components {
 	.elevated-card {
 		border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-		border-radius: 20px;
+		border-radius: var(--radius-2xl);
 		box-shadow: 0 0 60px 8px
 			color-mix(in srgb, var(--foreground) 5%, transparent);
-	}
-
-	@media (min-width: 640px) {
-		.elevated-card {
-			border-radius: 28px;
-		}
-	}
-
-	@media (min-width: 1024px) {
-		.elevated-card {
-			border-radius: 32px;
-		}
 	}
 
 	.dark .elevated-card {
@@ -6060,43 +6106,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		box-shadow: none;
 	}
 
-	/* rounded-* compile to var(--radius) (@theme inline), so the step goes on --radius. */
-	.api-rounding {
-		--radius: calc(1.1rem - 2px);
-	}
-
-	.api-rounding .elevated-card,
-	.api-rounding.elevated-card {
-		border-radius: 18px;
-	}
-
-	@media (min-width: 640px) {
-		.api-rounding .elevated-card,
-		.api-rounding.elevated-card {
-			border-radius: 25px;
-		}
-	}
-
-	@media (min-width: 1024px) {
-		.api-rounding .elevated-card,
-		.api-rounding.elevated-card {
-			border-radius: 29px;
-		}
-	}
-
 	.dark .elevated-card.elevated-card-dark-border {
 		border-color: color-mix(in srgb, var(--border) 70%, transparent);
-	}
-
-	.page-title-halo {
-		text-shadow:
-			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
-			0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
-			0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
-	}
-
-	.dark .page-title-halo {
-		text-shadow: none;
 	}
 
 	.train-section-chip {
@@ -6246,7 +6257,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	--studio-chat-header-height: 0px;
 	--studio-chat-scroller-top: 0px;
 	height: auto;
-	border-radius: 28px;
+	border-radius: var(--radius-3xl);
 	background-color: var(--dock-surface);
 	box-shadow:
 		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
@@ -6284,8 +6295,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .chat-full-view-dock .aui-thread-composer-dock {
 	background-color: var(--dock-surface);
-	border-bottom-left-radius: 28px;
-	border-bottom-right-radius: 28px;
+	border-bottom-left-radius: var(--radius-3xl);
+	border-bottom-right-radius: var(--radius-3xl);
 }
 
 .chat-full-view-dock .aui-thread-viewport {
@@ -6418,7 +6429,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .unsloth-files-panel {
 	/* pt-3.5: the 28px Add files pill sits in the 32px header row, so this keeps it 16px from the top edge. */
-	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-3.5 pb-6;
+	@apply relative mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-2xl px-4 pt-3.5 pb-6;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
@@ -6432,11 +6443,11 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	box-shadow: var(--composer-shadow);
 }
 .unsloth-files-panel[data-dragging="true"] {
-	border-color: var(--primary);
+	border-color: var(--foreground);
 }
 .dark .unsloth-files-panel[data-dragging="true"] {
 	box-shadow:
-		0 0 0 1.5px var(--primary),
+		0 0 0 1.5px var(--foreground),
 		var(--composer-shadow);
 }
 .unsloth-files-panel-count {
@@ -6511,11 +6522,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .unsloth-files-panel-action {
 	/* pt-px: centred by its line box, the cap-height text sits half a pixel high. */
-	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
-	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
-}
-.unsloth-files-panel-action:hover {
-	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+	@apply inline-flex h-7 shrink-0 items-center rounded-full px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	@apply btn-fill;
 }
 .unsloth-files-add-card:disabled {
 	@apply pointer-events-none opacity-50;

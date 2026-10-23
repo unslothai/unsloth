@@ -1084,12 +1084,28 @@ function Invoke-ManagedLlamaCppPreflight {
 }
 
 function Test-MirrorConfigured {
-    param([ValidateSet('uv', 'pip')][string]$Tool)
-    if ($Tool -eq 'uv') {
-        if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
-        $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
-        $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+    param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
+    if ($Tool -ne 'pip') {
+        if ($Tool -eq 'python') {
+            # UV_PYTHON_INSTALL_MIRROR would override UV_ASTRAL_MIRROR_URL; uv rejects a mirror beside a custom manifest.
+            if ("$env:UV_PYTHON_INSTALL_MIRROR$env:UV_ASTRAL_MIRROR_URL$env:UV_PYTHON_DOWNLOADS_JSON_URL") { return $true }
+            $pattern = '^\s*(python-install-mirror|python-downloads-json-url)\s*='
+        } else {
+            if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+            $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+        }
+        # uv's discovery: UV_CONFIG_FILE alone (even with UV_NO_CONFIG); relative paths from --directory.
+        # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
+        $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
+        $files = @("$env:APPDATA\uv\uv.toml")
+        if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
         $dir = (Get-Location -PSProvider FileSystem).ProviderPath
+        $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
+        if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
+        $configFile = if ($env:UV_CONFIG_FILE) { [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_CONFIG_FILE)) }
+        if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
+        if ($configFile) { $files = @($configFile); $dir = $null }
+        elseif ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
         while ($dir) {
             $pyproject = Join-Path $dir 'pyproject.toml'
             if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
@@ -1191,6 +1207,8 @@ function Invoke-MirrorFallback {
     $cernet = 'https://tuna.mirrors.cernet.edu.cn'
     $npmMirror = 'https://registry.npmmirror.com'
     $pypiMirror = "$cernet/pypi/web/simple"
+    # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+    $pythonMirror = "$npmMirror/-/binary/python-build-standalone"
     $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
@@ -1211,6 +1229,7 @@ function Invoke-MirrorFallback {
     }
     if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
     if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+    if (-not (Test-MirrorConfigured -Tool python)) { $hosts['python'] = @('astral', 'npmmirror', $pythonMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
         $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
     }
@@ -1234,6 +1253,7 @@ function Invoke-MirrorFallback {
             'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
             'node' { "UNSLOTH_NODE_MIRROR=$to" }
             'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+            'python' { "UV_PYTHON_INSTALL_MIRROR=$to" }
             'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
         }
     }
@@ -1259,7 +1279,7 @@ function Invoke-MirrorFallback {
         if ($slow.Count -eq 0) { return }
         $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
         $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
-        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @(@($slow | ForEach-Object { $artifact[$hosts[$_][0]] }) + @($sources | ForEach-Object { $artifact[$_] }) | Select-Object -Unique) -Seconds 4 -LastByte 1048575)
         $sourceIndexes = Wait-MirrorProbe $indexes
         foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
     } finally {
@@ -1284,7 +1304,7 @@ function Invoke-MirrorFallback {
 
 function Get-MirrorName {
     param([string]$Name)
-    @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+    @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; python = 'releases.astral.sh (Python builds)'; uvbin = 'releases.astral.sh (uv)' }[$Name]
 }
 
 function Set-MirrorEnv {
@@ -1316,6 +1336,7 @@ function Get-MirrorFailedHost {
         return
     }
     if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+    elseif ($Output -match 'python-build-standalone') { 'python' }
     elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
     elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
     elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
@@ -8974,12 +8995,13 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# triton-windows: torch 2.13 -> 3.7, 2.14 -> 3.8, older keeps <3.7.
+# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, older keeps <3.7.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
     if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
-    if ($TorchVersion -match '^2\.(\d+)\.') {
+    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
         switch ([int]$Matches[1]) {
+            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
             13 { return "triton-windows>=3.7,<3.8" }
             14 { return "triton-windows>=3.8,<3.9" }
         }
