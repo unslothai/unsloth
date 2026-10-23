@@ -92,8 +92,7 @@ def _has_offload_groups(module: Any) -> bool:
 
 
 def _groups_stream(module: Any, slots: dict) -> bool:
-    """Whether any offload group streams now (unknown = streaming). A transformer with no record and no groups is the
-    resident-transformer group tier (only the text encoders stream)."""
+    """Whether any offload group streams now (unknown = streaming); no record and no groups = resident transformer."""
     state = slots.get(_STREAM_STATE_ATTR)
     if not isinstance(state, dict):
         return _has_offload_groups(module)
@@ -448,9 +447,8 @@ def split_aware_request_extra(
     *,
     step_cache: bool = False,
 ) -> tuple:
-    """``(cfg priced, extra MiB)`` for the request guard; ``price(cfg)`` is the guard's extra MiB. A split guided render
-    is priced at the guidance-off batch only when that needs nothing released: releasing groups, or an AUTO step cache
-    engaging after the guard (``step_cache``), declines the split and the doubled call runs, so it is priced doubled."""
+    """``(cfg priced, extra MiB)``: guidance-off price only if nothing is released and no AUTO step cache engages
+    (either declines the split, so the doubled call is priced)."""
     if (
         cfg is not False
         and workflow in SPLIT_PRICED_WORKFLOWS
@@ -464,8 +462,7 @@ def split_aware_request_extra(
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
-    """Whether a guided render runs at the guidance-off batch (split armed, nothing declines it), so the request guard
-    must not price it doubled: doing so released resident groups, declined the split and recompiled. False if unknown."""
+    """Whether a guided render runs at the guidance-off batch; pricing it doubled released groups and recompiled."""
     denoiser = getattr(pipe, "transformer", None)
     slots = getattr(denoiser, "__dict__", None)
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():
@@ -495,8 +492,7 @@ def render(pipe: Any, samples: int):
     if not armed:
         yield
         return
-    # Eager (compiled_only, nothing compiled or graphed, no active router): batched, split only after the batched call
-    # ran out of memory. Decided once per render, as the request guard priced it: routed at entry splits throughout.
+    # Decided once per render, as the guard priced it: eager stays batched (split on OOM), routed splits throughout.
     eager = _eager_now(pipe, denoiser, slots)
     denoiser.__dict__[_SAMPLES_ATTR] = int(samples)
     if eager:

@@ -534,7 +534,6 @@ def test_request_guard_reprices_doubled_when_the_split_would_be_declined():
     # Fits only after a release: the release can demote denoiser groups, so the batched call is priced.
     assert zs.split_aware_request_extra(pipe, True, "txt2img", price(100, 900)) == (True, 900)
     assert zs.split_aware_request_extra(pipe, None, "txt2img", price(100, 900)) == (None, 900)
-    # AUTO FBCache will engage after the guard.
     assert zs.split_aware_request_extra(pipe, True, "txt2img", price(0, 900), step_cache = True) == (
         True,
         900,
@@ -560,7 +559,6 @@ def test_studio_guard_passes_the_auto_step_cache_prediction():
     assert len(calls) == 1
     assert {k.arg for k in calls[0].keywords} == {"step_cache"}
     assert "guided_runs_at_guidance_off_batch(" not in source
-    # The prediction is made before the guard, from the same steps the AUTO toggle later sees.
     predict = source.index("auto_step_cache_on = auto_step_cache_mode(cache_steps)")
     assert predict < source.index("guard_cfg, extra_mib = split_aware_request_extra(")
     assert predict < source.index("toggled = maybe_toggle_step_cache(")
@@ -708,8 +706,7 @@ def test_compiled_only_honours_the_background_compile_eager_gate():
 
 
 def test_eager_render_behind_an_active_router_is_priced_and_run_split():
-    """An eager compiled_only denoiser behind an active CFG-parallel router splits through run_pair: priced at the
-    guidance-off batch, and it keeps splitting for the render even if the router gives up mid-render."""
+    """Eager compiled_only behind an active router: priced guidance-off and keeps splitting if the router gives up."""
     from core.inference import diffusion_bg_compile as bg
     from core.inference.diffusion_multigpu import CfgParallelRouter
 
