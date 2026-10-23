@@ -28762,8 +28762,11 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
+            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
+            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
+            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,
