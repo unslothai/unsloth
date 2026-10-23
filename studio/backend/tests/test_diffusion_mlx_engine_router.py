@@ -220,7 +220,6 @@ def test_auto_keeps_a_load_mlx_cannot_honour_on_diffusers(monkeypatch, blocker_k
     r.select_and_activate_engine(fam, model_kind = "gguf", gguf_filename = _Q4, mlx_blocker = blocker)
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert needle in (r.annotate_status({})["mlx_fallback_reason"] or "")
-    # Forced MLX ignores it here: the load route refuses those options with a 400, as before.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     assert (
         r.predict_engine(fam, model_kind = "gguf", gguf_filename = _Q4, mlx_blocker = blocker)
@@ -230,8 +229,6 @@ def test_auto_keeps_a_load_mlx_cannot_honour_on_diffusers(monkeypatch, blocker_k
 
 @pytest.mark.parametrize("value", [None, "auto", "1"])
 def test_native_lora_pick_on_a_mac_is_never_an_mlx_refusal(monkeypatch, value):
-    # A LoRA load that asks for the native engine stays native: the default MLX routing must not divert it into the
-    # route's MLX LoRA refusal.
     _apple(monkeypatch)
     if value is not None:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", value)
@@ -262,7 +259,6 @@ def test_delegating_precisions_do_not_block_mlx():
 
 
 def test_pinned_original_precisions_block_mlx():
-    # none/off pin the released weights; MLX would substitute its own quant plan.
     for quant in ("none", "off"):
         assert r.mlx_load_blocker(transformer_quant = quant) is not None
         assert r.mlx_load_blocker(text_encoder_quant = quant) is not None
@@ -288,7 +284,6 @@ def test_kill_switch_keeps_todays_engine(monkeypatch, value):
 
 @pytest.mark.parametrize("runtime", [False, True])
 def test_default_keeps_sd_cpp_where_sd_cpp_is_chosen_today(monkeypatch, runtime):
-    # UNSLOTH_DIFFUSION_SD_CPP_MPS=1 is an explicit ask for native on the Mac GPU: auto MLX does not override it.
     _host(monkeypatch)
     _device(monkeypatch, "mps")
     if runtime:
@@ -527,7 +522,6 @@ def test_switching_away_from_mlx_unloads_it(monkeypatch):
     r._active_engine_name = ENGINE_MLX
     _host(monkeypatch)
     _device(monkeypatch, "mps")
-    # Off, so the result does not depend on whether this host has mlx installed (a real Mac would pick MLX).
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "0")
     assert _select() == ENGINE_DIFFUSERS
     assert unloaded == [True]
@@ -585,7 +579,6 @@ def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf
     if value is not None:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", value)
     fam = detect_family("z-image")
-    # Without adapters this load is MLX's.
     assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_MLX
     kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = True)
     assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
@@ -598,8 +591,6 @@ def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf
 def test_a_forced_mlx_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
     monkeypatch, sd_cpp_off
 ):
-    # UNSLOTH_DIFFUSION_MLX=1 with no native engine (absent, or UNSLOTH_DIFFUSION_SD_CPP=0): diffusers cannot apply
-    # LoRAs on a GGUF here, nor build a family its diffusers lacks, so the load is refused before the switch.
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     if sd_cpp_off:
@@ -677,14 +668,10 @@ def test_every_load_route_and_the_residency_estimate_pass_loras_to_engine_select
         for call in calls:
             kw = {k.arg: k.value for k in call.keywords}
             assert {"with_loras", "mlx_blocker"} <= set(kw), f"{rel}: {ast.unparse(call)[:120]}"
-            # A zero-weight entry is dropped before loading, so it must not count as a LoRA load.
             assert getattr(kw["with_loras"].func, "id", None) in (
                 "_has_active_loras",
                 "has_active_loras",
             ), f"{rel}: {ast.unparse(call)[:120]}"
-
-
-# ── a LoRA load never lands on MLX, which refuses adapters ───────────────────
 
 
 @pytest.mark.parametrize(
@@ -699,7 +686,6 @@ def test_every_load_route_and_the_residency_estimate_pass_loras_to_engine_select
     ],
 )
 def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
-    # An MPS Mac running native sd.cpp today with a LoRA: the opt-in must not divert it into MLX's refusal.
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")

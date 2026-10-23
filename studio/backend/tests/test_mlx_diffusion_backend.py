@@ -1871,7 +1871,6 @@ def test_release_buffer_cache_never_replaces_the_callers_exception():
 
 
 def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
-    # The routed status reads it to offer the diffusers fallback's Shift control before that loads.
     import fnmatch
 
     from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS

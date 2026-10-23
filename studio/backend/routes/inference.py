@@ -51673,7 +51673,6 @@ async def diffusion_download_plan(
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         elif predicted == ENGINE_MLX:
-            # MLX engine (Apple Silicon): same single-GGUF contract as native.
             _refuse_native_component_files(request)
             _refuse_mlx_loras(request)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
@@ -52135,7 +52134,6 @@ async def load_diffusion_model_gated(
                 gguf_filename = request.gguf_filename,
                 # The load's own engine pick (auto when absent); refused there rather than swapped.
                 engine = request.engine,
-                # MLX applies no LoRA: an adapter load keeps the engine it had without MLX, in every mode.
                 with_loras = _has_active_loras(request.loras),
                 # A load option the MLX engine cannot honour keeps an auto-routed Apple Silicon load on diffusers.
                 mlx_blocker = _mlx_load_blocker(request),
@@ -52937,8 +52935,6 @@ async def _generate_diffusion_image_run(
                 raise HTTPException(status_code = 409, detail = msg)
             refusal = unified_memory_refusal_code(exc)
             if refusal is not None:
-                # A fallback engine this request needed was refused by the unified-memory load guard: tagged with
-                # the load path's error code, not reported as a generation failure.
                 raise HTTPException(
                     status_code = 400,
                     detail = msg,

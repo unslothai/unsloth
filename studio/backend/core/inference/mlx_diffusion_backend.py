@@ -58,7 +58,6 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
-    # A few hundred bytes: the routed status builds the diffusers fallback's Shift control from them.
     "scheduler/*.json",
     "model_index.json",
 )
@@ -555,7 +554,6 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
-    # The source GGUF: the routed engine sizes a diffusers fallback from it.
     gguf_path: Optional[str] = None
 
 

@@ -29,11 +29,9 @@ ENGINE_MLX = "mlx"
 ENGINE_DIFFUSERS = "diffusers"
 
 COEXIST_ENV = "UNSLOTH_DIFFUSION_MLX_COEXIST"
-# How long unload() / a new load waits for an in-flight fallback load to tear itself down.
 _FALLBACK_DRAIN_S = 120.0
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
-# Only these delegate the precision choice. none/off pin the released weights, which MLX cannot honour.
 _UNSET_TOKENS = frozenset({"", "auto", "default"})
 
 
@@ -47,7 +45,6 @@ class MlxCapabilities:
 
 
 _DEFAULT_CAPABILITIES = MlxCapabilities()
-# Per family name; a family absent here gets the default (text-to-image only).
 MLX_CAPABILITIES: dict[str, MlxCapabilities] = {"z-image": _DEFAULT_CAPABILITIES}
 
 
@@ -76,7 +73,6 @@ def load_blocker(
     """The first LOAD option the MLX engine cannot honour, else None. Such a load stays on diffusers."""
     from core.inference.diffusion_engine_router import has_active_loras
 
-    # Zero-weight entries are dropped before loading, as in the route's MLX LoRA refusal.
     if has_active_loras(loras):
         return "LoRA adapters selected at load time need the diffusers engine"
     if component_files:
@@ -90,7 +86,6 @@ def load_blocker(
     return None
 
 
-# Generate kwargs a request may carry that change nothing on a text-to-image MLX run.
 _IGNORED_ON_MLX = frozenset({"live_preview", "mask_blur", "inpaint_only_masked", "inpaint_padding"})
 _CHECKED = frozenset(
     {
@@ -132,8 +127,7 @@ def request_blocker(
     mlx_params: Optional[frozenset[str]] = None,
     mlx_guidance: Optional[bool] = None,
 ) -> Optional[str]:
-    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only.
-    ``mlx_guidance``: whether the resident MLX variant applies CFG (None = unknown, not checked)."""
+    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only."""
     caps = mlx_capabilities(family)
     get = kwargs.get
     if mlx_guidance is False and _positive(get("guidance")):
@@ -206,12 +200,10 @@ def decide_route(
                 ENGINE_DIFFUSERS,
                 "MLX was unloaded to make room for diffusers; load the model again to return to MLX",
             )
-        # Nothing resident (a load in flight, or none): the MLX engine answers with its own not-loaded error.
         return Route(ENGINE_MLX, "no model resident")
     if diffusers_resident:
         return Route(ENGINE_DIFFUSERS, f"{blocker} runs on diffusers")
     if not fallback_available or not mlx_resident:
-        # MLX refuses with its own message, or reports that nothing is loaded.
         return Route(ENGINE_MLX, f"{blocker} has no diffusers fallback here")
     return Route(
         ENGINE_DIFFUSERS,
@@ -222,8 +214,7 @@ def decide_route(
 
 
 def engines_coexist(mlx_bytes: int, diffusers_bytes: int, budget_bytes: int) -> bool:
-    """Whether the MLX model (its plan includes the activation headroom) and a diffusers copy fit together.
-    Unknown sizes never fit. ``UNSLOTH_DIFFUSION_MLX_COEXIST=1`` / ``0`` overrides."""
+    """Whether the MLX model (its plan includes the activation headroom) and a diffusers copy fit together; unknown sizes never fit."""
     raw = os.environ.get(COEXIST_ENV, "auto").strip().lower()
     if raw in _ENABLE_TOKENS:
         return True
@@ -313,8 +304,7 @@ def _cached_base_file(base: str, filename: str) -> Optional[Path]:
 
 
 def fallback_shift_control(family: Any, status: dict[str, Any]) -> Optional[dict]:
-    """The ``shift_control`` diffusers reports once it loads this pick, built from the cached base scheduler config
-    with the same load-time ComfyUI shift. None when the config is not on disk (status never downloads)."""
+    """The ``shift_control`` diffusers reports once it loads this pick, built from the cached base scheduler config."""
     import json
 
     from core.inference.diffusion_content import content_variant_hint
@@ -334,7 +324,6 @@ def fallback_shift_control(family: Any, status: dict[str, Any]) -> Optional[dict
     index_path = _cached_base_file(base, "model_index.json")
     if index_path is not None:
         index = json.loads(index_path.read_text(encoding = "utf-8"))
-        # A shipped sampling grid: diffusers keeps its scheduler and hides the control.
         if isinstance(index, dict) and valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY)):
             return None
     config_path = _cached_base_file(base, _SCHEDULER_CONFIG)
@@ -361,7 +350,6 @@ def fallback_shift_control(family: Any, status: dict[str, Any]) -> Optional[dict
     return shift_control(node, pipe.scheduler)
 
 
-# Taken from the fallback only when the MLX variant drops CFG; one that applies it keeps its own thresholds.
 _GUIDANCE_KEYS = ("supports_guidance", "supports_negative_prompt", "negative_prompt_min_guidance")
 
 
@@ -432,7 +420,6 @@ class RoutedMlxEngine:
         self._epoch = 0
         # Replacement loads between their first epoch bump and registering their options: no fallback registers.
         self._replacing = 0
-        # diffusers holds a fallback copy of THIS load (the diffusers singleton is shared with plain diffusers loads).
         self._diffusers_ours = False
         self._mlx_dropped = False
         self._origin_identity: Any = None
@@ -440,7 +427,6 @@ class RoutedMlxEngine:
         self._serving: Optional[str] = None
         self._last: Optional[dict[str, Any]] = None
         self._fallback_cancel: Optional[threading.Event] = None
-        # Set when the in-flight fallback load has finished or torn itself down; unload() waits on it.
         self._fallback_done: Optional[threading.Event] = None
         self._active_generate_account: Optional[str] = None
         self.generate = _RoutedGenerate(self)
@@ -518,8 +504,7 @@ class RoutedMlxEngine:
         return fits
 
     def _drain_fallback(self, *, replacing: bool = False) -> bool:
-        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``.
-        ``replacing`` raises the replacement fence in the same step as the epoch bump."""
+        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``."""
         with self._lock:
             self._epoch += 1
             if replacing:
@@ -535,8 +520,7 @@ class RoutedMlxEngine:
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
         """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
-        # Fenced until this load's options are saved: a request routed meanwhile saw the old model resident and
-        # would load the old options into diffusers (or unload the new MLX load).
+        # Fenced until this load's options are saved, so no request routes on the old model's options.
         ours = self._drain_fallback(replacing = True)
         try:
             if ours:
@@ -565,8 +549,7 @@ class RoutedMlxEngine:
         return kwargs
 
     def _load_fallback(self, *, unload_mlx: bool, epoch: int) -> Any:
-        """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit.
-        Returns the diffusers copy's identity, read while ``epoch`` was still current."""
+        """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit."""
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
         from core.inference.diffusion_memory import (
             UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -575,15 +558,13 @@ class RoutedMlxEngine:
 
         mlx, diffusers = self._mlx(), self._diffusers()
         cancel, done = threading.Event(), threading.Event()
-        # Epoch check and registration are one step: a new load either sees this fallback in
-        # _drain_fallback (and waits for it) or this request sees the new epoch and touches nothing.
+        # Epoch check and registration are atomic: a new load drains this fallback, or this request sees the new epoch.
         with self._lock:
             if self._epoch != epoch or self._replacing:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             self._fallback_cancel = cancel
             self._fallback_done = done
             self._active_generate_account = current_account_id()
-        # A stopped tool ticket must reach the load too; the engine binds its own event only once generation starts.
         bind_generation_cancel(cancel)
         dropped = False
         started = time.perf_counter()
@@ -604,7 +585,6 @@ class RoutedMlxEngine:
             with self._lock:
                 self._diffusers_ours = True
             while True:
-                # Cancellation first: a load that turned ready after an unload or cancel is not served.
                 if cancel.is_set() or self._epoch != epoch:
                     diffusers.unload()
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -618,7 +598,6 @@ class RoutedMlxEngine:
                         f"{progress.get('error') or 'unknown error'}"
                     )
                     if progress.get("error_code") == UNIFIED_OVERSIZE_REFUSAL_CODE:
-                        # Typed so the route answers with the structured refusal, not a 500.
                         raise UnifiedMemoryShortfallError(message)
                     raise RuntimeError(message)
                 if phase is None:
@@ -642,7 +621,6 @@ class RoutedMlxEngine:
                 if restore:
                     self._mlx_dropped = False
             if restore:
-                # The model was MLX's before this request: bring it back rather than leave nothing loaded.
                 try:
                     restore_kwargs = dict(self._load_kwargs or {})
                     mlx.begin_load(restore_kwargs.pop("repo_id"), **restore_kwargs)
@@ -712,7 +690,6 @@ class RoutedMlxEngine:
                 coexist = coexist,
             )
             if blocker and route.engine == ENGINE_MLX and not mlx_resident:
-                # Nothing to serve it from (no model, or one still loading): the 409, not MLX's feature refusal.
                 raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
             snapshot: dict[str, Any] = {}
             if expected is not None:
@@ -721,21 +698,16 @@ class RoutedMlxEngine:
                 if accepted and expected not in accepted:
                     raise DiffusionModelReplacedError(expected, accepted[0])
             if route.load_diffusers and (mlx.load_progress() or {}).get("phase") != "ready":
-                # A replacement load is pending (or failed) with the old model still resident: the saved load
-                # options are the replacement's, so a fallback now would serve a different model.
                 raise RuntimeError(
                     "A diffusion load is in progress; retry once it finishes or load the model again."
                 )
             if blocker and route.engine == ENGINE_MLX and mlx_resident:
                 mlx_call = {k: v for k, v in kwargs.items() if k in mlx_params}
                 if request_blocker(mlx_call, family = getattr(family, "name", None)) is None:
-                    # The option MLX lacks would be filtered out before MLX could refuse it: refuse here.
                     raise ValueError(
                         f"{blocker[0].upper()}{blocker[1:]} is not supported on the MLX engine, and "
                         "this install has no diffusers pipeline for the model to fall back to."
                     )
-            # The served engine's identity from the validated snapshot (or the fallback copy of that load), never
-            # a later read: a load replacing the model after the check is then refused by the engine itself.
             own = snapshot.get(route.engine, expected) if expected is not None else None
             if route.load_diffusers:
                 logger.info("mlx_routing.fallback: %s", route.reason)
@@ -790,8 +762,7 @@ class RoutedMlxEngine:
         return self._mlx().cancel_generate(expected_account = expected_account)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
-        # The fallback drains first and stays fenced until the teardown ends: one failing after MLX was freed would
-        # otherwise see its own epoch and reload MLX, and none may register while both engines are torn down.
+        # Drain the fallback first and stay fenced until teardown ends, so none reloads MLX or registers meanwhile.
         if expected_account is not None:
             with self._lock:
                 foreign = (
@@ -855,7 +826,6 @@ class RoutedMlxEngine:
         return self._repo_ids("loaded_repo_ids")
 
     def download_plan(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
-        # MLX opens the diffusers GGUF plan's files, which are also what the diffusers fallback opens.
         return self._mlx().download_plan(repo_id, **kwargs)
 
     def preflight_base_access(self, *args: Any, **kwargs: Any) -> Any:

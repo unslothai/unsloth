@@ -380,8 +380,7 @@ MLX_FORCE = "force"
 
 
 def mlx_mode() -> str:
-    """``UNSLOTH_DIFFUSION_MLX``: unset / ``auto`` routes per request, ``1`` forces the MLX engine, ``0`` (or any value
-    it does not know) keeps it off."""
+    """``UNSLOTH_DIFFUSION_MLX``: unset / ``auto`` routes per request, ``1`` forces MLX, else off."""
     raw = os.environ.get("UNSLOTH_DIFFUSION_MLX", "auto").strip().lower()
     if raw in ("", "auto"):
         return MLX_AUTO
@@ -485,7 +484,6 @@ def mlx_selection(
     if mode == MLX_OFF:
         return False, None
     if mode == MLX_AUTO and _mlx_host_refusal():
-        # The default on every host: only an Apple Silicon Mac is ever told why MLX was not used.
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
     if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
@@ -547,9 +545,7 @@ def _refuse_lora_fallback(
     gguf_filename: Optional[str],
     engine: Optional[str],
 ) -> None:
-    """ValueError, before anything is unloaded, when a FORCED MLX engine would serve this pick but for its LoRAs and
-    the engine the load falls back to cannot apply them either (diffusers on a GGUF, or a native family without
-    LoRA). In auto the LoRA load keeps the host's own engine and behaviour, as without MLX."""
+    """ValueError, before anything is unloaded, when a FORCED MLX engine would serve this pick but for its LoRAs."""
     if not with_loras or mlx_mode() != MLX_FORCE:
         return
     if not mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = engine)[0]:
@@ -652,7 +648,6 @@ def cancel_generation_for_account(account_id: str) -> bool:
         # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
             cancelled = True
-    # The routed engine owns a generation only while loading its fallback; its targets are scanned above.
     routing = sys.modules.get("core.inference.mlx_diffusion_routing")
     routed = getattr(routing, "_routed_mlx_engine", None) if routing is not None else None
     if routed is not None and routed._active_generate_account == account_id:

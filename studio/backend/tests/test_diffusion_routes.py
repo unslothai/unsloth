@@ -740,7 +740,6 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
 
 
 def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monkeypatch):
-    # A fallback engine the request needed (MLX routing on a Mac) refused by the unified-memory load guard.
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         UNIFIED_OVERSIZE_REFUSAL_CODE,

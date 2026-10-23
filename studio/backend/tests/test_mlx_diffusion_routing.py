@@ -174,7 +174,6 @@ def rig(monkeypatch):
     monkeypatch.setattr(families, "family_pipeline_available", lambda _f: True)
     log: list = []
     mlx = _Mlx("mlx", log, base = "Tongyi-MAI/Z-Image-Turbo")
-    # diffusers resolves the base its own way: identity checks must not depend on the two agreeing.
     diffusers = _Diffusers("diffusers", log, base = "unsloth/Z-Image-Turbo")
     fit = {"coexist": False}
     engine = routing.RoutedMlxEngine(
@@ -221,7 +220,6 @@ def test_plain_txt2img_runs_on_mlx_and_never_loads_diffusers(rig):
     assert result["engine"] == "mlx"
     assert result["images"] == ["mlx-image"]
     assert rig.log == [("mlx", "generate")]
-    # Options MLX does not take never reach it.
     assert set(result["kwargs"]) == {"prompt", "width", "height", "seed"}
     routing_status = rig.engine.status()["engine_routing"]
     assert routing_status["resident"] == ["mlx"]
@@ -234,14 +232,12 @@ def test_img2img_after_txt2img_unloads_mlx_first_then_serves_from_diffusers(rig)
     result = _img2img(rig.engine)
     assert result["engine"] == "diffusers"
     assert result["kwargs"]["init_image"] == "data:image/png;base64,AAAA"
-    # MLX leaves BEFORE diffusers loads: a 16 GB Mac never holds both.
     assert rig.log == [
         ("mlx", "generate"),
         ("mlx", "unload"),
         ("diffusers", "load"),
         ("diffusers", "generate"),
     ]
-    # The fallback loads the same pick with the same load options.
     assert rig.diffusers.load_kwargs == {
         "repo_id": "unsloth/Z-Image-Turbo-GGUF",
         "gguf_filename": "z-image-turbo-Q4_0.gguf",
@@ -262,7 +258,6 @@ def test_after_a_fallback_that_did_not_fit_txt2img_stays_on_diffusers(rig):
     rig.log.clear()
     result = _txt2img(rig.engine)
     assert result["engine"] == "diffusers"
-    # No reload ping-pong.
     assert rig.log == [("diffusers", "generate")]
     routing_status = rig.engine.status()["engine_routing"]
     assert routing_status["txt2img_engine"] == "diffusers"
@@ -338,9 +333,7 @@ def test_neutral_values_stay_on_mlx(rig, extra):
         ("img2img", True, False, True, True, ("diffusers", True, False)),
         ("img2img", True, True, True, True, ("diffusers", False, False)),
         ("img2img", False, True, True, False, ("diffusers", False, False)),
-        # No diffusers pipeline for the family here: MLX answers with its own refusal.
         ("img2img", True, False, False, False, ("mlx", False, False)),
-        # A load in flight: nothing to fall back from yet.
         ("img2img", False, False, True, False, ("mlx", False, False)),
     ],
 )
@@ -360,7 +353,6 @@ def test_a_family_diffusers_cannot_build_keeps_the_mlx_refusal(rig, monkeypatch)
     with pytest.raises(ValueError, match = "text-to-image only"):
         _img2img(rig.engine)
     assert ("diffusers", "load") not in rig.log
-    # And the status does not advertise workflows nothing here can run.
     assert rig.engine.status()["workflows"] == ["txt2img"]
 
 
@@ -509,7 +501,6 @@ def test_the_original_identity_is_accepted_after_the_fallback(rig):
         "unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image-Turbo", "z-image"
     )
     assert _txt2img(rig.engine, expected_load = mlx_identity)["engine"] == "mlx"
-    # The client still holds the MLX status's identity; diffusers resolved a different base.
     assert _img2img(rig.engine, expected_load = mlx_identity)["engine"] == "diffusers"
     assert _txt2img(rig.engine, expected_load = mlx_identity)["engine"] == "diffusers"
 
@@ -551,7 +542,6 @@ def test_a_scoped_unload_never_cancels_another_accounts_fallback(rig):
 @pytest.mark.parametrize("field", ["transformer_quant", "text_encoder_quant"])
 @pytest.mark.parametrize("value", ["none", "off", "NONE"])
 def test_a_pinned_original_precision_keeps_the_load_on_diffusers(field, value):
-    # none/off pin the released GGUF / bf16 weights; MLX picks its own quant plan, so it cannot honour them.
     blocker = routing.load_blocker(**{field: value})
     assert blocker and value in blocker
 
@@ -574,7 +564,6 @@ def test_unload_forwards_the_account_scope_to_the_fallback(rig):
 
 
 def test_a_plain_diffusers_load_is_never_unloaded_as_a_fallback(rig):
-    # The diffusers singleton is shared: one that the routed engine did not load is not its to free.
     rig.diffusers.begin_load("someone/else")
     rig.log.clear()
     rig.engine.unload()
@@ -600,7 +589,6 @@ def test_generate_signature_is_the_union_of_both_engines(rig):
     ):
         assert name in params
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
-    # _sd_controls_kwargs reads the engine off the bound callable.
     assert rig.engine.generate.__self__ is rig.engine
     assert rig.engine.parses_prompt_attention is False
 
@@ -615,8 +603,6 @@ def test_load_blocker_matrix():
 
 
 def test_unload_during_the_fallback_begin_load_waits_for_its_teardown(rig):
-    # diffusers' begin_load validates synchronously before its worker starts; an unload in that window
-    # must not return while the fallback can still allocate, nor may the fallback then generate.
     entered, release = threading.Event(), threading.Event()
     real_begin_load = rig.diffusers.begin_load
 
@@ -666,7 +652,6 @@ def test_a_cancel_is_honoured_even_when_the_fallback_turns_ready(rig):
     deadline = time.time() + 5
     while rig.engine._fallback_cancel is None and time.time() < deadline:
         time.sleep(0.005)
-    # The cancel and the load finishing land inside one poll interval.
     rig.engine._fallback_cancel.set()
     rig.diffusers._loading = False
     rig.diffusers._state = SimpleNamespace(
@@ -682,7 +667,6 @@ def test_a_cancel_is_honoured_even_when_the_fallback_turns_ready(rig):
 
 
 def test_no_fallback_while_a_replacement_mlx_load_is_pending(rig):
-    # MLX keeps model A resident while model B loads; the saved load options are already B's.
     a_identity = load_identity("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image-Turbo", "z-image")
     rig.mlx.hang_load = True
     real_begin_load = rig.mlx.begin_load
@@ -709,12 +693,10 @@ def test_an_option_mlx_never_receives_is_refused_without_a_fallback(rig, monkeyp
     with pytest.raises(ValueError, match = "shift override"):
         _txt2img(rig.engine, shift = 3.0)
     assert ("mlx", "generate") not in rig.log
-    # Neutral values still run.
     assert _txt2img(rig.engine, sampler = "default")["engine"] == "mlx"
 
 
 def test_a_load_replacing_the_model_after_the_identity_check_is_refused(rig):
-    # The identity forwarded to the engine is the one validated, not a later read that may already be B's.
     a_identity = load_identity("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image-Turbo", "z-image")
     entered, release = threading.Event(), threading.Event()
     real_accepted = rig.engine._accepted_identities
@@ -746,7 +728,6 @@ def test_a_load_replacing_the_model_after_the_identity_check_is_refused(rig):
 
 
 def test_a_superseded_fallback_never_unloads_the_new_load(rig):
-    # A new load landing before the fallback registers must not have its MLX model unloaded by it.
     entered, release = threading.Event(), threading.Event()
     real_fallback = rig.engine._load_fallback
 
@@ -806,8 +787,7 @@ def _in_thread(fn):
 
 
 def test_no_fallback_registers_while_a_replacement_is_being_set_up(rig):
-    # The replacement bumped the epoch but has not registered its MLX load or options: the old model still
-    # reports ready, so a fallback now would load the old options into diffusers while MLX moves on.
+    # Epoch bumped, options not yet registered: a fallback now would load stale options.
     entered, release = _pause_mlx_begin_load(rig)
     replacer, replaced = _in_thread(
         lambda: rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
@@ -908,8 +888,7 @@ def test_explicit_guidance_without_a_fallback_is_refused_not_dropped(rig, monkey
 
 
 def test_status_offers_the_fallback_guidance_controls_over_a_turbo_mlx_variant(rig, monkeypatch):
-    # The Images page hides the guidance slider and negative prompt on supports_guidance / supports_negative_prompt
-    # False: a guided request routes to diffusers, so the routed status advertises what diffusers serves.
+    # A guided request routes to diffusers, so the routed status advertises what diffusers serves.
     _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = False)
     z_image = next(f for f in families._FAMILIES if f.name == "z-image")
     monkeypatch.setattr(rig.engine, "_family", lambda: z_image)
@@ -919,7 +898,6 @@ def test_status_offers_the_fallback_guidance_controls_over_a_turbo_mlx_variant(r
     assert status["supports_guidance"] is True
     assert status["supports_negative_prompt"] is True
     assert status["negative_prompt_min_guidance"] == 0.0
-    # The engine choice still reads the MLX variant itself.
     assert rig.engine._mlx_guidance() is False
     assert _txt2img(rig.engine, guidance = 4.0, negative_prompt = "blurry")["engine"] == "diffusers"
 
@@ -943,8 +921,6 @@ def test_an_mlx_variant_that_applies_guidance_keeps_its_own_thresholds(rig, monk
 
 
 def test_an_unload_racing_a_failing_fallback_never_leaves_mlx_resident(rig):
-    # The fallback dropped MLX and is loading diffusers; it fails just after unload freed MLX. It must not
-    # restore MLX: the unload returns with nothing resident.
     rig.diffusers.hang_load = True
     worker, outcome = _in_thread(lambda: _img2img(rig.engine))
     deadline = time.time() + 5
@@ -987,11 +963,9 @@ def test_a_unified_memory_refusal_of_the_fallback_keeps_its_error_code(rig):
     with pytest.raises(RuntimeError, match = "unified memory") as excinfo:
         _img2img(rig.engine)
     assert unified_memory_refusal_code(excinfo.value) == UNIFIED_OVERSIZE_REFUSAL_CODE
-    # MLX is restored as for any other failed fallback.
     assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
 
 
-# The shipped Tongyi-MAI/Z-Image-Turbo scheduler config, and the undistilled base's (shift 6, ComfyUI samples at 3).
 _Z_TURBO_SCHEDULER = {
     "_class_name": "FlowMatchEulerDiscreteScheduler",
     "_diffusers_version": "0.36.0.dev0",
@@ -1078,7 +1052,6 @@ def test_fallback_shift_control_reads_a_local_base_dir(rig, monkeypatch, tmp_pat
 
 
 def test_status_hides_shift_when_the_scheduler_config_is_not_cached(rig, monkeypatch, tmp_path):
-    # Status never downloads: an uncached base keeps the control hidden, as before.
     _z_image_rig(rig, monkeypatch)
     _cache_base(monkeypatch, tmp_path, "Tongyi-MAI/Z-Image-Turbo", {"model_index.json": {}})
     assert rig.engine.status().get("shift_control") is None
