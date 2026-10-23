@@ -302,7 +302,6 @@ const pendingRunStartReadyByMessageId = new Map<
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
-/** assistant-ui's fileMatchesAccept, which the package does not export. */
 function matchesAccept(file: { name: string; type: string }, accept: string): boolean {
   if (accept === "*") return true;
   const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
@@ -330,7 +329,7 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     this.getThreadIds = getThreadIds;
   }
 
-  // "*": the runtime's own accept check refuses a file with only a console error.
+  // "*": the runtime's own check refuses silently, so add() toasts instead.
   readonly accept = "*";
 
   add(state: { file: File }) {

@@ -512,7 +512,6 @@ pub fn is_text_attachment_name(path: &Path) -> bool {
         .is_some_and(|name| TEXT_ATTACHMENT_NAMES.contains(&without_duplicate_suffix(&name)))
 }
 
-/// Strips duplicate-copy suffixes ("license(1)", "readme copy 2"); mirrors DUPLICATE_SUFFIX_RE.
 fn without_duplicate_suffix(name: &str) -> &str {
     let mut rest = name;
     while let Some(shorter) = strip_counter_suffix(rest).or_else(|| strip_copy_suffix(rest)) {
