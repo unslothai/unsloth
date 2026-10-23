@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Give Intel's XPU Triton a C++ compiler it can drive on Windows (#14807).
-
-XPU Triton builds its SYCL helpers with `icpx`, else `cl` from PATH, else `$CXX`. Studio is not
-launched from a Developer Command Prompt, so `cl` is not on PATH and the first Triton kernel fails
-with "Failed to find C++ compiler". Pointing CXX at cl does not help on its own: Triton picks MSVC
-flags only when the compiler path contains the literal `cl.EXE`, so `cl.exe` gets GNU flags
-(`/Wno-psabi`, D8021), and a GNU driver like clang++ gets the MSVC `/LIBPATH:` Triton always adds
-on Windows. So: load the Visual Studio environment when it is missing, and hand Triton cl spelled
-the way it recognises.
-"""
+"""Windows XPU Triton builds its helpers with icpx, else cl, else $CXX, and uses MSVC flags only when
+the path contains `cl.EXE`; Studio is not started from a Developer Prompt, so load vcvars and hand it
+`cl.EXE`, plus the Level Zero SDK the helpers link against (#14807)."""
 
 from __future__ import annotations
 
@@ -28,13 +21,11 @@ from ._msvc_env import _have_crt_headers
 
 logger = logging.getLogger(__name__)
 
-# The environment cl needs to compile and link. Nothing else from vcvars is taken.
 _VCVARS_KEYS = ("PATH", "INCLUDE", "LIB", "LIBPATH")
 
 
 def _triton_is_xpu() -> bool:
-    """Intel's fork is the only Triton with an `intel` backend (triton-windows ships amd + nvidia). The
-    gate has imported it already; a directory check, since `packages_distributions()` scans every dist."""
+    """Only Intel's fork ships an `intel` backend; cheaper than `packages_distributions()`."""
     path = getattr(sys.modules.get("triton"), "__file__", None)
     return bool(path) and os.path.isdir(os.path.join(os.path.dirname(path), "backends", "intel"))
 
@@ -52,8 +43,7 @@ def _is_icpx(path: str) -> bool:
 
 
 def _triton_cl_spelling(cl_path: str) -> str:
-    """The same file, spelled so Triton's case-sensitive `"cl.EXE" in cc` test picks MSVC flags.
-    Windows paths are case-insensitive, so only the spelling changes."""
+    """Triton's MSVC test is a case-sensitive `"cl.EXE" in cc`; Windows paths are not."""
     return os.path.join(os.path.dirname(cl_path), "cl.EXE")
 
 
@@ -62,15 +52,14 @@ def _msvc_environment_loaded() -> bool:
 
 
 def _level_zero_sdk_found() -> bool:
-    """Triton's helpers include `level_zero/ze_api.h` and link `ze_loader.lib`, which the GPU driver and
-    the pip wheels do not ship. Triton looks under LEVEL_ZERO_V1_SDK_PATH, else ZE_PATH; cl also reads INCLUDE."""
+    """Neither the GPU driver nor the wheels ship it; Triton reads LEVEL_ZERO_V1_SDK_PATH, else ZE_PATH."""
     root = os.environ.get("LEVEL_ZERO_V1_SDK_PATH") or os.environ.get("ZE_PATH")
     dirs = [os.path.join(root, "include")] if root else []
     dirs += os.environ.get("INCLUDE", "").split(os.pathsep)
     return any(d and os.path.isfile(os.path.join(d, "level_zero", "ze_api.h")) for d in dirs)
 
 
-# The official Windows SDK (MIT): headers + ze_loader.lib only, 317 KB. Pinned by hash, fetched once.
+# Official Windows SDK (MIT, 317 KB), pinned by hash.
 _L0_VERSION = "1.34.0"
 _L0_URL = (
     "https://github.com/oneapi-src/level-zero/releases/download/"
@@ -109,7 +98,7 @@ def _fetch_level_zero_sdk(dest: Path) -> None:
                 target = staging.joinpath(*parts)
                 target.parent.mkdir(parents = True, exist_ok = True)
                 target.write_bytes(archive.read(member))
-        # Another worker may have won the race; its copy is the same pinned archive.
+        # A concurrent worker may have installed the same pinned archive first.
         try:
             os.replace(staging, dest)
         except OSError:
@@ -121,7 +110,6 @@ def _fetch_level_zero_sdk(dest: Path) -> None:
 
 
 def _provide_level_zero_sdk() -> str | None:
-    """Studio's cached copy of the SDK, fetched on first need unless installs are offline; else None."""
     try:
         from utils.paths.storage_roots import cache_root  # noqa: PLC0415
         from utils.utils import package_installs_offline  # noqa: PLC0415
@@ -136,7 +124,6 @@ def _provide_level_zero_sdk() -> str | None:
 
 
 def _vcvars_path() -> str | None:
-    """vcvars64.bat of the newest Visual Studio with the x64 C++ tools, found the way setup.ps1 does."""
     root = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
     vswhere = os.path.join(root, "Microsoft Visual Studio", "Installer", "vswhere.exe")
     if not os.path.isfile(vswhere):
@@ -169,8 +156,7 @@ def _vcvars_path() -> str | None:
 
 
 def _vcvars_environment(vcvars: str) -> dict | None:
-    """The variables vcvars64.bat sets, read back from the shell that ran it. `/u` makes `set` write
-    UTF-16: the default OEM code page would garble a non-ASCII PATH entry (setuptools' _get_vc_env)."""
+    """`/u`: UTF-16 `set` output, else the OEM code page garbles non-ASCII PATH entries (setuptools)."""
     try:
         done = subprocess.run(
             f'cmd /d /u /s /c ""{vcvars}" >nul 2>&1 && set"',
