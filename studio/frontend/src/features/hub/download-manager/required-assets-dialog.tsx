@@ -174,6 +174,7 @@ function DownloadChoice({
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
         <AlertDialogAction
+          variant="dark"
           disabled={checking}
           className="w-full sm:w-32"
           onClick={(e) => {

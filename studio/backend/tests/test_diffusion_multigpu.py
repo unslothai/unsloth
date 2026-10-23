@@ -482,6 +482,42 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == before
 
 
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+    """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
+    import importlib
+
+    try:
+        diffusers = importlib.import_module("diffusers")
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    ModularPipeline = getattr(diffusers, "ModularPipeline", None)
+    if ModularPipeline is None:
+        pytest.skip("this diffusers has no modular pipelines")
+
+    class Mod(torch.nn.Linear):
+        @property
+        def device(self):
+            return self.weight.device
+
+    class Pipe(ModularPipeline):
+        def __init__(self, text_encoder, transformer):
+            self._component_specs = {"text_encoder": None, "transformer": None}
+            self.text_encoder = text_encoder
+            self.transformer = transformer
+
+    text_encoder = Mod(1, 1).to("meta")  # the secondary card of the split
+    transformer = Mod(1, 1)  # the primary
+    pipe = Pipe(text_encoder, transformer)
+    assert pipe.device == torch.device("meta")  # stock: the first component's card
+    mg.install_execution_device_patch()
+    transformer._unsloth_split_home = torch.device("cpu")
+    assert pipe._execution_device == torch.device("cpu")
+    assert pipe.device == torch.device("cpu")
+    del transformer._unsloth_split_home
+    assert pipe.device == torch.device("meta")  # no split: diffusers' own answer again
+
+
 def test_place_split_and_fallback(monkeypatch):
     class Pipe:
         def __init__(self):
@@ -2377,6 +2413,46 @@ def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_th
     assert torch.equal(out, reference) and router.stats["replica_calls"] == 3
 
 
+def test_router_keeps_the_forward_signature_callers_filter_on():
+    """FLUX.3's modular denoise step filters kwargs by forward's signature; a bare router dropped img_ids/txt_ids."""
+    import inspect
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states = None,
+            timestep = None,
+            img_ids = None,
+            txt_ids = None,
+            return_dict = True,
+        ):
+            assert img_ids is not None and txt_ids is not None, "the ids were filtered out"
+            return (self.lin(hidden_states) + img_ids.sum() + txt_ids.sum(),)
+
+    dit = Dit()
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu")
+    dit.forward = router
+    fields = {"img_ids": torch.zeros(2, 4), "txt_ids": torch.zeros(3, 4), "guidance_hint": 1.0}
+    # the call diffusers' modular_pipelines/flux3/denoise.py makes
+    accepted = set(inspect.signature(dit.forward).parameters)
+    kwargs = {k: v for k, v in fields.items() if k in accepted}
+    assert sorted(kwargs) == ["img_ids", "txt_ids"]
+    x = torch.randn(1, 4)
+    out = dit(
+        hidden_states = x,
+        encoder_hidden_states = None,
+        timestep = torch.ones(1),
+        return_dict = False,
+        **kwargs,
+    )[0]
+    assert torch.equal(out, dit.lin(x))
+
+
 def test_replica_blocks_get_their_own_compile_guard():
     from core.inference.diffusion_speed import guard_compiled_blocks
 
@@ -2437,6 +2513,19 @@ def test_probe_sees_an_in_place_edit_of_an_inference_tensor():
     assert mg.weights_fingerprint(dit) == fp
     assert probe is not None and mg.weights_probe(dit) != probe
     assert mg.weights_probe(_Dit()) is None
+
+
+def test_probe_stays_inside_inference_weights_past_two_to_the_24_bytes():
+    # 3072 x 3072 bf16 = 18,874,368 bytes: a float32 linspace puts its last sample at n, one past the end
+    with torch.inference_mode():
+        dit = torch.nn.Linear(3072, 3072, bias = False, dtype = torch.bfloat16)
+        dit.weight.fill_(1.0)
+        dit.weight.view(-1)[-1] = 2.0
+    probe = mg.weights_probe(dit)
+    assert probe is not None and len(probe) == mg._PROBE_SAMPLES
+    with torch.inference_mode():
+        dit.weight.view(-1)[-1] = -2.0  # flips the high (last) byte of the last element
+    assert mg.weights_probe(dit) != probe  # the last byte is sampled
 
 
 def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica_on_the_next_render():

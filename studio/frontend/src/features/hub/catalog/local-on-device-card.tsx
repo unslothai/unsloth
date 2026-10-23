@@ -142,8 +142,8 @@ function BaseModelReference({
   const hfEndpoint = useHfEndpoint();
   const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
-      <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-muted/35 px-3 py-2">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-background/70 text-muted-foreground">
         <HugeiconsIcon
           icon={LayerIcon}
           strokeWidth={1.75}
@@ -484,7 +484,7 @@ export function LocalOnDeviceCard({
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -514,7 +514,7 @@ export function LocalOnDeviceCard({
                     <button
                       type="button"
                       disabled={currentVariantState.loading || runPending}
-                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -565,7 +565,7 @@ export function LocalOnDeviceCard({
                               setVariantOpen(false);
                             }}
                             className={cn(
-                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
                               isSelected
                                 ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
                                 : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",

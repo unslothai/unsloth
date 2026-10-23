@@ -49,9 +49,9 @@ import {
   CursorPointer02Icon,
   Delete02Icon,
   FlashIcon,
-  Key01Icon,
   PauseIcon,
   PlayIcon,
+  PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -486,7 +486,7 @@ const RequestRow = memo(function RequestRow({
   // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
-      <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-lg px-3 py-2">
+      <div className="flex w-full min-w-0 flex-col gap-0.5 rounded-md px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
@@ -525,7 +525,7 @@ const RequestRow = memo(function RequestRow({
       onClick={() => onSelect(entry.id)}
       aria-current={selected}
       className={cn(
-        "flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring/70",
+        "flex w-full min-w-0 flex-col gap-1 rounded-md px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring/70",
         selected ? "bg-muted" : "hover:bg-muted/50",
       )}
     >
@@ -845,7 +845,7 @@ function QuickStart({
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span
         className={cn(
-          "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+          "flex size-10 items-center justify-center rounded-md text-muted-foreground",
           INSET,
         )}
       >
@@ -885,7 +885,7 @@ function QuickStart({
         onClick={openApiSettings}
         className="h-8 gap-1.5 rounded-full"
       >
-        <HugeiconsIcon icon={Key01Icon} strokeWidth={1.75} className="size-4" />
+        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         Create an API key and see more examples
       </Button>
     </div>
@@ -1306,7 +1306,7 @@ export function ApiMonitorPage(): ReactElement {
   );
 
   return (
-    <main className="api-rounding mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
@@ -1745,7 +1745,7 @@ export function ApiMonitorPage(): ReactElement {
               {loading ? (
                 <div className="flex flex-col gap-2 p-1.5">
                   {[0, 1, 2].map((i) => (
-                    <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                    <Skeleton key={i} className="h-16 w-full rounded-md" />
                   ))}
                 </div>
               ) : visible.length === 0 ? (
@@ -1789,7 +1789,7 @@ export function ApiMonitorPage(): ReactElement {
                 <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
                   <span
                     className={cn(
-                      "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+                      "flex size-10 items-center justify-center rounded-md text-muted-foreground",
                       INSET,
                     )}
                   >

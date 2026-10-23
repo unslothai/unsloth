@@ -167,14 +167,12 @@ def _graphs_engaged(pipe: Any, denoiser: Any) -> bool:
             return True
         if _live_graph_wrapper(denoiser):
             return True
-        # A compile that failed at its first forward left this load eager (the guard cleared the compiled blocks but
-        # its marks stay on the transformer).
+        # A compile that failed at its first forward left marks on the transformer but runs eager.
         guard = getattr(denoiser, "__dict__", {}).get("_unsloth_compile_guard")
         if guard is not None and getattr(guard, "error", None):
             return False
         if compiled_denoiser(denoiser) is not None:
             return True
-        # A block whose instance forward was replaced by a torch.compile'd one.
         return any(
             hasattr(getattr(sub, "__dict__", {}).get("forward"), "_torchdynamo_orig_callable")
             for sub in denoiser.modules()
