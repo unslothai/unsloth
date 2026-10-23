@@ -34507,7 +34507,21 @@ class LlamaCppBackend:
                                     for i in range(_spawn_device_count)
                                 ]
                                 _spawn_output_dev = _spawn_pinned_at
-                            if not _spawn_devices and _extra_args_draft_device_pin(run_cmd) is None:
+                            # Free memory is keyed by nvidia-smi's PCI order; a child under
+                            # another CUDA_DEVICE_ORDER (FASTEST_FIRST is CUDA's default)
+                            # enumerates its own way, so positional shares could land on the
+                            # wrong cards. No reserve then, as before.
+                            _spawn_order_unproven = (
+                                self._GPU_IDS_ARE_PCI_INDICES is True
+                                and str(env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+                                != "PCI_BUS_ID"
+                                and self._smi_uuid_mask_order() is None
+                            )
+                            if (
+                                not _spawn_devices
+                                and _extra_args_draft_device_pin(run_cmd) is None
+                                and not _spawn_order_unproven
+                            ):
                                 _free_by_idx = dict(gpus or _detected_gpus or ())
                                 if (
                                     _child_gpu_physical_ids is None

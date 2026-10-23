@@ -105,3 +105,19 @@ def test_a_draft_with_its_own_head_keeps_its_graph_on_its_own_output_card(tmp_pa
         _r7._dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"])
     )
     assert out >= 1024 + 3 * 1024
+
+
+@pytest.mark.parametrize("order, per_card", [("FASTEST_FIRST", False), ("PCI_BUS_ID", True)])
+def test_per_card_shares_need_a_provable_device_order(tmp_path, monkeypatch, order, per_card):
+    """nvidia-smi keys free memory by PCI order; under FASTEST_FIRST the child enumerates its
+    own way, so a positional list could put the large card's share on the small one."""
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    B = _lc.LlamaCppBackend
+    monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = ((0, 80_000, 80_000), (1, 8_000, 8_000)))
+    backend._arch_gate_survivors = lambda binary = None: []
+    margins = _r7._margins(_r7._dspark(backend, gguf, tmp_path))
+    assert (len(margins) == 2) is per_card
