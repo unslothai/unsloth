@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -461,12 +462,15 @@ async def load_llm(
             alongside,
             kv_cache_type,
             gpu_layers,
+            # Explicit load settings are part of the load too: a load with other ones is not one to follow.
+            json.dumps(extra_body, sort_keys = True, default = str) if extra_body else None,
         ),
         hub_token = token,
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
         attach = not max_seq_length
         and load_in_4bit
+        and not extra_body
         and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 
