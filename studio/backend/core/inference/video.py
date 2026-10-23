@@ -1896,6 +1896,13 @@ def _h3_budgeted_launch_flags(
     return out
 
 
+class _H3UnpinnedMultiCardReserve(int):
+    """The smallest card's VRAM Budget reserve on an unpinned multi-card H3 load (``_h3_card_reserve_bytes`` with
+    ``single_card_only``). Tags the reading so :func:`_h3_spare_user_reserve` never emits a scalar negative spare
+    there: sd.cpp resolves that spare against whichever card it renders on, so the smallest card's reserve would
+    under-budget every larger card."""
+
+
 def _h3_spare_user_reserve(
     runtime: Any,
     flags: "list[str]",
@@ -1903,17 +1910,26 @@ def _h3_spare_user_reserve(
     free: Any = None,
     read_free: bool = False,
 ) -> list[str]:
-    """``flags`` with the ``--max-vram -1`` placeholder turned into ``-(1 + reserve GiB)`` under a lowered VRAM Budget,
-    so sd.cpp's own free-VRAM reading spares the user's reserve on top of its 1 GiB (unchanged at the default, off
-    CUDA, or when the reserve is unread). ``free`` is a known-small budget-adjusted reading: at or below the 1 GiB sd.cpp
-    spares itself, its reading minus the spare leaves no graph budget and it would disable graph splitting (place the
-    whole graph, into the reserve), so that launch is refused. ``read_free`` reads ``runtime.vram_free_probe`` for that
-    check, only under a reserve (the explicit-budget kill switch, which otherwise never probes)."""
+    """``flags`` with the ``--max-vram -1`` placeholder kept within a lowered VRAM Budget (unchanged at the default,
+    off CUDA, or when the reserve is unread).
+
+    Single card: ``-(1 + reserve GiB)``, so sd.cpp's own free-VRAM reading spares the user's reserve on top of its
+    1 GiB. ``free`` is a known-small budget-adjusted reading; the launch is refused when sd.cpp's raw reading
+    (``free`` + reserve) would not exceed the ROUNDED spare actually emitted, since sd.cpp resolves that to 0 = no cap.
+
+    Unpinned multi-card (the reserve probe returns :class:`_H3UnpinnedMultiCardReserve`): never a negative spare.
+    A POSITIVE cap of the smallest budget-adjusted free reading across the visible cards less sd.cpp's 1 GiB spare,
+    rounded down: it fits the tightest card, so it fits every card sd.cpp may pick. An unread card or a smallest
+    reading leaving no cap is refused.
+
+    ``read_free`` reads ``runtime.vram_free_probe`` for those checks, only under a reserve (the explicit-budget kill
+    switch, which otherwise never probes)."""
     from .sd_cpp_args import (
         GRAPH_CUT_VRAM_FLAGS,
         graph_cut_budget_gib,
         max_vram_is_placeholder,
         max_vram_value,
+        with_max_vram_budget,
     )
 
     from .video_minimax_h3 import H3NativeMemoryRefusal
@@ -1927,36 +1943,67 @@ def _h3_spare_user_reserve(
         reserve = None
     if not reserve or int(reserve) <= 0:
         return list(flags)
+    multi_card = isinstance(reserve, _H3UnpinnedMultiCardReserve)
     if read_free:
         free_probe = getattr(runtime, "vram_free_probe", None)
         try:
             free = free_probe() if free_probe is not None else None
-        except Exception:  # noqa: BLE001 -- an unreadable card keeps the spare
+        except Exception:  # noqa: BLE001 -- an unreadable card keeps the single-card spare
             free = None
-        # Only a known-small reading feeds the refusal, as on the explicit-budget path.
-        if isinstance(free, dict):
-            small = next(
-                (v is not None for v in free.values() if graph_cut_budget_gib(v) is None), False
-            )
-        else:
-            small = free is not None and graph_cut_budget_gib(free) is None
-        free = free if small else None
-    spare_gib = float(-float(GRAPH_CUT_VRAM_FLAGS[1]))
-    readings = free.values() if isinstance(free, dict) else [free]
-    if any(
-        value is not None and int(value) <= int(spare_gib * (1 << 30)) for value in readings
-    ) or isinstance(free, dict):
-        shown = min(int(v) for v in readings if v is not None) / float(1 << 30)
-        raise H3NativeMemoryRefusal(
-            f"MiniMax-H3 has about {max(0.0, shown):.1f} GiB of VRAM left inside the VRAM Budget on the render card, "
+        if not multi_card:
+            # Only a known-small reading feeds the single-card refusal, as on the explicit-budget path.
+            if isinstance(free, dict):
+                small = next(
+                    (v is not None for v in free.values() if graph_cut_budget_gib(v) is None), False
+                )
+            else:
+                small = free is not None and graph_cut_budget_gib(free) is None
+            free = free if small else None
+
+    def _refuse(shown_bytes: Optional[int]) -> H3NativeMemoryRefusal:
+        shown = (
+            "an unreadable amount of"
+            if shown_bytes is None
+            else (f"about {max(0.0, shown_bytes / float(1 << 30)):.1f} GiB of")
+        )
+        return H3NativeMemoryRefusal(
+            f"MiniMax-H3 has {shown} VRAM left inside the VRAM Budget on the render card, "
             "too little for the graph-cut render. Free VRAM on that card, raise the VRAM Budget, or lower the "
             "resolution or duration."
         )
-    # Rounded UP to 0.01 GiB, so the spare never undercuts the reserve.
-    spare_gib += -(-int(reserve) * 100 // (1 << 30)) / 100.0
+
+    sd_spare_bytes = int(-float(GRAPH_CUT_VRAM_FLAGS[1]) * (1 << 30))
+    if multi_card:
+        readings = list(free.values()) if isinstance(free, dict) else [free]
+        if not readings or any(value is None for value in readings):
+            raise _refuse(None)
+        smallest = min(int(value) for value in readings)
+        # Rounded DOWN to 0.01 GiB, so the cap never exceeds the tightest card's budget-adjusted free less 1 GiB.
+        cap = max(0, (smallest - sd_spare_bytes) * 100 // (1 << 30)) / 100.0
+        if cap <= 0:
+            raise _refuse(smallest)
+        out = with_max_vram_budget(flags, cap)
+        logger.info(
+            "video.h3_native_vram_budget: --max-vram %s (unpinned multi-card: smallest budget-adjusted free %s "
+            "less sd.cpp's 1 GiB spare)",
+            max_vram_value(out),
+            smallest,
+        )
+        return out
+    # Rounded UP to 0.01 GiB, so the spare never undercuts the reserve; the refusal then checks THIS spare.
+    spare_hundredths = int(-float(GRAPH_CUT_VRAM_FLAGS[1]) * 100) + -(
+        -int(reserve) * 100 // (1 << 30)
+    )
+    spare_bytes = -(-spare_hundredths * (1 << 30) // 100)
+    if isinstance(free, dict):
+        known = [int(v) for v in free.values() if v is not None]
+        raise _refuse(min(known) if known else None)
+    if free is not None and int(free) + int(reserve) <= spare_bytes:
+        # sd.cpp's raw reading (budget-adjusted free + reserve) at or below the emitted spare resolves to 0 = no cap.
+        raise _refuse(int(free))
     out = list(flags)
     index = out.index("--max-vram") + 1
-    out[index] = f"-{spare_gib:.2f}"
+    out[index] = f"-{spare_hundredths // 100}.{spare_hundredths % 100:02d}"
     logger.info(
         "video.h3_native_vram_budget: --max-vram %s (sd.cpp's free reading less the VRAM Budget reserve %s)",
         out[index],
@@ -2739,11 +2786,10 @@ def _h3_card_reserve_bytes(
     single_card_only: bool = False,
 ) -> Optional[int]:
     """Bytes the user's VRAM Budget keeps free on the H3 render card: 0 at the default (no reading) and off CUDA, None
-    unread. ``single_card_only`` (unpinned): sd.cpp picks the card itself and applies the scalar ``-(1 + reserve)``
-    spare to every card, so on a multi-card box the SMALLEST card's reserve. The largest card's would exceed a
-    smaller card's whole free reading, which sd.cpp resolves to 0 = no cap at all on that card; the free probe's
-    known-small refusal (smallest budget-adjusted reading across the cards) keeps every card's spare below its
-    free reading, so each card stays capped."""
+    unread. ``single_card_only`` (unpinned) on a multi-card box: the SMALLEST card's reserve, tagged as
+    :class:`_H3UnpinnedMultiCardReserve`. sd.cpp picks the card itself and resolves one scalar ``--max-vram`` on every
+    card, so no scalar negative spare can keep every card's reserve; the tag makes the launch a positive cap from the
+    smallest budget-adjusted free reading instead (:func:`_h3_spare_user_reserve`)."""
     if device != "cuda":
         return 0
     from .diffusion_memory import user_budget_reserve_share
@@ -2766,7 +2812,10 @@ def _h3_card_reserve_bytes(
         return None
     if not totals:
         return None
-    return min(_user_reserve_bytes("cuda", total) for total in totals)
+    smallest = min(_user_reserve_bytes("cuda", total) for total in totals)
+    if single_card_only and len(devices) != 1:
+        return _H3UnpinnedMultiCardReserve(smallest)
+    return smallest
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:

@@ -382,7 +382,10 @@ GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
 
 
 def explicit_vram_budget_enabled(env: Optional[dict] = None) -> bool:
-    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading."""
+    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading for a
+    single-card or default-budget load (a lowered VRAM Budget still spares its reserve via a negative spare). An
+    unpinned multi-card load under a lowered Budget still gets a positive cap from the smallest budget-adjusted free
+    reading, or is refused: a scalar negative spare cannot keep every card's reserve."""
     import os
 
     environ = os.environ if env is None else env
