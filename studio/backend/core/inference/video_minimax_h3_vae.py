@@ -844,13 +844,27 @@ def _swiglu(x: Any) -> Any:
     return out
 
 
+def _residual_dtype(hidden_states: Any, blocks: Any) -> Any:
+    """The stock block's residual dtype: ``h + out * scale`` promotes to the anchors' dtype, so diffusers' mixed
+    precision load (bfloat16 GEMMs, float32 ``scale1`` / ``scale2``) carries a float32 stream from block 0 on."""
+    import torch
+
+    dtype = hidden_states.dtype
+    for name in ("scale1", "scale2"):
+        scale = getattr(blocks[0], name, None)
+        if isinstance(scale, torch.Tensor):
+            dtype = torch.promote_types(dtype, scale.dtype)
+    return dtype
+
+
 def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm_dtype: Any) -> Any:
     """The transformer blocks; the kernels store normed activations in ``gemm_dtype``."""
     import torch.nn.functional as F
 
     blocks = decoder.transformer_blocks
     batch, seq, dim = hidden_states.shape
-    h = hidden_states.contiguous()
+    # a float32 residual keeps the stock rounding: each add is the stock separate multiply then add in float32
+    h = hidden_states.to(_residual_dtype(hidden_states, blocks)).contiguous()
     normed = _add_rmsnorm(h, None, None, blocks[0].norm1, gemm_dtype)
     cos2 = cos.reshape(-1, cos.shape[-1])
     sin2 = sin.reshape(-1, sin.shape[-1])
@@ -874,8 +888,16 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
         if i + 1 < len(blocks):
             normed = _add_rmsnorm(h, out, block.scale2, blocks[i + 1].norm1, gemm_dtype)
         else:
-            h.addcmul_(out, block.scale2)
+            # the stock ``h + out * scale2``: a separate rounded product, not addcmul's single fused rounding
+            h.add_(out * block.scale2)
     return h
+
+
+def _weight_dtype(module: Any, default: Any) -> Any:
+    """``module.weight``'s floating dtype; ``default`` for an int8 Linear (weight dropped) or a missing one."""
+    weight = getattr(module, "weight", None)
+    dtype = getattr(weight, "dtype", None)
+    return dtype if dtype is not None and dtype.is_floating_point else default
 
 
 def _fast_decoder_forward(self: Any, hidden_states: Any) -> Any:
@@ -894,7 +916,7 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     )
     hidden_states = self.proj_in(hidden_states)
     num_patches = hidden_states.shape[1]
-    register_tokens = self.register_tokens.expand(batch_size, -1, -1)
+    register_tokens = self.register_tokens.expand(batch_size, -1, -1).to(hidden_states.dtype)
     cls_token = torch.zeros_like(hidden_states[:, :1, :])
     hidden_states = torch.cat([hidden_states, register_tokens, cls_token], dim = 1)
     grids = [
@@ -911,12 +933,15 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     q_dtype = (
         torch.get_autocast_dtype("cuda")
         if torch.is_autocast_enabled("cuda")
-        else hidden_states.dtype
+        else _weight_dtype(self.transformer_blocks[0].attn.to_q, hidden_states.dtype)
     )
     cos = cos.to(q_dtype).contiguous()
     sin = sin.to(q_dtype).contiguous()
     hidden_states = _fast_block_stack(self, hidden_states, cos, sin, q_dtype)
-    hidden_states = self.norm_out(hidden_states)
+    # stock: a float32-pinned ``norm_out`` feeds a lower-precision ``proj_out`` through an explicit cast
+    hidden_states = self.norm_out(hidden_states).to(
+        _weight_dtype(self.proj_out, hidden_states.dtype)
+    )
     hidden_states = self.proj_out(hidden_states)
     hidden_states = hidden_states[:, :num_patches, :]
     p, pt = self.patch_size, self.patch_size_t
