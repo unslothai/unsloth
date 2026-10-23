@@ -398,10 +398,11 @@ export const BUDGET = {
   // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
   // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
   // about 100 B over a local one).
-  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): +3,845 B raw /
-  // +1,207 B transfer against 2eb94bcf47 (Node 22, 98 chunks). Raised by that.
-  transferBytes: 2_087_197,
-  rawBytes: 6_928_975,
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
+  // 6,929,472 B raw / 2,087,450 B transfer merged with main at bb89072db (Node 24, 98 chunks; CI read the same
+  // 6,767.1 / 2,038.5 KB). Set to that plus about 300 B raw / 100 B transfer, as for #14568.
+  transferBytes: 2_087_550,
+  rawBytes: 6_929_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
