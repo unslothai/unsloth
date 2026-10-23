@@ -1565,6 +1565,7 @@ export const sv = {
       filteredLineCount: "{shown} av {total} rader",
       wrapLines: "Radbryt",
       jumpToLatest: "Hoppa till senaste",
+      resizeLog: "Dra för att ändra loggens storlek",
       noMatches: "Inga rader matchar filtret.",
       mode: "Läge",
       modeLive: "Direkt",

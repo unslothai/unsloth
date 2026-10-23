@@ -1424,6 +1424,7 @@ export const zhCN = {
       filteredLineCount: "共 {total} 行，显示 {shown} 行",
       wrapLines: "自动换行",
       jumpToLatest: "跳到最新",
+      resizeLog: "拖动以调整日志大小",
       noMatches: "没有与筛选条件匹配的行。",
       mode: "模式",
       modeLive: "实时",

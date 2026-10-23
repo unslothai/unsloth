@@ -1532,6 +1532,7 @@ export const he = {
       filteredLineCount: "{shown} מתוך {total} שורות",
       wrapLines: "גלישת שורות",
       jumpToLatest: "קפוץ לאחרון",
+      resizeLog: "גרור כדי לשנות את גודל היומן",
       noMatches: "אין שורות התואמות למסנן.",
       mode: "מצב",
       modeLive: "חי",

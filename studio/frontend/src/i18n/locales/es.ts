@@ -1429,6 +1429,7 @@ export const es = {
       filteredLineCount: "{shown} de {total} líneas",
       wrapLines: "Ajustar líneas",
       jumpToLatest: "Ir al final",
+      resizeLog: "Arrastra para cambiar el tamaño del registro",
       noMatches: "Ninguna línea coincide con el filtro.",
       mode: "Modo",
       modeLive: "En vivo",

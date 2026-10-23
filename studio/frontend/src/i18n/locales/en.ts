@@ -1483,6 +1483,7 @@ export const en = {
       filteredLineCount: "{shown} of {total} lines",
       wrapLines: "Wrap lines",
       jumpToLatest: "Jump to latest",
+      resizeLog: "Drag to resize the log",
       noMatches: "No lines match the filter.",
       mode: "Mode",
       modeLive: "Live",

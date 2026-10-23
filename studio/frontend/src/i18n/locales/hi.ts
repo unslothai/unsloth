@@ -1430,6 +1430,7 @@ export const hi = {
       filteredLineCount: "{total} में से {shown} पंक्तियाँ",
       wrapLines: "पंक्तियाँ रैप करें",
       jumpToLatest: "नवीनतम पर जाएँ",
+      resizeLog: "लॉग का आकार बदलने के लिए खींचें",
       noMatches: "फ़िल्टर से कोई पंक्ति मेल नहीं खाती।",
       mode: "मोड",
       modeLive: "लाइव",

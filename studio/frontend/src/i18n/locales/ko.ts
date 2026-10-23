@@ -1426,6 +1426,7 @@ export const ko = {
       filteredLineCount: "{total}줄 중 {shown}줄",
       wrapLines: "줄 바꿈",
       jumpToLatest: "최신으로 이동",
+      resizeLog: "드래그하여 로그 크기 조정",
       noMatches: "필터와 일치하는 줄이 없습니다.",
       mode: "모드",
       modeLive: "실시간",

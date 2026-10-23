@@ -1428,6 +1428,7 @@ export const ptBR = {
       filteredLineCount: "{shown} de {total} linhas",
       wrapLines: "Quebrar linhas",
       jumpToLatest: "Ir para o fim",
+      resizeLog: "Arraste para redimensionar o log",
       noMatches: "Nenhuma linha corresponde ao filtro.",
       mode: "Modo",
       modeLive: "Ao vivo",

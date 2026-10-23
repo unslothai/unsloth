@@ -1430,6 +1430,7 @@ export const fr = {
       filteredLineCount: "{shown} sur {total} lignes",
       wrapLines: "Retour à la ligne",
       jumpToLatest: "Aller à la fin",
+      resizeLog: "Faites glisser pour redimensionner le journal",
       noMatches: "Aucune ligne ne correspond au filtre.",
       mode: "Mode",
       modeLive: "En direct",

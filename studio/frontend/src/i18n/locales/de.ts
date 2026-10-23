@@ -1430,6 +1430,7 @@ export const de = {
       filteredLineCount: "{shown} von {total} Zeilen",
       wrapLines: "Zeilen umbrechen",
       jumpToLatest: "Zum Ende springen",
+      resizeLog: "Ziehen, um die Protokollgröße zu ändern",
       noMatches: "Keine Zeilen passen zum Filter.",
       mode: "Modus",
       modeLive: "Live",

@@ -1331,6 +1331,7 @@ export const it = {
       filteredLineCount: "{shown} di {total} righe",
       wrapLines: "Righe a capo",
       jumpToLatest: "Vai alla fine",
+      resizeLog: "Trascina per ridimensionare il log",
       noMatches: "Nessuna riga corrisponde al filtro.",
       mode: "Modalità",
       modeLive: "In tempo reale",
