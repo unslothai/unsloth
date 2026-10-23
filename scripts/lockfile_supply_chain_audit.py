@@ -94,7 +94,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
     # Mini Shai-Hulud May-12 wave: OpenSearch JS client.
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
-    # Mini Shai-Hulud May-12 wave: @squawk/*.
+    # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each;
+    # https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
     "@squawk/airport-data": {"0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8"},
     "@squawk/airports": {"0.6.2", "0.6.3", "0.6.4", "0.6.5", "0.6.6"},
     "@squawk/airspace": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
@@ -117,7 +118,8 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@squawk/types": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
     "@squawk/units": {"0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7"},
     "@squawk/weather": {"0.5.6", "0.5.7", "0.5.8", "0.5.9", "0.5.10"},
-    # Mini Shai-Hulud May-12 wave: @uipath/*.
+    # Mini Shai-Hulud May-12 wave: @uipath/* (64 packages, single version each;
+    # https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
     "@uipath/apollo-react": {"4.24.5"},
     "@uipath/apollo-wind": {"2.16.2"},
     "@uipath/cli": {"1.0.1"},
@@ -199,7 +201,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tallyui/pos": {"0.1.1", "0.1.2", "0.1.3"},
     "@tallyui/storage-sqlite": {"0.2.1", "0.2.2", "0.2.3"},
     "@tallyui/theme": {"0.2.1", "0.2.2", "0.2.3"},
-    # Mini Shai-Hulud May-12 wave.
+    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions) (Aikido enumeration).
     "@beproduct/nestjs-auth": {
         "0.1.2",
         "0.1.3",
@@ -226,10 +228,11 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@draftlab/auth": {"0.24.1", "0.24.2"},
     "@draftlab/auth-router": {"0.5.1", "0.5.2"},
     "@draftlab/db": {"0.16.1"},
-    # Mini Shai-Hulud May-12 wave.
+    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli (Aikido enumeration).
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
-    # Mini Shai-Hulud May-12 wave.
+    # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*
+    # (Aikido enumeration).
     "@dirigible-ai/sdk": {"0.6.2", "0.6.3"},
     "@mesadev/rest": {"0.28.3"},
     "@mesadev/saguaro": {"0.4.22"},

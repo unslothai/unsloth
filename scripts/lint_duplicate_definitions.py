@@ -112,7 +112,7 @@ def _overload_names_in(body, base) -> set:
     def visit(nested) -> None:
         for node in nested:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
+                continue  # a binding in here belongs to a scope of its own, not to this one
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name in modules and alias.asname:
@@ -179,7 +179,7 @@ def _defined_names(node, overloads):
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         if _is_overload_def(node, overloads):
             return []
-        # One accessor of each kind is legitimate; a second of the same kind silently replaces the first.
+        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding every accessor meant a getter followed by two copies of the same `@value.setter` scanned clean, with the later setter silently replacing the earlier one, exactly the merge damage this gate is for. Keying on the KIND keeps the getter and the setter apart while making two setters collide.
         kind = _accessor_kind(node)
         if kind:
             return [(f"{node.name}.{kind}", f"{kind} accessor")]
@@ -242,7 +242,7 @@ def _import_duplicates(body, scope, out) -> None:
         if isinstance(node, ast.ImportFrom):
             module = f"{'.' * node.level}{node.module or ''}"
         elif isinstance(node, ast.Import):
-            module = None
+            module = None  # the source is per-alias for a plain import, not per-statement
         else:
             if isinstance(node, ast.ClassDef):
                 _import_duplicates(node.body, f"{scope}{node.name}.", out)
@@ -400,7 +400,7 @@ _SELF_TEST_CASES = [
     (0, "from a import x\nfrom b import x\n"),
     (0, "NAMES = ['a']\nNAMES = frozenset(n.lower() for n in NAMES)\n"),
     (0, "COUNT: int = 1\nCOUNT = COUNT + 1\n"),
-    (0, "REGISTRY: dict\nREGISTRY = {}\n"),
+    (0, "REGISTRY: dict\nREGISTRY = {}\n"),  # a bare annotation binds nothing
     (0, "from m import x\nfrom m import x as other\n"),
     (0, "ROWS = (1,)\nROWS = ROWS + (2,)\n"),
     (0, "A = 1\nB = 2\nA, B = B, A\n"),
@@ -409,7 +409,7 @@ _SELF_TEST_CASES = [
     (0, "import os\nfrom a import b\n\nX = 1\n\n\ndef go():\n    return os, b, X\n"),
     (2, "N = K = 256\nN = K = 512\n"),
     (0, "N = K = 256\nM = 512\n"),
-    (0, "X = X = 1\n"),
+    (0, "X = X = 1\n"),  # one statement, one live binding
     (
         0,
         "import typing as t\n@t.overload\ndef f(x: int) -> int: ...\n"
@@ -560,7 +560,7 @@ def main() -> int:
             # Read both revisions from git: a pull_request checkout is the merge ref, neither end of the range.
             after = _revision_findings(args.after, str(path))
             if after is None:
-                continue
+                continue  # not present at the head revision (deleted, or renamed away)
             # Follow a rename back only to a path that was itself Python.
             old = renames.get(str(path), str(path))
             before = _revision_findings(args.before, old) if old.endswith(".py") else None

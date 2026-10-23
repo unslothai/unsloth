@@ -58,12 +58,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Calibrated against the real frontend closure. Native binaries get a larger cap and skip
 # pattern scanning; text keeps a tight cap (typescript.js at 9.1 MB is the ceiling).
-HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024
-HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024
-HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024
-HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024
-HARD_MAX_MEMBERS = 50_000
-HARD_HTTP_TIMEOUT_S = 60
+HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
+HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
+HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per tarball
+HARD_HTTP_TIMEOUT_S = 60  # per request
 
 # Suffix shortlist; the content-magic check covers extensionless and versioned binaries.
 _BINARY_SUFFIXES = (
@@ -161,11 +161,11 @@ _SEVERITY_RANK = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, INFO: 3}
 @dataclass
 class Finding:
     severity: str
-    package: str
-    filename: str
-    pattern: str
-    evidence: str = ""
-    detail: str = ""
+    package: str  # name@version
+    filename: str  # relative path inside the tarball
+    pattern: str  # what matched
+    evidence: str = ""  # short surrounding snippet
+    detail: str = ""  # human-readable description
 
     def __str__(self) -> str:
         head = f"  [{self.severity}] {self.package} :: {self.filename}"
@@ -194,7 +194,6 @@ class PackageEntry:
 
 
 # Keep IOC patterns short and factual: speculative patterns dull the signal.
-
 KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     # Shai-Hulud TanStack wave (2026-05-11, GHSA-g7cv-rxg3-hmpx).
     "router_init.js": (HIGH, "filename associated with TanStack worm"),
@@ -284,7 +283,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tanstack/zod-adapter": {"1.166.12", "1.166.15"},
     # Mini Shai-Hulud May-12 wave: OpenSearch JS client.
     "@opensearch-project/opensearch": {"3.5.3", "3.6.2", "3.7.0", "3.8.0"},
-    # Mini Shai-Hulud May-12 wave: @squawk/*.
+    # Mini Shai-Hulud May-12 wave: @squawk/* (22 packages, 5 versions each; https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/).
     "@squawk/airport-data": {"0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8"},
     "@squawk/airports": {"0.6.2", "0.6.3", "0.6.4", "0.6.5", "0.6.6"},
     "@squawk/airspace": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
@@ -307,7 +306,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@squawk/types": {"0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5"},
     "@squawk/units": {"0.4.3", "0.4.4", "0.4.5", "0.4.6", "0.4.7"},
     "@squawk/weather": {"0.5.6", "0.5.7", "0.5.8", "0.5.9", "0.5.10"},
-    # Mini Shai-Hulud May-12 wave: @uipath/*.
+    # Mini Shai-Hulud May-12 wave: @uipath/* (64 packages, single version each; https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
     "@uipath/apollo-react": {"4.24.5"},
     "@uipath/apollo-wind": {"2.16.2"},
     "@uipath/cli": {"1.0.1"},
@@ -419,7 +418,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     # Mini Shai-Hulud May-12 wave.
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
-    # Mini Shai-Hulud May-12 wave.
+    # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*.
     "@dirigible-ai/sdk": {"0.6.2", "0.6.3"},
     "@mesadev/rest": {"0.28.3"},
     "@mesadev/saguaro": {"0.4.22"},
@@ -822,8 +821,8 @@ _JS_REGEX_PRECEDERS = frozenset("([{,;:?=&|!+-*/%^~<>")
 def _blank_js_strings(lines: list[str]) -> list[str]:
     """Replace string contents (single, double, multi-line backtick template literals) AND regex literal bodies with spaces across ``lines``, keeping the line count and every bracket OUTSIDE a string/regex intact, so bracket counting never miscounts a ``)`` inside a string, including a template literal spanning several lines or a ``/)/`` regex, which a per-line regex cannot blank. Escapes are honoured."""
     out: list[str] = []
-    in_back = False
-    prev_sig = ""
+    in_back = False  # inside a multi-line `template` literal
+    prev_sig = ""  # last significant non-space char (for regex-vs-division)
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -849,12 +848,12 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                 if end == -1:
                     buf.append(" " * (n - i))
                     i = n
-                    if ch == "`":
+                    if ch == "`":  # opens a template literal that runs past this line
                         in_back = True
                 else:
                     buf.append(" " * (end - i + 1))
                     i = end + 1
-                prev_sig = "v"
+                prev_sig = "v"  # a string is a value: a following `/` is division
                 continue
             if ch == "/" and (prev_sig == "" or prev_sig in _JS_REGEX_PRECEDERS):
                 # A regex never spans lines, so no close on this line means division.
@@ -876,7 +875,7 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                 if closed:
                     buf.append(" " * (j - i))
                     i = j
-                    prev_sig = "v"
+                    prev_sig = "v"  # a regex is a value
                     continue
                 buf.append(ch)
                 i += 1
@@ -910,13 +909,13 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
         left, right = _bracket_lr(blanked[j])
         if left >= depth:
-            depth = 0
+            depth = 0  # everything opened so far in the window has closed
             start = idx
         else:
             depth -= left
         if right > 0:
             if depth == 0:
-                start = j
+                start = j  # outermost still-open opener begins here
             depth += right
 
     # Same order-aware reduction forward; the cap is measured from the match.
@@ -983,7 +982,7 @@ def _format_match(
     max_chars: int,
 ) -> str:
     # Append a digest of the full logical line when the snippet does not show it all.
-    idx = bisect.bisect_left(nl, m.start())
+    idx = bisect.bisect_left(nl, m.start())  # 0-based line index of the match
     line_start = nl[idx - 1] + 1 if idx > 0 else 0
     ke = bisect.bisect_left(nl, m.end())
     line_end = nl[ke] if ke < len(nl) else len(text)
@@ -1081,12 +1080,12 @@ _IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 def _slash_is_regex(prev_tok: str) -> bool:
     """Disambiguate a lone ``/``: regex literal vs division operator. Biased toward regex when ambiguous, since regex state never blanks, so a wrong guess only costs FP reduction (or a fail-open), never a missed detection."""
     if prev_tok == "":
-        return True
+        return True  # start of file -> expression position
     if prev_tok in _REGEX_PRECEDING_KEYWORDS:
         return True
     last = prev_tok[-1]
     if last.isalnum() or last in "_$)]":
-        return False
+        return False  # previous token ends a value -> division
     return True  # operators, punctuation, `{`, `}` -> regex (safe bias)
 
 

@@ -118,7 +118,7 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
     if not full:
         return None
     release = _PYTHON_RELEASE_RE.match(full).group(0)
-    suffix = full[len(release) :]
+    suffix = full[len(release) :]  # `rc1`, `.dev3`; `python_version` never carries one
     parts = release.split(".")
     return {
         "python_version": ".".join(parts[:2]),
@@ -237,7 +237,7 @@ def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
         return _marker_truth(term[1:-1], environment)
     named = _marker_variables(term)
     if not named or named - environment.keys():
-        return None
+        return None  # nothing to judge on, or a field the oracle cannot answer for
     from packaging.markers import Marker
 
     return bool(Marker(term).evaluate(environment))
@@ -291,7 +291,7 @@ class Finding:
     file: str
     cell: int | None = None
     line: int | None = None
-    severity: str = "error"
+    severity: str = "error"  # error | warning
     message: str = ""
     hint: str = ""
 
@@ -370,7 +370,7 @@ def target_environment(notebook_name: str) -> str:
     if base.startswith("AMD-") or "_AMD_" in base:
         return "amd"
     if base.startswith("HuggingFace Course-") or base.startswith("HuggingFace_Course-"):
-        return "colab"
+        return "colab"  # HF Course notebooks still run on Colab.
     if "DGX_Spark" in base:
         return "dgx_spark"
     return "colab"
@@ -490,12 +490,12 @@ def cmp_versions(a: str, b: str) -> int:
 
 @dataclasses.dataclass
 class PipInvocation:
-    tool: str
-    flags: set[str]
-    packages: list[str]
+    tool: str  # "pip" | "uv-pip"
+    flags: set[str]  # {'--no-deps', '--upgrade', '--force-reinstall', ...}
+    packages: list[str]  # raw package specifiers (e.g. 'transformers==5.5.0')
     raw: str
     line_no: int = 0
-    action: str = "install"
+    action: str = "install"  # "install" | "uninstall"
     conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
@@ -677,7 +677,7 @@ def _split_first_word(text: str) -> tuple[str, str]:
         index += 1
     word: list[str] = []
     quote = ""
-    depth = 0
+    depth = 0  # open `$(` nesting
     # Track `${ }` too: bash keeps `TOKEN=${TOKEN:-a b}` as one word.
     brace = 0
     # Inside an open case an unbalanced `)` ends the arm pattern, not the substitution.
@@ -714,7 +714,7 @@ def _split_first_word(text: str) -> tuple[str, str]:
                 depth += 1
             elif ch == ")":
                 if not (case_depth and depth == 1):
-                    depth -= 1
+                    depth -= 1  # otherwise it is an arm pattern and the word continues
             elif ch.isalpha() and not text[index - 1 : index].isalnum():
                 keyword = _LEADING_WORD_RE.match(text, index)
                 if keyword is not None:
@@ -782,7 +782,7 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
         while rest:
             token, tail = _split_first_word(rest)
             if token == "--":
-                rest = tail
+                rest = tail  # end of options; what follows is the command
                 break
             if token == "-" or not token.startswith("-"):
                 break
@@ -801,7 +801,7 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
                 # `env --help` and `command -v` do not run their operands.
                 return text, prefixed
             if "=" in token and token.startswith("--"):
-                rest = tail
+                rest = tail  # `--unset=NAME` carries its operand inline
                 continue
             if name == "env" and token in _ENV_SPLIT_STRING_FLAGS:
                 # env -S's operand is the command; following ARGs are appended to it.
@@ -890,7 +890,7 @@ def _final_bracket_closes_substitution(text: str) -> bool:
             i += 2
             continue
         if ch == "(" and depth:
-            depth += 1
+            depth += 1  # a nested plain group inside a substitution
         elif ch == ")" and depth:
             depth -= 1
             if depth == 0 and i == len(text) - 1:
@@ -937,7 +937,7 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     stripped = _open_groups(stripped)
     while stripped[-1:] in (")", "}") and not _final_bracket_closes_substitution(stripped):
         stripped = stripped[:-1].rstrip()
-    conditional = definition is not None
+    conditional = definition is not None  # the body runs only when the function is called
     while True:
         # Any whitespace: `then\tpip` is the same command to the shell.
         parts = stripped.split(maxsplit = 1)
@@ -1011,11 +1011,11 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
     while i < len(command):
         ch = command[i]
         if ch == "\\" and quote != "'":
-            i += 2
+            i += 2  # escaped: `\\$(` is a literal dollar
             continue
         if quote == "'":
             if ch == "'":
-                quote = ""
+                quote = ""  # single quotes make the text literal, so nothing runs in there
             i += 1
             continue
         if ch in "\"'":
@@ -1045,7 +1045,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
                     depth += 1
                 elif inner == ")":
                     if not (case_depth and depth == 1):
-                        depth -= 1
+                        depth -= 1  # otherwise it is an arm pattern; the body stays open
                 elif inner.isalpha() and not command[j - 1 : j].isalnum():
                     word = _LEADING_WORD_RE.match(command, j)
                     if word is not None:
@@ -1116,7 +1116,7 @@ def _command_execs(command: str) -> bool:
         if _REDIRECTION_RE.match(word):
             rest = _split_first_word(tail)[1] if _REDIRECTION_RE.fullmatch(word) else tail
             continue
-        return True
+        return True  # a utility to hand the shell over to
     return False
 
 
@@ -1164,7 +1164,7 @@ def _piece_success_model(
 
     `!` inverts the pipeline's status, so `! false` succeeds and the `&&` behind it always runs,
     while `! pip install x` fails under the replay's model of pip succeeding."""
-    text = _unwrap_shell_group(piece)[0]
+    text = _unwrap_shell_group(piece)[0]  # `( ... )` exits with its last command's status
     # Only the first command carries the notebook bang; elsewhere `!` is bash negation.
     if notebook_bang and text.startswith("!"):
         text = text[1:].lstrip()
@@ -1309,11 +1309,11 @@ def _fold_status(left: bool | None, op: str, right: bool | None) -> bool | None:
     folded status, not the piece nearest the operator, decides whether `c` runs."""
     if op == "&&":
         if left is None:
-            return False if right is False else None
-        return right if left else False
+            return False if right is False else None  # `? && false` fails either way
+        return right if left else False  # a failed left skips right and keeps the failure
     if left is None:
-        return True if right is True else None
-    return True if left else right
+        return True if right is True else None  # `? || true` succeeds either way
+    return True if left else right  # a succeeded left skips right and keeps the success
 
 
 def _left_hand_status(
@@ -1532,7 +1532,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(line[i + 1])
             i += 2
         elif ch == "`" and quote != "'":
-            # Backticks expand inside double quotes too.
+            # Backticks expand inside double quotes as well, so this is checked before the
+            # quote branch; only single quotes make them literal.
             in_backtick = not in_backtick
             buf.append(ch)
             i += 1
@@ -1569,9 +1570,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             or line[i - 1] in ";&|"
             or (line[i - 1] in ")}" and grouping_closed)
         ):
-            break
+            break  # an operator, or a bracket that closed a grouping, ends a word
         elif in_substitution:
-            buf.append(ch)
+            buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
             # Only an unknown left side opens a `||` tail, and the left side is the whole list.
@@ -1641,7 +1642,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             list_has_pip[-1] = False
             list_models[-1] = None
             assumed_tail[-1] = False
-            prev_ops[-1] = ""
+            prev_ops[-1] = ""  # a new and-or list starts here
             buf_conditional = any(tails) or any(def_levels)
             i += 1
         else:
@@ -1653,7 +1654,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             ):
                 func_parens = True
             if ch == ")" and func_parens:
-                func_parens = False
+                func_parens = False  # the header's own bracket, matching the skip above
             elif ch in "({":
                 # `$(`, `<(`, `>(` run commands; `${ }` expands a word and runs nothing.
                 groupings.append(
@@ -1682,7 +1683,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 last_ok.append(None)
                 case_depths.append(0)
                 if not "".join(buf).strip():
-                    buf_conditional = any(tails) or any(def_levels)
+                    buf_conditional = any(tails) or any(
+                        def_levels
+                    )  # the group opens before the command
             elif ch in ")}" and not (ch == ")" and case_depths[-1]):
                 grouping_closed = groupings.pop() if groupings else True
                 if len(case_depths) > 1:
@@ -1770,9 +1773,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 cond_assumed.append(False)
                 cond_models.append(None)
             elif keyword in _SHELL_TEST_KEYWORDS:
-                body_levels.append(False)
+                body_levels.append(False)  # the test itself runs whenever the line does
                 test_models.append(None)
-                arms_failed.append(True)
+                arms_failed.append(True)  # no arm has run yet
                 arms_known.append(True)
                 openers.append(keyword)
                 arm_reached.append(True)
@@ -1823,7 +1826,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     cond_assumed.append(False)
                     cond_models.append(None)
             elif body_levels:
-                body_levels.pop()
+                body_levels.pop()  # fi / done / esac
                 test_models.pop()
                 arms_failed.pop()
                 arms_known.pop()
@@ -1835,12 +1838,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         # anything else may run. A false branch is inverted for else.
         active = [model for level, model in zip(body_levels, test_models) if level]
         if any(model is False for model in active):
-            continue
+            continue  # this branch can never be taken, so nothing in it runs
         if broke_at is not None:
             if len(body_levels) < broke_at:
-                broke_at = None
+                broke_at = None  # the loop closed; what follows `done` runs again
             else:
-                continue
+                continue  # still inside the loop the `break` jumped out of
         # A then/else/arm flag means conditional only if the branch is not known to be taken.
         # An elif after certain failures is a test, which runs whenever the statement does.
         reached_test = bool(body_levels) and not body_levels[-1] and arm_reached[-1]
@@ -1914,7 +1917,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # Keyed by definition, not name: a call uses the definition in force at that point.
                 def_last_index[owner] = index
                 if owner in returned:
-                    continue
+                    continue  # the body already returned; nothing after it in this function runs
                 body_entries.setdefault(owner, []).append((len(ordered), entered))
                 if not entered:
                     body_invokes.setdefault(owner, set()).add((invoked, index))
@@ -1938,8 +1941,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # Use the raw piece: unwrapping strips exec. An unreached exec hands nothing over.
             handed_over = (
                 not piece_conditional
-                and not assumed[index]
-                and separator not in ("|", "&")
+                and not assumed[index]  # only certainly-reached terminators cut the list
+                and separator not in ("|", "&")  # a subshell; the parent shell carries on
                 and _command_ends_shell(piece)
             )
             if (
@@ -2047,7 +2050,7 @@ OP_VERSION_RE = re.compile(r"(==|>=|<=|!=|~=|>|<)\s*([0-9][^,;\s]*)")
 @dataclasses.dataclass
 class SpecParts:
     name: str
-    pins: list[tuple[str, str]]
+    pins: list[tuple[str, str]]  # list of (op, version)
     raw: str
 
 
@@ -2199,7 +2202,7 @@ def _git_source_repository(source: str) -> str:
     remainder = source.split("+", 1)[1] if "+" in source else source
     remainder = remainder.split("://", 1)[-1]
     host, _, path = remainder.partition("/")
-    host = host.rsplit("@", 1)[-1]
+    host = host.rsplit("@", 1)[-1]  # drop any credentials
     path = path.split("#", 1)[0].split("?", 1)[0]
     # The last `@` is the revision delimiter, so `repo@fake/../../x@main` cannot pass.
     path = path.rsplit("@", 1)[0].rstrip("/")
@@ -2278,9 +2281,9 @@ def _removed_by_cell(
             if sp is None or _canonical_project(sp.name) != wanted:
                 continue
             if _is_dry_run(inv):
-                continue
+                continue  # `--dry-run` reports what pip WOULD do and changes nothing
             if inv.action == "install" and not _requirement_applies(raw, environment):
-                continue
+                continue  # pip skips a requirement its marker excludes, so nothing is put back
             # Replayed in order: `pip uninstall x; pip install x` leaves x installed.
             removed = inv.action == "uninstall"
     return removed
@@ -2353,7 +2356,7 @@ def _install_cell_lower_bound(
     best: str | None = None
     for inv in unconditional_pip_invocations(install_cell):
         if _is_dry_run(inv):
-            continue
+            continue  # pip makes no environment changes, so it places no floor on anything
         if inv.action == "uninstall":
             # The cell removed it, so no earlier line still floors it.
             if any(
@@ -2366,7 +2369,7 @@ def _install_cell_lower_bound(
             if sp is None or sp.name != target:
                 continue
             if not _requirement_applies(raw, environment):
-                continue
+                continue  # pip skips it, so it satisfies no floor
             for op, ver in sp.pins:
                 if op in ("==", ">="):
                     if best is None or cmp_versions(ver, best) > 0:
@@ -2589,14 +2592,14 @@ def _effective_version(
         replaced_unnamed = False
         for raw in inv.packages:
             if not _requirement_applies(raw, environment):
-                continue
+                continue  # pip skips it, so its bounds never move anything
             # Before parse_spec, which reads `./x-1.0.whl` as a project called `.`.
             archive = _archive_requirement(raw)
             if archive is not None:
                 if archive[0] == target:
                     named = True
                     if archive[1] is None:
-                        replaced_unnamed = True
+                        replaced_unnamed = True  # installed, by something with no version here
                     else:
                         pins.append(("==", archive[1]))
                 continue
@@ -2608,7 +2611,7 @@ def _effective_version(
         if not named:
             continue
         if inv.action == "uninstall":
-            current = None
+            current = None  # removed; a later install can put it back
             continue
         if not pins and not replaced_unnamed and _forces_resolution(inv.flags):
             current, exact_known = None, True
@@ -2636,7 +2639,7 @@ def _effective_version(
         if exact is not None:
             current, exact_known = exact, True
         elif current is None or _forces_resolution(inv.flags):
-            forced_off = current is not None
+            forced_off = current is not None  # got here by --upgrade over an installed one
             # `--upgrade` takes the newest admitted version, not the installed one. Absent: `<=V` names it,
             # a floor bounds it, and an exclusive ceiling names nothing.
             if cap is not None:
@@ -2661,13 +2664,13 @@ def _effective_version(
             or (exclusive_floor and cmp_versions(floor, current) == 0)
         ):
             if cap is not None:
-                current, exact_known = cap, cap_exact
+                current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
             elif landing is not None:
-                current, exact_known = landing, True
+                current, exact_known = landing, True  # the window pins the minor
             else:
                 current, exact_known = floor, False
         elif cap is not None and cmp_versions(current, cap) > 0:
-            current, exact_known = cap, cap_exact
+            current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
             current, exact_known = landing, True
         if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
@@ -2753,15 +2756,15 @@ def rule_inst_004_torchcodec_torch(
         not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )
     if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and codec_clears_abi:
-        return findings
+        return findings  # ABI-stable pairing, not locked to one torch minor
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
         if not at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH):
-            return findings
+            return findings  # torch older than the table — don't flag
         if not codec_exact and not at_least(c_minor, TORCHCODEC_ABI_STABLE_CODEC):
-            return findings
+            return findings  # a newer codec above this floor would be ABI-stable and fine
         findings.append(
             Finding(
                 rule = "R-INST-004",
