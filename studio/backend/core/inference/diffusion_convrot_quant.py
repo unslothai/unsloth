@@ -1029,6 +1029,7 @@ def convrot_swiglu_act_quant(g2d: Any, v2d: Any, group: int, v2: bool) -> Option
 INT8_ROTQUANT_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED"
 _UNLISTED_DEVICE: dict = {}
 _UNLISTED_TIMING: dict = {}
+_UNLISTED_PROBE: dict = {}  # index -> _h16_probe result (mode independent)
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096), (1024, 12288))
 
 
@@ -1102,35 +1103,42 @@ def _unlisted_latency(
 
 
 def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
-    """Once per device, outside any trace / capture: arch gate, ``_h16_probe``, latency check."""
+    """Once per (device, mode), outside any trace / capture: arch gate, ``_h16_probe`` (once per device), latency
+    check (auto only). Keyed by mode so switching ``..._UNLISTED`` between loads takes effect without a restart."""
     global _ROTQ_HANDLE
-    if unlisted_mode() == "off":  # read per load: the switches act without a restart
+    mode = unlisted_mode()
+    if mode == "off":  # read per load: the switches act without a restart
         return False
-    if index in _UNLISTED_DEVICE:
-        return _UNLISTED_DEVICE[index]
-    ok = False
-    try:
-        import torch
-        if (
-            torch.cuda.is_available()
-            and not is_rocm_torch(torch)
-            and _triton_ok()
-            and unlisted_wanted(torch.cuda.get_device_capability(index))
-            and _kernels() is not None
-            and _rotq_op() is not None
-        ):
-            mode = _h16_probe(index)
-            if mode:
-                ok = True
-                if unlisted_mode() != "force":
-                    timing = _unlisted_latency(index, mode == "tf32x3", stock_quant)
-                    _UNLISTED_TIMING[index] = {k: round(v, 2) for k, v in timing.items()}
-                    ok = timing["h16"] <= timing["stock"]
-                if ok:
-                    _H16_DEVICE[index] = mode
-    except Exception:  # noqa: BLE001 - main's path stays
+    key = (index, mode)
+    if key not in _UNLISTED_DEVICE:
         ok = False
-    _UNLISTED_DEVICE[index] = ok
+        try:
+            import torch
+            if (
+                torch.cuda.is_available()
+                and not is_rocm_torch(torch)
+                and _triton_ok()
+                and unlisted_wanted(torch.cuda.get_device_capability(index), mode)
+                and _kernels() is not None
+                and _rotq_op() is not None
+            ):
+                if index not in _UNLISTED_PROBE:
+                    _UNLISTED_PROBE[index] = _h16_probe(index)
+                h16 = _UNLISTED_PROBE[index]
+                if h16:
+                    ok = True
+                    if mode != "force":
+                        timing = _unlisted_latency(index, h16 == "tf32x3", stock_quant)
+                        _UNLISTED_TIMING[index] = {k: round(v, 2) for k, v in timing.items()}
+                        ok = timing["h16"] <= timing["stock"]
+        except Exception:  # noqa: BLE001 - main's path stays
+            ok = False
+        _UNLISTED_DEVICE[key] = ok
+    ok = _UNLISTED_DEVICE[key]
+    h16 = _UNLISTED_PROBE.get(index)
     if ok:
+        _H16_DEVICE[index] = h16
         _ROTQ_HANDLE = _rotq_op()
+    elif h16:  # probed unlisted card the latency check now rejects: drop a verdict a forced load left behind
+        _H16_DEVICE.pop(index, None)
     return ok

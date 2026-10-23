@@ -34,10 +34,12 @@ def _clean(monkeypatch):
         monkeypatch.delenv(name, raising = False)
     cq._UNLISTED_DEVICE.clear()
     cq._UNLISTED_TIMING.clear()
+    cq._UNLISTED_PROBE.clear()
     saved = dict(cq._H16_DEVICE)
     yield
     cq._UNLISTED_DEVICE.clear()
     cq._UNLISTED_TIMING.clear()
+    cq._UNLISTED_PROBE.clear()
     cq._H16_DEVICE.clear()
     cq._H16_DEVICE.update(saved)
 
@@ -164,6 +166,47 @@ def test_kill_switch_acts_on_a_cached_device(monkeypatch):
     assert not cq.unlisted_device_ok(0)
     monkeypatch.delenv(cq.INT8_ROTQUANT_UNLISTED_ENV)
     assert cq.unlisted_device_ok(0)
+
+
+def _counting_slow_device(monkeypatch):
+    _fake_device(monkeypatch, (8, 6))
+    calls = {"probe": 0, "time": 0}
+
+    def probe(index):
+        calls["probe"] += 1
+        return "ieee"
+
+    def latency(
+        index,
+        tf32x3,
+        stock = None,
+    ):
+        calls["time"] += 1
+        return {"h16": 30.0, "stock": 20.0}  # slower: auto rejects
+
+    monkeypatch.setattr(cq, "_h16_probe", probe)
+    monkeypatch.setattr(cq, "_unlisted_latency", latency)
+    return calls
+
+
+def test_force_after_an_auto_rejection_enables_the_card(monkeypatch):
+    calls = _counting_slow_device(monkeypatch)
+    assert not cq.unlisted_device_ok(0) and 0 not in cq._H16_DEVICE
+    monkeypatch.setenv(cq.INT8_ROTQUANT_UNLISTED_ENV, "1")
+    assert cq.unlisted_device_ok(0) and cq._H16_DEVICE[0] == "ieee"
+    assert calls == {"probe": 1, "time": 1}  # probed once per device, never timed under force
+
+
+def test_auto_after_a_forced_load_runs_the_latency_check(monkeypatch):
+    calls = _counting_slow_device(monkeypatch)
+    monkeypatch.setenv(cq.INT8_ROTQUANT_UNLISTED_ENV, "1")
+    assert cq.unlisted_device_ok(0) and cq._H16_DEVICE[0] == "ieee"
+    monkeypatch.delenv(cq.INT8_ROTQUANT_UNLISTED_ENV)
+    assert not cq.unlisted_device_ok(0) and 0 not in cq._H16_DEVICE
+    assert not cq.unlisted_device_ok(0)  # repeat auto load: cached, not re-timed
+    monkeypatch.setenv(cq.INT8_ROTQUANT_UNLISTED_ENV, "1")
+    assert cq.unlisted_device_ok(0) and cq._H16_DEVICE[0] == "ieee"
+    assert calls == {"probe": 1, "time": 1}
 
 
 def test_arm_rotated_follows_the_gate(monkeypatch):
