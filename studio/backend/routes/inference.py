@@ -150,6 +150,7 @@ from core.inference.orchestrator import (
     _summed_tool_loop_stats,
     routed_slot,
 )
+from core.inference.inference_gate import gated_async_client, holds_inference
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -5986,7 +5987,7 @@ async def _await_stt_disconnect_then_cancel(request, sidecar, cancel_event) -> N
 
 
 def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
+    return gated_async_client(
         limits = httpx.Limits(max_connections = 1, max_keepalive_connections = 0),
         trust_env = False,
         verify = _local_ssl_context(),
@@ -8335,11 +8336,22 @@ def _direct_llama_request(counted: bool = True):
     if not counted:
         yield
         return
+    from core.rag.conversation_archive import _pause_prewarm, hold_inference
+
+    # Inference too (caption / OCR, TTS): background archive embedding stays paused. A worker thread (caption /
+    # OCR) also waits out the batch in flight; the TTS route enters this on the event loop, and its generation
+    # runs the gated generate_audio_response in a thread, which waits there.
+    release = hold_inference()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _pause_prewarm()
     _direct_llama_request_started()
     try:
         yield
     finally:
         _direct_llama_request_finished()
+        release()
 
 
 def _direct_llama_is_busy() -> bool:
@@ -27461,6 +27473,7 @@ async def _transcribe_audio_bytes(
     )
 
 
+@holds_inference
 async def _transcribe_audio_result(
     raw: bytes,
     model: Optional[str],
@@ -27542,12 +27555,16 @@ async def _transcribe_audio_result(
         )
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if source_path is not None and timestamps:
-            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
+            await asyncio.to_thread(
+                holds_inference(sidecar.ensure_aligner), model, on_phase, cancel_event
+            )
             # Started with its aligner now, or transcribe_path would restart it.
             load_options["timestamps"] = True
         await asyncio.to_thread(
-            functools.partial(
-                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            holds_inference(
+                functools.partial(
+                    load_stt, model, serving_engine, cancel_event, device = device, **load_options
+                )
             )
         )
         loaded = getattr(sidecar, "loaded_model", None)
@@ -27555,19 +27572,21 @@ async def _transcribe_audio_result(
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
         if source_path is not None:
             result = await asyncio.to_thread(
-                functools.partial(
-                    sidecar.transcribe_path,
-                    source_path,
-                    model,
-                    language,
-                    timestamps = timestamps,
-                    cancel_event = cancel_event,
-                    on_phase = on_phase,
+                holds_inference(
+                    functools.partial(
+                        sidecar.transcribe_path,
+                        source_path,
+                        model,
+                        language,
+                        timestamps = timestamps,
+                        cancel_event = cancel_event,
+                        on_phase = on_phase,
+                    )
                 )
             )
         elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
-                transcribe,
+                holds_inference(transcribe),
                 raw,
                 model,
                 language,
@@ -27576,10 +27595,12 @@ async def _transcribe_audio_result(
                 on_progress = on_progress,
             )
         elif cancel_event is None:
-            result = await asyncio.to_thread(transcribe, raw, model, language, fast)
+            result = await asyncio.to_thread(
+                holds_inference(transcribe), raw, model, language, fast
+            )
         else:
             result = await asyncio.to_thread(
-                transcribe,
+                holds_inference(transcribe),
                 raw,
                 model,
                 language,
@@ -40384,7 +40405,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             from core.inference.llama_cpp import LlamaCppBackend
             from core.inference.llama_keepwarm import mark_response_failed
 
-            client = httpx.AsyncClient(
+            client = gated_async_client(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -43614,7 +43635,7 @@ async def _responses_stream(
                     _relay_recording_tool_extras(upstream.body_iterator, current_subject)
                 )
             else:
-                client = httpx.AsyncClient(
+                client = gated_async_client(
                     timeout = _llama_streaming_generation_timeout(),
                     trust_env = False,
                     verify = _local_ssl_context(),
@@ -48797,7 +48818,7 @@ async def _anthropic_passthrough_stream(
         # finalizer has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
-        client = httpx.AsyncClient(
+        client = gated_async_client(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
@@ -50114,7 +50135,7 @@ async def _openai_passthrough_stream_admitted(
 
         # Keep the pre-header window short so accepted SSE clients receive
         # immediate headers in the common timeout-reduced stall.
-        client = httpx.AsyncClient(
+        client = gated_async_client(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
@@ -51514,8 +51535,14 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
         )
 
 
+def _has_active_loras(loras: Any) -> bool:
+    from core.inference.diffusion_engine_router import has_active_loras
+    return has_active_loras(loras)
+
+
 def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
-    if request.loras:
+    # Zero-weight entries are dropped before loading, so only an applied adapter is refused.
+    if _has_active_loras(request.loras):
         raise HTTPException(
             status_code = 400,
             detail = "LoRA adapters are not supported on the MLX engine yet.",
@@ -51624,6 +51651,7 @@ async def diffusion_download_plan(
                 gpu_ordinal = gpu_ordinal,
                 gguf_filename = request.gguf_filename,
                 engine = request.engine,
+                with_loras = _has_active_loras(request.loras),
             )
             if fam is not None
             else None
@@ -51949,6 +51977,7 @@ async def load_diffusion_model_gated(
                     gpu_ordinal = gpu_ordinal,
                     gguf_filename = request.gguf_filename,
                     engine = request.engine,
+                    with_loras = _has_active_loras(request.loras),
                 )
                 if fam is not None
                 else None
@@ -52093,6 +52122,7 @@ async def load_diffusion_model_gated(
                 gguf_filename = request.gguf_filename,
                 # The load's own engine pick (auto when absent); refused there rather than swapped.
                 engine = request.engine,
+                with_loras = _has_active_loras(request.loras),
             ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
