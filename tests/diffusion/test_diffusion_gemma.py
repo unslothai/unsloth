@@ -199,7 +199,11 @@ def test_loss_through_distributed_wrapper(model):
 class _ScatteringDataParallel(torch.nn.DataParallel):
     """nn.DataParallel's contract without GPUs: tensors split on dim 0, every other object shared by all replicas."""
 
-    def __init__(self, inner, replicas = 2):
+    def __init__(
+        self,
+        inner,
+        replicas = 2,
+    ):
         torch.nn.Module.__init__(self)
         self.module = inner
         self.replicas = replicas
@@ -210,7 +214,9 @@ class _ScatteringDataParallel(torch.nn.DataParallel):
         outs = [
             self.module(
                 **{
-                    k: v[b[0] : b[-1] + 1] if torch.is_tensor(v) and v.dim() and v.shape[0] == rows else v
+                    k: v[b[0] : b[-1] + 1]
+                    if torch.is_tensor(v) and v.dim() and v.shape[0] == rows
+                    else v
                     for k, v in kwargs.items()
                 }
             )
@@ -228,7 +234,9 @@ def test_loss_through_data_parallel_scatter(model):
     torch.manual_seed(0)
     plain = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())[0]
     torch.manual_seed(0)
-    wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_ScatteringDataParallel(model), batch, _args())[0]
+    wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_ScatteringDataParallel(model), batch, _args())[
+        0
+    ]
     torch.testing.assert_close(wrapped, plain)
     assert not model._forward_pre_hooks and not model._forward_hooks
 
