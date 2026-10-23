@@ -1472,7 +1472,6 @@ def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
         "--top-k",
         "20",
     ]
-    # Chained with MTP the draft range is MTP's, as _build_ngram_mod_flags leaves it.
     assert translate_ngram_mod_args(knobs, "legacy", chain_with_mtp = True) == [
         "--spec-ngram-size-n",
         "16",
@@ -1486,8 +1485,7 @@ def test_ngram_mod_extras_are_respelled_for_a_legacy_build():
 
 
 def test_the_launch_respells_user_ngram_mod_extras_last():
-    """Checked at the source, like the other launch wiring tests: reaching the emit point needs a real binary.
-    The translation runs on the final user extras, after the device strip, with the build's probed flavor."""
+    """Source check: reaching the emit point needs a real binary."""
     import inspect
 
     from core.inference.llama_cpp import LlamaCppBackend
@@ -1498,7 +1496,6 @@ def test_the_launch_respells_user_ngram_mod_extras_last():
     assert "translate_ngram_mod_args(" in emit
     assert '_caps.get("ngram_mod_flavor")' in emit
     assert emit.index("_strip_device_extra_args") < emit.index("translate_ngram_mod_args(")
-    # MTP turned on by the user's own --spec-type also keeps the min/max pair out.
     assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
 
 
