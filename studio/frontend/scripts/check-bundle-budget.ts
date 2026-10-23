@@ -409,8 +409,7 @@ export const BUDGET = {
   // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
   // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
   // that plus about 300 B raw / 100 B transfer, as for #14568.
-  // Cosmos3 video families (#14554): picker rows, family labels, Hub Video gen rule and Video page defaults,
-  // +466 B raw / +218 B transfer against ce1ab5b6a (Node 24, 97 chunks). Raised by that.
+  // Raised for the Cosmos3 video families (#14554).
   transferBytes: 2_088_108,
   rawBytes: 6_930_716,
 };

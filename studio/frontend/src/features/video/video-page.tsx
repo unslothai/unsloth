@@ -274,7 +274,6 @@ const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
-  // Cosmos3 model cards: Nano 35 steps, Edge 20, both CFG 6.
   { match: "cosmos3-nano", steps: 35, guidance: 6 },
   { match: "cosmos3-edge", steps: 20, guidance: 6 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
@@ -332,8 +331,7 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
     }
     return { steps: 8, guidance: 1 };
   }
-  // Cosmos3 rows count only in the model name too; an HF-cache snapshot path ends in a commit hash, so its name is the
-  // models--<owner>--<name> folder (the backend's video_generation_variant reads it the same way).
+  // An HF-cache snapshot path ends in a commit hash, so its name is the models--<owner>--<name> folder.
   const snapshot = repoId.replace(/\\/g, "/").match(/models--[^/]+?--([^/]+)\/snapshots\/[^/]+\/?$/);
   const modelName = snapshot ? fold(snapshot[1]) : name;
   return (

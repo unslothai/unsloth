@@ -2601,8 +2601,7 @@ def _local_pipeline_component_is_complete(
     for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
         if not any(token in identity for token in tokens):
             continue
-        # Text tokenizers come from transformers; a diffusers class named *Tokenizer is a model with a config.json and
-        # weights (Cosmos3-Nano's sound_tokenizer, Cosmos3AVAEAudioTokenizer).
+        # A diffusers *Tokenizer class is a model with weights (Cosmos3AVAEAudioTokenizer).
         if tokens[0] == "tokenizer" and library_name == "diffusers":
             continue
         # Configs can exceed the manifest cap: LTX-2's Gemma3 tokenizer_config.json is 1.1 MB.

@@ -360,9 +360,7 @@ for (const id of [
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
-// Cosmos3 Edge: one bf16 pipeline, offered and loaded as a pipeline. Nano stays out until a default install can load it
-// (its checkpoint enables the Cosmos guardrail, whose package Studio does not install). The Reasoner, Policy,
-// Sim / Transfer and FP8 repos are no artifact either, so no On Device row or load spec takes them for the generator.
+// Cosmos3 Edge loads as a pipeline only; Nano and the non-generator repos stay out.
 for (const id of ["nvidia/Cosmos3-Edge"]) {
   const group = groupForRepoId(id, VIDEO_CATALOG);
   assert.ok(group, id);

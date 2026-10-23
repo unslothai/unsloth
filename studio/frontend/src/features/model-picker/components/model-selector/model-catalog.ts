@@ -753,15 +753,13 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Cosmos3 Nano is not listed: its checkpoint enables NVIDIA's Cosmos guardrail, whose cosmos_guardrail package Studio
-  // does not install, so the backend refuses every Nano pipeline load on a default install.
+  // Not Cosmos3 Nano: its checkpoint enables the guardrail, whose package Studio does not install.
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
     description: "Text and image to video 480p, small",
     scope: "video",
-    // Resident bf16, as the Wan2.1 rows: transformer 6.7 GB (also the text model, no text encoder) + VAE 1.4 GB, rounded
-    // up; the 9.2 GB download adds the vision encoder video does not load. totalParams is the Hub's (the card's 4B).
+    // Resident bf16: transformer 6.7 GB + VAE 1.4 GB; the download adds a vision encoder video does not load.
     artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
   },
 ];

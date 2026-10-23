@@ -197,8 +197,7 @@ async def video_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
-            # The encoder precision too: a family with no separate text encoder (Cosmos3) refuses an explicit one here,
-            # before the plan stages anything.
+            # Encoder precision too, before the plan stages anything.
             text_encoder_quant = request.text_encoder_quant,
             # And the partition, because one of those quant-keyed refusals is task-keyed. Without it here the plan below
             # staged the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first: the hosted pre-quantized

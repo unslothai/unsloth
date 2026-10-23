@@ -284,8 +284,7 @@ class VideoFamily:
     vae_force_fp32: bool = False
     # False holds cudnn.benchmark off: its per-process conv pick makes servers decode the same latents differently.
     cudnn_benchmark: bool = True
-    # False keeps the VAE encoder on stock kernels when the fused VAE passes are on (the decoder stays fused): a family
-    # whose every denoising step attends to the encoded conditioning clip turns their rounding into a different sample.
+    # False: stock VAE encoder (decoder stays fused); fused rounding changes samples that attend to the encoded clip.
     vae_fused_encoder: bool = True
     # One config per reduction instead of a per-process benchmark that can change the render (diffusion_speed.
     # pin_reduction_configs). Off by default: it can keep a slower config (HunyuanVideo-1.5 ~2% per step).
@@ -304,8 +303,7 @@ class VideoFamily:
     # The scheme an UNSET text_encoder_quant takes (video.video_te_quant_request), same contract as
     # DiffusionFamily.te_quant_auto: must be a scheme this family HOSTS (te_prequant_repos / TE_INT8_CONVROT_FILES), so
     # the default never costs a dense download plus an in-place cast. "none" / "off" still pin the released encoder.
-    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset; Cosmos3 has no separate text encoder (its
-    # bf16_components_gb text term is 0.0) and leaves it unset too.
+    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset; Cosmos3 has no text encoder.
     te_quant_auto: Optional[str] = None
     # The pipeline encoders that automatic pick casts, when not all of them (empty = every present encoder). An
     # explicit text_encoder_quant still covers every encoder.
@@ -347,11 +345,9 @@ class VideoFamily:
     default_flow_shift: Optional[float] = None
     # ComfyUI's static sigma shift (None = shipped); unlike default_flow_shift, no user control.
     comfy_flow_shift: Optional[float] = None
-    # Scheduler config the checkpoint's publisher samples with, applied once at load as (key, value) pairs (Cosmos3:
-    # its model cards rebuild UniPC at a static flow shift). Empty keeps the shipped scheduler.
+    # Publisher's scheduler config, applied once at load as (key, value) pairs.
     scheduler_overrides: tuple[tuple[str, object], ...] = field(default_factory = tuple)
-    # Fixed __call__ kwargs the publisher's examples pass on every request, as (key, value) pairs; a key the pipeline's
-    # signature lacks is skipped (Cosmos3-Edge's card turns the resolution / duration prompt templates off).
+    # Fixed __call__ kwargs per request; keys missing from the pipeline signature are skipped.
     call_kwargs: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
@@ -360,8 +356,7 @@ class VideoFamily:
     accepts_last_frame: bool = True
     # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
     i2v_pipeline_class: Optional[str] = None
-    # False when the pipeline fits the first frame onto the canvas itself (Cosmos3 centre-crops with its own resampling),
-    # so Studio hands it the source image.
+    # False: the pipeline fits the first frame itself, so Studio passes the source image.
     i2v_fits_first_frame: bool = True
     i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     # (identifier regex, ((kwarg, value), ...)); first matching row applies.
@@ -429,29 +424,20 @@ _HV15_I2V_REFUSAL = (
 )
 
 
-# Cosmos3 (diffusers >= 0.40): one omni transformer that is also the text model, so Cosmos3OmniPipeline carries a
-# tokenizer and no text encoder, and it takes a first frame through its own __call__ (image=). Nano and Edge are
-# separate families because the model cards sample them differently and the transformers differ in size
-# (hidden_size 4096 / 2048; Super's 5120 has no family).
+# Cosmos3 (diffusers >= 0.40): Nano and Edge are separate families (different card sampling and hidden_size).
 COSMOS3_NANO_FAMILY = "cosmos3-nano"
 COSMOS3_EDGE_FAMILY = "cosmos3-edge"
 COSMOS3_FAMILIES = (COSMOS3_NANO_FAMILY, COSMOS3_EDGE_FAMILY)
-# Families that load only as their Diffusers pipeline: diffusers has no single-file loader for Cosmos3OmniTransformer
-# and no GGUF runtime runs it, so a Cosmos3-named checkpoint without a pipeline index (a reasoner fine-tune, a quant,
-# the reasoner files alone) is never the generator, and no listing offers it as video.
+# No single-file or GGUF loader exists, so only a pipeline index is the generator.
 PIPELINE_ONLY_VIDEO_FAMILIES = frozenset(COSMOS3_FAMILIES)
-# Pipeline classes whose t2v __call__ takes the first frame itself, so naming them as the i2v class is a no-op swap
-# rather than a frame the call ignores.
 I2V_IN_T2V_PIPELINE_CLASSES = frozenset({"Cosmos3OmniPipeline"})
-# model_index.json _class_name values Cosmos3OmniPipeline serves: Nano's index names the pre-release class.
+# Nano's index names the pre-release class.
 _COSMOS3_INDEX_CLASSES = frozenset({"Cosmos3OmniPipeline", "Cosmos3OmniDiffusersPipeline"})
 # Root config.json model_type -> {transformer hidden_size: family}.
 _COSMOS3_MODEL_TYPES = {
     "cosmos3_omni": {4096: COSMOS3_NANO_FAMILY},
     "cosmos3_edge": {2048: COSMOS3_EDGE_FAMILY},
 }
-# A folder with no root config.json (a diffusers save_pretrained export writes only model_index.json and the component
-# folders): the transformer's own class and hidden_size decide.
 _COSMOS3_TRANSFORMER_SIZES = {
     size: family for sizes in _COSMOS3_MODEL_TYPES.values() for size, family in sizes.items()
 }
@@ -474,23 +460,17 @@ _COSMOS3_UNSUPPORTED = (
     (_COSMOS3_REASONER_RE, _COSMOS3_REASONER_REFUSAL),
     (_COSMOS3_CONDITIONED_RE, _COSMOS3_CONDITIONED_REFUSAL),
 )
-# Cosmos3 decodes through the Wan2.2-TI2V-5B VAE layout (AutoencoderKLWan, z_dim 48, 16x spatial / 4x temporal), whose
-# stock tiles leave a 4-latent edge tile at 480 / 832 px; decode untiled when it fits, priced as the Wan2.2-TI2V-5B
-# entry's measured 2.5 MiB per latent pixel (fp16; Cosmos3's VAE runs bf16, the same width).
+# Wan2.2-TI2V-5B VAE: stock tiles leave a 4-latent edge tile at 480 / 832 px; priced at its measured 2.5 MiB/latent px.
 _COSMOS3_PROFILE = FamilyProfile(
     untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
 )
-# Model-card sampling (assets/ examples): UniPC at a static flow shift; Edge also turns Karras sigmas off. The shipped
-# scheduler_config.json keeps flow_shift 1.0, which neither card uses.
+# Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
 _COSMOS3_EDGE_SCHEDULER = (("flow_shift", 12.0), ("use_karras_sigmas", False))
 
 
 def local_cosmos3_pipeline_family(path: Optional[str]) -> Optional[str]:
-    """The Cosmos3 family a local diffusers folder is, read from its ``model_index.json`` class, its root
-    ``config.json`` model_type (cosmos3_omni / cosmos3_edge) and its transformer's hidden_size; without a root
-    ``config.json`` (a ``save_pretrained`` export), from the transformer's class and hidden_size. None for anything
-    else, a folder that cannot be read, or a size no family serves (Super)."""
+    """The Cosmos3 family of a local diffusers folder from its configs, or None."""
     import json
     from pathlib import Path
 
@@ -1095,8 +1075,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         cudnn_benchmark = False,
     ),
-    # Cosmos3-Nano (nvidia/Cosmos3-Nano, OpenMDW-1.1): model card t2v at 1280x720, 189 frames @ 24 fps, 35 steps, CFG 6.
-    # The pipeline pads the latent grid itself, so /16 sizes (720) run; presets are its own 720p / 480p canvases.
+    # The pipeline pads the latent grid itself, so /16 sizes (720) run.
     VideoFamily(
         name = "cosmos3-nano",
         pipeline_class = "Cosmos3OmniPipeline",
@@ -1108,7 +1087,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 189,
         default_fps = 24,
-        # Wan2.2 VAE: 4x temporal, so 4k+1 frames; the card allows 5 to 400.
         frame_step = 4,
         min_num_frames = 5,
         max_num_frames = 397,
@@ -1123,20 +1101,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (480, 832),  # faster
         ),
         duration_presets = (2.0, 5.0, 7.875),
-        # bf16 on disk (decimal GB): transformer 30.35 (the omni LM is also the text model), no text encoder, VAE 1.41.
         bf16_components_gb = (30.4, 0.0, 1.4),
-        # Unmeasured: the DiT is a language model over a prompt-length sequence, so regional compile is left off.
+        # Unmeasured: the DiT runs over a prompt-length sequence.
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
         scheduler_overrides = _COSMOS3_NANO_SCHEDULER,
-        # Edge's two settings, for the same VAE and the same first-frame conditioning: the benchmark's per-process conv
-        # pick and the fused encoder each moved Edge's renders off the card's call (see the Edge row).
+        # Same VAE and conditioning as Edge (see the Edge row).
         cudnn_benchmark = False,
         vae_fused_encoder = False,
     ),
-    # Cosmos3-Edge (nvidia/Cosmos3-Edge, 4B): model card i2v at 832x480, 121 frames @ 24 fps, 20 steps, CFG 6; the card
-    # supports 256p / 480p, 12-30 fps and 50-150 frames.
     VideoFamily(
         name = "cosmos3-edge",
         pipeline_class = "Cosmos3OmniPipeline",
@@ -1154,18 +1128,15 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         resolution_presets = ((832, 480), (480, 832), (640, 640), (736, 544), (544, 736)),
         duration_presets = (3.0, 5.0, 6.0),
-        # bf16 (decimal GB, from the checkpoint headers): transformer 6.74, no text encoder, VAE 1.41.
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
         scheduler_overrides = _COSMOS3_EDGE_SCHEDULER,
         call_kwargs = (("add_resolution_template", False), ("add_duration_template", False)),
-        # same VAE as TI2V-5B; with the benchmark on, two server processes rendered one seed 55 dB (T2V) and
-        # 30 dB (I2V) apart, bit-identical with it off
+        # cudnn.benchmark made renders differ across processes; bit-identical off.
         cudnn_benchmark = False,
-        # I2V conditions every step on the encoded first-frame clip: at the default speed, seed 0 at the card's settings
-        # landed 29.5 dB from the card's call with the fused encoder and 51.8 dB with it stock (T2V 48.8 dB either way)
+        # The fused encoder moved I2V renders off the card's call (every step attends to the encoded clip).
         vae_fused_encoder = False,
     ),
 )
@@ -1213,9 +1184,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         "pipeline does not provide, so Unsloth cannot run it. Load a plain Wan2.1 text-to-video "
         "checkpoint instead.",
     ),
-    # Cosmos3 repos whose names carry a family token but that are not generators (the Reasoners, the Policy / Sim /
-    # Transfer and FP8 builds): here, not on the family rows, so detection names no family for them and no listing
-    # offers them as video; a Reasoner stays a Chat row.
+    # Cosmos3 non-generators: here, not on the family rows, so detection names no family for them.
     *_COSMOS3_UNSUPPORTED,
 )
 
@@ -1267,8 +1236,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE), and the Cosmos3 Reasoners and
-    # Policy / Sim / Transfer / FP8 builds a family token (Cosmos3-Nano-Reasoner): no T2V pipeline over those weights.
+    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE), Cosmos3 Reasoners a family token.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
     needle = model_identity(repo_id).lower()
@@ -1841,7 +1809,7 @@ def validate_video_reference_conditioning(
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
-    # Cosmos3 model cards (35 / 6 Nano, 20 / 6 Edge), first so a parent folder spelling another key cannot outrank them.
+    # First so a parent folder spelling another key cannot outrank them.
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3

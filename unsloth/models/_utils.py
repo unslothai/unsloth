@@ -3085,13 +3085,7 @@ def _root_index_weight_subfolders(
     revision = None,
     cache_dir = None,
 ):
-    """Best-effort: which subfolders does the repo's root safetensors index map weights into? Returns them, or () for a root-only index, no index, and on any failure.
-
-    weights_at_root assumes a root index points at root shards, but an index may point anywhere in the repo: nvidia/Cosmos3-Nano and nvidia/Cosmos3-Edge keep config.json and model.safetensors.index.json at the root while every weight_map entry names a file under transformer/ or vision_encoder/. Pruning those made the download unsatisfiable, and unsloth_zoo's post-download gate then reported it as a network fault, the same shape as the sentence-transformers case above.
-
-    The index is tens of kilobytes (68 KB for Cosmos3-Edge, 113 KB for Cosmos3-Nano) and a sharded load reads it anyway,
-    so the warm fetches it once; a repo without one costs a single 404 lookup per load.
-    """
+    """Subfolders the root safetensors index maps weights into (Cosmos3 keeps every shard under transformer/), else ()."""
     try:
         import json as _json
 
@@ -3307,7 +3301,6 @@ def maybe_prefetch_hf_snapshot(
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
-    # A root safetensors index can map weights into subfolders (Cosmos3); those are read by a root load too.
     index_subfolders = ()
     if (
         weights_at_root
@@ -3373,7 +3366,7 @@ def maybe_prefetch_hf_snapshot(
         # subfolder=X: the load resolves every weight under X/, so warm that subfolder plus root aux.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     elif weights_at_root:
-        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads, and a root index whose weight_map points into subfolders, which the load reads through that index.
+        # A bare load reads only root weights, so drop subdir weights and keep subdir configs, except ST module subfolders and subfolders a root index maps into.
         if not st_module_paths and not index_subfolders:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:

@@ -89,9 +89,7 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
-# Cosmos3: the pipeline tokenizes the chat-templated prompt without padding (pipeline_cosmos3_omni.py ``_tokenize``) and
-# the transformer runs it as the understanding stream beside the generated tokens, so every prompt length is a new
-# shape. Each decoder layer takes (und_seq, gen_seq, rotary_emb) with the rotary tables cut at the text length.
+# Cosmos3 tokenizes the prompt unpadded (pipeline_cosmos3_omni.py ``_tokenize``): every prompt length is a new shape.
 _COSMOS3_SOURCES: tuple[str, ...] = (
     "L['und_seq']",
     "L['rotary_emb'][0]",

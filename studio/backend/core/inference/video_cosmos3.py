@@ -3,22 +3,8 @@
 
 """Cosmos3 (nvidia/Cosmos3-Nano, nvidia/Cosmos3-Edge) on diffusers' ``Cosmos3OmniPipeline``.
 
-The pipeline differs from the other video families in these ways this module covers:
-
-- Its transformer is also the text model, so the pipeline has a ``text_tokenizer`` and no text encoder.
-- It returns ``Cosmos3OmniPipelineOutput(video=...)`` (one clip, already unbatched), not ``.frames``.
-- It builds NVIDIA's Cosmos guardrail (``cosmos_guardrail``) whenever the checkpoint's ``model_index.json`` leaves
-  ``enable_safety_checker`` on (Nano does; Edge ships it off), and raises ``ImportError`` without the package. Studio
-  keeps the checkpoint's choice and refuses the load up front instead of after a 35 GB download;
-  ``UNSLOTH_COSMOS3_SAFETY_CHECKER=0`` is the explicit opt-out.
-- Its repos ship a ``modular_model_index.json`` beside ``model_index.json``, which the download planner would otherwise
-  read as MiniMax-H3's layout.
-- It loads only as its pipeline (``Cosmos3OmniTransformer`` has no ``from_single_file``), and has no encoder precision
-  to set; ``load_request_refusal`` refuses both requests at validation.
-- Every denoising step attends to the VAE-encoded first-frame clip, so ``install_untiled_encode`` keeps that encode
-  untiled.
-
-Generation itself runs the shared video path; the families carry the model cards' sampling settings.
+The guardrail (``cosmos_guardrail``) is built whenever ``model_index.json`` enables it and raises ``ImportError``
+without the package, so Studio refuses the load up front; ``UNSLOTH_COSMOS3_SAFETY_CHECKER=0`` opts out.
 """
 
 from __future__ import annotations
@@ -35,7 +21,7 @@ logger = get_logger(__name__)
 
 SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
-# What each base repo's model_index.json ships, for when the index is not on disk yet (validation is network-free).
+# Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
     "nvidia/cosmos3-nano": True,
     "nvidia/cosmos3-edge": False,
@@ -94,7 +80,6 @@ def checkpoint_enables_safety_checker(repo_id: str, index: Optional[dict] = None
     return _BASE_SAFETY_CHECKER.get(str(repo_id or "").strip().lower(), True)
 
 
-# text_encoder_quant values that ask for nothing: unset, the automatic pick, or the released encoder.
 _TE_QUANT_UNSET = frozenset({"", "auto", "none", "off"})
 
 

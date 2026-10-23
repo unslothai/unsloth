@@ -1382,7 +1382,6 @@ def _resolve_load_family_with_source(
         or None
     )
     if fam is None and not gguf_filename:
-        # A renamed local Cosmos3 folder: its model_index.json, config.json model_type and transformer size name it.
         local_cosmos3 = local_cosmos3_pipeline_family(repo_id)
         if local_cosmos3:
             fam = detect_video_family("", override = local_cosmos3)
@@ -1393,7 +1392,6 @@ def _resolve_load_family_with_source(
         if arch:
             fam = detect_video_family(repo_id, override = arch)
     if fam is not None and fam.name in COSMOS3_FAMILIES and not gguf_filename:
-        # A local folder's own Cosmos3 configs outrank a path that names the other size.
         by_configs = local_cosmos3_pipeline_family(repo_id)
         if by_configs and by_configs != fam.name:
             fam = detect_video_family("", override = by_configs) or fam
@@ -4297,7 +4295,7 @@ class VideoBackend:
                 f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
                 f"repos, the official family base repos, and local paths."
             )
-        # After the trust gate: an untrusted Cosmos3-named repo is refused as untrusted, not sent to install a package.
+        # After the trust gate, so an untrusted repo is refused as untrusted.
         if fam.name in COSMOS3_FAMILIES and kind == "pipeline":
             from .video_cosmos3 import guardrail_refusal
             refusal = guardrail_refusal(repo_id)
@@ -6714,8 +6712,7 @@ class VideoBackend:
 
         siblings = list(info.siblings or [])
         ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
-        # The LTX-2.5 pack and Cosmos3 ship a modular_model_index.json beside their model_index.json; neither is H3's
-        # layout.
+        # LTX-2.5 and Cosmos3 also ship a modular_model_index.json; neither is H3's layout.
         from .video_cosmos3 import is_cosmos3_listing
 
         is_h3_modular = (
@@ -12137,7 +12134,6 @@ class VideoBackend:
                 # LTX-2 takes frame_rate (shapes audio length); others fix their rate, fps only at export
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
-                # Cosmos3 takes fps: it modulates the temporal position encoding and fills the duration template.
                 if fam.name in COSMOS3_FAMILIES and "fps" in call_params:
                     kwargs["fps"] = float(out_fps)
                 for key, value in getattr(fam, "call_kwargs", ()) or ():
@@ -12660,8 +12656,7 @@ class VideoBackend:
                 width or default_w,
                 height or default_h,
             )
-        # Fit once so both engines condition on identical pixels; a family whose pipeline fits the frame itself (Cosmos3:
-        # aspect-preserving resize, then centre crop) gets the source image and its own resampling.
+        # Fit once so both engines condition on identical pixels, unless the pipeline fits the frame itself.
         if first is not None and not fam.i2v_fits_first_frame:
             pass
         elif first is not None and i2v_pipeline:

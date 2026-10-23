@@ -559,7 +559,6 @@ def _local_family_needles(model) -> tuple[str, ...]:
     except Exception:
         pass
     try:
-        # A renamed Cosmos3 folder: its configs name the family (model_type and transformer size).
         from core.inference.video_families import local_cosmos3_pipeline_family
         needles.append(local_cosmos3_pipeline_family(model.path))
     except Exception:
@@ -601,8 +600,7 @@ def _local_model_task(model) -> Optional[str]:
             unsupported_video_checkpoint_reason,
         )
 
-        # The loader judges the names before the family, so a name it refuses (a Cosmos3 FP8 build, a generator copy in
-        # a Cosmos3-Edge-Reasoner folder) lists no video, whatever the folder's contents name.
+        # Names are judged before the family, as the loader does.
         if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
             pipeline_dir = _is_diffusers_pipeline_dir(Path(path))
             for needle in _local_family_needles(model):
@@ -705,8 +703,6 @@ def _local_is_diffusers(model) -> bool:
         pass
     try:
         from core.inference.video_families import detect_video_family
-
-        # A Cosmos3 name is no evidence (pipeline only); a pipeline folder answered above.
         families = (detect_video_family(needle) for needle in _local_family_needles(model))
         return any(
             family is not None and not _pipeline_only_video_family(family) for family in families
@@ -738,7 +734,6 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     try:
         from core.inference.video_families import detect_video_family
         family = detect_video_family(repo_id)
-        # A Cosmos3 repo is diffusers only as a pipeline, which the index check above answered.
         return family is not None and not _pipeline_only_video_family(family)
     except Exception:
         return False
@@ -777,9 +772,7 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
         family = detect_video_family(repo_id)
         if family is not None:
             if _pipeline_only_video_family(family):
-                # No single-file path: only a trusted repo holding the pipeline index is the generator. Generator-first:
-                # nvidia/Cosmos3-Edge is also its reasoner (root config.json) and lists as video; chat use goes through
-                # the -Reasoner repos, which detect no family.
+                # Generator-first: nvidia/Cosmos3-Edge also has a reasoner root config.json but lists as video.
                 trusted = _is_trusted_video_repo(repo_id) and _repo_has_pipeline_index(
                     repo_info, selected
                 )

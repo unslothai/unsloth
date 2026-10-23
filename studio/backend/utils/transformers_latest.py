@@ -452,10 +452,7 @@ def _hardcoded_model_types() -> frozenset[str]:
 _TIER_ROUTED_WITHOUT_MODEL = frozenset({"diffusion_gemma"})
 
 
-# Nested model_types no transformers release registers because the wrapper never builds them: the dict stays a plain
-# attribute nothing reads, so it cannot fail a load on the newest release and must not veto its offer. Cosmos3-Edge's
-# projector_config (Cosmos3EdgeConfig builds only its text and vision sub-configs and reads the top-level
-# projector_hidden_size).
+# Nested model_types the wrapper config never builds (Cosmos3-Edge's projector_config), so they must not veto an offer.
 _INERT_NESTED_MODEL_TYPES = frozenset({"cosmos3_edge_projector"})
 
 
