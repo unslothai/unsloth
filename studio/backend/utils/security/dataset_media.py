@@ -14,6 +14,7 @@ import importlib.abc
 import importlib.util
 import os
 import re
+import stat
 import sys
 import tempfile
 
@@ -87,7 +88,12 @@ def _extracted_source(path: str):
     source = _extracted_sources.get(top)
     if source is None:
         try:
-            with open(top + _SOURCE_SUFFIX, "rb") as f:
+            # A record planted as a FIFO or a link (an archive member can name it) must not block or redirect the read.
+            flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(top + _SOURCE_SUFFIX, flags)
+            with os.fdopen(fd, "rb") as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    return ""
                 raw = f.read(_SOURCE_MAX_BYTES + 1)
             if len(raw) > _SOURCE_MAX_BYTES:
                 return ""

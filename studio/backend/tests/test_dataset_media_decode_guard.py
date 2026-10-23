@@ -364,8 +364,6 @@ def test_managed_member_of_another_accounts_extracted_archive_is_refused(extract
 
 
 def test_managed_extraction_record_is_read_once_per_process(extracted_root, monkeypatch):
-    import builtins
-
     from utils.security import dataset_media
 
     archive = run_as(
@@ -374,14 +372,14 @@ def test_managed_extraction_record_is_read_once_per_process(extracted_root, monk
     member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
     dataset_media._extracted_sources.clear()
     reads = []
-    real_open = builtins.open
+    real_open = os.open
 
     def counting_open(file, *args, **kwargs):
         if str(file).endswith(".unsloth-source"):
             reads.append(file)
         return real_open(file, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "open", counting_open)
+    monkeypatch.setattr(dataset_media.os, "open", counting_open)
     for _ in range(3):
         assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
     assert len(reads) == 1
@@ -425,5 +423,40 @@ def test_managed_oversized_extraction_record_is_refused_unread(extracted_root, m
     finally:
         tracemalloc.stop()
     assert peak < (1 << 20)
+    with pytest.raises(PermissionError):
+        _decode(member, {})
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "needs FIFOs")
+def test_managed_extraction_record_planted_as_fifo_is_refused_without_blocking(
+    extracted_root, monkeypatch
+):
+    import threading
+
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    top = _extract(archive, ALICE)
+    member = {"bytes": None, "path": str(extracted_root / top / "member.png")}
+    sidecar = extracted_root / (top + ".unsloth-source")
+    sidecar.unlink()
+    os.mkfifo(sidecar)
+    dataset_media._extracted_sources.clear()
+    result = []
+    reader = threading.Thread(
+        target = lambda: result.append(dataset_media._extracted_source(member["path"])),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(5)
+    if reader.is_alive():
+        # Unblock the stuck open so the thread can end, then fail.
+        with open(sidecar, "wb"):
+            pass
+        reader.join(5)
+        pytest.fail("reading a FIFO extraction record blocked")
+    assert result == [""]
     with pytest.raises(PermissionError):
         _decode(member, {})
