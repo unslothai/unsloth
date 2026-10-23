@@ -431,11 +431,13 @@ def _embed_pending_chunks(
     model_name: str,
     cancel_check: Optional[Callable[[], bool]] = None,
     expected_identity: Optional[str] = None,
+    cached: Optional[list] = None,
 ):
     """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
     write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
     are encoded."""
-    vectors = _cached_vectors(expected_identity, texts)
+    # `cached` is the lookup the caller's cap was computed from; a second lookup could see a later eviction.
+    vectors = list(cached) if cached is not None else _cached_vectors(expected_identity, texts)
     identity = expected_identity if any(v is not None for v in vectors) else None
     misses = [i for i, v in enumerate(vectors) if v is None]
     restarted = cancelled = False
@@ -486,7 +488,11 @@ _prewarm_worker: Optional[threading.Thread] = None
 _prewarm_stop = threading.Event()
 
 
-def note_branch(thread_id: Optional[str], messages: list[dict]) -> None:
+def note_branch(
+    thread_id: Optional[str],
+    messages: list[dict],
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> None:
     """Remember a thread's latest transcript for the next idle gap; replaces the previous snapshot."""
     if not thread_id or not messages or not enabled():
         return
@@ -495,7 +501,12 @@ def note_branch(thread_id: Optional[str], messages: list[dict]) -> None:
     # Captured here: the worker is a plain thread, which would otherwise read the owner's databases.
     account = current_account()
     with _gap:
-        _noted_branches[(account.account_id, thread_id)] = (account, thread_id, list(messages))
+        _noted_branches[(account.account_id, thread_id)] = (
+            account,
+            thread_id,
+            list(messages),
+            cancel_check,
+        )
 
 
 @contextmanager
@@ -538,18 +549,26 @@ def _gap_closed() -> bool:
 
 def _prewarm_jobs(jobs: list) -> None:
     from utils.account_context import run_as
-    for account, thread_id, messages in jobs:
+    for account, thread_id, messages, cancel_check in jobs:
         if _gap_closed():
             return
+        # Chat Stop ends this request's background work too, not only its foreground pass.
+        stopped = cancel_check or (lambda: False)
+        if stopped():
+            continue
         try:
-            run_as(account, _prewarm_thread, thread_id, messages)
+            run_as(account, _prewarm_thread, thread_id, messages, stopped)
         except Exception:  # noqa: BLE001 -- a cache warm-up is never worth a log storm
             logger.debug(
                 "conversation_archive.prewarm_failed thread_id=%s", thread_id, exc_info = True
             )
 
 
-def _prewarm_thread(thread_id: str, messages: list[dict]) -> None:
+def _prewarm_thread(
+    thread_id: str,
+    messages: list[dict],
+    stopped: Callable[[], bool] = lambda: False,
+) -> None:
     """Embed this thread's not-yet-archived turns into the vector cache, oldest first (the next to be
     evicted). Writes nothing to the archive, so an edit or rewind cannot strand a stale row."""
     if not can_archive(thread_id):
@@ -565,7 +584,7 @@ def _prewarm_thread(thread_id: str, messages: list[dict]) -> None:
     try:
         budget, todo, done = _PREWARM_MAX_CHUNKS, [], 0
         for group in group_turns(messages):
-            if _gap_closed() or budget <= 0:
+            if _gap_closed() or stopped() or budget <= 0:
                 break
             archivable = _archivable(group)
             text = render_turn(archivable) if archivable else ""
@@ -578,10 +597,10 @@ def _prewarm_thread(thread_id: str, messages: list[dict]) -> None:
             misses = [t for t, v in zip(texts, _cached_vectors(identity, texts)) if v is None]
             todo += misses[:budget]
             budget -= len(misses)
-            while len(todo) >= _PREWARM_BATCH and not _gap_closed():
+            while len(todo) >= _PREWARM_BATCH and not (_gap_closed() or stopped()):
                 done += _prewarm_batch(model, identity, todo[:_PREWARM_BATCH])
                 todo = todo[_PREWARM_BATCH:]
-        while todo and not _gap_closed():
+        while todo and not (_gap_closed() or stopped()):
             done += _prewarm_batch(model, identity, todo[:_PREWARM_BATCH])
             todo = todo[_PREWARM_BATCH:]
     finally:
@@ -663,7 +682,7 @@ def archive_turns(
 
         # Chunk everything first, then embed it in ONE pass. Per group, a first compaction of a long chat ran dozens
         # of one-item embedding jobs back to back before the reply could start, and both backends serialise them.
-        pending, needs = [], []
+        pending, needs, snapshots = [], [], []
         max_chunks = _archive_embed_max_chunks()
         collected = skipped = 0
         for group, span in groups:
@@ -701,12 +720,11 @@ def archive_turns(
             chunks = _turn_chunks(text, chunk_limit, count)
             if chunks:
                 # The cap counts what must be encoded now; chunks pre-embedded in an idle gap are free.
-                need = sum(
-                    v is None
-                    for v in _cached_vectors(expected_identity, [chunk.text for chunk in chunks])
-                )
+                hits = _cached_vectors(expected_identity, [chunk.text for chunk in chunks])
+                need = sum(v is None for v in hits)
                 pending.append((group, span, digest, chunks, seats, budget))
                 needs.append(need)
+                snapshots.append(hits)
                 collected += need
         if not pending:
             return 0
@@ -742,6 +760,7 @@ def archive_turns(
                 max_chunks,
                 deferred,
             )
+            snapshots = snapshots[: len(kept)]
             pending = kept
             if not pending:
                 return 0
@@ -762,6 +781,7 @@ def archive_turns(
             model_name = model,
             cancel_check = cancel_check,
             expected_identity = expected_identity,
+            cached = [vector for hits in snapshots for vector in hits],
         )
         logger.info(
             "conversation_archive.embed_done thread_id=%s vectors=%s/%s cancelled=%s elapsed_ms=%s",

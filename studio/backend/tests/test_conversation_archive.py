@@ -1732,7 +1732,7 @@ def test_a_gap_job_runs_as_the_account_that_noted_it(monkeypatch):
     monkeypatch.setattr(
         conversation_archive,
         "_prewarm_thread",
-        lambda thread_id, messages: seen.append((current_account().account_id, thread_id)),
+        lambda thread_id, messages, stopped: seen.append((current_account().account_id, thread_id)),
     )
     member = AccountContext("acct-member", "member", "user")
     run_as(
@@ -1743,6 +1743,46 @@ def test_a_gap_job_runs_as_the_account_that_noted_it(monkeypatch):
     )
     _run_gap()
     assert seen == [("acct-member", "member-thread")]
+
+
+def test_a_stopped_request_leaves_no_background_work(conn, monkeypatch):
+    """Stop before the gap: the noted job is dropped, not resumed in the background."""
+    thread_id = "stopped-gap-thread"
+    turns = _gap_thread(thread_id, 4, tag = "stopped")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns, lambda: True)
+    _run_gap()
+    assert calls == []
+
+
+def test_stop_during_the_gap_ends_the_background_work(conn, monkeypatch):
+    thread_id = "stop-mid-gap-thread"
+    turns = _gap_thread(thread_id, 20, tag = "midgap")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns, lambda: len(calls) >= 2)
+    _run_gap()
+    assert len(calls) == 2
+
+
+def test_the_cap_holds_when_the_cache_churns_before_the_encode(conn, monkeypatch):
+    """Vectors counted as free stay free even if the cache evicts them before encoding."""
+    thread_id = "churn-thread"
+    turns = _gap_thread(thread_id, 6, tag = "churn")
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+
+    real = conversation_archive._embed_pending_chunks
+
+    def evict_then_embed(*args, **kwargs):
+        conversation_archive._vector_cache.clear()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "_embed_pending_chunks", evict_then_embed)
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, turns) == 6
+    assert calls == []
 
 
 def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):

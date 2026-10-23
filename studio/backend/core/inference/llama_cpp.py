@@ -2313,7 +2313,7 @@ def _archive_and_recall(
         gone = evicted_messages(before, conversation)
         if background:
             # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
-            conversation_archive.note_branch(thread_id, before)
+            conversation_archive.note_branch(thread_id, before, cancel_check)
         # `conversation` is the fitted prompt, so it says which repeats of a turn the model
         # can still read. Without it a twice-said turn is archived twice and spends two
         # recall slots on text already in the prompt.
