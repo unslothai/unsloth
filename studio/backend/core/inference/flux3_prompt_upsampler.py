@@ -1334,12 +1334,49 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+        slot = None
         try:
+            # Offloaded layers size themselves to the free memory read at spawn: a render denoising meanwhile (another
+            # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
+            # holds it. Called ahead of the request's own render, never inside one.
+            slot = self._wait_for_render_slot()
             self._spawn_server(binary, model, mmproj)
         finally:
+            if slot is not None:
+                slot.release()
             with self._lock:
                 self._loading = False
                 self._starting_process = None
+
+    def _wait_for_render_slot(self) -> Any:
+        """The active image engine's generation lock, acquired, or None where the start would not offload (training,
+        nobody on the GPU, a CPU-only host) or the engine cannot be read. Waited for cancellably: a Stop, training
+        start or handover sets ``_load_cancel``."""
+        from core.inference.stt_sidecar import _training_active
+
+        if _training_active() or _gpu_unowned():
+            return None
+        if _accelerator_memory_mib(_resident_cuda_ordinal())[2] == "cpu":
+            return None
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            engine = get_active_diffusion_engine()
+            lock = getattr(engine, "_generate_lock", None)
+        except Exception:  # noqa: BLE001 -- unreadable: start as before rather than fail the enhancement
+            return None
+        if lock is None:
+            return None
+        while not lock.acquire(timeout = 0.2):
+            if self._load_cancel.is_set():
+                raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if self._load_cancel.is_set():
+            lock.release()
+            raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if _engine_loading(engine) or not _image_model_owns_gpu():
+            # The model this caption is for is leaving: the run goes as typed (or retries with the new model).
+            lock.release()
+            raise UpsamplerUnavailableError("The image model is being replaced.")
+        return lock
 
     def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         from core.inference.stt_mtmd_sidecar import (

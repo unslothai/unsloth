@@ -10,6 +10,7 @@ import warnings
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("torchao") is None, reason = "require torchao"
@@ -105,7 +106,9 @@ def test_nvfp4_needs_in_features_divisible_by_32(monkeypatch, lora):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
+    not has_real_cuda()
+    or not torch.cuda.is_available()
+    or torch.cuda.get_device_capability() < (10, 0),
     reason = "needs an FP4 tensor core GPU",
 )
 def test_nvfp4_admitted_widths_run_on_gpu():

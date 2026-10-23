@@ -59,6 +59,13 @@ class StreamEncode:
             getattr(sys.modules.get(type(vae).__module__), "unpatchify", None) if patch else None
         )
         self._patch = patch
+        # ROCm's bf16 decode (diffusion_device.install_rocm_vae_bf16_decode) runs the decoder in bf16 and hands the
+        # pipeline the fp32 widening of its output, so the pipeline postprocesses fp32: the chunks must be widened the
+        # same way or no frame ever matches. Read off the VAE, not ``vae.decode``: the untiled-when-fits decode (and
+        # the OOM scope) wrap it from outside. NVIDIA's fp16 decode returns fp16 as is, which the chunks already are.
+        self._widen = bool(getattr(vae, "_unsloth_bf16_decode_mode", None)) or bool(
+            getattr(getattr(vae, "decode", None), "_unsloth_bf16_decode", False)
+        )
         self._side = None
         self.chunks: list = []
         self.reason = ""
@@ -98,6 +105,8 @@ class StreamEncode:
                     self.invalidate("no unpatchify")
                     return
                 x = self._unpatchify(x, patch_size = self._patch)
+            if self._widen and x.is_floating_point() and x.dtype != torch.float32:
+                x = x.float()
             x = torch.clamp(x, min = -1.0, max = 1.0)
             x = self.processor.postprocess(x[0].permute(1, 0, 2, 3), "pt")
             x = (
@@ -174,7 +183,11 @@ class StreamEncode:
         try:
             _wrap("decode", _decode_wrapper)
             _wrap("tiled_decode", _tiled_wrapper)
-            handle = vae.decoder.register_forward_hook(self._on_chunk, with_kwargs = True)
+            # Disabled for Dynamo: under a compiled decode (UNSLOTH_DIFFUSION_COMPILE_VAE=1) the hook's thread, queue and
+            # CUDA stream code broke the graph at each of them; as one eager island the chunks still stream.
+            handle = vae.decoder.register_forward_hook(
+                self._torch.compiler.disable(self._on_chunk), with_kwargs = True
+            )
         except Exception:  # noqa: BLE001 - a VAE that refuses the hooks just encodes afterwards
             self.invalidate("hooks refused")
         try:

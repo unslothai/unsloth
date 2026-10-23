@@ -7572,7 +7572,8 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
 
 
 def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
-    """nn.Embedding subclasses with their own forward (Gemma3TextScaledWordEmbedding scales by embed_scale)."""
+    """Embeddings QAT must restore after torchao's swap: nn.Embedding subclasses with their own forward
+    (Gemma3TextScaledWordEmbedding scales by embed_scale), and plain embeddings carrying an Accelerate hook."""
     try:
         from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
     except ImportError:
@@ -7581,19 +7582,22 @@ def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
         fqn: module
         for fqn, module in model.named_modules()
         if isinstance(module, torch.nn.Embedding)
-        and type(module) is not torch.nn.Embedding
         and not isinstance(module, FakeQuantizedEmbedding)
+        and (type(module) is not torch.nn.Embedding or hasattr(module, "_hf_hook"))
     }
 
 
 def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -> None:
     """Copy the parameters, submodules, buffers and plain attributes an Embedding subclass adds (e.g.
-    Gemma3's embed_scale, T5Gemma2's eoi_embedding) onto dst."""
+    Gemma3's embed_scale, T5Gemma2's eoi_embedding) onto dst, then move src's Accelerate hook.
+    The instance `forward` is never copied: the only one QAT admits is Accelerate's wrapper, which is bound to src
+    and is re-created on dst by _move_dispatch_hook (see _qat_embedding_unsupported)."""
     for name, param in src._parameters.items():
         if name not in dst._parameters:
             dst.register_parameter(name, param)
     for name, module in src._modules.items():
-        if name not in dst._modules:
+        # weight_fake_quantizer is FakeQuantizedEmbedding's own; a converted plain embedding must not carry it.
+        if name not in dst._modules and name != "weight_fake_quantizer":
             dst.add_module(name, module)
     for name, buffer in src._buffers.items():
         if name not in dst._buffers:
@@ -7601,16 +7605,317 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
                 name, buffer, persistent = name not in src._non_persistent_buffers_set
             )
     for name, value in vars(src).items():
-        if name.startswith("_") or name in vars(dst) or isinstance(value, torch.nn.Module):
+        if (
+            name.startswith("_")
+            or name == "forward"
+            or name in vars(dst)
+            or isinstance(value, torch.nn.Module)
+        ):
             continue
         setattr(dst, name, value)
+    _move_dispatch_hook(dst, src)
+
+
+def _call_with_fake_quantized_weight(module: torch.nn.Module, fn, *args, **kwargs):
+    """Run fn with module.weight swapped for its fake quantized value, so a class forward that reads self.weight
+    directly (unsloth_zoo's float32 Gemma forward) trains against the quantized weight.
+    Re-entrant: inside the scope weight is a plain tensor, not the Parameter, so it is quantized once."""
+    fake_quantizer = getattr(module, "weight_fake_quantizer", None)
+    weight = module.weight
+    if fake_quantizer is None or not isinstance(weight, torch.nn.Parameter):
+        return fn(*args, **kwargs)
+    from torch.nn.utils.stateless import _reparametrize_module
+
+    with _reparametrize_module(module, {"weight": fake_quantizer(weight)}):
+        return fn(*args, **kwargs)
+
+
+def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
+    """Accelerate's add_hook_to_module wrapper: a partial of new_forward over module, the hooked forward in _old_forward."""
+    return (
+        isinstance(forward, functools.partial)
+        and bool(forward.args)
+        and forward.args[0] is module
+        and "_old_forward" in vars(module)
+    )
+
+
+def _is_class_forward(module: torch.nn.Module, forward) -> bool:
+    import types
+    return (
+        isinstance(forward, types.MethodType)
+        and forward.__self__ is module
+        and forward.__func__ is getattr(type(module).forward, "__func__", type(module).forward)
+    )
+
+
+def _is_require_grads_hook(hook) -> bool:
+    """transformers' enable_input_require_grads hook (make_inputs_require_grads, handles kept on the model) or
+    PEFT's fallback (make_inputs_require_grad, no handle kept). Both are re-registered after the QAT swap."""
+    return getattr(hook, "__name__", None) in (
+        "make_inputs_require_grads",
+        "make_inputs_require_grad",
+    )
+
+
+def _unowned_require_grads_hooks(originals: Dict[str, torch.nn.Module]):
+    """PEFT's make_inputs_require_grad hooks per embedding: nobody holds their handle, so they can be re-registered."""
+    return {
+        fqn: [
+            h
+            for h in module._forward_hooks.values()
+            if getattr(h, "__name__", None) == "make_inputs_require_grad"
+        ]
+        for fqn, module in originals.items()
+    }
+
+
+def _reregister_unowned_require_grads_hooks(
+    model: torch.nn.Module, originals, hooks_by_fqn
+) -> None:
+    for fqn, hooks in hooks_by_fqn.items():
+        if not hooks:
+            continue
+        try:
+            module = model.get_submodule(fqn)
+        except AttributeError:
+            continue
+        if module is originals[fqn]:
+            continue  # not swapped: its hooks are still there
+        for hook in hooks:
+            module.register_forward_hook(hook)
+
+
+def _require_grads_owners(model: torch.nn.Module):
+    return [
+        m
+        for m in model.modules()
+        if getattr(m, "_require_grads_hooks", None) or hasattr(m, "_require_grads_hook")
+    ]
+
+
+def _reinstall_input_require_grads(owners) -> None:
+    """Re-run enable_input_require_grads on the models that had it, so the hook lands on the QAT embedding
+    and the owner's handles point at it (disable first: no duplicate on an embedding QAT left alone)."""
+    for owner in owners:
+        try:
+            owner.disable_input_require_grads()
+            owner.enable_input_require_grads()
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not re-enable input require grads after QAT ({type(exc).__name__}: {exc}).",
+                RuntimeWarning,
+                stacklevel = 3,
+            )
+
+
+def _flat_accelerate_hooks(hook):
+    """The hooks inside an Accelerate _hf_hook: itself, or a SequentialHook's children (nested ones flattened)."""
+    if hook is None:
+        return []
+    children = getattr(hook, "hooks", None)
+    if type(hook).__name__ == "SequentialHook" and children is not None:
+        return [h for child in children for h in _flat_accelerate_hooks(child)]
+    return [hook]
+
+
+def _offload_hook(module: torch.nn.Module):
+    """The offloading AlignDevicesHook on module, also inside a SequentialHook, else None."""
+    hooks = [
+        h
+        for h in _flat_accelerate_hooks(getattr(module, "_hf_hook", None))
+        if getattr(h, "offload", False)
+    ]
+    return hooks[0] if hooks else None
+
+
+def _qat_embedding_unsupported(module: torch.nn.Module):
+    """Why QAT cannot swap this embedding without losing behaviour, else None. Supported: no instance forward, or
+    only Accelerate's wrapper over the class forward, with at most one AlignDevicesHook (also in a SequentialHook)
+    and no forward pre / post hooks. Anything else would have to be rebound onto the replacement, so it is not."""
+    if len(module._forward_pre_hooks) or any(
+        not _is_require_grads_hook(hook) for hook in module._forward_hooks.values()
+    ):
+        return "it has forward hooks"
+    forward = vars(module).get("forward")
+    if forward is not None:
+        if not _is_accelerate_forward(module, forward):
+            return "it has an instance-level forward override"
+        if not _is_class_forward(module, vars(module)["_old_forward"]):
+            return "Accelerate's hook wraps an instance-level forward override"
+    hooks = _flat_accelerate_hooks(getattr(module, "_hf_hook", None))
+    align = [h for h in hooks if type(h).__name__ == "AlignDevicesHook"]
+    if len(align) > 1:
+        return f"it has {len(align)} AlignDevicesHooks"
+    offloading = [h for h in hooks if getattr(h, "offload", False)]
+    if offloading and type(offloading[0]).__name__ != "AlignDevicesHook":
+        return f"its offload hook is a {type(offloading[0]).__name__}, not an AlignDevicesHook"
+    return None
+
+
+class _SkipExcludedEmbeddings:
+    """A QAT filter that leaves embeddings marked _unsloth_qat_excluded out (prepare, convert and save alike)."""
+
+    def __init__(self, filter_fn):
+        self.filter_fn = filter_fn
+
+    def __call__(self, module, fqn):
+        return not getattr(module, "_unsloth_qat_excluded", False) and self.filter_fn(module, fqn)
+
+
+def _exclude_unsupported_qat_embeddings(model: torch.nn.Module, torchao_config) -> None:
+    """Leave out of QAT, with one warning, each selected embedding _qat_embedding_unsupported rejects."""
+    configs = torchao_config.base_config_and_filter_fns
+    filters = [f for _, f in configs if f is not None]
+    if not filters:
+        return  # a None filter selects Linears only
+    excluded = []
+    for fqn, module in model.named_modules():
+        if not isinstance(module, torch.nn.Embedding) or not any(f(module, fqn) for f in filters):
+            continue
+        reason = _qat_embedding_unsupported(module)
+        if reason is not None:
+            module._unsloth_qat_excluded = True
+            excluded.append(f"{fqn} ({reason})")
+    if not excluded:
+        return
+    torchao_config.base_config_and_filter_fns = [
+        (
+            c,
+            f
+            if f is None or isinstance(f, _SkipExcludedEmbeddings)
+            else _SkipExcludedEmbeddings(f),
+        )
+        for c, f in configs
+    ]
+    warnings.warn(
+        "Unsloth: QAT leaves these embeddings in full precision (they are trained and saved unquantized), "
+        "since swapping them would drop behaviour QAT cannot carry over: " + ", ".join(excluded),
+        stacklevel = 3,
+    )
+
+
+def _materialize_offloaded_fake_quantized_embeddings(model: torch.nn.Module) -> None:
+    """QAT convert / strip read embedding weights directly, not through forward: give an offloaded fake quantized
+    embedding its real weight on the CPU (where offload keeps it; the execution GPU may not fit it) and drop the
+    offload hook, so conversion sees real data."""
+    for module in list(model.modules()):
+        hook = _offload_hook(module)
+        if not (
+            isinstance(module, torch.nn.Embedding)
+            and hasattr(module, "weight_fake_quantizer")
+            and hook is not None
+            and getattr(hook, "weights_map", None) is not None
+        ):
+            continue
+        from accelerate.hooks import remove_hook_from_module
+        from accelerate.utils import set_module_tensor_to_device
+
+        weights_map = hook.weights_map
+        values = {n: weights_map[n] for n, _ in module.named_parameters(recurse = False)}
+        # offload_buffers = True keeps buffers (Gemma's embed_scale) in weights_map too, meta on the module.
+        buffers = {}
+        for name, buffer in module.named_buffers(recurse = False):
+            if name in weights_map:
+                buffers[name] = weights_map[name]
+            elif buffer.device.type == "meta":
+                raise RuntimeError(
+                    f"Unsloth: cannot convert the offloaded embedding: its buffer {name!r} is on the meta "
+                    "device and its offload hook's weights_map has no value for it."
+                )
+        remove_hook_from_module(module)  # the whole chain, a SequentialHook included
+        for name, value in values.items():
+            set_module_tensor_to_device(module, name, "cpu", value = value)
+        # Keep the module on one device: offloaded buffers come from weights_map, the rest sat on the GPU.
+        for name, buffer in list(module.named_buffers(recurse = False)):
+            if name in buffers:
+                set_module_tensor_to_device(module, name, "cpu", value = buffers[name])
+            elif buffer.device.type != "cpu":
+                set_module_tensor_to_device(module, name, "cpu")
+
+
+def _offload_hook_problem(module: torch.nn.Module):
+    """Why an Accelerate offload hook on module cannot be moved onto its fake quantized replacement, else None."""
+    hook = _offload_hook(module)
+    if hook is None:
+        return None
+    if type(hook).__name__ != "AlignDevicesHook":
+        return f"its offload hook is a {type(hook).__name__}, not an AlignDevicesHook"
+    if getattr(hook, "weights_map", None) is None:
+        return "its offload hook has no weights_map"
+    if getattr(hook, "place_submodules", False):
+        return "its offload hook also places submodules"
+    missing = [n for n, _ in module.named_parameters(recurse = False) if n not in hook.weights_map]
+    if missing:
+        return f"its offload weights_map has no {missing}"
+    return None
+
+
+def _check_offloaded_embeddings(
+    originals: Dict[str, torch.nn.Module], base_config_and_filter_fns
+) -> None:
+    """Refuse, before QAT replaces anything, an offloaded embedding selected for QAT whose real weight could not
+    follow it. A filter of None selects Linears only, so it never selects an embedding."""
+    filters = [f for _, f in base_config_and_filter_fns if f is not None]
+    for fqn, module in originals.items():
+        if not any(f(module, fqn) for f in filters):
+            continue
+        problem = _offload_hook_problem(module)
+        if problem is not None:
+            raise RuntimeError(
+                f"Unsloth: QAT cannot fake quantize the CPU / disk offloaded embedding {fqn!r}: {problem}. "
+                "Load the model without offloading the embedding (e.g. device_map = 'auto' with enough GPU "
+                "memory, or keep the embedding on a GPU in device_map)."
+            )
+
+
+def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Re-attach src's Accelerate hook (an AlignDevicesHook, or a SequentialHook holding one) to dst, so a split
+    model still aligns devices at dst's own forward. An offload hook moves too: its weights_map holds the real
+    weight, which the hook loads onto dst (meta between calls) before dst's forward fake quantizes it."""
+    hook = getattr(src, "_hf_hook", None)
+    if hook is None or hasattr(dst, "_hf_hook"):
+        return
+    offload_hook = _offload_hook(src)
+    if offload_hook is not None:
+        problem = _offload_hook_problem(src)
+        if problem is not None:
+            raise RuntimeError(
+                f"Unsloth: cannot move the offload hook onto the fake quantized embedding: {problem}."
+            )
+        # init_hook re-reads devices from dst, already meta; keep src's so detaching still restores the weight.
+        original_devices = dict(getattr(offload_hook, "original_devices", {}) or {})
+    try:
+        from accelerate.hooks import add_hook_to_module
+        add_hook_to_module(dst, hook)
+        if offload_hook is not None and original_devices:
+            offload_hook.original_devices = original_devices
+    except Exception as exc:
+        if offload_hook is not None:
+            raise RuntimeError(
+                "Unsloth: could not move the offload hook onto the fake quantized embedding "
+                f"({type(exc).__name__}: {exc})."
+            ) from exc
+        warnings.warn(
+            f"Unsloth: could not re-attach a dispatch hook to the fake quantized embedding "
+            f"({type(exc).__name__}: {exc}).",
+            RuntimeWarning,
+            stacklevel = 3,
+        )
+
+
+class _PlainEmbeddingLookup(torch.nn.Embedding):
+    """Sits between an Embedding subclass and FakeQuantizedEmbedding: super().forward() is a plain lookup of the
+    (already fake quantized) weight."""
+
+    forward = torch.nn.Embedding.forward
 
 
 _FAKE_QUANTIZED_EMBEDDING_CLASSES = {}
 
 
 def _fake_quantized_embedding_class(original_cls):
-    """FakeQuantizedEmbedding that keeps original_cls.forward: its super().forward() is the fake-quantized lookup."""
+    """FakeQuantizedEmbedding that keeps original_cls.forward, run on the fake quantized weight."""
     from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
 
     cls = _FAKE_QUANTIZED_EMBEDDING_CLASSES.get(original_cls)
@@ -7628,13 +7933,19 @@ def _fake_quantized_embedding_class(original_cls):
         # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
         return (_rebuild_fake_quantized_embedding, (original_cls,), self.__getstate__())
 
+    def forward(self, *args, **kwargs):
+        # Fake quantize the weight the original forward reads, whether it calls super().forward() (transformers'
+        # Gemma3) or F.embedding(self.weight) directly (unsloth_zoo's float32 Gemma3 / Gemma4 patch).
+        return _call_with_fake_quantized_weight(self, original_cls.forward, self, *args, **kwargs)
+
     name = "_FakeQuantized_" + re.sub(
         r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
     )
     cls = type(
         name,
-        (original_cls, FakeQuantizedEmbedding),
+        (original_cls, _PlainEmbeddingLookup, FakeQuantizedEmbedding),
         {
+            "forward": forward,
             "to_embedding": to_embedding,
             "__reduce_ex__": __reduce_ex__,
             "__module__": __name__,
@@ -7664,6 +7975,11 @@ def _restore_fake_quantized_embedding_subclasses(
         except AttributeError:
             continue
         if type(module) is not FakeQuantizedEmbedding:
+            continue
+        if type(original) is torch.nn.Embedding:
+            _move_dispatch_hook(
+                module, original
+            )  # torchao's own class already fake quantizes the lookup
             continue
         module.__class__ = _fake_quantized_embedding_class(type(original))
         _copy_embedding_subclass_state(module, original)
@@ -7698,6 +8014,7 @@ def _strip_torchao_fake_quantization(model):
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
 
+    _materialize_offloaded_fake_quantized_embeddings(model)
     # torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no weight_fake_quantizer.
     try:
         from torchao.prototype import qat as prototype_qat
@@ -7821,6 +8138,7 @@ def _convert_torchao_model(model):
     from torchao.quantization.qat import QATConfig
     from torchao.utils import TorchAOBaseTensor
 
+    _materialize_offloaded_fake_quantized_embeddings(model)
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
@@ -8346,10 +8664,19 @@ def _prepare_model_for_qat(
 
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
+    _exclude_unsupported_qat_embeddings(model, torchao_config)
+    require_grads_owners = _require_grads_owners(model)
+    all_embeddings = {
+        fqn: m for fqn, m in model.named_modules() if isinstance(m, torch.nn.Embedding)
+    }
+    unowned_require_grads = _unowned_require_grads_hooks(all_embeddings)
     embedding_subclasses = _embedding_subclasses(model)
+    _check_offloaded_embeddings(embedding_subclasses, torchao_config.base_config_and_filter_fns)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
+    _reinstall_input_require_grads(require_grads_owners)
+    _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
 
     return model
@@ -10380,11 +10707,19 @@ def widen_target_regex_to_expert_submodules(
         # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
         for name, module in model.named_modules():
             parent, _, leaf = name.rpartition(".")
-            if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (
-                isinstance(module, torch.nn.Linear)
-                or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+            if (
+                leaf in requested
+                and any(re.fullmatch(p, parent) for p in native)
+                and (
+                    isinstance(module, torch.nn.Linear)
+                    or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+                )
             ):
-                siblings.add(r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")))
+                siblings.add(
+                    r"\.".join(
+                        r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")
+                    )
+                )
     if not parents:
         return target_modules, detect_targets, []
     # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
