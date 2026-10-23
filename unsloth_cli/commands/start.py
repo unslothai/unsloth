@@ -5383,8 +5383,28 @@ def _agent_compacts_at(
     return window - opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
 
 
+_CLAUDE_RESUME_ARGS = ({"-c", "--continue", "--fork-session"}, {"-r", "--resume", "--session-id"})
+_OPENCODE_RESUME_ARGS = ({"-c", "--continue", "--fork", "--no-replay"}, {"-s", "--session"})
+
+
+def _only_resumes(args: list, resume_args: tuple) -> bool:
+    """True when the forwarded args only reopen an interactive session, which keeps the stock prompt."""
+    flags, valued = resume_args
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        name = arg.split("=", 1)[0]
+        if name in flags:
+            continue
+        if name not in valued:
+            return False
+        if "=" not in arg and rest and not rest[0].startswith("-"):
+            rest.pop(0)
+    return True
+
+
 def _command_line_options(ctx, quote) -> Optional[list]:
-    """The options typed on this command line, minus --max-seq-length and the remembered --api-key."""
+    """The options typed on this command line, minus --max-seq-length and --api-key."""
     # Duck-typed: typer may vendor its own click, so isinstance / enum identity against ours fails.
     if ctx is None:
         return None
@@ -5449,17 +5469,22 @@ def _check_agent_context(
         hint = f"Its full context is {native:,} tokens, so pick a model with a longer one."
     else:
         quote = _powershell_quote if os.name == "nt" else shlex.quote
-        given = _command_line_options(ctx, quote)
-        if given is not None:
-            target = "".join(f" {part}" for part in given)
-        else:
-            target = f" --model {quote(model)}" if model else ""
-            if gguf_variant:
-                target += f" --gguf-variant {quote(gguf_variant)}"
-            if max_tokens:
-                target += f" --max-tokens {int(max_tokens)}"
+        given = _command_line_options(ctx, quote) or []
+        # A positional org/name (or none at all, outside a command) never reaches the option sources.
+        if model and not {"--model", "-m"} & set(given):
+            given = ["--model", quote(model), *given]
+        if gguf_variant and "--gguf-variant" not in given:
+            given += ["--gguf-variant", quote(gguf_variant)]
+        if max_tokens and "--max-tokens" not in given:
+            given += ["--max-tokens", str(int(max_tokens))]
+        if ctx is not None and ctx.get_parameter_source("api_key").name == "COMMANDLINE":
+            # Not remembered yet before the load; never echo the key itself.
+            given += ["--api-key", "<your key>"]
+        forwarded = [quote(arg) for arg in ctx.args] if ctx is not None else []
+        target = "".join(f" {part}" for part in given)
+        tail = "".join(f" {arg}" for arg in forwarded)
         hint = (
-            f"Run unsloth start {agent}{target} --max-seq-length {suggested} "
+            f"Run unsloth start {agent}{target} --max-seq-length {suggested}{tail} "
             "(a smaller quant if that does not fit in memory"
             + ("" if loaded else "; for a Connection, a model with a longer context")
             + ")."
@@ -7099,8 +7124,8 @@ def claude(
     )
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
-    # Only a bare interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
-    refuse_small_context = launch and not ctx.args
+    # Only a bare or resumed interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Other forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
+    refuse_small_context = launch and _only_resumes(ctx.args, _CLAUDE_RESUME_ARGS)
     if max_seq_length > 0 and not as_subagent:
         # Before the load, which would evict the resident model only for this to refuse.
         _check_agent_context(
@@ -7522,7 +7547,7 @@ def opencode(
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     opencode_prompt_tokens = _OPENCODE_V2_PROMPT_TOKENS if opencode_v2 else _OPENCODE_PROMPT_TOKENS
-    refuse_small_context = launch and not ctx.args
+    refuse_small_context = launch and _only_resumes(ctx.args, _OPENCODE_RESUME_ARGS)
     if max_seq_length > 0 and not as_subagent and not app:
         _check_agent_context(
             "opencode",

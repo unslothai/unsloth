@@ -7879,6 +7879,55 @@ def test_agent_context_retry_keeps_the_load_flags(fake_studio, launched, agent):
     assert load["load_in_4bit"] is False
 
 
+def test_agent_context_retry_keeps_a_positional_model(fake_studio, launched):
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "unsloth/other-GGUF", "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    command = "unsloth start claude --model unsloth/other-GGUF --max-seq-length 65536"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    loads = [p for _, url, p in fake_studio if url.endswith("/api/inference/load")]
+    assert loads[-1]["model_path"] == "unsloth/other-GGUF"
+
+
+def test_agent_context_retry_names_a_typed_key_without_echoing_it(fake_studio, launched):
+    args = [
+        "claude",
+        "--model",
+        "unsloth/other-GGUF",
+        "--api-key",
+        "sk-secret",
+        "--max-seq-length",
+        "8192",
+    ]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    assert "--api-key <your key>" in result.output
+    assert "sk-secret" not in result.output
+
+
+@pytest.mark.parametrize(
+    "agent, passthrough, suggested",
+    [
+        ("claude", ["--continue"], 65536),
+        ("claude", ["-r", "abc123"], 65536),
+        ("claude", ["--resume"], 65536),
+        ("opencode", ["-c"], 32768),
+        ("opencode", ["--session", "ses_1", "--fork"], 32768),
+    ],
+)
+def test_agent_context_check_refuses_a_resumed_session(
+    fake_studio, launched, agent, passthrough, suggested
+):
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, [agent, *passthrough])
+    assert result.exit_code == 1, result.output
+    assert f"--max-seq-length {suggested} {' '.join(passthrough)}" in result.output
+    assert not launched
+
+
 def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
     target = "unsloth/other-GGUF"
     args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
