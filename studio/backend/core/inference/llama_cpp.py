@@ -8507,6 +8507,7 @@ class LlamaCppBackend:
         self._variant_fallback_warning: Optional[str] = None
         # The route's Hub notice for the running model, so /status matches the load response.
         self.hub_access_warning: Optional[str] = None
+        self.cluster_notice: Optional[str] = None
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
@@ -16627,6 +16628,7 @@ class LlamaCppBackend:
         died."""
         self._last_load_warning = None
         self.hub_access_warning = None
+        self.cluster_notice = None
         # Same lifetime, same reason: the advice describes the placement the dying
         # child was priced against and must not be reported against its replacement.
         self._last_carveout_advice = None

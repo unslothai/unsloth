@@ -2269,6 +2269,10 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
+            for n in self.nodes:
+                # A live relay to a stopped worker passes _reachable; the probe is what finds it gone.
+                if n.link and n.endpoint in missing:
+                    LINK_DROPPED.setdefault(n.name or n.node_id, "its rpc-server did not answer")
         one_kv = float(kv_bytes or 0)
 
         def group_kv(groups: int) -> float:

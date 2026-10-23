@@ -653,3 +653,34 @@ def test_a_status_read_racing_a_load_never_repoints_the_relay_it_verified(monkey
     load[0].join(10.0)
     assert not load[0].is_alive()
     assert relays.destination("node-a") == REAL
+
+
+def test_a_paired_worker_whose_probe_finds_no_device_is_reported_dropped(monkeypatch, relays):
+    # A live relay to a stopped worker passes the reachability check; only the probe sees it gone.
+    st = cs.state()
+    st.refresh_nodes()
+    a, b = st.nodes
+
+    async def reachable(node):
+        return True
+
+    async def nothing(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(st, "_reachable", reachable)
+    monkeypatch.setattr(st, "_ensure_workers", nothing)
+    monkeypatch.setattr(st, "_held_workers", nothing)
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: "llama-server")
+    only_b = cs.Device(
+        name = "RPC0",
+        description = b.endpoint,
+        total_bytes = 8 << 30,
+        free_bytes = 8 << 30,
+        endpoint = b.endpoint,
+    )
+    monkeypatch.setattr(cs, "list_devices", lambda *args, **kwargs: ([only_b], ""))
+    st._host_projector = 0
+    request = SimpleNamespace()
+    asyncio.run(st._place(request, 1, ss, [], [], 1 << 30, 0.0, 0.0, None))
+    assert set(cs.LINK_DROPPED) == {a.name}
+    assert "did not answer" in cs.LINK_DROPPED[a.name]

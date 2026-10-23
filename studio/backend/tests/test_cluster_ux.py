@@ -120,3 +120,20 @@ def test_a_local_load_gets_no_cluster_wording_but_names_a_left_out_worker(monkey
     # A pass-through load reports no dropped worker.
     cs.state()._passthrough = True
     assert cluster_ux.dropped_worker_notice() is None
+
+
+def test_status_keeps_the_dropped_worker_notice_until_the_next_load():
+    # The client re-shows /status's warning right after a load; a missing notice dismisses the toast.
+    from core.inference.llama_cpp import LlamaCppBackend
+    from routes import inference as routes
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._variant_fallback_warning = backend._last_load_warning = None
+    backend.hub_access_warning = backend._last_carveout_advice = None
+    notice = (
+        "Paired worker studio-2 was not reachable, so this model is running on this machine only."
+    )
+    backend.cluster_notice = notice
+    assert routes._status_load_warning(backend) == notice
+    backend._begin_load_warnings()
+    assert routes._status_load_warning(backend) is None

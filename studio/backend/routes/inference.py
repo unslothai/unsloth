@@ -18734,7 +18734,11 @@ def _remember_hub_access_warning(response, token_rejections) -> None:
 
 def _status_load_warning(llama_backend) -> Optional[str]:
     """The running GGUF's load warning as its load response carried it."""
-    notices = (llama_backend.last_load_warning, getattr(llama_backend, "hub_access_warning", None))
+    notices = (
+        llama_backend.last_load_warning,
+        getattr(llama_backend, "hub_access_warning", None),
+        getattr(llama_backend, "cluster_notice", None),
+    )
     return " ".join(notice for notice in notices if notice) or None
 
 
@@ -18836,6 +18840,9 @@ async def _run_tracked_load_model_impl(
         finally:
             _load_warnings_reach_user.reset(warnings_token)
         response = _with_load_warning(response, cluster_notice)
+        if isinstance(response, LoadResponse) and response.is_gguf:
+            # /status re-shows the load warning after a load; without this it clears the notice.
+            get_llama_cpp_backend().cluster_notice = cluster_notice
         response = _with_cluster_summary(response)
         if await spark_serving.after_load(
             get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
