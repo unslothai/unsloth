@@ -339,3 +339,16 @@ def test_many_side_runs_keep_the_older_outputs(client):
     engine_mod.ENGINE.runs.clear()
     latest = client.get("/api/flows/flow1/latest-outputs").json()["nodes"]
     assert latest["a"]["outputs"] == {"text": "story"}
+
+
+def test_an_m4a_upload_is_audio_not_video(client):
+    # A phone voice memo: an MP4 box file whose brand says audio. A plain MP4 stays video.
+    m4a = b"\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00M4A isommp42" + b"\x00" * 64
+    media = client.post("/api/flows/assets?name=memo.m4a", content = m4a).json()["media"]
+    assert media["kind"] == "audio" and media["mime"] == "audio/mp4"
+    assert client.get(media["url"]).content == m4a
+    mp4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+    assert (
+        client.post("/api/flows/assets?name=clip.mp4", content = mp4).json()["media"]["kind"]
+        == "video"
+    )

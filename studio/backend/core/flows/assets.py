@@ -27,13 +27,14 @@ MIME_EXT = {
     "audio/mpeg": "mp3",
     "audio/ogg": "ogg",
     "audio/flac": "flac",
+    "audio/mp4": "m4a",
     "video/mp4": "mp4",
     "video/webm": "webm",
     "application/json": "json",
 }
 EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
             "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg", "flac": "audio/flac",
-            "mp4": "video/mp4", "webm": "video/webm", "json": "application/json"}  # fmt: skip
+            "m4a": "audio/mp4", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json"}  # fmt: skip
 
 
 def assets_dir() -> Path:
@@ -62,7 +63,8 @@ def sniff_mime(data: bytes) -> Optional[str]:
     if head[:4] == b"fLaC":
         return "audio/flac"
     if data[4:8] == b"ftyp":
-        return "video/mp4"
+        # M4A / M4B (phone voice memos, iTunes audio) share MP4's box format; the brand says it is audio.
+        return "audio/mp4" if data[8:12] in (b"M4A ", b"M4B ") else "video/mp4"
     if head[:4] == b"\x1aE\xdf\xa3":
         return "video/webm"
     return None
