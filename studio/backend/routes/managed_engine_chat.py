@@ -241,6 +241,8 @@ async def managed_tool_chat(
             full_access = bool(payload.bypass_permissions),
         )
         nudge = await api._apply_rag_nudge(nudge, tools, rag_scope = payload.rag_scope)
+        if not api._tool_calls_are_disabled(payload):
+            nudge = api._apply_compaction_nudge(nudge, tools, payload = payload)
         if nudge:
             messages = api._append_to_system_message(messages, nudge)
     try:
