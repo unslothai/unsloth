@@ -3404,10 +3404,16 @@ def test_image_status_and_load_id_name_the_same_load(token_client):
             media_load_ids.admitted("diffusion", backend, "t2", prior)
             admitted.set()
 
+    reads = []
+
     def racing_status():
-        worker = threading.Thread(target = newer_load)
-        worker.start()
-        worker.join(0.3)
+        # The first read is slow and a load is admitted meanwhile, which it does not hold up.
+        reads.append(True)
+        if len(reads) == 1:
+            worker = threading.Thread(target = newer_load)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
         return read()
 
     backend.status = racing_status
@@ -3416,7 +3422,8 @@ def test_image_status_and_load_id_name_the_same_load(token_client):
     finally:
         backend.status = read
     assert admitted.wait(5)
-    assert answer["load_id"] == "t1"
+    # The read that straddled the admission was read again, so the id is that of the state it shows.
+    assert answer["load_id"] == "t2" and len(reads) == 2
     backend.loading = ()
 
 

@@ -41,6 +41,11 @@ _CANCELLED_TTL_S = 24 * 3600.0
 # another account's.
 _PER_ACCOUNT = 4096
 _now = time.monotonic
+# Bumped under _lock on every admission and token unload, so a status read can tell whether its
+# state changed while it ran.
+_generation = 0
+# Status reads snapshot() tries before answering with no load id (an admission landed in each).
+_SNAPSHOT_TRIES = 3
 MAX_TOKEN_LEN = 128
 
 
@@ -143,7 +148,9 @@ def admitting(modality: str, engine: Any, load_token: Optional[str]) -> Any:
 
 def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) -> None:
     """The engine accepted the load: record it as the one in the slot (a load without a token gets one)."""
+    global _generation
     with _lock:
+        _generation += 1
         token = load_token or f"studio-{uuid.uuid4().hex}"
         _current[modality] = _Record(token, engine, getattr(engine, "_load_token", None), prior)
         # Per account like _cancelled: another account's earlier use of a token never answers
@@ -182,12 +189,24 @@ def _slot_token(modality: str, engine: Any) -> Optional[str]:
 def snapshot(
     modality: str, engine: Any, read_status: Callable[[], Any]
 ) -> tuple[Any, Optional[str]]:
-    """``read_status()`` and the ``load_id`` of the same state: both under the admission lock, so no
-    load is admitted between them and the id never names a load the status does not show."""
-    with _media_lock():
+    """``read_status()`` and the ``load_id`` of the same state, so the id never names a load the status
+    does not show.
+
+    The read runs outside every lock (it can block, and must not hold up admissions or unloads); the
+    id is taken only if no admission or token unload landed while it ran, else the read is retried.
+    After ``_SNAPSHOT_TRIES`` the answer carries no id. A load still starting when the read begins
+    records its token only at its admission, which moves the generation, and an engine that began a
+    load since its record was taken is not named by it, so neither pairing can mix two states.
+    """
+    status = None
+    for _ in range(_SNAPSHOT_TRIES):
+        with _lock:
+            generation = _generation
         status = read_status()
         with _lock:
-            return status, _slot_token(modality, engine)
+            if _generation == generation:
+                return status, _slot_token(modality, engine)
+    return status, None
 
 
 def current_id(modality: str, engine: Any) -> Optional[str]:
@@ -200,6 +219,7 @@ def unload_if_current(
     modality: str, engine: Any, load_token: str, unload: Callable[[], Any]
 ) -> tuple[str, Any]:
     """Unload only the load ``load_token`` names: ("unloaded", unload()), ("superseded", None) or ("cancelled", None)."""
+    global _generation
     with _media_lock():
         with _lock:
             record = _current.get(modality)
@@ -214,6 +234,7 @@ def unload_if_current(
         # (as retire_media_load does).
         status = unload()
         with _lock:
+            _generation += 1
             if _current.get(modality) is record:
                 del _current[modality]
             _published.pop(modality, None)

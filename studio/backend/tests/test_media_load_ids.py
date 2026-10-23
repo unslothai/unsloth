@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -268,18 +269,50 @@ def test_a_resident_stays_named_after_a_newer_load_fails():
     assert _unload(engine, "t1")[0] == "unloaded"
 
 
-def test_a_status_snapshot_reads_under_the_admission_lock():
+def test_a_blocking_status_read_holds_up_no_admission_or_unload():
     engine = _Engine()
     _load(engine, "t1")
     engine.finish()
-    held = []
+    release, reads, result = threading.Event(), [], []
 
     def read():
-        held.append(account_access.media_load_lock.locked())
+        reads.append(account_access.media_load_lock.locked())
+        if len(reads) == 1:
+            release.wait(10)
+        return {"read": len(reads)}
+
+    reader = threading.Thread(
+        target = lambda: result.append(media_load_ids.snapshot("video", engine, read))
+    )
+    reader.start()
+    while not reads:
+        time.sleep(0.01)
+    # While the read blocks: a token unload and a new admission both go through.
+    done = []
+    worker = threading.Thread(
+        target = lambda: done.extend([_unload(engine, "t1")[0], _load(engine, "t2")])
+    )
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive() and done[0] == "unloaded"
+    release.set()
+    reader.join(5)
+    # The first read straddled them, so it was read again: the id names the state the answer shows.
+    assert result == [({"read": 2}, "t2")]
+    assert reads == [False, False]
+
+
+def test_a_status_read_an_admission_lands_in_every_time_names_no_load(monkeypatch):
+    engine = _Engine()
+    _load(engine, "t1")
+    engine.finish()
+    tokens = iter(f"n{n}" for n in range(10))
+
+    def read():
+        _load(engine, next(tokens))
         return {"loaded": True}
 
-    assert media_load_ids.snapshot("video", engine, read) == ({"loaded": True}, "t1")
-    assert held == [True]
+    assert media_load_ids.snapshot("video", engine, read) == ({"loaded": True}, None)
 
 
 def test_a_token_another_account_used_is_cancelled_for_this_account():

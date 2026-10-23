@@ -1871,7 +1871,7 @@ def test_status_names_the_load_an_unload_can_name(token_client):
 
 
 def test_status_and_load_id_name_the_same_load(token_client):
-    # A load admitted while status reads the backend waits for the read, so the id in the answer
+    # A load admitted while status reads the backend makes it read again, so the id in the answer
     # never names a load the answer does not show.
     from core.inference import media_load_ids
     from hub.services.models import account_access
@@ -1889,10 +1889,16 @@ def test_status_and_load_id_name_the_same_load(token_client):
             media_load_ids.admitted("video", backend, "t2", prior)
             admitted.append(True)
 
+    reads = []
+
     def racing_status():
-        worker = threading.Thread(target = newer_load)
-        worker.start()
-        worker.join(0.3)
+        # The first read is slow and a load is admitted meanwhile, which it does not hold up.
+        reads.append(True)
+        if len(reads) == 1:
+            worker = threading.Thread(target = newer_load)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
         return read()
 
     backend.status = racing_status
@@ -1903,7 +1909,8 @@ def test_status_and_load_id_name_the_same_load(token_client):
     deadline = time.monotonic() + 5
     while not admitted and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert answer["load_id"] == "t1"
+    # The read that straddled the admission was read again, so the id is that of the state it shows.
+    assert answer["load_id"] == "t2" and len(reads) == 2
     assert admitted == [True]
     backend.loading = ()
 
