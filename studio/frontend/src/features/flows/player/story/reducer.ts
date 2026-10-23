@@ -21,7 +21,9 @@ import type {
   StoryChoice,
   StoryLine,
   StoryManifest,
+  StoryPosition,
   StoryScene,
+  StoryTransition,
 } from "../../types";
 
 export const STORY_SAVE_VERSION = 1;
@@ -101,6 +103,35 @@ export function visibleLines(
   return (scene.lines ?? []).filter((l) => cond(l.if, vars));
 }
 
+/** A text-less line of stage directions: applied on the way past, never shown. */
+export function isDirection(line: StoryLine | undefined): boolean {
+  return Boolean(line && line.text === "" && line.stage);
+}
+
+/** Seconds a `[pause n]` line holds the reader, or null. */
+export function pauseOf(line: StoryLine | null | undefined): number | null {
+  const p = line && isDirection(line) ? line.stage?.pause : null;
+  return typeof p === "number" ? p : null;
+}
+
+/** The first line at or after `from` the reader stops on: text or a pause. `lines.length` if none. */
+export function restAt(lines: StoryLine[], from: number): number {
+  let i = Math.max(0, from);
+  while (
+    i < lines.length &&
+    isDirection(lines[i]) &&
+    pauseOf(lines[i]) === null
+  )
+    i++;
+  return i;
+}
+
+/** The reader has not moved past the scene's first stop (directions before it are not a stop). */
+export function atSceneStart(m: StoryManifest, s: StoryState): boolean {
+  const scene = sceneOf(m, s, s.sceneId);
+  return !scene || s.line <= restAt(visibleLines(scene, s.vars), 0);
+}
+
 export function visibleChoices(
   scene: StoryScene,
   vars: Record<string, unknown>,
@@ -145,7 +176,7 @@ function withBacklog(
   scene: StoryScene,
   line: StoryLine | undefined,
 ): BacklogEntry[] {
-  if (!line) return s.backlog;
+  if (!line?.text) return s.backlog;
   const next = [
     ...s.backlog,
     {
@@ -236,11 +267,13 @@ function enter(
   if (typeof applied === "string") return fail(s, applied);
   s = applied;
   const lines = visibleLines(scene, s.vars);
-  if (lines.length > 0) {
+  const first = restAt(lines, 0);
+  if (first < lines.length) {
     return {
       ...s,
+      line: first,
       status: "reading",
-      backlog: withBacklog(s, scene, lines[0]),
+      backlog: withBacklog(s, scene, lines[first]),
     };
   }
   // Its dialogue is being written: wait on the scene (shown as "...") instead of skipping past it.
@@ -329,11 +362,12 @@ export function reduce(
       const lines = visibleLines(scene, s.vars);
       // Its dialogue is still being written: the "..." placeholder cannot be read past.
       if (lines.length === 0 && scene.generate_lines) return s;
-      if (s.line + 1 < lines.length) {
+      const next = restAt(lines, s.line + 1);
+      if (next < lines.length) {
         return {
           ...s,
-          line: s.line + 1,
-          backlog: withBacklog(s, scene, lines[s.line + 1]),
+          line: next,
+          backlog: withBacklog(s, scene, lines[next]),
         };
       }
       return leave(m, s, scene, 0);
@@ -356,9 +390,16 @@ export function reduce(
       return enter(m, s, a.sceneId, 0);
     case "set":
       return { ...s, vars: { ...s.vars, ...a.vars } };
-    case "load":
+    case "load": {
       if (!saveFits(m, a.state)) return s;
-      return { ...a.state, rev: s.rev + 1 };
+      const loaded = { ...a.state, rev: s.rev + 1 };
+      // A save from before the story gained directions may point at one: move to the next readable line.
+      const scene = sceneOf(m, loaded, loaded.sceneId);
+      if (!scene || loaded.status !== "reading") return loaded;
+      const lines = visibleLines(scene, loaded.vars);
+      const at = restAt(lines, loaded.line);
+      return at < lines.length ? { ...loaded, line: at } : loaded;
+    }
     case "addScene": {
       if (
         a.rev !== s.rev ||
@@ -396,8 +437,8 @@ export function reduce(
       const scene = sceneOf(m, s, a.sceneId);
       if (!scene || a.lines.length === 0) return s;
       // Mid-scene the reader's line index belongs to the current list; the next visit writes fresh lines.
-      if (s.sceneId === a.sceneId && s.status === "reading" && s.line > 0)
-        return s;
+      const here = s.sceneId === a.sceneId && s.status === "reading";
+      if (here && !atSceneStart(m, s)) return s;
       const replaced: StoryScene = {
         ...scene,
         lines: a.lines,
@@ -408,16 +449,16 @@ export function reduce(
         extraScenes: { ...s.extraScenes, [a.sceneId]: replaced },
       };
       // Only restart the scene if the reader is still on its first line.
-      if (s.sceneId === a.sceneId && s.line === 0 && s.status === "reading") {
-        const shown = visibleLines(scene, s.vars).length > 0;
+      if (here) {
+        const old = visibleLines(scene, s.vars);
+        const shown = Boolean(old[restAt(old, 0)]?.text);
         const backlog = shown ? s.backlog.slice(0, -1) : s.backlog;
+        const lines = visibleLines(replaced, s.vars);
+        const first = Math.min(restAt(lines, 0), Math.max(0, lines.length - 1));
         return {
           ...next,
-          backlog: withBacklog(
-            { ...next, backlog },
-            replaced,
-            visibleLines(replaced, s.vars)[0],
-          ),
+          line: first,
+          backlog: withBacklog({ ...next, backlog }, replaced, lines[first]),
         };
       }
       return next;
@@ -467,4 +508,84 @@ export function backgroundFor(
 ): MediaValue | null {
   const scene = sceneOf(m, s, sceneId);
   return s.backgrounds[sceneId] ?? scene?.background ?? null;
+}
+
+export interface StageSlot {
+  id: string;
+  at: StoryPosition | null;
+  expression: string | null;
+}
+
+export interface StageView {
+  cast: (StageSlot & { enter: StoryTransition | null })[];
+  /** Taken off since the previous stop, kept for the exit transition. */
+  leaving: (StageSlot & { exit: StoryTransition | null })[];
+  /** `[sound]` cues reached since the previous stop. */
+  sounds: string[];
+}
+
+function castAfter(
+  scene: StoryScene,
+  lines: StoryLine[],
+  last: number,
+): Map<string, StageSlot> {
+  const cast = new Map<string, StageSlot>(
+    (scene.on_stage ?? []).map((id) => [
+      id,
+      { id, at: null, expression: null },
+    ]),
+  );
+  for (let i = 0; i <= last && i < lines.length; i++) {
+    const st = lines[i].stage;
+    if (!st) continue;
+    if (st.hide) cast.delete(st.hide);
+    if (st.show) {
+      const prev = cast.get(st.show);
+      cast.set(st.show, {
+        id: st.show,
+        at: st.at ?? prev?.at ?? null,
+        expression: st.expression ?? prev?.expression ?? null,
+      });
+    }
+  }
+  return cast;
+}
+
+/** Who is on stage at the reader's stop: the scene's `on_stage` plus the directions read so far.
+ * Derived, so saves carry no stage state and saves from before directions existed still render. */
+export function stageAt(m: StoryManifest, s: StoryState): StageView {
+  const scene = sceneOf(m, s, s.sceneId);
+  if (!scene) return { cast: [], leaving: [], sounds: [] };
+  const lines = visibleLines(scene, s.vars);
+  const upto = s.status === "choosing" ? lines.length - 1 : s.line;
+  let prev = -1;
+  const stop = (i: number) =>
+    i < lines.length && (!isDirection(lines[i]) || pauseOf(lines[i]) !== null);
+  if (s.status !== "reading" && stop(s.line)) {
+    // Choices or the ending open after the last line was shown: its cues already played there.
+    prev = s.line;
+  } else {
+    for (let i = 0; i < upto; i++) if (stop(i)) prev = i;
+  }
+  const before = castAfter(scene, lines, prev);
+  const now = castAfter(scene, lines, upto);
+  const sounds: string[] = [];
+  const shown = new Map<string, StoryTransition | null>();
+  const hidden = new Map<string, StoryTransition | null>();
+  for (let i = prev + 1; i <= upto && i < lines.length; i++) {
+    const st = lines[i].stage;
+    if (st?.sound) sounds.push(st.sound);
+    if (st?.show) shown.set(st.show, st.with ?? null);
+    if (st?.hide) hidden.set(st.hide, st.with ?? null);
+  }
+  return {
+    cast: [...now.values()].map((c) => ({
+      ...c,
+      enter: before.has(c.id) ? null : (shown.get(c.id) ?? null),
+    })),
+    leaving: [...before.values()]
+      .filter((c) => !now.has(c.id))
+      .map((c) => ({ ...c, exit: hidden.get(c.id) ?? null })),
+    sounds,
+  };
 }
