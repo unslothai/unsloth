@@ -354,6 +354,9 @@ export interface WorldNpc {
   x?: number | null;
   y?: number | null;
   wander?: boolean;
+  routine?: string;
+  relationships?: Record<string, string>;
+  seed_memories?: { text: string; importance: number }[];
 }
 
 export interface WorldItem {
@@ -386,6 +389,26 @@ export interface WorldRegion {
   on_enter_text: string;
 }
 
+export interface WorldPlace {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Generative Agents style village life (Park et al. 2023); absent on classic worlds. */
+export interface WorldSimulation {
+  enabled: boolean;
+  /** Game minutes per real second. */
+  minutes_per_second: number;
+  start_minute: number;
+  places: WorldPlace[];
+  chat_cooldown_min: number;
+  calls_per_minute: number;
+}
+
 export interface WorldSpec {
   title: string;
   seed: number;
@@ -407,6 +430,7 @@ export interface WorldSpec {
   intro_text: string;
   style?: string | null;
   entry_points?: Record<string, string>;
+  simulation?: WorldSimulation;
 }
 
 export type RunStatus =

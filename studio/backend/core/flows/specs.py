@@ -1224,6 +1224,42 @@ NODE_SPECS: list[dict] = [
         icon = "chat",
     ),
     spec(
+        "world.npc_plan",
+        "NPC Plan (live)",
+        "world",
+        "Entrypoint the world player calls once per NPC per game day in a simulated world: plans the day as "
+        "blocks of time at the world's places, from the NPC's persona, routine and memories. After Park et al. 2023.",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("plan", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("relevance", "select", "embeddings", "Relevance", options = ["embeddings", "keywords"]),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        entrypoint = True,
+        cacheable = False,
+        icon = "calendar",
+    ),
+    spec(
+        "world.npc_chat",
+        "NPC Chat (live)",
+        "world",
+        "Entrypoint the world player calls when two NPCs meet in a simulated world: writes their short chat and "
+        "what each learns from the other, so news spreads through the village. After Park et al. 2023.",
+        inputs = [inp("state", "json", optional = True)],
+        outputs = [out("chat", "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("relevance", "select", "embeddings", "Relevance", options = ["embeddings", "keywords"]),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        entrypoint = True,
+        cacheable = False,
+        icon = "users",
+    ),
+    spec(
         "world.play",
         "World Player",
         "world",

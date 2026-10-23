@@ -21,8 +21,8 @@ def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
 
 
-def test_there_are_eleven_examples():
-    assert len(BUILT) == 11
+def test_there_are_twelve_examples():
+    assert len(BUILT) == 12
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -79,6 +79,18 @@ def test_pocket_village_plays_after_a_run():
     assert not warnings
     assert [n["name"] for n in w["npcs"]] == ["Bea", "Grandma Fern"]
     assert w["entry_points"] == {"npc_reply": "reply"}
+
+
+def test_smallville_lite_is_a_simulated_village():
+    w, warnings = resolve_world_report(_example("smallville-lite"))
+    assert not warnings
+    assert w["entry_points"] == {"npc_reply": "reply", "npc_plan": "plan", "npc_chat": "chat"}
+    assert len(w["npcs"]) == 6 and len(w["simulation"]["places"]) == 5
+    isabella = w["npcs"][0]
+    assert "Valentine's Day party at Hobbs Cafe" in isabella["seed_memories"][0]["text"]
+    assert isabella["seed_memories"][0]["importance"] == 8
+    assert w["vars"] == {"party_attendance": 0}
+    assert "Park et al. 2023" in _example("smallville-lite")["notes"][0]["text"]
 
 
 @pytest.mark.parametrize("name", ["lantern-picnic", "sloth-moon"])
