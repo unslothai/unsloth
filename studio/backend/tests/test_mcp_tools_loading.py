@@ -1454,7 +1454,9 @@ def _replacement_failed_studio(*, held):
             return {"loaded": False, "unloaded": True, "outcome": "unloaded"}
         return {"unloaded": False, "outcome": "superseded"}
 
-    return fake_studio({VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload}), state
+    return fake_studio(
+        {VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload}
+    ), state
 
 
 def test_an_unload_ends_the_model_a_failed_replacement_left_resident(monkeypatch):
