@@ -480,6 +480,28 @@ def sd_cpp_payload(
     }
 
 
+def _vae_execution_device(pipe: Any, vae: Any, param: Any) -> Any:
+    """Where the VAE computes. Under CPU offload its weights sit on the host (model offload) or on ``meta``
+    (sequential offload) and the hook moves them to the card for the call, so the input must go to the card."""
+    import torch
+
+    hook_device = getattr(getattr(vae, "_hf_hook", None), "execution_device", None)
+    if hook_device is not None:
+        if isinstance(hook_device, int):
+            return torch.device("cuda", hook_device)
+        return torch.device(hook_device)
+    if param.device.type not in ("cpu", "meta"):
+        # Resident (or placed on its own card by a split): the weights are where it runs.
+        return param.device
+    try:
+        exec_device = getattr(pipe, "_execution_device", None)
+    except Exception:  # noqa: BLE001 - a duck-typed pipe; fall back to the weights
+        exec_device = None
+    if exec_device is not None and torch.device(exec_device).type != "meta":
+        return torch.device(exec_device)
+    return param.device
+
+
 def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int]) -> Any:
     """VAE-encode as StableDiffusionXLImg2ImgPipeline.prepare_latents does, then interpolate nearest-exact."""
     import torch
@@ -487,7 +509,7 @@ def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int])
 
     vae = pipe.vae
     param = next(vae.parameters())
-    device, dtype = param.device, param.dtype
+    device, dtype = _vae_execution_device(pipe, vae, param), param.dtype
     x = pipe.image_processor.preprocess(base_image).to(device = device, dtype = dtype)
     upcast = bool(getattr(vae.config, "force_upcast", False)) and dtype == torch.float16
     with torch.inference_mode():

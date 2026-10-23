@@ -10578,14 +10578,17 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
-def _desktop_unsloth_spec(package_name: str) -> str:
+def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
     """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
 
-    Twin of install.sh's _relax_unsloth_floors_to_index.
+    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
+    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
+    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
     """
+    zoo_spec = "unsloth-zoo"
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
     if not (desktop_min_ver and package_name == "unsloth"):
-        return package_name
+        return package_name, zoo_spec
     spec = f"unsloth>={desktop_min_ver}"
     marker = Path(sys.prefix) / FEED_CEILING_MARKER
     try:
@@ -10593,19 +10596,21 @@ def _desktop_unsloth_spec(package_name: str) -> str:
     except OSError:
         pass
     if not USE_UV:
-        return spec
+        return spec, zoo_spec
 
-    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+    def resolve(*requirements: str, deps: bool = False) -> "dict[str, str] | None":
         # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        # Linux x86_64 is fixed so a host without torch wheels (Intel Mac, no-torch) still resolves.
         with tempfile.TemporaryDirectory() as scratch:
             out = Path(scratch) / "probe.txt"
-            argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
+            argv = ["uv", "pip", "compile", "--python", sys.executable]
+            argv += ["--python-platform", "x86_64-manylinux_2_28"] if deps else ["--no-deps"]
             argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
             argv += ["--output-file", str(out), "-"]
             try:
                 result = subprocess.run(
                     argv,
-                    input = requirement + "\n",
+                    input = "\n".join(requirements) + "\n",
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     text = True,
@@ -10617,29 +10622,54 @@ def _desktop_unsloth_spec(package_name: str) -> str:
                 return None
         if text is None:
             return None
-        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
-        return match.group(1) if match else None
+        found = dict(
+            re.findall(r"^(unsloth(?:-zoo)?)==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        )
+        return found or None
 
-    if newest(spec) is not None:
-        return spec
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+        return (resolve(requirement) or {}).get(name)
+
+    found = resolve(spec, zoo_spec, deps = True) or {}
+    if found.get("unsloth"):
+        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
+        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
+        return spec, (
+            f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
+        )
+    requested_present = newest(spec) is not None
     # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
-    zoo = newest("unsloth-zoo", "unsloth-zoo")
+    zoo = newest(zoo_spec, "unsloth-zoo")
     available = newest(f"unsloth<={zoo}") if zoo else None
     if available is None:
-        return spec
-    _note(
-        f"[WARN] your package index does not have {spec} yet; "
-        f"installing unsloth {available}, the newest it has",
-        _warn,
-    )
+        return spec, zoo_spec
+    # A newer unsloth whose zoo floor the index still meets beats that bound (unsloth patch
+    # releases often ship without a zoo release).
+    pair = resolve(f"unsloth>={available}", zoo_spec, deps = True) or {}
+    if pair.get("unsloth") and pair.get("unsloth-zoo"):
+        available, zoo = pair["unsloth"], pair["unsloth-zoo"]
+    elif requested_present:
+        # The index has the release and nothing older resolves either: not a lag to work around.
+        return spec, zoo_spec
     try:
-        marker.write_text(
-            json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
-            encoding = "utf-8",
+        from packaging.version import Version
+        lowered = Version(available) < Version(desktop_min_ver)
+    except Exception:  # noqa: BLE001 - unparseable: treat as lowered, as before
+        lowered = True
+    if lowered:
+        _note(
+            f"[WARN] your package index does not have {spec} with a matching unsloth-zoo yet; "
+            f"installing unsloth {available} + unsloth-zoo {zoo}, the newest pair it has",
+            _warn,
         )
-    except OSError:
-        pass
-    return f"unsloth=={available}"
+        try:
+            marker.write_text(
+                json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+                encoding = "utf-8",
+            )
+        except OSError:
+            pass
+    return f"unsloth=={available}", f"unsloth-zoo=={zoo}"
 
 
 def pip_install(
@@ -12895,7 +12925,7 @@ def install_python_stack() -> int:
     elif NO_TORCH:
         # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
-        unsloth_spec = _desktop_unsloth_spec(package_name)
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -12905,7 +12935,7 @@ def install_python_stack() -> int:
             "--upgrade-package",
             "unsloth-zoo",
             unsloth_spec,
-            "unsloth-zoo",
+            zoo_spec,
         )
         # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(
@@ -12948,7 +12978,7 @@ def install_python_stack() -> int:
         )
     else:
         _progress("base packages")
-        unsloth_spec = _desktop_unsloth_spec(package_name)
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         with _FreezeNewTorchForCoreUpdate():
             pip_install(
                 "Updating core packages",
@@ -12958,7 +12988,7 @@ def install_python_stack() -> int:
                 "--upgrade-package",
                 "unsloth-zoo",
                 unsloth_spec,
-                "unsloth-zoo",
+                zoo_spec,
             )
 
     # The package just installed may ship a newer copy of this file. Raised rather than rerun

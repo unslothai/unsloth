@@ -4396,6 +4396,7 @@ def apply_memory_plan(
         applied = _apply_group_offload(pipe, placement, logger, **group_kwargs)
         failure = getattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, None)
         if not applied and failure is not None and _is_oom(failure):
+            _set_group_offload_failure(pipe, None)  # the retry records its own failure, if any
             lowered = _retry_group_offload_lower(pipe, plan, placement, logger, failure)
             if lowered is not None:
                 applied = True
@@ -4489,8 +4490,20 @@ def apply_memory_plan(
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
 
 
+class _GroupOffloadFailure(Exception):
+    """Type and message of a failed group offload setup. The live exception is not kept: its traceback holds the
+    failed frames, whose tensors would stay allocated through the very retry that needs the room."""
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__(f"{type(exc).__name__}: {exc}")
+        self.type_name = type(exc).__name__
+        self.oom = _is_oom(exc)
+
+
 def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
     """What made ``_apply_group_offload`` return False (it absorbs the exception so the caller can fall back)."""
+    if exc is not None and not isinstance(exc, _GroupOffloadFailure):
+        exc = _GroupOffloadFailure(exc)
     try:
         setattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, exc)
     except Exception:  # noqa: BLE001
@@ -4498,6 +4511,8 @@ def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
 
 
 def _is_oom(exc: BaseException) -> bool:
+    if isinstance(exc, _GroupOffloadFailure):
+        return exc.oom
     from .diffusion_batched import is_oom_error
     return is_oom_error(exc)
 
