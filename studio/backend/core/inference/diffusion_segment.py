@@ -822,12 +822,22 @@ def _resident_cuda_ordinal() -> Optional[int]:
 
 
 def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB on CUDA card ``ordinal``: driver free plus this process's reusable allocator cache, the same
+    credit the render's memory check gives (diffusion_memory.cuda_reclaimable_bytes). Parking leaves SAM's emptied
+    weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a warm card
+    (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
     try:
         import torch
         free, total = torch.cuda.mem_get_info(ordinal)
-        return int(free // (1024 * 1024)), int(total // (1024 * 1024))
     except Exception:  # noqa: BLE001
         return None, None
+    try:
+        from core.inference.diffusion_memory import cuda_reclaimable_bytes
+        reclaimable = cuda_reclaimable_bytes(ordinal) or 0
+    except Exception:  # noqa: BLE001 -- no allocator reading: driver free still stands
+        reclaimable = 0
+    free = min(int(free) + max(0, int(reclaimable)), int(total))
+    return int(free // (1024 * 1024)), int(total // (1024 * 1024))
 
 
 def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:

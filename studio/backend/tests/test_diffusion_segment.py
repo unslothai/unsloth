@@ -765,6 +765,42 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
     assert seg.choose_device(True) == ("cpu", torch.float32)
 
 
+def test_choose_device_credits_the_allocator_cache_parking_leaves(monkeypatch):
+    # Parking keeps SAM's emptied weights in the CUDA cache: 2 GiB driver free plus 8 GiB reusable cache is room for
+    # the segmenter, as the render's memory check counts it, so the next detection must not fall back to the CPU.
+    import contextlib
+
+    import torch
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    gib = 1024**3
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda ordinal: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda ordinal: (2 * gib, 24 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 12 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 4 * gib)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 0)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 1)
+    monkeypatch.setattr(seg, "_other_owner_on", lambda ordinal: None)
+    if getattr(torch.backends, "mps", None) is not None:
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert seg._cuda_free_mib(1) == (10 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cuda:1", torch.bfloat16)
+    # A live CUDA graph pool is reserved but not reusable: without it the card really is short.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 7 * gib)
+    assert seg._cuda_free_mib(1) == (3 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cpu", torch.float32)
+    # The credit never claims more than the card.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 90 * gib)
+    assert seg._cuda_free_mib(1) == (24 * 1024, 24 * 1024)
+
+
 def test_choose_device_never_shares_a_card_another_owner_holds(monkeypatch):
     import contextlib
 
