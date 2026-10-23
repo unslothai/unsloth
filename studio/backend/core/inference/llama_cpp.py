@@ -1167,26 +1167,25 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     }
 
 
-_EXTRA_WEIGHT_FILE_FLAGS = frozenset(
-    {"--mmproj", "-mm", "--model-draft", "--spec-draft-model", "-md"}
-)
-
-
-def _extra_weight_file_bytes(argv) -> int:
-    """Sizes of the projector and draft model ``argv`` names, as ``--flag value`` or ``--flag=value``."""
-    if not isinstance(argv, (list, tuple)):
-        return 0
-    paths: list[str] = []
-    tokens = [str(token) for token in argv]
+def _extra_weight_file_bytes(argv, env: Optional[Mapping[str, str]] = None) -> int:
+    """GGUF sets of the projector and local drafter a llama-server launch loads. arg.cpp reads the
+    ``LLAMA_ARG_*`` env first and lets argv override it, so ``env`` is the one the child got."""
+    tokens = [str(token) for token in argv] if isinstance(argv, (list, tuple)) else []
+    env_map = env or {}
+    projector: Optional[str] = None
     for index, token in enumerate(tokens):
-        flag, eq, value = token.partition("=")
-        if flag not in _EXTRA_WEIGHT_FILE_FLAGS:
+        if _flag_name(token) not in ("--mmproj", "-mm"):
             continue
+        _, eq, value = token.partition("=")
         if eq:
-            paths.append(value)
+            projector = value
         elif index + 1 < len(tokens):
-            paths.append(tokens[index + 1])
-    return sum(_gguf_set_bytes(Path(value)) for value in dict.fromkeys(paths))
+            projector = tokens[index + 1]
+    if projector is None:
+        projector = (env_map.get("LLAMA_ARG_MMPROJ") or "").strip() or None
+    drafter, remote = _extra_args_mtp_draft_source(tokens, env_map)
+    paths = [path for path in (projector, None if remote else drafter) if path]
+    return sum(_gguf_set_bytes(Path(path)) for path in dict.fromkeys(paths))
 
 
 def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
@@ -9568,7 +9567,11 @@ class LlamaCppBackend:
 
         gguf_path = self._gguf_path
         bytes_total = _gguf_set_bytes(Path(gguf_path)) if gguf_path else 0
-        bytes_total += _extra_weight_file_bytes(getattr(proc, "args", None))
+        launched = getattr(self, "_process_env", None)
+        bytes_total += _extra_weight_file_bytes(
+            getattr(proc, "args", None),
+            launched[1] if launched is not None and launched[0] is proc else None,
+        )
 
         rss = LlamaCppBackend._read_rss_bytes(pid)
         read = LlamaCppBackend._read_load_bytes(pid)
@@ -26056,6 +26059,8 @@ class LlamaCppBackend:
                 )
             )
             self._process = _spawned
+            # The env picks companions too (LLAMA_ARG_MMPROJ, ...): load_progress sizes them from it.
+            self._process_env = (_spawned, env)
             _invalidate_gpu_memory("llama-server spawned")
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
@@ -33812,6 +33817,7 @@ class LlamaCppBackend:
                                 )
                             )
                             self._process = _spawned
+                            self._process_env = (_spawned, env)
                             _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid

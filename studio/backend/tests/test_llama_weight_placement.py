@@ -186,6 +186,36 @@ def test_a_split_drafter_counts_every_shard(tmp_path):
     assert _gguf_set_bytes(tmp_path / "Model-Q4_K_M-00001-of-00002.gguf") == 14
 
 
+def test_companions_picked_by_the_launch_env_count_too(tmp_path):
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"x" * 1000)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x" * 300)
+    argv = ["llama-server", "-m", "model.gguf"]
+    env = {"LLAMA_ARG_MMPROJ": str(projector), "LLAMA_ARG_SPEC_DRAFT_MODEL": str(drafter)}
+    assert _extra_weight_file_bytes(argv, env) == 1300
+    # Pre-b8955 drafter spelling.
+    assert _extra_weight_file_bytes(argv, {"LLAMA_ARG_MODEL_DRAFT": str(drafter)}) == 300
+    # argv overrides the env, as in arg.cpp; a Hugging Face repo is not a local file.
+    other = tmp_path / "mmproj-BF16.gguf"
+    other.write_bytes(b"x" * 50)
+    assert _extra_weight_file_bytes(argv + ["--mmproj", str(other)], env) == 350
+    assert _extra_weight_file_bytes(argv, {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/draft"}) == 0
+
+
+def test_load_progress_sizes_companions_from_the_env_its_process_got(tmp_path, monkeypatch):
+    inst = _fake_load(tmp_path, 1000)
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: None))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 500))
+    inst._process_env = (inst._process, {"LLAMA_ARG_MMPROJ": str(projector)})
+    assert inst.load_progress()["bytes_total"] == 2000
+    # An env recorded for an earlier process does not describe this one.
+    inst._process_env = (object(), {"LLAMA_ARG_MMPROJ": str(projector)})
+    assert inst.load_progress()["bytes_total"] == 1000
+
+
 @pytest.mark.skipif(not Path("/proc").exists(), reason = "live /proc test is Linux-only")
 def test_load_progress_follows_bytes_read_when_rss_stays_flat(tmp_path):
     """A server that streams its weights to VRAM reads every byte but keeps little resident:
