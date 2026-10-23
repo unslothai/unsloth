@@ -314,6 +314,11 @@ def apply_fsdp(model, mesh) -> None:
             fully_shard(module, mesh = mesh, reshard_after_forward = reshard, mp_policy = policy)
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
+    # Every rank loaded the full model before sharding. Return the freed blocks to the driver:
+    # NCCL allocates outside PyTorch's cache and fails with "Cuda failure 2 'out of memory'"
+    # when a large model (Kimi-Linear-48B) left the cache holding them.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def apply_fsdp_checkpoint(model) -> int:
