@@ -817,10 +817,11 @@ def _install_new_skill(
                     | getattr(os, "O_NOFOLLOW", 0)
                 )
                 try:
-                    for path, content in files:
+                    for path, content, executable in files:
                         target = skill_dir.joinpath(*path.parts)
                         target.parent.mkdir(mode = 0o700, parents = True, exist_ok = True)
-                        with os.fdopen(os.open(target, flags, 0o600), "wb") as handle:
+                        mode = 0o700 if executable else 0o600
+                        with os.fdopen(os.open(target, flags, mode), "wb") as handle:
                             handle.write(content)
                 except OSError as exc:
                     shutil.rmtree(skill_dir, ignore_errors = True)
@@ -989,11 +990,9 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
                 if total > MAX_SKILL_ARCHIVE_BYTES:
                     raise SkillError("Skill archive exceeds the 20 MB limit.")
                 # Bare ZipInfo keeps 1980 timestamps: reproducible archives.
-                archive.writestr(
-                    zipfile.ZipInfo(f"{record['name']}/{relative.as_posix()}"),
-                    content,
-                    compress_type = zipfile.ZIP_DEFLATED,
-                )
+                info = zipfile.ZipInfo(f"{record['name']}/{relative.as_posix()}")
+                info.external_attr = (0o755 if os.stat(path).st_mode & 0o111 else 0o644) << 16
+                archive.writestr(info, content, compress_type = zipfile.ZIP_DEFLATED)
         return record["name"], output.getvalue()
 
 
@@ -1044,15 +1043,18 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                 raise SkillError("Skill archive cannot contain encrypted files.")
             if stat.S_ISLNK(info.external_attr >> 16):
                 raise SkillError("Skill archive cannot contain symbolic links.")
+            # LZMA/BZIP2 decoders allocate what the member header asks for, before any limit applies.
+            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                raise SkillError("Skill archive must use stored or deflated entries.")
             members.append((name, info))
         if len(members) > MAX_SKILL_ARCHIVE_FILES:
             raise SkillError(f"Skill archive exceeds the {MAX_SKILL_ARCHIVE_FILES}-file limit.")
 
-        bundles: list[tuple[str, bytes, list[tuple[PurePosixPath, bytes]]]] = []
+        bundles: list[tuple[str, bytes, list[tuple[PurePosixPath, bytes, bool]]]] = []
         total = 0
         for folder in _archive_skill_folders([name for name, _ in members]):
             manifest = b""
-            files: list[tuple[PurePosixPath, bytes]] = []
+            files: list[tuple[PurePosixPath, bytes, bool]] = []
             seen: set[str] = set()
             for name, info in members:
                 if not name.startswith(folder):
@@ -1063,7 +1065,7 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                     raise SkillError(f"Skill archive contains '{path.as_posix()}' more than once.")
                 seen.add(key)
                 limit = MAX_SKILL_MD_BYTES if key == "skill.md" else MAX_SKILL_FILE_BYTES
-                # Declared sizes are untrusted; any decoder error (zlib, bz2, lzma, CRC) is the archive's.
+                # Declared sizes are untrusted; any decoder or CRC error is the archive's.
                 try:
                     with archive.open(info) as handle:
                         content = handle.read(limit + 1)
@@ -1077,7 +1079,7 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                 if path.as_posix() == "SKILL.md":
                     manifest = content
                 else:
-                    files.append((path, content))
+                    files.append((path, content, bool((info.external_attr >> 16) & 0o111)))
             bundles.append((folder.rstrip("/").rsplit("/", 1)[-1], manifest, files))
 
     imported: list[dict] = []

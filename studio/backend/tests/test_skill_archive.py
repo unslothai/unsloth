@@ -24,9 +24,9 @@ _MANIFEST = (
 )
 
 
-def _zip(*members) -> bytes:
+def _zip(*members, compression = zipfile.ZIP_DEFLATED) -> bytes:
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output, "w", compression) as archive:
         for name, content in members:
             archive.writestr(name, content)
     return output.getvalue()
@@ -64,12 +64,18 @@ def test_an_exported_skill_imports_back_with_the_same_files(isolated_skills):
     )
     (skill_dir / "references").mkdir()
     (skill_dir / "references" / "guide.md").write_bytes(b"# Guide\n")
+    (skill_dir / "run.sh").write_bytes(b"echo hi\n")
+    (skill_dir / "run.sh").chmod(0o755)
     before = _files(skill_dir)
 
     name, archive = skills.export_skill("packed", home = home)
     infos = zipfile.ZipFile(io.BytesIO(archive)).infolist()
     assert name == "packed"
-    assert [info.filename for info in infos] == ["packed/SKILL.md", "packed/references/guide.md"]
+    assert [info.filename for info in infos] == [
+        "packed/SKILL.md",
+        "packed/run.sh",
+        "packed/references/guide.md",
+    ]
     assert {info.date_time for info in infos} == {(1980, 1, 1, 0, 0, 0)}
 
     skills.delete_skill("packed", home = home)
@@ -78,6 +84,9 @@ def test_an_exported_skill_imports_back_with_the_same_files(isolated_skills):
     assert (record["name"], record["source"], record["enabled"]) == ("packed", "agents", True)
     assert (record["license"], record["metadata"]) == ("Apache-2.0", {"author": "tester"})
     assert _files(skill_dir) == before
+    if os.name == "posix":
+        assert os.access(skill_dir / "run.sh", os.X_OK)
+        assert not os.access(skill_dir / "SKILL.md", os.X_OK)
 
 
 @pytest.mark.parametrize("prefix", ["", "my-skill-main/"])
@@ -122,6 +131,11 @@ def test_import_takes_skill_md_at_the_top_or_inside_one_folder(isolated_skills, 
         pytest.param(b"not a zip", "ZIP file", id = "not-a-zip"),
         pytest.param(
             _future_version(_zip(("SKILL.md", _MANIFEST))), "ZIP file", id = "future-version"
+        ),
+        pytest.param(
+            _zip(("SKILL.md", _MANIFEST), compression = zipfile.ZIP_LZMA),
+            "stored or deflated",
+            id = "lzma",
         ),
         pytest.param(
             _corrupt_member(_zip(("SKILL.md", _MANIFEST), ("ref.md", b"x" * 100))),
