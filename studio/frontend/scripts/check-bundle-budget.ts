@@ -404,9 +404,9 @@ export const BUDGET = {
   // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
   // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
   // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
-  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +288 B transfer (6,924,738 ->
-  // 6,925,827 B raw, 2,086,221 -> 2,086,509 B transfer against bf172053ac, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_087_047,
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
+  // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
+  transferBytes: 2_087_057,
   rawBytes: 6_927_757,
 };
 
