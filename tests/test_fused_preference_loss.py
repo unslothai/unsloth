@@ -715,7 +715,8 @@ def _zero_head_input_grad(module, grad_input, grad_output):
 
 
 @pytest.mark.parametrize(
-    "kind", ["full_backward_hook", "backward_pre_hook", "legacy_backward_hook", "global_backward_hook"]
+    "kind",
+    ["full_backward_hook", "backward_pre_hook", "legacy_backward_hook", "global_backward_hook"],
 )
 def test_backward_hooked_head_falls_back(dpo_module, monkeypatch, kind):
     """The kernel never calls the head module, so its module backward hooks would never fire."""
@@ -745,7 +746,6 @@ def test_backward_hooked_head_falls_back(dpo_module, monkeypatch, kind):
             )
         else:
             from torch.nn.modules.module import register_module_full_backward_hook
-
             def global_hook(module, grad_input, grad_output):
                 if module is head:
                     return _zero_head_input_grad(module, grad_input, grad_output)
