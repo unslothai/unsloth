@@ -1231,6 +1231,96 @@ def test_a_late_media_unload_defers_to_a_newer_load_that_registers(monkeypatch, 
     assert state["unloads"] == [0]
 
 
+def test_a_newer_load_that_fails_after_posting_does_not_strand_the_stopped_one(
+    monkeypatch, fast_polls
+):
+    # The newer POST is accepted but its load then reports an error: it replaced nothing, so the
+    # stopped POST that returns afterwards still gets its late unload.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+    fake = loading.route_json
+
+    async def route_json(method, path, **kw):
+        if path.endswith("/load-progress") and state.get("fail"):
+            return {"phase": "error", "error": "load failed"}
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        state["fail"] = True
+        with pytest.raises(ToolError):
+            await loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0, 2]
+
+
+def test_a_late_media_unload_retries_a_transient_route_error(monkeypatch, fast_polls):
+    state = _late_unload_scenario(monkeypatch, post_s = (0.3,))
+    fake = loading.route_json
+    failed = []
+
+    async def route_json(method, path, **kw):
+        if path == "/api/inference/video/status" and state["registered"] and not failed:
+            failed.append(path)
+            raise ToolError("Unsloth Studio is busy")
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        await asyncio.sleep(0.4)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert failed and state["unloads"] == [0, 1]
+
+
+def test_a_stopped_post_that_fails_while_the_unload_runs_needs_no_late_unload(
+    monkeypatch, fast_polls
+):
+    state = _late_unload_scenario(monkeypatch, post_s = (), unload_s = 0.4)
+    fake = loading.route_json
+
+    async def route_json(method, path, **kw):
+        if path == "/api/inference/video/load":
+            await asyncio.to_thread(time.sleep, 0.2)
+            raise ToolError("out of memory")
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        result = await loading.unload_media(caller, "video")
+        assert not loading._LATE_UNLOADS
+        return result
+
+    result = asyncio.run(scenario())
+    assert result.unloaded is True
+    assert state["unloads"] == [0]
+
+
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(
     monkeypatch, fast_polls
 ):
