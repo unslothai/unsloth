@@ -1272,7 +1272,9 @@ def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
         )
         first = local.clone()
         _mesh_broadcast_from_first(first, mesh, dist)
-        differs = (local != first).any(dim = 1).to(torch.int32)
+        # NaN-aware: a checkpoint with non-finite weights (tiny Llama4) is still the same on every rank.
+        same = (local == first) | (local.isnan() & first.isnan())
+        differs = (~same).any(dim = 1).to(torch.int32)
         mesh_all_reduce(differs, mesh, dist)
         index = [i for i, n in enumerate(differs.tolist()) if n]
         for i in index:

@@ -50,9 +50,13 @@ def _worker(rank, world, port, out, case):
     try:
         native = _load_native()
         # Same base weights everywhere; the adapters differ per rank unless the case says otherwise.
-        seed = 1 if case == "same" else 1 + rank
+        seed = 1 + rank if case == "differ" else 1
         model = _lora(seed)
         first = _lora(1)  # rank 0's starting adapters, built locally for the comparison
+        if case == "nan":
+            # Identical non-finite weights on every rank (tiny Llama4 ships some) are not a mismatch.
+            for m in (model, first):
+                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = float("nan")
         want = {n: p.detach().clone() for n, p in first.named_parameters() if p.requires_grad}
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -60,7 +64,9 @@ def _worker(rank, world, port, out, case):
         got = _full(model, trainable_only = True)
         res = {
             "n": len(want),
-            "max_diff": max((got[n] - want[n]).abs().max().item() for n in want),
+            "max_diff": max(
+                (got[n] - want[n]).nan_to_num(0.0).abs().max().item() for n in want
+            ),
             "message": "differed across ranks" in buf.getvalue(),
         }
         out.put((rank, res))
@@ -105,5 +111,13 @@ def test_ranks_that_already_agree_are_left_alone():
     pytest.importorskip("transformers")
     pytest.importorskip("peft")
     for rank, r in _run("same").items():
+        assert r["max_diff"] == 0.0, (rank, r)
+        assert not r["message"], (rank, r)
+
+
+def test_identical_non_finite_weights_are_not_a_mismatch():
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+    for rank, r in _run("nan").items():
         assert r["max_diff"] == 0.0, (rank, r)
         assert not r["message"], (rank, r)
