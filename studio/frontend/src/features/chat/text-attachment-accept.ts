@@ -375,9 +375,9 @@ const DUPLICATE_SUFFIX_RE = /(?:\s*\(\d+\)|\s+(?:-\s+)?copy(?:\s+\d+)?)+$/i;
 /** Whether a path or filename belongs to the inline UTF-8 text adapter. */
 export function isTextAttachmentName(path: string): boolean {
   const segments = path.split(PATH_SEPARATOR_RE);
-  const full = (segments[segments.length - 1] || path).toLowerCase();
-  const name = full.replace(DUPLICATE_SUFFIX_RE, "") || full;
-  if ((TEXT_ATTACHMENT_BASENAMES as readonly string[]).includes(name)) {
+  const name = (segments[segments.length - 1] || path).toLowerCase();
+  const base = name.replace(DUPLICATE_SUFFIX_RE, "") || name;
+  if ((TEXT_ATTACHMENT_BASENAMES as readonly string[]).includes(base)) {
     return true;
   }
   const dot = name.lastIndexOf(".");

@@ -1398,7 +1398,7 @@ mod tests {
         ] {
             assert!(is_text_attachment_name(Path::new(name)), "{name}");
         }
-        for name in ["notes(1)", ".env (1)", "copy", "(1)", "LICENSE(x)"] {
+        for name in ["notes(1)", ".env (1)", "copy", "(1)", "LICENSE(x)", "notes.txt(1)"] {
             assert!(!is_text_attachment_name(Path::new(name)), "{name}");
         }
     }
