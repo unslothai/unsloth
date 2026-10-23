@@ -84,11 +84,15 @@ def npu_is_available():
 
 
 def _zoo_cpu_backend(name):
-    """The CPU-fallback rules live in unsloth_zoo.device_type; an older zoo has none."""
-    try:
-        from unsloth_zoo import device_type as _zoo_device_type
-    except Exception:
-        return False
+    """The CPU-fallback rules live in unsloth_zoo.device_type; an older zoo has none.
+
+    Only consulted once `import unsloth` has imported unsloth_zoo (as _gpu_init does before this
+    module). Importing it from here would pull the whole zoo package into anything that loads
+    unsloth.device_type on its own (Studio's hardware probes, the test harness's preload).
+    """
+    import sys
+
+    _zoo_device_type = sys.modules.get("unsloth_zoo.device_type")
     check = getattr(_zoo_device_type, name, None)
     return bool(check()) if callable(check) else False
 

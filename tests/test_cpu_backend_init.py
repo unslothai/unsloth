@@ -158,3 +158,37 @@ def test_cpu_init_only_reached_from_the_handoff():
         if isinstance(n, ast.ImportFrom) and n.module == "_cpu_init" and n.level == 1
     ]
     assert inside and len(inside) == len(everywhere), "_cpu_init must only load from the handoff"
+
+
+def test_cpu_backend_query_only_reads_an_already_imported_zoo(monkeypatch):
+    """unsloth.device_type asks zoo about the CPU backend without importing it: an import from there
+    reorders zoo's own initialisation under harnesses that preload device_type (CUDA spoof in the
+    test suite), which sent Qwen3.5's linear attention down the Triton path on CPU runners."""
+    import builtins
+    import types
+
+    src = (_ROOT / "unsloth" / "device_type.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    fn = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_zoo_cpu_backend"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), "device_type.py", "exec"), namespace)
+    query = namespace["_zoo_cpu_backend"]
+    imports = []
+    real_import = builtins.__import__
+    monkeypatch.setattr(
+        builtins,
+        "__import__",
+        lambda name, *a, **k: imports.append(name) or real_import(name, *a, **k),
+    )
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.device_type", raising = False)
+    assert query("cpu_backend_forced") is False
+    assert not any(name.startswith("unsloth_zoo") for name in imports)
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.device_type",
+        types.SimpleNamespace(cpu_backend_forced = lambda: True),
+    )
+    assert query("cpu_backend_forced") is True
+    assert query("cpu_backend_allowed") is False  # an older zoo without the function
