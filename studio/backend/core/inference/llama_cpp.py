@@ -41456,9 +41456,7 @@ class LlamaCppBackend:
                         self._effective_context_length, _iteration_max_tokens
                     )
                     if (
-                        estimate_messages_tokens_dense(
-                            self._countable_messages(conversation)
-                        )
+                        estimate_messages_tokens_dense(self._countable_messages(conversation))
                         > 0.7 * _reply_target
                     ):
                         try:
@@ -43306,9 +43304,7 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            self._countable_messages(
-                                                [*conversation, _size_probe]
-                                            ),
+                                            self._countable_messages([*conversation, _size_probe]),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),

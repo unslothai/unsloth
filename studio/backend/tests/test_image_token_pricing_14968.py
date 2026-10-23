@@ -33,7 +33,11 @@ def _flat(price: int):
     return lambda part: price
 
 
-def _backend(projector = "qwen3vl_merger", extra_args = None, vision = True):
+def _backend(
+    projector = "qwen3vl_merger",
+    extra_args = None,
+    vision = True,
+):
     return types.SimpleNamespace(
         is_vision = vision,
         _mmproj_projector_type = projector,
@@ -74,7 +78,10 @@ def test_a_chat_without_media_is_returned_as_is():
 
 
 def test_the_estimate_adds_each_image_price():
-    message = {"role": "user", "content": [{"type": "text", "text": "look"}, _image("x"), _image("y")]}
+    message = {
+        "role": "user",
+        "content": [{"type": "text", "text": "look"}, _image("x"), _image("y")],
+    }
 
     text_only = cw.estimate_message_tokens_without_unpriced_media(message)
 
@@ -183,8 +190,8 @@ def test_screenshots_that_outgrow_the_reply_reserve_now_trigger_compaction():
     backend._countable_messages = lambda messages: cw.messages_with_priced_images(
         messages, backend._price_image
     )
-    backend._estimate_countable_message = lambda message: cw.estimate_message_tokens_with_priced_images(
-        message, backend._price_image
+    backend._estimate_countable_message = (
+        lambda message: cw.estimate_message_tokens_with_priced_images(message, backend._price_image)
     )
     messages = _screenshot_chat(rounds = 9)
 
