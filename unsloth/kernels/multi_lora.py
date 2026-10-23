@@ -53,15 +53,22 @@ __all__ = [
     "clip_grad_norm_per_adapter_",
     "drop_absent_adapter_grads_",
     "adapter_state_dict",
+    "set_multi_lora_triton",
 ]
 
 
+# Read once: an environment lookup inside a compiled forward would be a guard on every call.
+_TRITON_ENABLED = HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
+
+
+def set_multi_lora_triton(enabled: bool) -> None:
+    """Turn the Triton kernels on or off (off = the PyTorch fallback); ``UNSLOTH_MULTI_LORA_TRITON=0``."""
+    global _TRITON_ENABLED
+    _TRITON_ENABLED = bool(enabled) and HAS_TRITON
+
+
 def _use_triton(X: torch.Tensor) -> bool:
-    return (
-        HAS_TRITON
-        and X.device.type in ("cuda", "xpu")
-        and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
-    )
+    return _TRITON_ENABLED and X.device.type in ("cuda", "xpu")
 
 
 @dataclass
@@ -76,6 +83,7 @@ class MultiLoraBatch:
     sorted_idx: torch.Tensor
     seg_start: torch.Tensor
     num_adapters: int
+    token_ids: Optional[torch.Tensor] = None
 
     @classmethod
     def from_adapter_ids(
@@ -95,7 +103,7 @@ class MultiLoraBatch:
         counts = torch.bincount(keys, minlength = num_adapters + 1)[:num_adapters]
         seg_start = torch.zeros(num_adapters + 1, dtype = torch.int32, device = ids.device)
         seg_start[1:] = torch.cumsum(counts, 0)
-        return cls(sorted_idx, seg_start, num_adapters)
+        return cls(sorted_idx, seg_start, num_adapters, ids)
 
     @property
     def num_tokens(self) -> int:
@@ -260,6 +268,114 @@ def _block(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, triton.next_power_of_2(n)))
 
 
+def _launch_seg_mm(
+    inp: torch.Tensor,
+    W: torch.Tensor,
+    out: torch.Tensor,
+    scales: Optional[torch.Tensor],
+    idx: torch.Tensor,
+    seg: torch.Tensor,
+    N: int,
+    stride_wu: int,
+    stride_wk: int,
+    stride_wn: int,
+    in_sorted: bool,
+    out_sorted: bool,
+    add: bool,
+) -> None:
+    M, K = inp.shape
+    BLOCK_M = 64
+    BLOCK_N = _block(N, 16, 128)
+    BLOCK_K = _block(K, 16, 64 if BLOCK_N > 32 else 128)
+    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), seg.shape[0] - 1)
+    _wrap(_seg_mm_kernel)[grid](
+        inp,
+        W,
+        out,
+        scales if scales is not None else inp,
+        idx,
+        seg,
+        N,
+        K,
+        inp.stride(0),
+        out.stride(0),
+        stride_wu,
+        stride_wk,
+        stride_wn,
+        IN_SORTED = in_sorted,
+        OUT_SORTED = out_sorted,
+        ADD = add,
+        SCALE = scales is not None,
+        IEEE = inp.dtype == torch.float32,
+        BLOCK_M = BLOCK_M,
+        BLOCK_N = BLOCK_N,
+        BLOCK_K = BLOCK_K,
+        num_warps = 4,
+    )
+
+
+def _launch_seg_wgrad(
+    P: torch.Tensor,
+    Q: torch.Tensor,
+    out: torch.Tensor,
+    scales: Optional[torch.Tensor],
+    idx: torch.Tensor,
+    seg: torch.Tensor,
+    p_sorted: bool,
+    q_sorted: bool,
+) -> None:
+    _, I, J = out.shape
+    BLOCK_I = _block(I, 16, 64)
+    BLOCK_J = _block(J, 16, 64)
+    grid = (triton.cdiv(I, BLOCK_I) * triton.cdiv(J, BLOCK_J), seg.shape[0] - 1)
+    _wrap(_seg_wgrad_kernel)[grid](
+        P,
+        Q,
+        out,
+        scales if scales is not None else P,
+        idx,
+        seg,
+        I,
+        J,
+        P.stride(0),
+        Q.stride(0),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        P_SORTED = p_sorted,
+        Q_SORTED = q_sorted,
+        SCALE = scales is not None,
+        IEEE = P.dtype == torch.float32,
+        BLOCK_T = 64,
+        BLOCK_I = BLOCK_I,
+        BLOCK_J = BLOCK_J,
+        num_warps = 4,
+    )
+
+
+# As torch.library triton ops, Dynamo and Inductor trace the launches instead of breaking the graph on them.
+# The interpreter (TRITON_INTERPRET=1) runs plain Python kernels that wrap_triton does not accept.
+_INTERPRETED = os.environ.get("TRITON_INTERPRET", "0") == "1"
+if HAS_TRITON and hasattr(torch.library, "triton_op") and not _INTERPRETED:
+    _wrap = torch.library.wrap_triton
+    _seg_mm_op = torch.library.triton_op("unsloth::multi_lora_seg_mm", mutates_args = {"out"})(
+        _launch_seg_mm
+    )
+    _seg_wgrad_op = torch.library.triton_op("unsloth::multi_lora_seg_wgrad", mutates_args = {"out"})(
+        _launch_seg_wgrad
+    )
+else:
+    _wrap = lambda kernel: kernel  # noqa: E731
+    _seg_mm_op, _seg_wgrad_op = _launch_seg_mm, _launch_seg_wgrad
+
+
+def _eager_guard(device: torch.device):
+    # Triton launches on the current device; compiled code sets its own device guard.
+    if torch.compiler.is_compiling():
+        return contextlib.nullcontext()
+    return _device_guard(device)
+
+
 def _seg_mm(
     inp: torch.Tensor,
     W: torch.Tensor,
@@ -272,33 +388,19 @@ def _seg_mm(
     out_sorted: bool,
     add: bool,
 ) -> torch.Tensor:
-    M, K = inp.shape
-    BLOCK_M = 64
-    BLOCK_N = _block(N, 16, 128)
-    BLOCK_K = _block(K, 16, 64 if BLOCK_N > 32 else 128)
-    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), batch.num_adapters)
-    with _device_guard(inp.device):
-        _seg_mm_kernel[grid](
+    with _eager_guard(inp.device):
+        _seg_mm_op(
             inp,
             W,
             out,
-            scales if scales is not None else inp,
+            scales,
             batch.sorted_idx,
             batch.seg_start,
             N,
-            K,
-            inp.stride(0),
-            out.stride(0),
             *w_strides,
-            IN_SORTED = in_sorted,
-            OUT_SORTED = out_sorted,
-            ADD = add,
-            SCALE = scales is not None,
-            IEEE = inp.dtype == torch.float32,
-            BLOCK_M = BLOCK_M,
-            BLOCK_N = BLOCK_N,
-            BLOCK_K = BLOCK_K,
-            num_warps = 4,
+            in_sorted,
+            out_sorted,
+            add,
         )
     return out
 
@@ -312,34 +414,8 @@ def _seg_wgrad(
     p_sorted: bool,
     q_sorted: bool,
 ) -> torch.Tensor:
-    _, I, J = out.shape
-    BLOCK_I = _block(I, 16, 64)
-    BLOCK_J = _block(J, 16, 64)
-    grid = (triton.cdiv(I, BLOCK_I) * triton.cdiv(J, BLOCK_J), batch.num_adapters)
-    with _device_guard(P.device):
-        _seg_wgrad_kernel[grid](
-            P,
-            Q,
-            out,
-            scales if scales is not None else P,
-            batch.sorted_idx,
-            batch.seg_start,
-            I,
-            J,
-            P.stride(0),
-            Q.stride(0),
-            out.stride(0),
-            out.stride(1),
-            out.stride(2),
-            P_SORTED = p_sorted,
-            Q_SORTED = q_sorted,
-            SCALE = scales is not None,
-            IEEE = P.dtype == torch.float32,
-            BLOCK_T = 64,
-            BLOCK_I = BLOCK_I,
-            BLOCK_J = BLOCK_J,
-            num_warps = 4,
-        )
+    with _eager_guard(P.device):
+        _seg_wgrad_op(P, Q, out, scales, batch.sorted_idx, batch.seg_start, p_sorted, q_sorted)
     return out
 
 
@@ -454,18 +530,25 @@ class MultiLoRA_W(torch.autograd.Function):
 
 
 def multi_lora_delta(X, A, B, scales, batch: MultiLoraBatch):
-    """Reference LoRA delta in plain PyTorch (any device, any dtype, autograd through ordinary ops)."""
+    """Reference LoRA delta in plain PyTorch (any device, any dtype, autograd through ordinary ops).
+
+    Every adapter runs on every token and a one-hot mask keeps each token's own: U times the LoRA FLOPs,
+    small next to the base matmul, with no host sync or data-dependent shape, so it compiles cleanly.
+    """
     shape = X.shape
     X = X.reshape(-1, shape[-1])
-    out = X.new_zeros(X.shape[0], B.shape[1])
-    starts = batch.seg_start.tolist()
-    idx = batch.sorted_idx.long()
-    for u in range(batch.num_adapters):
-        if starts[u] == starts[u + 1]:
-            continue
-        rows = idx[starts[u] : starts[u + 1]]
-        h = X.index_select(0, rows) @ A[u].to(X.dtype).t()
-        out = out.index_add(0, rows, (h @ B[u].to(X.dtype).t()) * scales[u].to(X.dtype))
+    U = A.shape[0]
+    ids = batch.token_ids
+    if ids is None:  # built by hand from a sorted order: recover each token's adapter
+        ids = torch.full((X.shape[0],), -1, dtype = torch.int64, device = X.device)
+        seg = batch.seg_start.long()
+        pos = torch.arange(X.shape[0], device = X.device)
+        ids = ids.scatter(0, batch.sorted_idx.long(), torch.searchsorted(seg[1:], pos, right = True))
+        ids = torch.where(ids >= U, torch.full_like(ids, -1), ids)
+    mask = (ids.unsqueeze(0) == torch.arange(U, device = X.device).unsqueeze(1)).to(X.dtype)
+    H = torch.einsum("mk,urk->umr", X, A.to(X.dtype))
+    H = H * (mask * scales.to(X.dtype).unsqueeze(1)).unsqueeze(-1)
+    out = torch.einsum("umr,unr->mn", H, B.to(X.dtype))
     return out.view(*shape[:-1], out.shape[-1])
 
 
@@ -527,6 +610,8 @@ class MultiLoraLinear(nn.Module):
         scales = [a / (math.sqrt(k) if use_rslora else k) for a, k in zip(alphas, ranks)]
         self.register_buffer("scales", torch.tensor(scales, dtype = torch.float32, device = device))
         self.reset_parameters()
+        # A plain attribute, not a buffer: DDP broadcasts buffers from rank 0, which would hand every rank
+        # rank 0's routing.
         self.batch: Optional[MultiLoraBatch] = None
         self.seen: Optional[torch.Tensor] = None
         self.trained: Optional[torch.Tensor] = None
@@ -678,13 +763,13 @@ def per_adapter_loss(
     ).view(shift_labels.shape)
     valid = (shift_labels != ignore_index).float()
     ids = row_adapter_ids.to(logits.device).long()
-    keep = ids >= 0
+    # Rows with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.
+    keep = (ids >= 0).to(token_loss.dtype)
+    ids = ids.clamp_min(0)
     sums = torch.zeros(num_adapters, device = logits.device).index_add(
-        0, ids[keep], token_loss.sum(1)[keep]
+        0, ids, token_loss.sum(1) * keep
     )
-    counts = torch.zeros(num_adapters, device = logits.device).index_add(
-        0, ids[keep], valid.sum(1)[keep]
-    )
+    counts = torch.zeros(num_adapters, device = logits.device).index_add(0, ids, valid.sum(1) * keep)
     losses = sums / counts.clamp_min(1)
     if model is not None:
         # Adapters with valid label tokens: routed rows whose labels are all ignored do not train.

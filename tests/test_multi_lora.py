@@ -513,3 +513,45 @@ def test_ddp_two_ranks_train_each_adapter_on_its_global_mean(tmp_path):
     assert proc.returncode == 0 and "DDP OK" in proc.stdout, (
         proc.stdout[-2000:] + proc.stderr[-4000:]
     )
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.parametrize("triton_kernels", [True, False])
+def test_compiles_fullgraph_without_recompiling_per_batch(triton_kernels):
+    from torch._dynamo.utils import counters
+
+    def model():
+        torch.manual_seed(0)
+        m = torch.nn.Sequential(torch.nn.Linear(64, 128), torch.nn.GELU(), torch.nn.Linear(128, 32))
+        m = m.cuda().to(torch.bfloat16)
+        ml.inject_multi_lora(m, ["0", "2"], 3, r = [4, 8, 8])
+        for _, layer in ml._layers(m):
+            for B in layer.lora_B:
+                torch.nn.init.normal_(B, std = 0.05)
+        return m
+
+    def step(m, fn, x, ids):
+        ml.set_multi_lora_batch(m, ids)
+        m.zero_grad(set_to_none = True)
+        y = fn(x)
+        y.float().pow(2).mean().backward()
+        return [y.detach()] + [p.grad.clone() for p in m.parameters() if p.requires_grad]
+
+    ml.set_multi_lora_triton(triton_kernels)
+    try:
+        torch._dynamo.reset()
+        counters.clear()
+        eager, compiled = model(), model()
+        fn = torch.compile(compiled, fullgraph = True)
+        g = torch.Generator().manual_seed(0)
+        for _ in range(4):  # same size, different routing: one graph
+            x = torch.randn(48, 64, generator = g).cuda().to(torch.bfloat16)
+            ids = torch.randint(-1, 3, (48,), generator = g).cuda()
+            for a, b in zip(step(compiled, fn, x, ids), step(eager, eager, x, ids)):
+                rel = (a.float() - b.float()).norm() / b.float().norm().clamp_min(1e-12)
+                assert rel < 3e-2, rel
+        assert sum(counters["graph_break"].values()) == 0
+        assert counters["stats"]["unique_graphs"] == 1
+    finally:
+        ml.set_multi_lora_triton(True)
+        torch._dynamo.reset()
