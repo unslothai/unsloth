@@ -1751,7 +1751,8 @@ def retired_copy_loads_from_disk(source: Optional[str], filename: Optional[str] 
             return False
         single = (filename or "").strip().replace("\\", "/")
         if single and (
-            _safe_relative_parts(single) is None or not _nonempty_file(root.joinpath(*single.split("/")))
+            _safe_relative_parts(single) is None
+            or not _nonempty_file(root.joinpath(*single.split("/")))
         ):
             return False
         from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX

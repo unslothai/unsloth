@@ -39,7 +39,12 @@ def _flux3_pipeline(root, *, complete = True):
     return root
 
 
-def _snapshot(tmp_path, repo = _COPY, *, complete = True):
+def _snapshot(
+    tmp_path,
+    repo = _COPY,
+    *,
+    complete = True,
+):
     root = tmp_path / "hub" / f"models--{repo.replace('/', '--')}"
     snapshot = _flux3_pipeline(root / "snapshots" / "0123abc", complete = complete)
     _write(root / "refs" / "main", b"0123abc")
@@ -118,7 +123,11 @@ def test_a_root_transformer_pick_missing_its_file_loads_through_its_base(tmp_pat
         gguf_filename = "model.safetensors",
         model_kind = "single_file",
     )
-    assert (request.model_path, request.gguf_filename, request.model_kind) == (_BASE, None, "pipeline")
+    assert (request.model_path, request.gguf_filename, request.model_kind) == (
+        _BASE,
+        None,
+        "pipeline",
+    )
 
 
 def test_a_copy_not_on_disk_loads_through_its_base(offline_hub):
