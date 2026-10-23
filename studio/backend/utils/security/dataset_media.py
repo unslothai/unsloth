@@ -29,7 +29,6 @@ _EXTRACT = "datasets.utils.extract"
 _SOURCE_SUFFIX = ".unsloth-source"
 _SOURCE_MAX_BYTES = 16384
 # Protocols ``datasets`` chains in front of an outer location ("zip://member::<outer>").
-_ARCHIVE_HOPS = frozenset({"zip", "tar", "gzip", "bz2", "xz", "zstd", "lz4"})
 _MARK = "_unsloth_dataset_media_guard"
 _SNAPSHOT_REPO = re.compile(r"[\\/]datasets--([^\\/]+?)--([^\\/]+)[\\/]")
 _dataset_repos: set[str] = set()
@@ -162,6 +161,11 @@ def require_readable_media(path) -> None:
         _require_readable(str(path))
 
 
+_READ_THROUGH_PROTOCOLS = frozenset(
+    {"zip", "tar", "gzip", "bz2", "xz", "lz4", "zstd", "simplecache", "filecache", "blockcache"}
+)
+
+
 def _anchored(pattern: str):
     """``pattern``'s ``{field}`` placeholders as groups and the rest literal, matched against a whole string."""
     parts = re.split(r"{([^:}]+)(?::[^}]+)?}", pattern)
@@ -208,8 +212,10 @@ def _permitted_tokens(value, token_per_repo_id):
         return token_per_repo_id
     from datasets.utils.file_utils import is_local_path
 
+    # A chained URL ("zip://inner::<outer>") reads the outer location, but only an archive,
+    # compression or cache hop reads through to the next one: `file://x::hf://...` opens x.
     *hops, source = path.split("::")
-    if any(hop.split("://", 1)[0] not in _ARCHIVE_HOPS or "://" not in hop for hop in hops):
+    if any(hop.split("://", 1)[0] not in _READ_THROUGH_PROTOCOLS for hop in hops):
         _refuse(path)
     if is_local_path(source):
         _require_readable(source)

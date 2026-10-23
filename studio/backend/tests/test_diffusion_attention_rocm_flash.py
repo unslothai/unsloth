@@ -39,6 +39,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_STORED_MISSES", set(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -1333,6 +1334,78 @@ def test_deferral_belongs_to_its_dit_not_to_other_generations(monkeypatch):
     assert timed == [4096, 32768] and ran[-1] == "flash"
 
 
+def test_cfg_replica_retries_its_deferred_bucket_at_the_next_generation(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 60.0})
+    replica = _Dit()
+    att.track_rocm_flash_replica(dit, replica, "cpu")
+    pipe = types.SimpleNamespace(transformer = dit)
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: False)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert timed == [4096] and ran == ["native"]
+    assert len(getattr(replica, att.ROCM_FLASH_DEFERRED_ATTR)) == 1
+    # Room on the replica card at the next generation: the same (kept) replica times the bucket again.
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert timed == [4096, 32768] and ran[-1] == "flash"
+
+
+def test_cfg_replica_routes_count_in_the_generation_report(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0})
+    replica = _Dit()
+    att.track_rocm_flash_replica(dit, replica, "cpu")
+    pipe = types.SimpleNamespace(transformer = dit)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    dit.run(guarded, [(5000, None)])
+    replica.run(guarded, [(40000, None)])
+    assert ran == ["flash", "native"]
+    value, reason = att.rocm_flash_ran(pipe)
+    assert value == "flash" and "on 1 of 2 attention calls" in reason
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert att.rocm_flash_ran(pipe)[0] == "native"
+
+
+def test_a_hooked_replica_is_freed_without_a_cycle_collection():
+    import gc
+    import weakref
+
+    torch = pytest.importorskip("torch")
+    module = torch.nn.Linear(4, 4)
+    att._hook_rocm_flash_dit(module)
+    assert getattr(module, att._ROCM_FLASH_HOOKS_ATTR)
+    ref = weakref.ref(module)
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del module
+        assert (
+            ref() is None
+        )  # no hook -> module cycle: a dropped CFG replica frees its card memory at once
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def test_traced_segments_read_the_stored_verdicts_once_per_absent_bucket(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    loads = []
+    real_load = att._load_rocm_flash_verdicts
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: "tc")
+    monkeypatch.setattr(att, "_rocm_flash_cache_path", lambda tc: str(tmp_path / "probe.json"))
+    monkeypatch.setattr(
+        att, "_load_rocm_flash_verdicts", lambda *a: loads.append(a) or real_load(*a)
+    )
+    g = ((3072, 24, 128),)
+    args = ("cuda:0", torch.bfloat16, g, 4096, 4096, 1)
+    assert att._rocm_flash_bucket_known(*args) is None
+    first = len(loads)
+    assert first == 1
+    assert att._rocm_flash_bucket_known(*args) is None
+    assert len(loads) == first  # an absent slot is not re-read on every traced call
+
+
 def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
     baseline = ["sdpafem,aotriton-exp1"]
     monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: baseline[0])
@@ -1979,6 +2052,62 @@ def test_compiled_dynamic_lengths_recompile_per_bucket_not_per_length(monkeypatc
     assert float(compiled(torch.zeros(1, 9000, 2, 16, dtype = bf16)).flatten()[0]) == -1.0
     assert len(frames) == 2 and timed == [4096, 8192]
     torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("native_8192", [False, True])
+def test_compiled_lengths_across_known_buckets_guard_only_where_the_route_changes(
+    monkeypatch, native_8192
+):
+    # every bucket already timed (persisted, read back after a restart): neighbouring buckets with the same verdict
+    # share one graph; a bucket whose verdict differs still gets its own
+    flash_ms = {4096: 70.0, 8192: 90.0 if native_8192 else 70.0, 16384: 70.0}
+    torch, dit, timed = _compiled_env(monkeypatch, True, flash_ms)
+    bf16 = torch.bfloat16
+    lengths = (4352, 9000, 17000, 5000, 9500)
+    eager = [float(dit(torch.zeros(1, n, 2, 16, dtype = bf16)).flatten()[0]) for n in lengths]
+    att._ROCM_FLASH_BUCKETS.clear()
+    att.ROCM_FLASH_ADMISSIONS.clear()
+    att._ROCM_FLASH_STORED_MISSES.clear()
+    torch._dynamo.reset()
+    frames = []
+    compiled = torch.compile(
+        dit,
+        backend = lambda gm, inputs: frames.append(gm) or gm.forward,
+        dynamic = True,
+        fullgraph = True,
+    )
+    out, counts = [], []
+    for n in lengths:
+        out.append(float(compiled(torch.zeros(1, n, 2, 16, dtype = bf16)).flatten()[0]))
+        counts.append(len(frames))
+    assert out == eager == ([1.0, -1.0, 1.0, 1.0, -1.0] if native_8192 else [1.0] * 5)
+    assert counts == ([1, 2, 3, 3, 3] if native_8192 else [1, 1, 1, 1, 1])
+    assert timed == [4096, 8192, 16384]  # read back, never re-timed
+    torch._dynamo.reset()
+
+
+def test_cfg_replica_keeps_the_rocm_flash_gate_on_its_worker_thread(monkeypatch):
+    mg = pytest.importorskip("core.inference.diffusion_multigpu")
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0, 8192: 110.0})
+    q = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+    assert float(dit(q).flatten()[0]) == -1.0  # 8192 lost its timing: native on the source
+    replica = mg.build_replica(dit, "cpu")
+    worker = mg._ReplicaWorker(torch.device("cpu"))
+    try:
+        out = worker.call(mg._replica_call(replica, (q,), {}))
+    finally:
+        worker.close()
+    assert float(out.flatten()[0]) == -1.0 and timed == [4096, 8192]
+    assert getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
+    # a rebuilt replica (weights changed) is tracked too; the copy carries no replica set of its own
+    again = mg.build_replica(dit, "cpu")
+    assert att._ROCM_FLASH_REPLICAS_ATTR not in again.__dict__
+    assert set(getattr(dit, att._ROCM_FLASH_REPLICAS_ATTR)) == {replica, again}
+    # on another card the gate is that card's, so its buckets are timed there
+    copy = torch.nn.Module()
+    att.track_rocm_flash_replica(dit, copy, "cuda:1")
+    gate = getattr(copy, att.ROCM_FLASH_GATE_ATTR)
+    assert {k[0] for k in gate} == {"cuda:1"} and len(copy._forward_pre_hooks) == 1
 
 
 def test_traced_call_with_no_room_for_its_probe_runs_native(monkeypatch):
