@@ -65,8 +65,10 @@ import {
   CheckmarkSquare02Icon,
   Delete02Icon,
   Folder02Icon,
+  FolderAddIcon,
   LayerIcon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
@@ -1010,7 +1012,6 @@ export function ChatsLibrary({
                 className="rounded-full px-5"
                 onClick={() => newChatInSection(openSectionId)}
               >
-                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                 {t("library.chats.toolbar.newChat")}
               </Button>
             }
@@ -1024,7 +1025,6 @@ export function ChatsLibrary({
           description={t("library.chats.empty.chatsDescription")}
           action={
             <Button variant="muted" className="rounded-full px-5" onClick={() => newChatIn(null)}>
-              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               {t("library.chats.toolbar.newChat")}
             </Button>
           }
@@ -1171,7 +1171,6 @@ export function ChatsLibrary({
               className="rounded-full px-5"
               onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
             >
-              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               {t("shell.sections.newSection")}
             </Button>
           }
@@ -1267,7 +1266,6 @@ export function ChatsLibrary({
           description={t("library.chats.empty.projectsDescription")}
           action={
             <Button variant="dark" className="rounded-full px-5" onClick={() => setCreatingProject(true)}>
-              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               {t("library.chats.toolbar.newProject")}
             </Button>
           }
@@ -1298,7 +1296,7 @@ export function ChatsLibrary({
             onClick={() => setCreatingProject(true)}
             className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
-            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
           </button>
         )}
@@ -1343,7 +1341,7 @@ export function ChatsLibrary({
       actions={
         <>
           <Button variant="muted" className="rounded-full px-4" onClick={() => newChatInSection(currentSection.id)}>
-            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
             {t("library.chats.toolbar.newChat")}
           </Button>
           <DropdownMenu>

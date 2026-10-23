@@ -20,7 +20,6 @@ import {
   LayerIcon,
   PencilEdit02Icon,
   PinIcon,
-  PlusSignIcon,
   Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -340,7 +339,6 @@ function NewMenu({
           type="button"
           className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
         </button>

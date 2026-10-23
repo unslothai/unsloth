@@ -25,15 +25,14 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
   Cancel01Icon,
+  FlimSlateIcon,
   Delete02Icon,
   Download01Icon,
-  FlimSlateIcon,
   Folder01Icon,
   FolderExportIcon,
   Image02Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
-  PlusSignIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
@@ -825,7 +824,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           className="rounded-full px-5"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >
-          <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
           {t("library.empty.createFolder")}
         </Button>
       );
