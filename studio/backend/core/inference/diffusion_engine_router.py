@@ -431,10 +431,8 @@ def _mlx_runtime_refusal() -> Optional[str]:
 
 
 def has_active_loras(loras: Any) -> bool:
-    """Whether a load's LoRA list applies any adapter. Weight 0 disables an entry and every loader
-    drops it (``diffusion_lora.resolve_specs``, sd.cpp's ``active_loras``), so an all-zero list must
-    not keep a load off MLX. Takes ``LoraSpec`` models or ``(id, weight)`` pairs; an unreadable
-    weight counts as active so it never routes a real adapter into MLX's refusal."""
+    """Every loader drops weight-0 entries (``diffusion_lora.resolve_specs``, sd.cpp's ``active_loras``),
+    so routing must ignore them too. An unreadable weight counts as active so a real adapter never hits MLX."""
     for entry in loras or ():
         weight = getattr(entry, "weight", None)
         if weight is None:
