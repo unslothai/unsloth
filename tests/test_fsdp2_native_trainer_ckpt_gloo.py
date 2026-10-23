@@ -325,7 +325,9 @@ def test_bnb_optimizers_without_torch_equivalent_are_refused(optim):
         ("adamw_torch", "adamw_torch"),
     ],
 )
-def test_bnb_optimizers_switch_to_torch(optim, target):
+def test_bnb_optimizers_switch_to_torch(optim, target, monkeypatch):
+    # bitsandbytes Adam / AdamW step local shards by default; UNSLOTH_FSDP2_BNB_LOCAL=0 switches them.
+    monkeypatch.setenv("UNSLOTH_FSDP2_BNB_LOCAL", "0")
     native = _load_native()
     args = types.SimpleNamespace(optim = optim)
     native._swap_bnb_optimizer(args)
@@ -338,3 +340,13 @@ def test_bnb_optimizers_switch_to_torch(optim, target):
         return
     known = set(native._BNB_OPTIMS) | set(native._BNB_UNSUPPORTED)
     assert {str(o.value) for o in _BITSANDBYTES_OPTIMIZERS} <= known
+
+
+@pytest.mark.parametrize("optim", ["adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit"])
+def test_bnb_adam_is_kept_for_local_shards(optim):
+    pytest.importorskip("bitsandbytes")
+    native = _load_native()
+    args = types.SimpleNamespace(optim = optim)
+    assert native._swap_bnb_optimizer(args) is False
+    assert args.optim == optim
+    assert set(native._BNB_LOCAL_SHARD_OPTIMS) <= set(native._BNB_OPTIMS)

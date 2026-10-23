@@ -2022,6 +2022,10 @@ def native_load_optimizer(model, optimizer, path_or_state):
     state = path_or_state
     if not isinstance(state, dict):
         state = torch.load(state, map_location = "cpu", weights_only = True)
+    from .fsdp2_bnb_optim import rename_optimizer_state_for
+
+    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
+    rename_optimizer_state_for(_inner_optimizer(optimizer), state)
     set_optimizer_state_dict(
         _native_root(model),
         _inner_optimizer(optimizer),
@@ -2339,6 +2343,7 @@ def _install_trainer_hooks():
         if is_native_fsdp2(getattr(self, "model", None)):
             # Before the LR scheduler records one base LR per group.
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
+            _localize_bnb_optimizer(optimizer)
         return optimizer
 
     original_create_scheduler = Trainer.create_scheduler
@@ -2356,6 +2361,8 @@ def _install_trainer_hooks():
         # above, and transformers 4.x builds the scheduler before Accelerator.prepare splits the
         # groups. Split here, before the scheduler records one base LR (and lambda) per group.
         target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
+        if is_native_fsdp2(getattr(self, "model", None)):
+            _localize_bnb_optimizer(target)  # a subclass create_optimizer's bitsandbytes Adam
         if (
             target is not None
             and getattr(self, "lr_scheduler", None) is None
@@ -2519,7 +2526,10 @@ def _native_optimizer(optimizer):
 
 
 # bitsandbytes optimizers (transformers' OptimizerNames) step plain tensors through custom ops with no
-# DTensor sharding strategy. Those with a torch equivalent are switched to it; the others are refused.
+# DTensor sharding strategy. Adam / AdamW step each DTensor's local shard (fsdp2_bnb_optim), keeping
+# their 8-bit state as on one GPU; the others with a torch equivalent are switched to it (as are Adam /
+# AdamW with UNSLOTH_FSDP2_BNB_LOCAL=0); the rest are refused.
+_BNB_LOCAL_SHARD_OPTIMS = ("adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit")
 _BNB_OPTIMS = {
     "adamw_8bit": "adamw_torch_fused",
     "adamw_bnb_8bit": "adamw_torch_fused",
@@ -2557,6 +2567,13 @@ def _swap_bnb_optimizer(training_args):
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
+    if name in _BNB_LOCAL_SHARD_OPTIMS and _bnb_local_shards_available():
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps optim = '{name}': bitsandbytes steps each rank's local shard "
+            "of the DTensor parameters (8-bit state per shard; UNSLOTH_FSDP2_BNB_LOCAL=0 switches to "
+            "torch's AdamW)."
+        )
+        return False
     if target == "adamw_torch_fused" and not torch.cuda.is_available():
         target = "adamw_torch"
     _print_rank0(
@@ -2569,6 +2586,31 @@ def _swap_bnb_optimizer(training_args):
     except Exception:
         training_args.optim = target
     return True
+
+
+def _bnb_local_shards_available():
+    from .fsdp2_bnb_optim import bnb_local_shards_enabled, supports_local_shards
+
+    if not bnb_local_shards_enabled():
+        return False
+    try:
+        from bitsandbytes.optim import AdamW8bit
+    except Exception:
+        return False
+    return supports_local_shards(AdamW8bit)
+
+
+def _localize_bnb_optimizer(optimizer):
+    """A bitsandbytes Adam / AdamW (built by the Trainer from args.optim, or passed in) steps the local
+    shards of its DTensor parameters (fsdp2_bnb_optim). True when it now does."""
+    if optimizer is None:
+        return False
+    inner = _inner_optimizer(optimizer)
+    if not _is_bnb_optimizer_class(type(inner)) or not _bnb_local_shards_available():
+        return False
+    from .fsdp2_bnb_optim import localize_bnb_optimizer
+
+    return localize_bnb_optimizer(inner)
 
 
 # Trainer.__init__'s positional order (the same in transformers 4.57 and 5.x), for an __init__ whose
@@ -2681,15 +2723,16 @@ def _refuse_bnb_optimizer_instance(optimizer):
     """A prebuilt optimizer passed as Trainer(optimizers = (opt, ...)) or to accelerator.prepare:
     _swap_bnb_optimizer only edits args.optim, so a bitsandbytes instance would be kept and step
     DTensor shards it cannot handle. Torch optimizers pass."""
-    if optimizer is None:
+    if optimizer is None or _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)
     if _is_bnb_optimizer_class(type(inner)):
         raise ValueError(
             f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
-            f"step (got a {type(inner).__name__}). Build a torch optimizer (torch.optim.AdamW over "
+            f"step (got a {type(inner).__name__}; only bitsandbytes Adam / AdamW step local shards). "
+            "Build a torch optimizer (torch.optim.AdamW over "
             "`unsloth.models.fsdp2_native.split_param_groups(...)`), or let the Trainer build it with "
-            "optim = 'adamw_8bit', which native FSDP2 switches to torch's AdamW."
+            "optim = 'adamw_8bit'."
         )
 
 
@@ -2700,12 +2743,17 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     if not isinstance(optimizer_cls_and_kwargs, (tuple, list)) or not optimizer_cls_and_kwargs:
         return
     cls = optimizer_cls_and_kwargs[0]
+    if _is_bnb_optimizer_class(cls) and _bnb_local_shards_available():
+        from .fsdp2_bnb_optim import supports_local_shards
+
+        if supports_local_shards(cls):
+            return  # Trainer.create_optimizer builds it; the native hook makes it step local shards
     if _is_bnb_optimizer_class(cls):
         raise ValueError(
             f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
             f"step (optimizer_cls_and_kwargs = ({getattr(cls, '__name__', cls)}, ...)). Pass a torch "
-            "optimizer class (torch.optim.AdamW), or drop optimizer_cls_and_kwargs and set optim = "
-            "'adamw_8bit' / 'paged_adamw_8bit', which native FSDP2 switches to torch's AdamW."
+            "optimizer class (torch.optim.AdamW) or a bitsandbytes Adam / AdamW, or drop "
+            "optimizer_cls_and_kwargs and set optim = 'adamw_8bit' / 'paged_adamw_8bit'."
         )
 
 
