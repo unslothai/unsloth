@@ -99,6 +99,20 @@ function publish(now: number): void {
   }
 }
 
+/** The chat "Return to Chat" opens: the newest running one, or while any of them waits, the newest
+ *  waiting one, since the row then shows the waiting mark. Insertion order is start order. */
+export function returnToChatThreadId(
+  runningByThreadId: Readonly<Record<string, boolean>>,
+  waiting: ReadonlySet<string>,
+): string | null {
+  const running = Object.entries(runningByThreadId)
+    .filter(([, on]) => on)
+    .map(([id]) => id);
+  const waitingRunning = running.filter((id) => waiting.has(id));
+  const pool = waitingRunning.length > 0 ? waitingRunning : running;
+  return pool.length > 0 ? pool[pool.length - 1] : null;
+}
+
 /** Feed the current parked calls; ids that are gone stop counting at once. */
 export function syncApprovalWaiting(
   confirmations: PendingConfirmations,

@@ -32,6 +32,7 @@ mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
 
 const {
   APPROVAL_SETTLE_MS,
+  returnToChatThreadId,
   syncApprovalWaiting,
   useApprovalWaitingStore,
   watchApprovalWaiting,
@@ -283,4 +284,25 @@ test("the open chat is left out of the waiting marks: its card is on screen", ()
   assert.ok(sidebar.indexOf("const activeThreadId = isChatRoute") < sidebar.indexOf("const approvalWaitingElsewhere"));
   const readers = sidebar.match(/approvalWaitingThreadIds/g) ?? [];
   assert.equal(readers.length, 4, "a reader skips the open-chat exclusion");
+});
+
+test("Return to Chat opens the newest waiting chat while one waits, else the newest running one", () => {
+  const running = { "chat-a": true, "chat-b": true, "chat-c": false };
+  assert.equal(returnToChatThreadId(running, new Set()), "chat-b");
+  // The older chat waits while the newer one generates: the row's mark is chat-a's.
+  assert.equal(returnToChatThreadId(running, new Set(["chat-a"])), "chat-a");
+  assert.equal(returnToChatThreadId(running, new Set(["chat-a", "chat-b"])), "chat-b");
+  // A stale wait on a chat that stopped running does not count.
+  assert.equal(returnToChatThreadId(running, new Set(["chat-c"])), "chat-b");
+  assert.equal(returnToChatThreadId({}, new Set(["chat-a"])), null);
+});
+
+test("Return to Chat targets a waiting chat whenever the row shows the mark", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const target =
+    /const runningTarget = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
+  assert.ok(target, "runningTarget not found");
+  // The same set the mark reads, so the click and the mark name the same chats.
+  assert.match(target, /returnToChatThreadId\(runningByThreadId, approvalWaitingElsewhere\)/);
+  assert.match(target, /\[runningByThreadId, approvalWaitingElsewhere, allChatItems\]/);
 });

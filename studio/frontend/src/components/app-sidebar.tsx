@@ -49,6 +49,7 @@ import {
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
 import {
+  returnToChatThreadId,
   useApprovalWaitingStore,
   watchApprovalWaiting,
 } from "@/features/chat/utils/approval-waiting";
@@ -2088,21 +2089,6 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
-  // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
-  const runningTarget = useMemo(() => {
-    const ids = Object.entries(runningByThreadId)
-      .filter(([, on]) => on)
-      .map(([id]) => id);
-    const id = ids.length > 0 ? ids[ids.length - 1] : null;
-    if (!id) return null;
-    const pair = allChatItems.find(
-      (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
-    );
-    return pair
-      ? { id: pair.id, compare: true as const }
-      : { id, compare: false as const };
-  }, [runningByThreadId, allChatItems]);
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -2120,6 +2106,18 @@ export function AppSidebar() {
     () => [...approvalWaitingElsewhere].some((id) => runningByThreadId[id]),
     [approvalWaitingElsewhere, runningByThreadId],
   );
+  // Where "Return to Chat" lands: a running chat, not an empty New Chat draft. Compare rows
+  // resolve back to the pair id /chat expects.
+  const runningTarget = useMemo(() => {
+    const id = returnToChatThreadId(runningByThreadId, approvalWaitingElsewhere);
+    if (!id) return null;
+    const pair = allChatItems.find(
+      (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
+    );
+    return pair
+      ? { id: pair.id, compare: true as const }
+      : { id, compare: false as const };
+  }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
   // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
