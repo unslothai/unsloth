@@ -53,27 +53,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The `id@{ ... }` shape data blocks, as mermaid's lexer ends them: at the first `}` outside a "string". */
+/**
+ * The `id@{ ... }` shape data blocks, as mermaid's lexer reads them: a `@{` inside a "string" (a quoted
+ * label) is text, and a block ends at the first `}` outside a string. An unterminated block runs to the
+ * end, so an image named in it is still vetted.
+ */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
-  let from = 0;
-  for (;;) {
-    const open = source.indexOf("@{", from);
-    if (open < 0) return blocks;
-    let inString = false;
-    let close = -1;
+  let inString = false;
+  for (let open = 0; open < source.length; open++) {
+    if (source[open] === '"') inString = !inString;
+    if (inString || source[open] !== "@" || source[open + 1] !== "{") continue;
+    let quoted = false;
+    let close = source.length;
     for (let index = open + 2; index < source.length; index++) {
       const char = source[index];
-      if (char === '"') inString = !inString;
-      else if (char === "}" && !inString) {
+      if (char === '"') quoted = !quoted;
+      else if (char === "}" && !quoted) {
         close = index;
         break;
       }
     }
-    if (close < 0) return blocks;
-    blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
-    from = close + 1;
+    blocks.push({ start: open, end: Math.min(close + 1, source.length), body: source.slice(open + 2, close) });
+    open = close;
   }
+  return blocks;
 }
 
 /** A shape data block without a remote `img`, or null when it carries none and stays as written. */

