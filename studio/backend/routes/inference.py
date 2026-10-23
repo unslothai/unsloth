@@ -327,13 +327,18 @@ _LOST_CONNECTION_MSG = (
 )
 
 
-def _lost_connection_msg() -> str:
-    """The lost-connection error, naming the paired workers when the model was split across them."""
+def _cluster_ux(name: str, *args: Any, **kwargs: Any) -> Any:
+    """``core.inference.cluster_ux.<name>(...)``: cluster wording for the user, or None if it fails."""
     try:
         from core.inference import cluster_ux
-        return cluster_ux.lost_connection_message() or _LOST_CONNECTION_MSG
+        return getattr(cluster_ux, name)(*args, **kwargs)
     except Exception:
-        return _LOST_CONNECTION_MSG
+        return None
+
+
+def _lost_connection_msg() -> str:
+    """The lost-connection error, naming the paired workers when the model was split across them."""
+    return _cluster_ux("lost_connection_message") or _LOST_CONNECTION_MSG
 
 
 _OVERSIZE_TOKENS_RE = _re.compile(
@@ -18672,20 +18677,12 @@ def _with_token_rejected_warning(response, token_rejections):
 
 def _cluster_refusal_detail(exc: BaseException) -> str:
     """A cluster planner refusal in words a user can act on; other refusals keep their text."""
-    try:
-        from core.inference import cluster_ux
-        return cluster_ux.does_not_fit_detail(exc) or str(exc)
-    except Exception:
-        return str(exc)
+    return _cluster_ux("does_not_fit_detail", exc) or str(exc)
 
 
 def _cluster_dropped_notice() -> Optional[str]:
     """Right after planning: the paired workers this load leaves out, or None."""
-    try:
-        from core.inference import cluster_ux
-        return cluster_ux.dropped_worker_notice()
-    except Exception:
-        return None
+    return _cluster_ux("dropped_worker_notice")
 
 
 def _with_load_warning(response, warning: Optional[str]):
@@ -18704,11 +18701,7 @@ def _with_cluster_summary(response):
     """Name the machines a split load landed on, for the loaded toast."""
     if not isinstance(response, LoadResponse):
         return response
-    try:
-        from core.inference import cluster_ux
-        summary = cluster_ux.split_summary()
-    except Exception:
-        summary = None
+    summary = _cluster_ux("split_summary")
     return response.model_copy(update = {"cluster_summary": summary}) if summary else response
 
 
@@ -24084,11 +24077,7 @@ def _cluster_load_message(progress: Optional[dict]) -> Optional[str]:
     """What a load across paired workers is doing, for the stretches the byte count cannot show."""
     if progress is not None and progress.get("phase") == "ready":
         return None
-    try:
-        from core.inference import cluster_ux
-        return cluster_ux.load_progress_message(llama_started = progress is not None)
-    except Exception:
-        return None
+    return _cluster_ux("load_progress_message", llama_started = progress is not None)
 
 
 @router.get("/load-progress", response_model = LoadProgressResponse)
