@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deleting an account must reap its RAG ingestion workers, not just drop their leases.
-
-A worker parked in a long parse notices retirement only at its next progress checkpoint, so
-without a join the delete renames the roots, returns 204, and the thread then lands its
-cleanup writes in the renamed-aside database."""
+"""Account delete must join RAG ingest workers; a parked worker would write into the renamed-aside db."""
 
 from __future__ import annotations
 
@@ -83,7 +79,6 @@ def test_deleting_an_account_reaps_its_blocked_ingestion_worker(alice_home, monk
     worker.join(60)
     assert not worker.is_alive()
 
-    # With the worker gone, retirement completes and the roots move with nothing left writing.
     retire_account_roots(ALICE)
     tombstones = [p for p in alice_home.parent.iterdir() if "-deleted-" in p.name]
     assert tombstones and not alice_home.exists()

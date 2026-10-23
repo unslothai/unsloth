@@ -85,6 +85,8 @@ class FamilyProfile:
     # Extra schemes denied for TRAINING on top of ``scheme_deny`` (nvfp4 is denied for training everywhere).
     train_scheme_deny: frozenset[str] = frozenset()
     auto_prefer: Optional[AutoPrefer] = None
+    # Schemes ``auto`` skips for this family (explicit requests still allowed).
+    auto_scheme_skip: frozenset[str] = frozenset()
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
     # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).

@@ -29,6 +29,7 @@ import os
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
 _OP_NAMESPACE = "unsloth_studio"
@@ -402,7 +403,7 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
         import torch
         if (
             torch.cuda.is_available()
-            and not getattr(torch.version, "hip", None)
+            and not is_rocm_torch(torch)
             and _triton_ok()
             and _kernels() is not None
             and _rotq_op() is not None

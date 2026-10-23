@@ -8,10 +8,10 @@ import test from "node:test";
 
 import { SIDEBAR_WIDTH_DEFAULT } from "../src/hooks/use-sidebar-width.ts";
 
-// widest window that must still show both columns with the sidebar expanded; the previous 64rem tier needed 1376px
+// Widest window that must still show both columns with the sidebar expanded.
 const WINDOW_BUDGET_PX = 1280;
 
-// container queries resolve rem against the root font size, which studio leaves at the browser default
+// Container queries resolve rem against the root font size (browser default here).
 const ROOT_FONT_PX = 16;
 
 const STUDIO_PAGE = new URL(
@@ -34,16 +34,13 @@ const SPACING_SCALE = /--spacing:\s*([\d.]+)rem/;
 const CLASS_NAME = /className="([^"]+)"/g;
 const TWO_COLUMN_RULE =
   /@([\w-]+)\/train-configure:grid-cols-\[minmax\(0,1fr\)_(\d+)px\]/;
-// arbitrary variants such as @min-[40rem] are captured too, so an unresolvable tier throws rather than dropping out of the budget
+// Arbitrary variants are captured too, so an unresolvable tier throws rather than dropping out.
 const CONFIGURE_GAP = /@([^/\s"]+)\/train-configure:gap-([\d.]+)/g;
 const TRAIN_SECTION_TIER = /@([^/\s"]+)\/train-section:/g;
-// The cap scales with the UI font size like the padding beside it; the tiers
-// below are read at the default, where the multiplier is 1.
 const PAGE_MAX_WIDTH = /max-w-\[(?:calc\()?(\d+)px(?:\*var\(--ui-space-scale,1\)\))?\]/;
 const PAGE_PADDING = /(?:^|\s)sm:px-(\d+)(?:\s|$)/;
 const CARD_BORDER = /\.elevated-card\s*\{[^}]*?border:\s*(\d+)px/;
 
-/** tailwind's own --container-* and --spacing scales, in px */
 async function tailwindScales(): Promise<{
   containers: Map<string, number>;
   spacing: number;
@@ -63,7 +60,6 @@ async function tailwindScales(): Promise<{
   return { containers, spacing: Number(spacing[1]) * ROOT_FONT_PX };
 }
 
-/** the single className in source that contains marker */
 function classNameContaining(source: string, marker: string): string {
   const found = [...source.matchAll(CLASS_NAME)]
     .map((match) => match[1])
@@ -76,7 +72,6 @@ function classNameContaining(source: string, marker: string): string {
   return found[0];
 }
 
-/** a bare utility such as gap-8 or p-5, in spacing steps */
 function baseStep(className: string, utility: string): number {
   const match = new RegExp(`(?:^|\\s)${utility}-(\\d+)(?:\\s|$)`).exec(
     className,
@@ -87,7 +82,6 @@ function baseStep(className: string, utility: string): number {
   return Number(match[1]);
 }
 
-/** narrowest @*\/train-section tier in top-level wizard and section files, in px */
 async function smallestTrainSectionTier(
   containers: Map<string, number>,
 ): Promise<number> {
@@ -120,7 +114,7 @@ test("the run preview column reaches a laptop window without dropping the wizard
   const page = await readFile(STUDIO_PAGE, "utf8");
   const wizard = await readFile(TRAINING_WIZARD, "utf8");
 
-  // every tier below is inert unless the named containers are still declared
+  // Every tier below is inert unless the named containers are still declared.
   classNameContaining(page, "@container/train-configure");
   classNameContaining(wizard, "@container/train-section");
 
@@ -133,7 +127,6 @@ test("the run preview column reaches a laptop window without dropping the wizard
   assert.ok(thresholdPx, `unknown container tier @${tierName}`);
   const previewPx = Number(previewTrack);
 
-  // the preview only earns its sticky offset once it is a column, so both switch on the same tier
   const sticky = classNameContaining(page, "/train-configure:sticky");
   assert.match(
     sticky,
@@ -141,7 +134,6 @@ test("the run preview column reaches a laptop window without dropping the wizard
     `preview sticks at a different tier than the ${tierName} column split`,
   );
 
-  // gap at the narrowest two-column width: the base gap unless a variant at or below the split tier replaces it
   let gapPx = baseStep(grid, "gap") * spacing;
   let gapTierPx = 0;
   for (const [, variantTier, step] of grid.matchAll(CONFIGURE_GAP)) {
@@ -164,21 +156,20 @@ test("the run preview column reaches a laptop window without dropping the wizard
   assert.ok(padding, "page wrapper has no sm:px-* padding");
   const paddingPx = Number(padding[1]) * spacing;
 
-  // a threshold above the page's own width cap can never match, however wide the window gets
+  // A threshold above the page's own width cap can never match.
   const widestContainerPx = Number(maxWidth[1]) - 2 * paddingPx;
   assert.ok(
     thresholdPx <= widestContainerPx,
     `@${tierName} (${thresholdPx}px) never matches inside a ${widestContainerPx}px container`,
   );
 
-  // the container is min(cap, window - sidebar) - padding, so the tier is really a window-width requirement
+  // The container is min(cap, window - sidebar) - padding, so the tier is a window-width requirement.
   const windowPx = thresholdPx + 2 * paddingPx + SIDEBAR_WIDTH_DEFAULT;
   assert.ok(
     windowPx <= WINDOW_BUDGET_PX,
     `two columns need a ${windowPx}px window, budget is ${WINDOW_BUDGET_PX}px`,
   );
 
-  // and the wizard column still clears the narrowest tier its own sections use
   const card = classNameContaining(wizard, "@container/train-card");
   assert.ok(
     card.includes("elevated-card"),
