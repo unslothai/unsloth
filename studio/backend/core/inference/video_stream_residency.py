@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the top-level group and a block prefix of a group-offloaded Wan denoiser resident, re-fitted per request.
+"""Keep the top-level group and a block prefix of a block-streamed Wan or HunyuanVideo-1.5 denoiser resident, re-fitted
+per request.
 
 Room = free + unused cache + already resident - need. Need is the streamed floor + base overhead + the runtime estimate,
 or, for a request no larger (pixels x frames) than a completed one, that request's measured peak x 1.15 + 1 GiB; the
@@ -22,6 +23,9 @@ from typing import Any, Optional
 VIDEO_DIT_RESIDENT_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT"
 VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
 VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
+RESIDENT_POLICIES = ("group", "streaming")
+# Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
+RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
 # A measured peak is scaled by this and a fixed slack is kept on top (allocator fragmentation, cuDNN workspaces).
 MEASURED_PEAK_MARGIN = 1.15
 MEASURED_SLACK_MIB = 1024
@@ -69,8 +73,8 @@ def applies(
         residency_enabled()
         and not modular
         and not is_moe
-        and str(family_name or "").startswith("wan")
-        and offload_policy == "group"
+        and str(family_name or "").startswith(RESIDENT_FAMILY_PREFIXES)
+        and offload_policy in RESIDENT_POLICIES
         and str(device or "").startswith("cuda")
     )
 

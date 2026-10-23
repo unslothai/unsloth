@@ -55,6 +55,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
+import { LineBox } from "@/components/ui/line-box";
 
 type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
@@ -157,7 +158,7 @@ function LanUrlQrButton({ url }: { url: string }) {
             Scan from a device on the same network to open this address.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -224,9 +225,9 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
       {status.urls.map((url) => (
         <div key={url} className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+            <LineBox as="code" className="block w-full min-w-0 break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
               {url}
-            </code>
+            </LineBox>
             {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
           </div>
           {stale.has(url) ? (
@@ -454,7 +455,7 @@ export function LanAccessSection() {
   return (
     <section
       data-settings-label="LAN access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
