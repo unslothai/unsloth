@@ -22,7 +22,8 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 18
+    assert len(BUILT) == 22
+    assert sum("notebook" in BUILT[i]["meta"]["tags"] for i in BUILT) == 4
 
 
 @pytest.mark.parametrize("name", IDS)
