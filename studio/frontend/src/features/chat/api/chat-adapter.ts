@@ -7864,6 +7864,8 @@ export function createOpenAIStreamAdapter(
                     } as PositionedToolCallPart);
                   }
                   if (awaitingConfirmation) {
+                    // The run's key now, not at send: a first turn adopted mid-run files its calls under the chat.
+                    const confirmationThreadKey = liveThreadKey(serverCancel);
                     useChatRuntimeStore
                       .getState()
                       .setToolConfirmation(
@@ -7871,7 +7873,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
-                        resolvedThreadId ?? "",
+                        confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }

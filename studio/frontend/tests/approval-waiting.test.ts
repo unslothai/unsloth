@@ -181,7 +181,7 @@ test("both writers record which chat a parked call belongs to", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /\.setToolConfirmation\(\s*id,\s*approvalId,\s*sandboxSessionId \?\? "",\s*toolConfirmationScopeId,\s*resolvedThreadId \?\? "",/,
+    /const confirmationThreadKey = liveThreadKey\(serverCancel\);\s*useChatRuntimeStore\s*\.getState\(\)\s*\.setToolConfirmation\(\s*id,\s*approvalId,\s*sandboxSessionId \?\? "",\s*toolConfirmationScopeId,\s*confirmationThreadKey === "__default" \? "" : confirmationThreadKey,/,
   );
   const provider = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
