@@ -1143,6 +1143,43 @@ def test_stop_during_an_upscale_only_resize_returns_no_image(monkeypatch):
     assert str(exc.value) == DIFFUSION_CANCELLED_MSG
 
 
+def test_a_drop_in_runs_through_the_spandrel_descriptor(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    from PIL import Image
+    from spandrel import ModelLoader
+    from spandrel.architectures.MMRealSR import MMRealSR
+
+    torch.manual_seed(0)
+    net = MMRealSR(
+        num_in_ch = 3,
+        num_out_ch = 3,
+        scale = 4,
+        num_feat = 8,
+        num_block = 1,
+        num_grow_ch = 4,
+        num_feats = [8, 8, 8, 8],
+        num_blocks = [1, 1, 1, 1],
+    )
+    path = tmp_path / "tiny_mmrealsr.pth"
+    torch.save(net.state_dict(), path)
+    descriptor = ModelLoader(device = "cpu").load_from_file(str(path))
+    assert type(descriptor.architecture).__name__ == "MMRealSRArch"
+    probe = torch.rand(1, 3, 32, 32)
+    with torch.inference_mode():
+        assert isinstance(descriptor.model(probe), tuple)
+        want = descriptor(probe.clone())
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    img = Image.fromarray((torch.rand(48, 40, 3) * 255).to(torch.uint8).numpy())
+    untiled = ups.upscale_with_model(img, "local:tiny_mmrealsr", (160, 192), device = "cpu", tile = 512)
+    tiled = ups.upscale_with_model(
+        img, "local:tiny_mmrealsr", (160, 192), device = "cpu", tile = 32, overlap = 8
+    )
+    assert untiled.model_scale == 4 and untiled.tiles == 1 and tiled.tiles > 1
+    assert untiled.image.size == tiled.image.size == (160, 192)
+    assert want.shape == (1, 3, 128, 128)
+
+
 def test_a_resident_drop_in_reloads_when_its_file_is_replaced(tmp_path, monkeypatch):
     import os
 
@@ -1190,9 +1227,14 @@ def _fake_model_upscaler(tmp_path, monkeypatch, fn):
 
     monkeypatch.setattr(ups, "spandrel_available", lambda: True)
     monkeypatch.setattr(ups, "resolve_model_path", lambda upscaler_id, cancel = None: path)
-    monkeypatch.setattr(
-        ups, "_load", lambda p, dev: (types.SimpleNamespace(scale = 2, model = fn), torch.float32)
-    )
+
+    class _Descriptor:
+        scale = 2
+
+        def __call__(self, image):
+            return fn(image)
+
+    monkeypatch.setattr(ups, "_load", lambda p, dev: (_Descriptor(), torch.float32))
 
 
 def test_model_upscaler_halves_the_tile_on_oom_like_comfyui(tmp_path, monkeypatch):
