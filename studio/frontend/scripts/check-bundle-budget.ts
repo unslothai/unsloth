@@ -409,10 +409,11 @@ export const BUDGET = {
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  // Merged with the MCP tab branch at 20d148829 the build measures 6,928,242 B raw / 2,087,124 B transfer (Node 24).
+  // Opening saved-voice links with the session adds 896 B raw / 216 B transfer. Merged with the MCP tab branch at
+  // 840f4d903 the build measures 6,929,138 B raw / 2,087,340 B transfer (Node 24).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
-  transferBytes: 2_087_324,
-  rawBytes: 6_928_742,
+  transferBytes: 2_087_540,
+  rawBytes: 6_929_638,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

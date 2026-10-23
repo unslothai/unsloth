@@ -8,6 +8,7 @@ import {
   backendPathUrl,
   desktopSignedMediaPath,
   isStudioUrl,
+  protectedBackendPath,
   resetApiBase,
   setApiBase,
 } from "../src/lib/api-base.ts";
@@ -65,4 +66,22 @@ test("only a signed backend media URL is fetched into a blob, and only on Deskto
     assert.equal(desktopSignedMediaPath(other), null, other);
   }
   resetApiBase();
+});
+
+test("an unsigned backend link is fetched with the session, a signed or outside one is not", () => {
+  for (const path of [
+    "/v1/audio/voices/v1/file",
+    "/api/gallery/x?archived=1",
+  ]) {
+    assert.equal(protectedBackendPath(path), path, path);
+  }
+  for (const other of [
+    "/v1/audio/gallery/a/file-signed?token=t",
+    "/chat",
+    "https://example.com/v1/x",
+    "//example.com/v1/x",
+    "/v1/",
+  ]) {
+    assert.equal(protectedBackendPath(other), null, other);
+  }
 });

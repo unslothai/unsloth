@@ -74,4 +74,9 @@ export function desktopSignedMediaPath(url: string): string | null {
   return apiBase && /^\/(?:api|v1)\/[^?#]+\/file-signed\?token=[^&#]+$/.test(url) ? url : null
 }
 
+// A backend link without a signed token: a plain navigation carries no Authorization header, so it 401s.
+export function protectedBackendPath(url: string): string | null {
+  return /^\/(?:v1|api)\/[^?#]+(?:\?[^#]*)?$/.test(url) && !/\/file-signed\?/.test(url) ? url : null
+}
+
 export { isTauri }
