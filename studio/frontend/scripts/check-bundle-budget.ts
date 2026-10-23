@@ -387,9 +387,8 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
-  // The sidebar's waiting-for-approval mark, the Desktop attention request and the tool_approved handling in
-  // the stream parsers, the adapter and the reload follower: +3,506 B raw / +1,039 B transfer against e1b3124110
-  // (6,920,155 -> 6,923,661 B raw, 2,084,273 -> 2,085,312 B transfer, Node 22, 97 chunks). Raised by that.
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling: +3,506 B raw /
+  // +1,039 B transfer against e1b3124110 (Node 22, 97 chunks). Raised by that.
   transferBytes: 2_085_735,
   rawBytes: 6_924_327,
 };

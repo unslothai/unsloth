@@ -157,8 +157,7 @@ export function createGenerationToolRecovery(
    *  unconditionally because it owns every card in its stream; a recovery shares the store with
    *  whatever else is on screen, so reaching for a card it never raised is not its business. */
   const armed = new Set<string>();
-  /** Approvals this run has reported as granted. The seeded check's answer can be older than that
-   *  frame, so an approval seen here is never armed again, whichever path asks. */
+  /** Approvals the stream reported granted. Never armed again: a seeded check can predate the frame. */
   const approved = new Set<string>();
   const armApproval = (
     entry: CarriedPart,
@@ -400,10 +399,8 @@ export function createGenerationToolRecovery(
     }
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
-    // Answered, possibly in another tab: the card stops offering the decision now, not at tool_end, which
-    // can be a whole tool run later. Remembered first, so a seeded check still in flight, whose answer
-    // may predate this frame, cannot arm it again. A frame older than the snapshot names no card armed
-    // here yet, so it only needs remembering.
+    // Answered, possibly in another tab: disarm now, not at tool_end. Remembered first so an in-flight
+    // seeded check cannot re-arm it; a frame at or below the snapshot names no card armed here yet.
     if (event.type === "tool_approved") {
       if (typeof event.approval_id === "string" && event.approval_id) {
         approved.add(event.approval_id);

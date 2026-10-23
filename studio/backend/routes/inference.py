@@ -34549,9 +34549,8 @@ async def produce_openai_chat_completions(
                             chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
                         return chunks
 
-                    # Set by a frame that ends a park. The slot is taken back before the generator is asked for
-                    # more, not before that frame is sent: the first one after a decision is the approval,
-                    # refusal or expiry every other tab clears its prompt on, and no work went into it.
+                    # Set by the frame that ends a park: other tabs clear their prompt on it, so it
+                    # is forwarded first and the slot is retaken before the generator does more.
                     resume_before_next = False
                     while True:
                         if cancel_event.is_set():

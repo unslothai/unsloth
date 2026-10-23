@@ -4,9 +4,8 @@
 import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 
-// A call covered by "Always allow" still parks, and its card answers it within one request.
-// Only a call still parked after this long is waiting on the user, so the sidebar dot does not
-// flicker and the taskbar does not flash for a call nobody has to answer.
+// An "Always allow" call still parks until its card answers it in one request; only a call
+// parked longer than this is waiting on the user.
 export const APPROVAL_SETTLE_MS = 1_500;
 
 type PendingConfirmations = Readonly<Record<string, { threadId: string }>>;
@@ -28,7 +27,6 @@ export const useApprovalWaitingStore = create<{
   threadIds: ReadonlySet<string>;
 }>(() => ({ threadIds: NONE }));
 
-// Parked tool-call id -> its chat and when it was first seen parked.
 const parked = new Map<string, { threadId: string; since: number }>();
 const settled = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -42,8 +40,7 @@ function windowIsInBackground(): boolean {
   );
 }
 
-// Windows flashes the taskbar button until the window is focused, macOS bounces the Dock icon
-// once, Linux sets the urgency hint. null withdraws the request where the platform supports it.
+// null withdraws the request where the platform supports it.
 function setWindowAttention(on: boolean): void {
   if (!isTauri) return;
   void import("@tauri-apps/api/window")
@@ -73,7 +70,7 @@ function publish(now: number): void {
       settled.add(id);
       newlySettled = true;
     }
-    // A run with no saved chat yet has no sidebar row to mark, but still asks for attention.
+    // No saved chat yet: no row to mark, but it still asks for attention.
     if (threadId) threadIds.add(threadId);
   }
   if (nextDue !== Number.POSITIVE_INFINITY) {

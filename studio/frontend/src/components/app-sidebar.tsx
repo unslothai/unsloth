@@ -706,7 +706,7 @@ function NavItem({
         {waiting ? (
           <>
             <span className="sr-only"> {waiting}</span>
-            {/* In the spinner's place, here and on the collapsed rail below. */}
+            {/* Also on the collapsed rail below. */}
             <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
           </>
         ) : (
@@ -737,12 +737,8 @@ function NavItem({
   );
 }
 
-/** Shown in place of the spinner while a chat's run waits on an Allow / Deny prompt: a filled amber
- *  disc with an exclamation mark. Shape and size set it apart from the 8 px unread dot on every theme,
- *  including those whose accent is amber, and for colour-blind users; amber, not the accent, because
- *  it is waiting on the user rather than news. Static, since motion is the spinner's "working" cue and
- *  the wait can last an hour. Both shades and the mark inside reach at least 5:1. Decorative: the row
- *  or nav button carries the words. */
+/** The spinner's stand-in while a run waits on Allow / Deny. Its shape, not only its colour, tells it from
+ *  the unread dot (amber-accent themes, colour-blind users); static, since motion means working. */
 function ApprovalMark({ className, testId }: { className: string; testId?: string }) {
   return (
     <svg
@@ -2066,8 +2062,7 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
-  // Chats whose run is parked on an Allow / Deny prompt. Watched here, where the rows read it,
-  // since only the open chat mounts its tool cards.
+  // Watched here, not by the tool cards: only the open chat mounts those.
   const approvalWaitingThreadIds = useApprovalWaitingStore((s) => s.threadIds);
   useEffect(() => watchApprovalWaiting(useChatRuntimeStore), []);
   // Shared with the thread's own Fork, so neither surface can post a second one.
@@ -2114,7 +2109,7 @@ export function AppSidebar() {
       storeThreadId ??
       undefined
     : undefined;
-  // Chats parked on Allow / Deny, less the open one: its card is on screen, so it needs no mark.
+  // Less the open chat: its card is already on screen.
   const approvalWaitingElsewhere = useMemo(() => {
     if (!activeThreadId) return approvalWaitingThreadIds;
     const open = allChatItems.find((item) => item.id === activeThreadId);
@@ -5487,8 +5482,6 @@ export function AppSidebar() {
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
-    // Parked on an Allow / Deny prompt: still a live run, so it keeps the spinner's slot, but the
-    // run is waiting on the user rather than working. The open chat keeps its spinner.
     const awaitingApproval =
       isGenerating &&
       threadIds.some((threadId) => approvalWaitingElsewhere.has(threadId));
@@ -5575,7 +5568,7 @@ export function AppSidebar() {
               data-thread-type={item.type}
               data-thread-id={item.id}
               data-generating={isGenerating ? "true" : undefined}
-              // Not busy while it waits on the user, so the row reads as waiting, not working.
+              // Waiting on the user is not busy.
               aria-busy={(isGenerating && !awaitingApproval) || undefined}
               isActive={activeThreadId === item.id}
               data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
@@ -5597,8 +5590,7 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
-              {/* The approval mark and the unread dot sit outside the button and are drawn
-                  only, so the button's name carries what they show. */}
+              {/* The mark and the dot sit outside the button, so its name carries them. */}
               {awaitingApproval ? (
                 <span className="sr-only"> {translate("shell.navigation.chatAwaitingApproval")}</span>
               ) : hasUnreadActivity ? (
@@ -5638,7 +5630,7 @@ export function AppSidebar() {
               </span>
             ) : null}
             {hasUnreadActivity ? (
-              // Boxed and anchored like the spinner, so the dot centres on the same column.
+              // Same box and anchor as the spinner, so both share one column.
               <span
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",

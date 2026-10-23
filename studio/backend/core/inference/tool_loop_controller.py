@@ -283,8 +283,7 @@ class ToolCallDecision:
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def tool_approved_event(self, approval_id: str) -> dict[str, Any]:
-        """The parked call was allowed. The client that answered clears its own prompt; every other
-        follower of the run learns it here, not from tool_end, which can be a whole tool run later."""
+        """Tells the run's other followers the parked call was allowed, ahead of tool_end."""
         return {
             "type": "tool_approved",
             "tool_name": self.tool_name,

@@ -7544,8 +7544,7 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
-                // A call answered elsewhere (another tab or device): its prompt clears now, not at tool_end,
-                // which can be a whole tool run later.
+                // Answered in another tab or device: clear the prompt now, not at tool_end.
                 if (toolEvent.type === "tool_approved") {
                   const approvedBackendId =
                     (toolEvent.tool_call_id as string) || "";
