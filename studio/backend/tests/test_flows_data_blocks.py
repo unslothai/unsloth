@@ -216,7 +216,7 @@ class _Rag(FakeCtx):
             self.kbs.append({"id": "kb2", "name": json["name"]})
             return {"id": "kb2", "name": json["name"]}
         if path.endswith("/documents"):
-            assert files["file"][0] == "document.pdf"
+            assert files["file"][0] == "a.pdf"
             return {"documentId": "d1", "jobId": "j1"}
         if path == "/api/rag/jobs/j1":
             return {"status": "completed", "progress": 1.0, "numChunks": 4}
@@ -284,3 +284,17 @@ def test_knowledge_examples_name_only_studios_local_models():
 
     for spec_type in ("doc.load", "kb.add", "kb.search"):
         assert not any(p["kind"] in ("model", "json") for p in SPECS_BY_TYPE[spec_type]["params"])
+
+
+def test_indexed_documents_keep_their_names_with_the_sniffed_extension():
+    digest, mime = asset_store.store(b"%PDF-1.4 tiny", None)
+
+    def name_for(upload_name):
+        value = asset_store.media_value(digest, mime, name = upload_name)
+        return run(knowledge._upload(_Rag("kb.add", inputs = {"file": value})))[0]
+
+    # Search results label passages with this name, so two PDFs must not both be "document.pdf".
+    assert name_for("Q3 report.pdf") == "Q3 report.pdf"
+    assert name_for("../../etc/notes.exe") == "notes.pdf"
+    assert name_for("<>:.pdf") == "document.pdf"
+    assert name_for(None) == "document.pdf"
