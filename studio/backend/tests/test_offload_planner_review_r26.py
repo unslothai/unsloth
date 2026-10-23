@@ -26,6 +26,17 @@ from core.inference.offload_planner import (  # noqa: E402
 )
 from test_offload_planner_seam import _inputs, _Stub  # noqa: E402
 
+
+@pytest.fixture(autouse = True)
+def _six_physical_cores(monkeypatch):
+    """These cells ask for -t 6; a CI runner with fewer physical cores would decline them on
+    the thread check, not on the placement under test."""
+    from core.inference import llama_cpp as _lc
+    monkeypatch.setattr(
+        _lc, "_spilled_decode_threads", lambda requested = None, extra_args = None: requested or 6
+    )
+
+
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 
