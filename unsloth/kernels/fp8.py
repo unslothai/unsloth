@@ -125,9 +125,8 @@ except:
     )
 
 
-# ROCm Triton (gfx11, Triton 3.6) lowers an fp32 multiply followed by an fp16 cast to
-# v_fma_mixlo_f16(a, b, +0): -0.0 comes out +0.0 and the product is not rounded as the torch
-# loop does (fp32, then fp16). There the dequant kernels round to fp16 with integer ops instead.
+# ROCm Triton fuses fp32 multiply + fp16 cast into v_fma_mixlo_f16, which drops -0.0 and rounds
+# differently from the torch loop, so the dequant kernels round to fp16 with integer ops there.
 _FP8_EXACT_F16_ROUND = torch.version.hip is not None
 
 
@@ -145,8 +144,7 @@ def _f32_to_f16_rne(x):
     a = u & 0x7FFFFFFF
     c = tl.minimum(a, 0x477FF000)
     normal = (c + 0xFFF + ((c >> 13) & 1) - 0x38000000) >> 13
-    # Below 2^-14: value = m * 2^(e - 150), result in units of 2^-24. Clamped so lanes that take
-    # the normal path never shift by a negative count.
+    # Below 2^-14, in units of 2^-24; clamped so normal lanes never shift by a negative count.
     shift = tl.minimum(tl.maximum(126 - (a >> 23), 1), 31)
     m = (a & 0x7FFFFF) | 0x800000
     q = m >> shift

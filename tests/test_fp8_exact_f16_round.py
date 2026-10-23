@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""FP8 block dequant to fp16: the integer-rounding path (default on ROCm) must match the torch loop bit for bit.
-
-On gfx11 ROCm Triton lowers `fp32 multiply -> fp16 cast` to v_fma_mixlo_f16(a, b, +0), which turns
--0.0 into +0.0 and does not round like the torch loop (fp32 product, then fp16). Both dequant kernels
-then round fp32 -> fp16 with integer ops. NVIDIA runs that path with UNSLOTH_FP8_EXACT_F16_ROUND=1.
-"""
+"""FP8 block dequant to fp16: the integer-rounding path (ROCm default, UNSLOTH_FP8_EXACT_F16_ROUND=1
+elsewhere) must match the torch loop bit for bit."""
 
 import numpy as np
 import pytest
@@ -20,9 +16,7 @@ BLOCK = 16
 
 
 def _data(device):
-    # Every e4m3fn byte in every 16x16 block, under 256 x 128 per-block fp32 scales: realistic
-    # 1e-4..1e-2 ones (with single-vs-double rounding ties), plus 2^-40..2^10 for fp16 subnormal,
-    # overflow and fp32-subnormal products.
+    # Every e4m3fn byte per 16x16 block; scales 1e-4..1e-2 (rounding ties) and 2^-40..2^10 (subnormal / overflow).
     g = torch.Generator(device = "cpu").manual_seed(0)
     rows, cols = 256, 128
     w = torch.arange(256, dtype = torch.uint8).view(16, 16).repeat(rows, cols)
@@ -54,8 +48,7 @@ def test_data_has_double_rounding_ties():
 
 
 def _rounding_inputs():
-    # Every fp32 exponent x mantissas around the fp16 rounding point (exact halves, one above and
-    # below, odd / even kept bits), both signs, plus zeros, infinities and NaNs.
+    # Every fp32 exponent x mantissas at the fp16 rounding point (halves, +-1, odd / even), both signs.
     low = torch.tensor(
         [0, 1, 0xFFF, 0x1000, 0x1001, 0x1FFF, 0x2000, 0x3000, 0x7FFFFF, 0x7FE000, 0x7FF000],
         dtype = torch.int64,
