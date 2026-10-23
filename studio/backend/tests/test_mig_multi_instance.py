@@ -810,9 +810,9 @@ def test_untranslatable_optional_engine_ids_keep_the_physical_behaviour(monkeypa
 
 def test_a_mig_slice_without_a_memory_reading_fails_the_reservation_clearly():
     from core.inference import engine_adapters
+
     # Imported here, not first inside host(): its sys.modules patch would drop the module on exit.
     from utils import vram_budget_settings  # noqa: F401
-
     with host() as probe:
         assert len(B._get_gpu_memory()) == 3
         probe["source"] = "failed"
