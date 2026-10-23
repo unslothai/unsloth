@@ -616,6 +616,23 @@ def test_unloads_and_training_teardown_respect_a_lease_taken_later(no_lease):
         inference._refuse_while_leased()
 
 
+def test_every_unload_path_shares_the_lease_guard(no_lease):
+    import fastapi
+    from models.inference import UnloadRequest
+    from routes import inference
+
+    lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Model")
+    lease.__enter__()
+    arb._lease_holder.set(None)
+    try:
+        # The llama-compatible /models/unload calls the shared implementation, not the route wrapper.
+        with pytest.raises(fastapi.HTTPException) as err:
+            asyncio.run(inference._unload_model_impl(UnloadRequest(model_path = "x"), "owner"))
+        assert err.value.status_code == 409
+    finally:
+        arb._lease = None
+
+
 def test_a_lease_waits_for_a_residency_change_already_under_way(no_lease):
     # A load past its lease check holds _lock until its eviction finishes; the lease must not start under it.
     with arb._lock:
