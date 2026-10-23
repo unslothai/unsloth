@@ -324,12 +324,13 @@ NODE_SPECS: list[dict] = [
         "llm.agent",
         "Agent",
         "chat",
-        "A language model that can search the web, a knowledge base and your MCP servers before it answers. "
-        "It never runs code or edits files.",
+        "A local language model that can search a knowledge base, your MCP servers or (optionally) the web before "
+        "it answers. It never runs code or edits files.",
         inputs = [
             inp("prompt", "text", optional = True),
             inp("history", "json", optional = True),
             inp("context", "any", optional = True, multi = True),
+            inp("image", "image", optional = True),
         ],
         outputs = [out("text", "text"), out("steps", "json")],
         params = [
@@ -341,7 +342,7 @@ NODE_SPECS: list[dict] = [
                 "Instructions",
             ),
             P("prompt", "textarea", "", "Prompt"),
-            P("web_search", "bool", True, "Search the web"),
+            P("web_search", "bool", False, "Search the web (needs internet)"),
             P(
                 "knowledge_base",
                 "text",

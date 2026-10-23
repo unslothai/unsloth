@@ -1370,8 +1370,8 @@ def ask_documents() -> B:
         "ask-documents",
         "Ask My Documents",
         "pipeline",
-        "A chat assistant that answers from one of your knowledge bases and the web, with sources. Open it in the "
-        "player to chat; pick the knowledge base in the Agent block.",
+        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
+        "in the player to chat; pick the knowledge base in the Agent block.",
         tags = ["chat", "agent", "knowledge base"],
         seed = 41,
     ).need("chat")
@@ -1384,9 +1384,9 @@ def ask_documents() -> B:
         2,
         1,
         model = CHAT,
-        system = "Answer from the knowledge base first, then the web. Say which source you used. If neither has "
-        "the answer, say so.",
-        web_search = True,
+        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
+        "say so.",
+        web_search = False,
     )
     b.e("in.message", "agent.prompt")
     b.e("memory.history", "agent.history")

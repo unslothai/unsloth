@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from core.flows.nodes._common import (
+    _images_content,
     _messages,
     _message_text,
     _register_chat_cancel,
@@ -39,9 +40,9 @@ def chat_history(value: Any) -> list[dict]:
     return turns[-MAX_HISTORY_TURNS:]
 
 
-def agent_body(ctx: NodeContext, prompt: str, system: str, history: list[dict]) -> dict:
-    """The /v1/chat/completions request: the chat route applies its own tool rules to the run's key, as for any
-    API client; a flow only ever asks for the search tools."""
+def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) -> dict:
+    """The /v1/chat/completions request to the loaded local model: the chat route applies its own tool rules to the
+    run's key, as for any API client; a flow only ever asks for the search tools."""
     messages = _messages(system, prompt)
     messages[-1:-1] = history
     tools = []
@@ -78,8 +79,11 @@ async def agent(ctx: NodeContext) -> dict:
     if not prompt:
         raise FlowNodeError("The prompt is empty: type one or connect text to Prompt")
     system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
-    await ensure_model(ctx, "chat", ctx.params.get("model"))
-    body = agent_body(ctx, prompt, system, chat_history(ctx.inputs.get("history")))
+    image = ctx.inputs.get("image")
+    # A picture goes to a local vision model; otherwise the local chat model answers.
+    await ensure_model(ctx, "vision" if image else "chat", ctx.params.get("model"))
+    content = await _images_content(ctx, prompt, [image] if image else None)
+    body = agent_body(ctx, content, system, chat_history(ctx.inputs.get("history")))
     _register_chat_cancel(ctx, body["cancel_id"])
     ctx.check_cancelled()
     payload = await ctx.call("POST", "/v1/chat/completions", json = body)

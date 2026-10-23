@@ -196,3 +196,52 @@ async def test_the_chat_player_invokes_the_output_with_its_message():
         app = None, flow_id = "f1", doc = parsed, entry = "out", params = {"message": "again"}
     )
     assert second["reply"] == "you said again after 0 turns"
+
+
+def test_agent_is_local_and_offline_by_default(monkeypatch):
+    kinds = []
+
+    async def loaded(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        kinds.append(kind)
+
+    monkeypatch.setattr(chat, "ensure_model", loaded)
+    ctx = Ctx(params = {"prompt": "hi"})
+    asyncio.run(chat.agent(ctx))
+    body = ctx.calls[-1][2]
+    assert kinds == ["chat"] and body["model"] == "default"
+    assert (
+        body["enabled_tools"] == [] and "provider_id" not in body and "external_model" not in body
+    )
+    from core.flows.specs import SPECS_BY_TYPE
+
+    defaults = {p["id"]: p["default"] for p in SPECS_BY_TYPE["llm.agent"]["params"]}
+    assert defaults["web_search"] is False
+
+
+def test_agent_sends_an_image_to_a_local_vision_model(monkeypatch):
+    kinds = []
+
+    async def loaded(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        kinds.append(kind)
+
+    async def as_url(ctx, media):
+        return "data:image/png;base64,AA=="
+
+    monkeypatch.setattr(chat, "ensure_model", loaded)
+    monkeypatch.setattr("core.flows.nodes._common.data_url", as_url)
+    ctx = Ctx(
+        params = {"prompt": "what is this?"}, inputs = {"image": {"kind": "image", "ref": "image:1"}}
+    )
+    asyncio.run(chat.agent(ctx))
+    content = ctx.calls[-1][2]["messages"][-1]["content"]
+    assert kinds == ["vision"] and content[1]["image_url"]["url"].startswith("data:image/png")
