@@ -4,6 +4,7 @@
 """Context parallelism for DPO / GRPO: decoder sharding + hidden-state gather, peer sync, refusals (CPU, gloo)."""
 
 import contextlib
+import dataclasses as _dc
 import os
 import tempfile
 import types
@@ -272,3 +273,199 @@ def test_rl_trainers_without_cp_are_untouched(monkeypatch):
     trainer.training_step(trainer.model, {})
     assert all(value is None for name, value in log if name != "compute_loss_returned")
     assert trainer._get_train_sampler().batch_size == 8
+
+
+# Objective parity: a Llama-shaped decoder (RoPE on global positions, GQA, real Ulysses all-to-all) under the
+# RL hooks, scored with TRL's DPO sigmoid loss and GRPO's default dapo loss, against the same model without CP.
+_H, _NH, _NKV, _D, _V = 16, 4, 2, 4, 40
+
+
+def _rope(x, pos):
+    inv = 1.0 / (10000 ** (torch.arange(0, _D, 2, dtype = torch.float64) / _D))
+    ang = (pos[..., None].double() * inv)[:, None].to(x.dtype)
+    x1, x2 = x[..., ::2], x[..., 1::2]
+    return torch.stack([x1 * ang.cos() - x2 * ang.sin(), x1 * ang.sin() + x2 * ang.cos()], -1).flatten(-2)
+
+
+def _causal_attention(*, config, context, Q, K, V):
+    K = K.repeat_interleave(config.n_groups, 1)
+    V = V.repeat_interleave(config.n_groups, 1)
+    return torch.nn.functional.scaled_dot_product_attention(Q, K, V, is_causal = True).transpose(1, 2)
+
+
+@_dc.dataclass
+class _UlyssesConfig:
+    n_kv_heads: int
+    n_groups: int
+
+
+@_dc.dataclass
+class _UlyssesContext:
+    bsz: int
+    q_len: int
+    kv_seq_len: int
+    n_heads: int
+    head_dim: int
+    attention_mask: object = None
+    causal_mask: object = None
+    prefix_seg_info: object = None
+
+
+class _Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q = torch.nn.Linear(_H, _NH * _D, bias = False)
+        self.kv = torch.nn.Linear(_H, 2 * _NKV * _D, bias = False)
+        self.o = torch.nn.Linear(_NH * _D, _H, bias = False)
+        self.up = torch.nn.Linear(_H, 2 * _H, bias = False)
+        self.down = torch.nn.Linear(2 * _H, _H, bias = False)
+
+    def forward(self, x, pos):
+        from unsloth.utils import ulysses
+
+        B, T, _ = x.shape
+        q = _rope(self.q(x).view(B, T, _NH, _D).transpose(1, 2), pos)
+        k, v = self.kv(x).view(B, T, 2, _NKV, _D).unbind(2)
+        k, v = _rope(k.transpose(1, 2), pos), v.transpose(1, 2)
+        config = _UlyssesConfig(_NKV, _NH // _NKV)
+        manager = cp.get_cp_manager()
+        if manager is None:
+            a = _causal_attention(config = config, context = None, Q = q, K = k, V = v)
+        else:
+            a = ulysses.ulysses_attention(
+                _causal_attention, config, _UlyssesContext(B, T, T, _NH, _D), q, k, v, manager.group
+            )
+        x = x + self.o(a.reshape(B, T, -1))
+        return x + self.down(torch.nn.functional.silu(self.up(x)))
+
+
+class _LlamaLike(torch.nn.Module):
+    def __init__(self, seed, dtype):
+        super().__init__()
+        torch.manual_seed(seed)
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(_V, _H)
+        self.model.layers = torch.nn.ModuleList([_Block(), _Block()])
+        self.model.forward = self._decode
+        self.lm_head = torch.nn.Linear(_H, _V, bias = False)
+        with torch.no_grad():
+            for p in self.parameters():
+                p.normal_(0, 0.4)
+        self.to(dtype)
+
+    def _decode(self, input_ids = None, attention_mask = None, position_ids = None, **kwargs):
+        if position_ids is None:
+            position_ids = torch.arange(input_ids.shape[1]).expand_as(input_ids)
+        x = self.model.embed_tokens(input_ids)
+        for block in self.model.layers:
+            x = block(x, position_ids)
+        return BaseModelOutputWithPast(last_hidden_state = torch.nn.functional.rms_norm(x, (_H,)))
+
+    def token_logps(self, ids, mask):
+        h = self.model(input_ids = ids, attention_mask = mask).last_hidden_state
+        return torch.log_softmax(self.lm_head(h)[:, :-1], -1).gather(-1, ids[:, 1:, None]).squeeze(-1)
+
+
+def _right_pad(rows):
+    ids = torch.zeros(len(rows), max(map(len, rows)), dtype = torch.long)
+    mask = torch.zeros_like(ids)
+    for i, row in enumerate(rows):
+        ids[i, : len(row)], mask[i, : len(row)] = torch.tensor(row), 1
+    return ids, mask
+
+
+def _dpo_sigmoid(policy, ref, batch, world, beta = 0.1):
+    # trl DPOTrainer._compute_loss: completion sums, rows [chosen, rejected], -logsigmoid(beta * delta).mean()
+    ids, mask, completion = batch
+    logps = (policy.token_logps(ids, mask) * completion).sum(1)
+    with torch.no_grad():
+        ref_logps = (ref.token_logps(ids, mask) * completion).sum(1)
+    (c, r), (rc, rr) = logps.chunk(2), ref_logps.chunk(2)
+    return -torch.nn.functional.logsigmoid(beta * ((c - rc) - (r - rr))).mean()
+
+
+def _grpo_dapo(policy, ref, batch, world, beta = 0.04, eps = 0.2):
+    # trl GRPOTrainer (loss_type "dapo", num_iterations 1): token sum over gather(mask.sum()).sum() / num_processes
+    ids, mask, completion, rewards = batch
+    adv = ((rewards - rewards.mean()) / (rewards.std() + 1e-4)).to(policy.lm_head.weight.dtype)[:, None]
+    completion = completion.to(adv.dtype)
+    counts = [completion.sum().float()]
+    if world > 1:  # accelerator.gather over every process: CP peers each count the full rows
+        counts = [torch.zeros(()) for _ in range(world)]
+        dist.all_gather(counts, completion.sum().float())
+    normalizer = torch.stack(counts).sum().clamp(min = 1.0) / world
+    logps = policy.token_logps(ids, mask)
+    with torch.no_grad():
+        ref_logps = ref.token_logps(ids, mask)
+    ratio = torch.exp(logps - logps.detach())
+    loss = -torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv)
+    loss = loss + beta * (torch.exp(ref_logps - logps) - (ref_logps - logps) - 1)
+    return (loss * completion).sum() / normalizer
+
+
+def _objective_worker(rank, world, init_file, queue):
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
+    try:
+        torch.set_num_threads(1)
+        g = torch.Generator().manual_seed(3)
+        rand = lambda n: torch.randint(1, _V, (n,), generator = g).tolist()
+        prompts = [rand(7), rand(12)]
+        chosen, rejected = [p + rand(n) for p, n in zip(prompts, (9, 5))], [p + rand(n) for p, n in zip(prompts, (4, 14))]
+        ids, mask = _right_pad(chosen + rejected)  # 26 tokens: odd row lengths, the pad tail crosses the shard
+        completion = mask.clone()
+        for i, n in enumerate([7, 12, 7, 12]):
+            completion[i, :n] = 0
+        dpo = (ids, mask, completion[:, 1:])
+        prompt = rand(9)
+        g_ids, g_mask = _right_pad([prompt + rand(n) for n in (11, 3, 17, 8)])
+        g_completion = g_mask.clone()
+        g_completion[:, :9] = 0
+        grpo = (g_ids, g_mask, g_completion[:, 1:], torch.tensor([0.3, 1.0, 0.1, 0.65]))
+        tolerances = {torch.float64: 1e-12, torch.float32: 1e-6}
+        for dtype, tol in tolerances.items():
+            for objective, batch in ((_dpo_sigmoid, dpo), (_grpo_dapo, grpo)):
+                results = []
+                for use_cp in (False, True):
+                    policy, ref = _LlamaLike(0, dtype), _LlamaLike(1, dtype).requires_grad_(False)
+                    scope = contextlib.nullcontext()
+                    if use_cp:
+                        manager = _manager(rank, world)
+                        cp.attach_rl_hooks(manager, policy)
+                        cp.attach_rl_hooks(manager, ref)
+                        scope = cp._manager_scope(manager)
+                    with scope:
+                        loss = objective(policy, ref, batch, world if use_cp else 1)
+                        loss.backward()
+                    grads = torch.cat([p.grad.flatten() for p in policy.parameters()])
+                    if use_cp:  # DDP's average over the CP group
+                        dist.all_reduce(grads)
+                        grads /= world
+                    results.append((loss.detach(), grads))
+                (loss_ref, grad_ref), (loss_cp, grad_cp) = results
+                name = f"{objective.__name__} {dtype}"
+                assert abs(float(loss_cp - loss_ref)) <= tol * abs(float(loss_ref)), name
+                grad_rel = float((grad_cp - grad_ref).norm() / grad_ref.norm())
+                assert grad_rel <= tol, f"{name}: grad rel {grad_rel:.3e}"
+        queue.put((rank, "ok"))
+    except BaseException:  # pragma: no cover - reported to the parent
+        import traceback
+
+        queue.put((rank, traceback.format_exc()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_dpo_and_grpo_objectives_match_without_cp_in_fp64_and_fp32():
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs fork")
+    ctx = mp.get_context("fork")
+    queue = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmp:
+        init_file = os.path.join(tmp, "init")
+        procs = [ctx.Process(target = _objective_worker, args = (r, 2, init_file, queue)) for r in range(2)]
+        for p in procs:
+            p.start()
+        results = dict(queue.get(timeout = 180) for _ in procs)
+        for p in procs:
+            p.join(30)
+    assert results == {0: "ok", 1: "ok"}, results
