@@ -300,6 +300,37 @@ def _tiny_minimax_m2():
     return model
 
 
+def _tiny_gemma4():
+    from transformers.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+
+    config = Gemma4TextConfig(
+        vocab_size = 128,
+        vocab_size_per_layer_input = 128,
+        hidden_size = 64,
+        hidden_size_per_layer_input = 16,
+        intermediate_size = 128,
+        num_hidden_layers = 4,
+        num_kv_shared_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        global_head_dim = 32,
+        sliding_window = 8,
+        final_logit_softcapping = 30.0,
+        use_double_wide_mlp = True,
+        layer_types = [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    )
+    torch.manual_seed(3407)
+    model = Gemma4ForCausalLM(config).float()
+    model.config.use_cache = False
+    return model
+
+
 def _generic_worker(rank, world, port, seq, out, builder):
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, init_method = f"tcp://127.0.0.1:{port}"
@@ -319,7 +350,7 @@ def _generic_worker(rank, world, port, seq, out, builder):
 
 @pytest.mark.parametrize(
     "builder",
-    [_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2],
+    [_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2, _tiny_gemma4],
 )
 def test_deepseek_cp_matches_single_process(builder):
     seq = 16
@@ -346,6 +377,6 @@ if __name__ == "__main__":
     for s in (32, 33):
         test_cp_matches_single_process(s)
         print(f"test_cp_matches_single_process(seq={s}): PASS")
-    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2):
+    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2, _tiny_gemma4):
         test_deepseek_cp_matches_single_process(b)
         print(f"test_deepseek_cp_matches_single_process({b.__name__}): PASS")

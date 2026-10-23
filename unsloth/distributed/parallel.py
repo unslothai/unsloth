@@ -129,11 +129,64 @@ def sdpa_flash_fn(
     sliding_window = kwargs.get("sliding_window")
     softcap = kwargs.get("softcap")
     s_aux = kwargs.get("s_aux")
+    seq_len = query.shape[2]
+    # Fast block-windowed SDPA when sliding_window < seq_len and no packed/padding mask:
+    # avoids allocating an O(S^2) mask (e.g. 1 GiB at S=16384) and restricts attention to O(S * W).
+    if (
+        sliding_window is not None
+        and int(sliding_window) < seq_len
+        and softcap is None
+        and s_aux is None
+        and is_causal
+        and _blocked_key_mask(
+            attention_mask,
+            kwargs.get("position_ids"),
+            query.shape[0],
+            seq_len,
+            query.device,
+            sliding_window = None,
+        )
+        is None
+    ):
+        w = int(sliding_window)
+        if query.shape[1] != key.shape[1]:
+            repeat = query.shape[1] // key.shape[1]
+            key = key.repeat_interleave(repeat, dim = 1)
+            value = value.repeat_interleave(repeat, dim = 1)
+        neg_inf = torch.finfo(query.dtype).min
+        pieces = []
+        for q_start in range(0, seq_len, w):
+            q_end = min(q_start + w, seq_len)
+            k_start = max(0, q_start - w + 1)
+            k_end = q_end
+            q_idx = torch.arange(q_start, q_end, device = query.device)[:, None]
+            k_idx = torch.arange(k_start, k_end, device = query.device)[None, :]
+            blk_keep = (k_idx <= q_idx) & ((q_idx - k_idx) < w)
+            blk_mask = torch.zeros(
+                (1, 1, q_end - q_start, k_end - k_start),
+                dtype = query.dtype,
+                device = query.device,
+            )
+            blk_mask.masked_fill_(~blk_keep.unsqueeze(0).unsqueeze(0), neg_inf)
+            pieces.append(
+                F.scaled_dot_product_attention(
+                    query[:, :, q_start:q_end, :],
+                    key[:, :, k_start:k_end, :],
+                    value[:, :, k_start:k_end, :],
+                    attn_mask = blk_mask,
+                    is_causal = False,
+                    scale = softmax_scale,
+                    enable_gqa = False,
+                )
+            )
+        out = torch.cat(pieces, dim = 2)
+        return out.transpose(1, 2).contiguous()
+
     keep = _blocked_key_mask(
         attention_mask,
         kwargs.get("position_ids"),
         query.shape[0],
-        query.shape[2],
+        seq_len,
         query.device,
         sliding_window = sliding_window,
     )
@@ -178,9 +231,14 @@ def sdpa_flash_fn(
     if keep is not None:
         # Float mask: 0 keeps the score, a large negative drops the key.
         # Bool masks disagree across torch versions about which value is blocked.
-        attn_mask = torch.zeros(keep.shape, dtype = torch.float32, device = query.device)
-        attn_mask.masked_fill_(~keep, torch.finfo(torch.float32).min)
+        attn_mask = torch.zeros(keep.shape, dtype = query.dtype, device = query.device)
+        attn_mask.masked_fill_(~keep, torch.finfo(query.dtype).min)
         causal = False
+    use_gqa = attn_mask is None and key.shape[-1] == value.shape[-1] <= 256
+    if query.shape[1] != key.shape[1] and not use_gqa:
+        repeat = query.shape[1] // key.shape[1]
+        key = key.repeat_interleave(repeat, dim = 1)
+        value = value.repeat_interleave(repeat, dim = 1)
     out = F.scaled_dot_product_attention(
         query,
         key,
@@ -245,7 +303,13 @@ def apply_fsdp(model, mesh) -> None:
     classes = _layer_classes(model)
     for module in model.modules():
         if type(module) in classes:
-            fully_shard(module, mesh = mesh, reshard_after_forward = True, mp_policy = policy)
+            # Gemma 4 store_full_length_kv layers pass KV tensors via shared_kv_states
+            # into later layers, so their parameters must remain unsharded until their
+            # own post-backward hook runs.
+            reshard = not any(
+                getattr(sub, "store_full_length_kv", False) for sub in module.modules()
+            )
+            fully_shard(module, mesh = mesh, reshard_after_forward = reshard, mp_policy = policy)
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
@@ -304,6 +368,7 @@ def _chunked_nll(
     hidden,
     labels,
     chunk: int = 128,
+    softcap: float | None = None,
 ):
     """Sum of token NLL. lm_head is applied on short chunks so the
     vocab-sized logit tensor (about 30 GiB at 65536) is never allocated.
@@ -313,6 +378,8 @@ def _chunked_nll(
     for start in range(0, length, chunk):
         stop = min(start + chunk, length)
         logits = lm_head(hidden[:, start:stop]).float()
+        if softcap is not None:
+            logits = torch.tanh(logits / float(softcap)) * float(softcap)
         piece = labels[:, start:stop]
         total = total + F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
@@ -345,7 +412,11 @@ def sft_loss(model, input_ids, labels, cp_group):
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     outputs = base.model(input_ids = input_ids, position_ids = position_ids, use_cache = False)
     hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
-    local_num = _chunked_nll(base.lm_head, hidden, shift_labels)
+    cfg = getattr(base, "config", None)
+    softcap = getattr(cfg, "final_logit_softcapping", None)
+    if softcap is None and cfg is not None and hasattr(cfg, "get_text_config"):
+        softcap = getattr(cfg.get_text_config(), "final_logit_softcapping", None)
+    local_num = _chunked_nll(base.lm_head, hidden, shift_labels, softcap = softcap)
     denom = (labels[:, 1:] != -100).sum().clamp_min(1).to(local_num.dtype)
     if cp_group is None:
         return local_num / denom
