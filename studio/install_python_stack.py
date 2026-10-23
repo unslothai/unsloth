@@ -8793,6 +8793,24 @@ def _run_import_probe(code: str):
         return None
 
 
+# Studio's extension-free mamba-ssm wheel for Mamba-2 hybrids (#14160) imports without
+# selective_scan_cuda by design: unsloth-zoo runs the scan and conv on Triton.
+_SSM_EXTENSION_FREE_DISTRIBUTIONS = frozenset({"mamba-ssm"})
+
+
+def _is_extension_free_wheel(distribution: str) -> bool:
+    """Whether *distribution* is installed from a pure (py3-none-any) wheel, which ships no
+    compiled extension to go stale; a compiled or source build always carries a platform tag."""
+    if distribution not in _SSM_EXTENSION_FREE_DISTRIBUTIONS:
+        return False
+    try:
+        from importlib.metadata import distribution as installed_distribution
+        wheel = installed_distribution(distribution).read_text("WHEEL") or ""
+    except Exception:
+        return False
+    return any(line.strip() == "Tag: py3-none-any" for line in wheel.splitlines())
+
+
 def _remove_stale_ssm_kernels() -> None:
     """Remove an installed causal-conv1d / mamba-ssm whose compiled extension no longer imports,
     e.g. built for the torch a repair just replaced. Never installs: a model that needs them
@@ -8819,6 +8837,11 @@ def _remove_stale_ssm_kernels() -> None:
     for name in installed:
         distribution = KERNELS[name][0]
         extension = _SSM_KERNEL_EXTENSIONS[name]
+        if _is_extension_free_wheel(distribution):
+            # Removing it would leave an offline Nemotron-H / Falcon-H1 / Granite-4.0-H load with
+            # nothing, and every setup and update would remove it again.
+            _note(f"kept the extension-free {name} wheel (no {extension} by design)")
+            continue
         probe = _run_import_probe(
             _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
         )
