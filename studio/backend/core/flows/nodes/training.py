@@ -11,6 +11,7 @@ import time
 from typing import Any, Optional
 
 from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, poll_job, strip_think
+from core.flows.nodes.data import recipe_artifact
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
@@ -83,7 +84,10 @@ async def finetune(ctx: NodeContext) -> dict:
             config["train_split"] = dataset["split"]
     elif dataset.get("source") == "local":
         config["local_datasets"] = [dataset["ref"]]
+    elif dataset.get("source") == "recipe" and recipe_artifact(dataset.get("ref")):
+        config["local_datasets"] = [dataset["ref"]]
     elif dataset.get("source") == "recipe":
+        # Flows saved before recipe datasets carried their parquet path name the job instead.
         from core.flows.nodes.data import recipe_rows, upload_rows
 
         rows = await recipe_rows(ctx, str(dataset["ref"]))
