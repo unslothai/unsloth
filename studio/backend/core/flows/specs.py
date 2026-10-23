@@ -635,7 +635,15 @@ NODE_SPECS: list[dict] = [
                 "select",
                 "832x480",
                 "Size",
-                options = ["832x480", "480x832", "1280x720", "720x1280", "640x640"],
+                options = [
+                    "832x480",
+                    "480x832",
+                    "1280x704",
+                    "704x1280",
+                    "1280x720",
+                    "720x1280",
+                    "640x640",
+                ],
             ),
             P("seconds", "number", 4, "Seconds", min = 1, max = 20, step = 0.5),
             P("seed", "seed", None, "Seed"),
@@ -670,8 +678,13 @@ NODE_SPECS: list[dict] = [
         "audio.speak",
         "Speak",
         "audio",
-        "Text to speech with a built-in or saved voice.",
-        inputs = [inp("text", "text"), inp("reference", "audio", optional = True)],
+        "Text to speech with a built-in or saved voice, or a voice cloned from a reference clip (some voice "
+        "models also need what is said in it).",
+        inputs = [
+            inp("text", "text"),
+            inp("reference", "audio", optional = True),
+            inp("reference_text", "text", optional = True),
+        ],
         outputs = [out("audio", "audio")],
         params = [
             P("model", "model", None, "Model", model_kind = "tts"),

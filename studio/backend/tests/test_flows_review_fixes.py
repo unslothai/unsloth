@@ -772,3 +772,31 @@ def test_upscale_still_raises_other_errors():
     ctx = _UpscaleCtx(_png_bytes(8, 8), "No image model is loaded")
     with pytest.raises(FlowNodeError):
         asyncio.run(upscale(ctx))
+
+
+def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
+    from core.flows.nodes import _common
+
+    sent = []
+
+    async def fake_run(ctx, body):
+        sent.append(body)
+        return [{"kind": "audio", "ref": "audio:x"}]
+
+    async def fake_ensure(ctx, kind, model):
+        return None
+
+    monkeypatch.setattr(_common, "audio_run", fake_run)
+    monkeypatch.setattr(_common, "ensure_model", fake_ensure)
+    clip = {"kind": "audio", "ref": "audio:abc"}
+    asyncio.run(
+        _common.speak(
+            object(), model = None, text = "Hola", reference = clip, reference_text = " Hello there "
+        )
+    )
+    asyncio.run(
+        _common.speak(object(), model = None, text = "Hola", reference_text = "ignored without a clip")
+    )
+    assert sent[0]["workflow"] == "clone" and sent[0]["reference_text"] == "Hello there"
+    assert sent[1]["workflow"] == "speak" and "reference_text" not in sent[1]
+    assert any(p["id"] == "reference_text" for p in SPECS_BY_TYPE["audio.speak"]["inputs"])

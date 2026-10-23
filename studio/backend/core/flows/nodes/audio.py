@@ -22,6 +22,7 @@ async def speak(ctx: NodeContext) -> dict:
         voice = str(ctx.params.get("voice") or ""),
         instructions = str(ctx.params.get("instructions") or ""),
         reference = ctx.inputs.get("reference"),
+        reference_text = as_text(ctx.inputs.get("reference_text")),
         seed = ctx.seed,
     )
     return {"audio": clip}
