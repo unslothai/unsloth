@@ -632,3 +632,76 @@ def test_get_mtp_head_reads_the_loaded_commit(tmp_path):
     assert _loaded_revision(model, "org/m", None) == "abc123"
     assert _loaded_revision(model, "org/m", "dev") == "dev"
     assert _loaded_revision(model, str(tmp_path), None) is None
+
+
+@pytest.mark.parametrize("adapter_name", ["default", "task"])
+def test_named_peft_adapter_save_keeps_the_head(save_module, tmp_path, adapter_name):
+    """PEFT writes a non-default adapter under `<out>/<adapter_name>/`; the head goes beside it."""
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    pytest.importorskip("unsloth_zoo.speculative.nextn")
+    from unsloth.models.speculative import attach_saved_mtp_head, get_mtp_head
+
+    model = get_peft_model(
+        _tiny_glm(tmp_path, torch),
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"]),
+        adapter_name = adapter_name,
+    )
+    head = get_mtp_head(model, random_init = True)
+    with torch.no_grad():
+        for p in head.parameters():
+            p.add_(0.01)
+    expected = {k: v.detach().clone() for k, v in head.mtp_state_dict().items()}
+
+    out = tmp_path / "saved"
+    model.save_pretrained(str(out))
+    folder = out if adapter_name == "default" else out / adapter_name
+    assert (folder / "adapter_config.json").is_file()
+    assert (folder / "mtp_head.safetensors").is_file()
+    assert not list(out.glob("model*.safetensors"))
+
+    reloaded = attach_saved_mtp_head(_tiny_glm(tmp_path, torch), str(folder))
+    assert reloaded is not None
+    assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
+
+
+def test_every_saved_adapter_folder_gets_the_head(save_module, tmp_path, monkeypatch):
+    """A save of several adapters writes the head beside each folder and pushes each one."""
+    import torch
+    from unsloth.models.speculative import _wrap_save_pretrained
+    from unsloth_zoo.speculative.stitch import load_saved_mtp_head
+
+    model = torch.nn.Module()
+    object.__setattr__(model, "peft_config", {"default": None, "task": None})
+
+    def transformers_save(save_directory, push_to_hub = False, **kwargs):
+        for name in ("default", "task"):
+            folder = Path(save_directory) / ("" if name == "default" else name)
+            folder.mkdir(parents = True, exist_ok = True)
+            (folder / "adapter_config.json").write_text("{}")
+
+    object.__setattr__(model, "save_pretrained", transformers_save)
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    _wrap_save_pretrained(model)
+    uploads = []
+
+    class Api:
+        def __init__(self, **kwargs):
+            pass
+
+        def upload_folder(self, **kwargs):
+            uploads.append(kwargs)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    model.save_pretrained(str(tmp_path), push_to_hub = True, repo_id = "me/x")
+    for folder in (tmp_path, tmp_path / "task"):
+        loaded, _ = load_saved_mtp_head(folder)
+        assert set(loaded) == {"fc.weight", "norm.weight"}
+    assert len(uploads) == 1
+    assert sorted(uploads[0]["allow_patterns"]) == [
+        "mtp_head.safetensors",
+        "task/mtp_head.safetensors",
+    ]

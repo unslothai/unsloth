@@ -168,6 +168,23 @@ def _takes_push_to_hub(fn):
         return False
 
 
+def _fresh_adapter_dirs(model, save_directory, started):
+    """Adapter folders this save wrote, relative to `save_directory` ("" is the folder itself).
+
+    PEFT writes the `default` adapter into `save_directory` and every other adapter into
+    `save_directory/<adapter_name>/`.
+    """
+    names = list(getattr(model, "peft_config", None) or {})
+    candidates = [""] + [name for name in names if name != "default"]
+    out = []
+    for folder in candidates:
+        adapter_config = os.path.join(save_directory, folder, "adapter_config.json")
+        # Written by this save, not left over from an adapter saved here before.
+        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
+            out.append(folder)
+    return out
+
+
 def _wrap_save_pretrained(model):
     """Plain `save_pretrained` keeps the trained head too: beside a LoRA adapter, else in the checkpoint."""
     original = model.save_pretrained
@@ -207,14 +224,14 @@ def _wrap_save_pretrained(model):
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
-        adapter_config = os.path.join(save_directory, "adapter_config.json")
-        # Written by this save, not left over from an adapter saved here before.
-        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
-            files = (
-                ["mtp_head.safetensors"]
-                if _save_mtp_head_beside_adapter(model, save_directory)
-                else []
-            )
+        adapter_dirs = _fresh_adapter_dirs(model, save_directory, started)
+        if adapter_dirs:
+            files = []
+            for folder in adapter_dirs:
+                if _save_mtp_head_beside_adapter(model, os.path.join(save_directory, folder)):
+                    files.append(
+                        "/".join(filter(None, (folder.replace(os.sep, "/"), "mtp_head.safetensors")))
+                    )
         else:
             report = _stitch_mtp_head(model, save_directory)
             files = list(report["files_touched"]) if report else []
