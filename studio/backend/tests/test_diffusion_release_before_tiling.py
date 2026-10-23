@@ -26,6 +26,9 @@ from core.inference.diffusion_memory import (
 )
 
 UNTILED_NEED = 9000  # MiB the whole-frame decode needs, past FREE_FRACTION
+ENCODE_NEED = (
+    3000  # MiB the untiled source encode needs, past FREE_FRACTION (fits the 6000 MiB free)
+)
 
 
 class _Card:
@@ -68,6 +71,10 @@ def card(monkeypatch):
     monkeypatch.setattr(diffusion, "release_resident_groups", release)
     monkeypatch.setattr(
         diffusion, "_untiled_decode_shortfall_mib", lambda vae, z: UNTILED_NEED - c.free
+    )
+    c.encode_need = ENCODE_NEED
+    monkeypatch.setattr(
+        diffusion, "_untiled_encode_shortfall_mib", lambda vae, x: c.encode_need - c.free
     )
     monkeypatch.delenv(diffusion.RELEASE_BEFORE_TILING_ENV, raising = False)
     return c
@@ -192,7 +199,7 @@ def test_the_untiled_decode_shortfall_uses_the_wide_tile_rule(monkeypatch):
 
 
 class _Vae:
-    """A VAE whose decode records the tiling and the resident MiB it ran with."""
+    """A VAE whose decode and encode record the tiling and the resident MiB they ran with."""
 
     def __init__(
         self,
@@ -206,6 +213,7 @@ class _Vae:
         self.encode_oom = encode_oom
         self.decodes: list = []
         self.encodes: list = []
+        self.encode_resident: list = []
 
     def decode(self, z):
         self.decodes.append((self.use_tiling, self.card.resident))
@@ -215,6 +223,7 @@ class _Vae:
 
     def encode(self, x):
         self.encodes.append(self.use_tiling)
+        self.encode_resident.append(self.card.resident)
         if self.encode_oom:
             self.encode_oom -= 1
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
@@ -333,3 +342,95 @@ def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, cas
     out = diffusion._defer_tiling_to_decode(pipe, pipe, verdict, TARGET, {}, restore_vae, None)
     assert out is restore_vae and "decode" not in vae.__dict__ and "encode" not in vae.__dict__
     assert card.releases == []
+
+
+def test_an_oversized_encode_keeps_tiling_with_no_untiled_attempt(card):
+    card.encode_need = 20000  # short 14000 MiB, past every resident group
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [True] and vae.use_tiling is False  # tiled straight away, as main
+    assert card.releases == []
+    stats = vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]
+    assert stats["encode_tiled"] == 1 and stats["encode_untiled"] == 0 and stats["encode_oom"] == 0
+    restore()
+
+
+def test_a_fitting_encode_runs_untiled_without_streaming(card):
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [False] and vae.encode_resident == [4283] and card.releases == []
+    stats = vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]
+    assert stats["encode_untiled"] == 1 and stats["encode_tiled"] == 0
+    restore()
+
+
+def test_a_short_encode_streams_runs_untiled_and_pins_back(card):
+    card.encode_need = (
+        8000  # short 2000 MiB: plus a quarter and 256 MiB, 2756 of the 4283 resident stream
+    )
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [False] and vae.encode_resident == [4283 - 2756]
+    assert card.releases == [(2756, "an untiled VAE encode")]
+    assert (
+        card.resident == 4283 and card.restored == 1
+    )  # pinned back as soon as the encode returned
+    stats = vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]
+    assert stats["encode_untiled"] == 1 and stats["encode_released_mib"] == 2756
+    assert stats["released_mib"] == 0  # the decode's own counter is untouched
+    restore()
+
+
+def test_unknown_encode_figures_tile(card, monkeypatch):
+    monkeypatch.setattr(diffusion, "_untiled_encode_shortfall_mib", lambda vae, x: None)
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [True] and card.releases == []
+    restore()
+
+
+@pytest.mark.parametrize("need", [None, 20000])
+def test_on_wddm_no_untiled_encode_without_a_fit(card, monkeypatch, need):
+    # Windows WDDM spills an overrun to host RAM instead of raising (the activation guard keys it on sys.platform),
+    # so the out-of-memory retry never fires: only a positive fit check may run the encode untiled.
+    monkeypatch.setattr(diffusion.sys, "platform", "win32")
+    monkeypatch.setattr(
+        diffusion,
+        "_untiled_encode_shortfall_mib",
+        lambda vae, x: None if need is None else need - card.free,
+    )
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [True] and card.releases == []
+    restore()
+
+
+def test_the_untiled_encode_shortfall_uses_the_measured_encode_figures(monkeypatch):
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (16, 32, 4))
+    monkeypatch.setattr(tiling, "_fused", lambda vae: False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    param = types.SimpleNamespace(element_size = lambda: 2)
+    vae = type("AutoencoderKLQwenImage21", (), {})()
+    vae.encoder = types.SimpleNamespace(parameters = lambda: iter([param]))
+    x = types.SimpleNamespace(
+        shape = (1, 4, 1, 1024, 1024), dim = lambda: 5, device = types.SimpleNamespace(type = "cuda")
+    )
+    want = 64 * 64 * 0.6 / tiling.FREE_FRACTION - 1000
+    assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - want) <= 1
+    assert tiling.encode_mib_per_latent(16, True, "AutoencoderKLQwenImage21") == 0.3
+    assert tiling.encode_mib_per_latent(8, False, "AutoencoderKL") == tiling.decode_mib_per_latent(
+        8, False, "AutoencoderKL"
+    )
+    assert tiling.encode_mib_per_latent(12, False, "SomeVae") is None  # unknown class and ratio
+    x.device = types.SimpleNamespace(type = "cpu")
+    assert diffusion._untiled_encode_shortfall_mib(vae, x) is None

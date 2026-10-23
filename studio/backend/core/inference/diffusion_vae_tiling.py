@@ -132,6 +132,31 @@ def decode_mib_per_latent(
     return DECODE_MIB_PER_LATENT * (int(ratio) / DECODE_MIB_RATIO) ** 2
 
 
+# bf16 untiled encode peak MiB per latent of the encoded frame, (unfused, fused): B200, real weights, 512 to 1536 px
+# (linear in area: Qwen-Image-2.1 0.565 / 0.283, Qwen-Image 0.165 / 0.121), rounded up.
+ENCODE_MIB_PER_LATENT_BY_CLASS = {
+    "AutoencoderKLQwenImage": (0.17, 0.13),
+    "AutoencoderKLQwenImage21": (0.6, 0.3),
+}
+
+
+def encode_mib_per_latent(
+    ratio: int,
+    fused: bool = False,
+    cls: Optional[str] = None,
+) -> Optional[float]:
+    """bf16 untiled encode peak MiB per latent: measured by class, else the class / ratio decode figure (above the
+    measured encode on every measured class), else None (unknown: the encode tiles)."""
+    known = (
+        ENCODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_RATIO.get(int(ratio))
+    )
+    if known is None:
+        return None
+    return known[1] if fused else known[0]
+
+
 def _geometry(vae: Any) -> tuple[int, int, int]:
     """(ratio, floor tile, floor overlap), cached on the VAE at install."""
     cached = getattr(vae, "__dict__", {}).get("_unsloth_wide_geometry")
