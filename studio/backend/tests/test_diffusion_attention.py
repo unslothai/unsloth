@@ -936,7 +936,6 @@ def test_mps_prefill_attention_follows_the_torch_dispatch(change, prefill, monke
     )
     with torch.enable_grad():
         assert att.mps_prefill_attention(q, k, v, mask) is prefill
-    # diffusers' [B, S, H, D] layout names the sequence axis explicitly.
     q.shape = (q.shape[0], q.shape[2], q.shape[1], q.shape[3])
     k.shape = (k.shape[0], k.shape[2], k.shape[1], k.shape[3])
     with torch.enable_grad():

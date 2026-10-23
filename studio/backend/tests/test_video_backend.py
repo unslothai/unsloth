@@ -8908,7 +8908,6 @@ def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_pa
     monkeypatch.setattr(
         video_mod, "sdpa_math_only", lambda target, *a: seen.append((target, *a)) or True
     )
-    # The family's head dims travel with the record too: MPS answers per head dim.
     monkeypatch.setattr(video_mod, "_dit_head_dims", lambda pipe: {128})
     records = _shared_setup_10(backend, monkeypatch)
     assert [a for _, *a in seen] == [[[128]]]
