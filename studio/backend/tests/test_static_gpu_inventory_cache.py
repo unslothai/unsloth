@@ -111,7 +111,9 @@ def test_an_amd_card_attached_beside_another_reads_the_gfx_target_again(rocm_cli
     assert _count(rocm_cli, "rocminfo") == 2
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "sysfs is Linux only; PCI addresses contain ':'")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "sysfs is Linux only; PCI addresses contain ':'"
+)
 def test_amd_pci_topology_reads_sysfs(tmp_path):
     def card(name, vendor, device, slot):
         dev = tmp_path / "pci" / slot
