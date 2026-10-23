@@ -22,7 +22,6 @@ def _collator_masks_user_labels() -> bool:
     try:
         import trl
         from packaging.version import Version
-
         return Version(trl.__version__) < Version("1.7.0")
     except Exception:
         return True
@@ -85,7 +84,11 @@ def _column_names(dataset) -> list[str]:
     names = getattr(dataset, "column_names", None)
     if names:
         fmt = getattr(dataset, "format", None)
-        if isinstance(fmt, dict) and fmt.get("columns") is not None and not fmt.get("output_all_columns"):
+        if (
+            isinstance(fmt, dict)
+            and fmt.get("columns") is not None
+            and not fmt.get("output_all_columns")
+        ):
             return [c for c in names if c in fmt["columns"]]
         return list(names)
     return list(next(iter(dataset)).keys())
@@ -103,7 +106,13 @@ def has_custom_labels(dataset) -> bool:
     return "labels" in _column_names(dataset)
 
 
-def _check_arrow_table(table, max_seq_length, vocab_size, masks = (), labels = True) -> bool:
+def _check_arrow_table(
+    table,
+    max_seq_length,
+    vocab_size,
+    masks = (),
+    labels = True,
+) -> bool:
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -117,7 +126,11 @@ def _check_arrow_table(table, max_seq_length, vocab_size, masks = (), labels = T
     for name in masks:
         # An all-null or scalar column has no list kernel: reject it with the same error.
         kind = table.column(name).type
-        if not (pa.types.is_list(kind) or pa.types.is_large_list(kind) or pa.types.is_fixed_size_list(kind)):
+        if not (
+            pa.types.is_list(kind)
+            or pa.types.is_large_list(kind)
+            or pa.types.is_fixed_size_list(kind)
+        ):
             raise _mask_error(name)
         same = pc.equal(lengths, pc.list_value_length(table.column(name)))
         # A row without the mask compares as null: that row fails too.

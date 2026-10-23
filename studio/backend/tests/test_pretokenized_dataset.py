@@ -298,7 +298,9 @@ def test_prepare_checks_and_truncates_masks_hidden_by_the_format():
     bad.set_format(columns = ["input_ids"], output_all_columns = False)
     with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
         prepare_pretokenized_dataset(bad, max_seq_length = 2048, vocab_size = 100)
-    ok = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], "assistant_masks": [[0, 1, 1, 1, 1, 1]]})
+    ok = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4, 5, 6]], "assistant_masks": [[0, 1, 1, 1, 1, 1]]}
+    )
     ok.set_format(columns = ["input_ids"], output_all_columns = False)
     out = prepare_pretokenized_dataset(ok, max_seq_length = 4, vocab_size = 100)
     assert list(out[0]) == ["input_ids"]
@@ -319,7 +321,9 @@ def test_completion_only_loss_resolves_from_the_train_split():
     assert resolve_completion_only_loss(evals, True) is True
     with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
         prepare_pretokenized_dataset(
-            evals, max_seq_length = 2048, vocab_size = 100,
+            evals,
+            max_seq_length = 2048,
+            vocab_size = 100,
             completion_only_loss = resolve_completion_only_loss(train),
         )
 
@@ -343,8 +347,12 @@ def test_prepare_rejects_non_list_masks_with_the_mask_error(mask):
 @pytest.mark.parametrize("mask", [0, 1.0, True])
 def test_prepare_rejects_streamed_scalar_masks_with_the_mask_error(mask, fmt, monkeypatch):
     # Streamed rows skip the Arrow type check: a scalar mask must not surface as len()'s TypeError.
-    monkeypatch.setattr("datasets.config.TORCHVISION_AVAILABLE", False)  # torchvision without VideoReader
-    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [mask]}).to_iterable_dataset()
+    monkeypatch.setattr(
+        "datasets.config.TORCHVISION_AVAILABLE", False
+    )  # torchvision without VideoReader
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3]], "assistant_masks": [mask]}
+    ).to_iterable_dataset()
     if fmt:
         ds = ds.with_format(fmt)
     out = prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100)
@@ -355,9 +363,11 @@ def test_prepare_rejects_streamed_scalar_masks_with_the_mask_error(mask, fmt, mo
 @pytest.mark.parametrize("fmt", ["numpy", "torch"])
 def test_prepare_truncates_streamed_array_masks(fmt, monkeypatch):
     monkeypatch.setattr("datasets.config.TORCHVISION_AVAILABLE", False)
-    ds = Dataset.from_dict(
-        {"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1, 1]]}
-    ).to_iterable_dataset().with_format(fmt)
+    ds = (
+        Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1, 1]]})
+        .to_iterable_dataset()
+        .with_format(fmt)
+    )
     rows = list(prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100))
     assert [list(map(int, r["assistant_masks"])) for r in rows] == [[0, 1]]
 
