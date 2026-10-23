@@ -2897,7 +2897,13 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
+# MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
+    "qwen-image-2.1": 1849,
+    "flux.1": 2666,
+    "z-image": 2666,
+    "moss-image": 2976,
+}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3127,6 +3133,8 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
+        if module is None:
+            continue  # an empty slot (Wan2.2-TI2V-5B and Wan2.1 register transformer_2 = None)
         state = _streaming_state(module)
         if state is None:
             return None
@@ -3158,6 +3166,8 @@ def _streamed_group_window_mib(pipe: Any) -> int:
         largest = 0
         for name, module in (getattr(pipe, "components", {}) or {}).items():
             if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if module is None:
                 continue
             for group in _offload_groups(module):
                 if getattr(group, "_unsloth_resident", False):
@@ -4179,10 +4189,8 @@ def install_encode_release(
             restore = release_resident_groups(
                 owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
             )
+            # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
-            if restore is not None and torch.cuda.is_available():
-                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
-                torch.cuda.empty_cache()
 
         def _after(module: Any, args: Any, output: Any) -> None:
             if not pending:
@@ -4263,11 +4271,10 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
-    tier_seeded = (
-        dense_mib is not None
-        and sized["dense_tier_seeds"]
-        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
+    tier_seeded = str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES and (
+        (dense_mib is not None and sized["dense_tier_seeds"])
+        or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
         (learned or need is None)
@@ -4390,6 +4397,7 @@ def apply_memory_plan(
         applied = _apply_group_offload(pipe, placement, logger, **group_kwargs)
         failure = getattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, None)
         if not applied and failure is not None and _is_oom(failure):
+            _set_group_offload_failure(pipe, None)  # the retry records its own failure, if any
             lowered = _retry_group_offload_lower(pipe, plan, placement, logger, failure)
             if lowered is not None:
                 applied = True
@@ -4483,8 +4491,20 @@ def apply_memory_plan(
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
 
 
+class _GroupOffloadFailure(Exception):
+    """Type and message of a failed group offload setup. The live exception is not kept: its traceback holds the
+    failed frames, whose tensors would stay allocated through the very retry that needs the room."""
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__(f"{type(exc).__name__}: {exc}")
+        self.type_name = type(exc).__name__
+        self.oom = _is_oom(exc)
+
+
 def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
     """What made ``_apply_group_offload`` return False (it absorbs the exception so the caller can fall back)."""
+    if exc is not None and not isinstance(exc, _GroupOffloadFailure):
+        exc = _GroupOffloadFailure(exc)
     try:
         setattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, exc)
     except Exception:  # noqa: BLE001
@@ -4492,6 +4512,8 @@ def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
 
 
 def _is_oom(exc: BaseException) -> bool:
+    if isinstance(exc, _GroupOffloadFailure):
+        return exc.oom
     from .diffusion_batched import is_oom_error
     return is_oom_error(exc)
 

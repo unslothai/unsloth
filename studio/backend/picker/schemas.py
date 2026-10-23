@@ -5,9 +5,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-# Mirror the frontend's 64 KiB chat-template contract (per-model-config.ts) at the API boundary:
-# MaxBodyMiddleware only caps the whole request body, not this field.
-MAX_CHAT_TEMPLATE_BYTES = 65_536
+# Mirror the frontend's chat-template contract (per-model-config.ts) at the API boundary:
+# MaxBodyMiddleware only caps the whole request body, not this field. Community templates
+# reach ~230 KB (#14841); the frontend keeps overrides in a 1 MiB per-model storage budget,
+# so this stays well under it even after JSON escaping.
+MAX_CHAT_TEMPLATE_BYTES = 512 * 1024
 
 
 def chat_template_byte_length(value: str) -> Optional[int]:

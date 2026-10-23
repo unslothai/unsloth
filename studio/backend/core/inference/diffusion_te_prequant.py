@@ -150,6 +150,13 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
             "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
+    # MOSS-Image Qwen3.5-9B: MLP + full-attention Linears int8; gated-delta, embeddings, vision stay bf16.
+    "moss-image": {
+        "text_encoder": (
+            "unsloth/MOSS-Image-SFT-FP8",
+            "MOSS-Image-SFT-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
 }
 
 # family -> lowercased variant base -> {component: (repo_id, filename)}, for a variant whose encoder is a different
@@ -291,11 +298,15 @@ TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 # FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344 dense (0.591), rounded up the same way.
 # Wan's UMT5 keeps its 256k-row embedding dense: its int8 file is 6,735,404,944 bytes against 11,361,851,208 dense,
 # 0.593, rounded up the same way.
+# HunyuanImage-2.1 loads Qwen-Image's 8,974,915,168-byte file against a 15.5 GB table price (0.579), rounded up.
 _TE_INT8_CONVROT_BUDGET_SCALES = {
+    "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,
     "krea-2": 0.60,
     "flux.3-klein": 0.60,
     "flux.3-klein-base": 0.60,
+    # MOSS-Image's 11,488,171,720-byte file against its 15.9 GB table price (0.723), rounded up.
+    "moss-image": 0.73,
     **{
         name: 0.62
         for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")
@@ -652,6 +663,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+        }
+    ),
+    # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
+    frozenset(
+        {
+            "openmoss-team/moss-image-sft",
+            "openmoss-team/moss-image-base",
         }
     ),
 )

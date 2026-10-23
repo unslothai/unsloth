@@ -122,7 +122,7 @@ function UpsamplerDownloadNotice({
   return (
     <div
       data-testid="prompt-upsampler-download"
-      className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
+      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
     >
       {download.downloading ? (
         <>
@@ -303,7 +303,7 @@ export function EnhancePromptControls({
       {preview ? (
         <div
           data-testid="enhanced-prompt-preview"
-          className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-xs"
+          className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-xs"
         >
           <div className="flex items-center justify-between gap-2">
             <button
