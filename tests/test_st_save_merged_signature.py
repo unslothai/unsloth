@@ -19,6 +19,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ST_PY = REPO_ROOT / "unsloth" / "models" / "sentence_transformer.py"
@@ -158,6 +159,9 @@ def _extract(i):
         "os": __import__("os"),
         "print": lambda *a, **k: None,
         "_normalize_save_method": _normalize_save_method,
+        "_copy_sentence_encoder_for_merge": lambda model, dtype: _Merged(),
+        "copy": __import__("copy"),
+        "torch": torch,
         "FastSentenceTransformer": type(
             "F", (), {"_add_unsloth_branding": staticmethod(lambda d: branding.append(d))}
         ),
@@ -212,13 +216,26 @@ class _Module:
         self.auto_model = inner
 
 
+class _Log(list):
+    """Shared by a model and its export copy, so the copy's writes are visible here."""
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+class _Merged:
+    """What the fast-encoder path exports in place of the live transformer."""
+
+
 class _FakeST:
     """A SentenceTransformer stand-in: a sequence of modules, module 0 of
     which wraps the transformer."""
 
     def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
-        self.saved = []
+        self.saved = _Log()
+        self.saved_encoders = _Log()
+        self._dtype = torch.float32
         self.inner = _Inner()
         self.no_modules = no_modules
         self._modules_list = [_Module(self.inner)]
@@ -228,6 +245,7 @@ class _FakeST:
 
     def save_pretrained(self, d):
         self.saved.append(d)
+        self.saved_encoders.append(self[0].auto_model)
 
 
 def test_positional_call_completes_the_merge(tmp_path):
@@ -238,8 +256,8 @@ def test_positional_call_completes_the_merge(tmp_path):
     tok = _Tok()
     fn(st, str(tmp_path), tok, "merged_16bit")
     assert st.saved == [str(tmp_path)]
-    assert st.inner.merged, "LoRA should have been merged away"
-    assert st.inner.saved == [str(tmp_path)]
+    assert isinstance(st.saved_encoders[0], _Merged), "the export must carry the merged encoder"
+    assert st[0].auto_model is st.inner and not st.inner.merged, "the live model keeps its LoRA"
     assert tok.saved == [str(tmp_path)], "the passed tokenizer must be used"
     assert branding == [str(tmp_path)]
 
@@ -348,7 +366,10 @@ def test_case_and_space_variants_are_accepted(method, i, tmp_path):
     fn, _ = _extract(i)
     st = _FakeST(no_modules = True)
     fn(st, str(tmp_path), None, method)
-    assert st.inner.merged
+    if i == 0:
+        assert isinstance(st.saved_encoders[0], _Merged)
+    else:
+        assert st.inner.merged
 
 
 def test_normalization_leaves_non_strings_alone():

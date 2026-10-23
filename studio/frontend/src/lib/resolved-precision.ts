@@ -64,9 +64,14 @@ function isOff(value: string | boolean | null | undefined): boolean {
   return text === "" || text === "none" || text === "off" || text === "0";
 }
 
+const ENGINE_LABELS: Record<string, string> = { sd_cpp: "Native", diffusers: "Diffusers", mlx: "MLX" };
+
 /** The engaged value of a resolved Advanced control, formatted for its badge. */
 export function formatResolvedValue(key: string, value: string | boolean | null | undefined): string {
   if (key === "cpu_offload") return value ? "On" : "Off";
+  if (key === "engine" && typeof value === "string") {
+    return ENGINE_LABELS[value] ?? value.toUpperCase();
+  }
   if (value === null || value === undefined || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";

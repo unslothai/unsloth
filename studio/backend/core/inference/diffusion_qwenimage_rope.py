@@ -145,19 +145,14 @@ def install(transformer: Any, logger: Any = None) -> bool:
         return False
     if type(transformer).__name__ != "QwenImageTransformer2DModel":
         return False
-    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     def _finish(t: Any) -> bool:
-        dev = resident_cuda_device(t)
-        if dev is None:
-            return False
-        import torch
+        cards = resident_cuda_cards(t)
+        passed = [index for index in cards if _probe(index)]
+        return bool(passed) and _patch_table(passed[0], logger)
 
-        return _patch_table(
-            dev.index if dev.index is not None else torch.cuda.current_device(), logger
-        )
-
-    if resident_cuda_device(transformer) is not None:
+    if resident_cuda_cards(transformer):
         return _finish(transformer)
     run_on_first_call(transformer, "qwenimage_rope", _finish)
     return True

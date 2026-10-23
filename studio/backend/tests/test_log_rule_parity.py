@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One definition of "a successful access record", in two languages.
-
-The backend decides whether to emit an access line; the desktop shell decides whether to
-mirror it into ``tauri.log``. Two implementations of the same idea, in two languages and
-two processes, with nothing holding them together. The pair already drifted once: the
-Python tee and the Rust ``collapse_progress_frames`` disagreed about CRLF, so a Windows
-traceback survived on one sink and became blank lines on the other.
-
-``tests/fixtures/access_log_records.json`` is the shared contract. This module checks the
-Python side and, once the desktop-side filter exists, checks that the Rust side was written
-against the same rule. The matching ``#[test]`` in ``process.rs`` consumes the same file, so
-changing the rule on either side turns the other red.
-"""
+"""Python and Rust share one successful-access rule via tests/fixtures/access_log_records.json."""
 
 from __future__ import annotations
 

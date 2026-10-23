@@ -33,7 +33,6 @@ def test_every_declared_recipe_is_known():
     for fam in (*_FAMILIES, *_VIDEO_FAMILIES):
         recipe = getattr(fam, "fp16_guard", None)
         assert recipe is None or recipe in guard.RECIPES, (fam.name, recipe)
-        # a guard only means something on a family that would otherwise be promoted
         assert recipe is None or fam.fp16_incompatible, fam.name
 
 
@@ -76,7 +75,6 @@ def test_unsupported_diffusers_block_keeps_promotion(monkeypatch):
     monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: False)
     z = detect_family("Tongyi-MAI/Z-Image-Turbo")
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float32
-    # "native" needs no patch, so no structural probe either
     monkeypatch.undo()
     monkeypatch.setattr(guard, "_SUPPORTED", {})
     assert guard._recipe_supported(_video("wan2.2-ti2v-5b"), "native") is True
@@ -199,7 +197,7 @@ def _overflowing_model():
     model = nn.Sequential(_Block(), _Block())
     with torch.no_grad():
         for blk in model:
-            # Z-Image-like: the FFN gate product and output, and the attention output, exceed float16's range.
+            # Z-Image-like: FFN gate product/output and attention output exceed float16's range.
             blk.feed_forward.w1.weight.mul_(40.0)
             blk.feed_forward.w3.weight.mul_(40.0)
             blk.feed_forward.w2.weight.mul_(400.0)
@@ -225,13 +223,13 @@ def test_guard_keeps_overflowing_block_finite_and_accurate():
     x = torch.randn(2, 16, 64)
     with torch.no_grad():
         ref = model.float()(x.float())
-        assert ref.abs().max() < 1e3  # the residual stream itself is in range
+        assert ref.abs().max() < 1e3
         branch = model[0].feed_forward(model[0].ffn_norm1(x.float()))
-        assert branch.abs().max() > 65504  # ...the pre-norm branch is not
+        assert branch.abs().max() > 65504
 
         half = model.half()
         stock = half(x.half())
-        assert not torch.isfinite(stock).all()  # stock fp16 overflows (black image)
+        assert not torch.isfinite(stock).all()
 
         assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 2
         fixed = half(x.half())

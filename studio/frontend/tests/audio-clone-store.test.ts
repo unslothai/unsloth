@@ -156,7 +156,6 @@ test("Add it again under Generate drops the expired clip's transcript too", () =
   store().setReferenceText("");
   store().adoptReference(a);
   store().applyTranscript(a, "clip a words");
-  // What the reference-expired action does before opening the file picker.
   const generation = readFileSync(
     new URL(
       "../src/features/audio/hooks/use-clone-generation.ts",

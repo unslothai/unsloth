@@ -122,7 +122,7 @@ def capability_snapshot(
             f"set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot. "
-            "Studio's own Python runtime folders get a permanent read-only entry instead, so "
+            "Unsloth's own Python runtime folders get a permanent read-only entry instead, so "
             "launches stay fast; turn that off in the same place (or set "
             f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
@@ -181,7 +181,7 @@ def prepare(plan, capability):
         network_policy = "mxc_compatibility_requested_unverified",
         backend_tier = "unknown",
         runtime_revision = mxc_runtime.MXC_REVISION,
-        runtime_artifact_digest = f"sha256:{mxc_runtime.WXC_EXEC_SHA256}",
+        runtime_artifact_digest = f"sha256:{mxc_runtime.artifact('exec')[2]}",
         schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash = request["policyHash"],
         execution_status = "planned",

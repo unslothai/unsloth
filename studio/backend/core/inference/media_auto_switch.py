@@ -118,6 +118,41 @@ def resident_answers_media_request(
     return pick is not None and satisfied_by(resident, name, pick)
 
 
+def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
+    """The downloaded model *name* refers to. A retired FLUX.3 full copy that is not downloaded itself answers with
+    what replaced it when that is downloaded: the base it copies, which Studio stages in that base's -FP8 mirror."""
+    pick = resolve_local_media_model(name, task = task)
+    if pick is not None or owner != DIFFUSION:
+        return pick
+    from core.inference.diffusion_families import mirror_repo, retired_full_copy_base
+
+    base = retired_full_copy_base(name)
+    if base is None:
+        return None
+    if any(
+        c and resolve_local_media_model(c, task = task) is not None for c in (base, mirror_repo(base))
+    ):
+        # Under the base's identity, as the load route publishes it: locality is planned for the base (its cached
+        # mirror), and a base the Images page already loaded answers the request without a reload.
+        return MediaModelPick(base, base, None, "pipeline")
+    return None
+
+
+def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
+    """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
+    ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
+    not the copy's snapshot, and the resident match compares the id the status publishes."""
+    from core.inference.diffusion_families import retired_full_copy_base
+
+    base = retired_full_copy_base(pick.model_id)
+    if base is None:
+        return pick
+    single = (pick.gguf_filename or "").replace("\\", "/")
+    if single and single != "model.safetensors":
+        return pick
+    return MediaModelPick(base, base, None, "pipeline")
+
+
 async def _require_local(
     owner: str,
     pick: MediaModelPick,
@@ -459,7 +494,7 @@ async def maybe_auto_switch_media_model(
 
     # off the loop: a cold index walks the model roots and reads gguf headers
     pick = await bounded(
-        asyncio.to_thread(resolve_local_media_model, name, task = task),
+        asyncio.to_thread(_resolve_pick, owner, name, task),
         deadline,
         kind = kind,
         openai_errors = openai_errors,
@@ -480,6 +515,9 @@ async def maybe_auto_switch_media_model(
             openai_errors = openai_errors,
             code = "model_not_found",
         )
+
+    if owner == DIFFUSION:
+        pick = _retired_copy_as_base(pick)
 
     # before anything is evicted: the load would otherwise finish and be refused for lacking txt2img
     if owner == DIFFUSION and await asyncio.to_thread(is_edit_only, pick):

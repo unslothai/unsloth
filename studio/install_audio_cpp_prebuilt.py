@@ -51,7 +51,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -270,6 +269,32 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _nvidia_has_prebuilt_arch() -> Optional[bool]:
+    """Any NVIDIA card sm_75+ (audio.cpp CUDA*_ARCHS in unsloth-prebuilt-build.yml start at 75); None if unreadable."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    caps = []
+    for line in (out.stdout or "").splitlines() if out.returncode == 0 else ():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
+        if not match:
+            # Old driver ("[N/A]"): unknown, keep the CUDA answer.
+            return None
+        caps.append((int(match.group(1)), int(match.group(2))))
+    return any(cap >= (7, 5) for cap in caps) if caps else None
+
+
 def _nvidia_gpu_present() -> bool:
     """An NVIDIA card, also one whose driver reports no CUDA version (wedged, partial)."""
     if shutil.which("nvidia-smi"):
@@ -306,7 +331,10 @@ def detect_accelerator() -> str:
     system = platform.system().lower()
     if system == "darwin":
         return "metal"
-    if nvidia_driver_cuda_version() is not None:
+    # Pascal / Volta-only hosts: the fork's bundles have no kernels for them. Other publishers set their own archs.
+    if nvidia_driver_cuda_version() is not None and (
+        _repo().casefold() != DEFAULT_REPO.casefold() or _nvidia_has_prebuilt_arch() is not False
+    ):
         return "cuda"
     # No HIP bundle is published (#13042); never beside NVIDIA, which Vulkan could enumerate first.
     if _amd_gpu_present() and not _nvidia_gpu_present():
@@ -753,7 +781,7 @@ def _fetch_model_specs(repo: str, commit: Optional[str], dest_dir: Path) -> bool
                     pool.map(lambda item: _spec_bytes(repo, commit, *item), entries.items()),
                 )
             )
-        tmp = Path(tempfile.mkdtemp(prefix = ".model_specs-", dir = str(dest_dir)))
+        tmp = core.make_staging_dir(dest_dir, ".model_specs-")
         for name, data in blobs.items():
             (tmp / name).write_bytes(data)
         os.replace(tmp, dest)
@@ -805,12 +833,30 @@ def _sweep_retired_trees(target: Path) -> None:
     """Remove ``<target>.old-*`` trees an earlier swap could not delete (Windows keeps a running
     server's files open). Best-effort: one still in use stays for the next run."""
     for old in target.parent.glob(target.name + ".old-*"):
-        if old.is_dir() and (old / OWNERSHIP_MARKER).is_file():
+        try:
+            owned = old.is_dir() and (old / OWNERSHIP_MARKER).is_file()
+        except OSError:
+            # Unreadable (an elevated run's tree, #14052): only an elevated run can remove it.
+            owned = False
+        if owned:
             shutil.rmtree(old, ignore_errors = True)
     # Staging dirs of a killed run; the install lock is held, so none belongs to a live one.
     for staging in target.parent.glob(".audio.cpp-staging-*"):
         if staging.is_dir() and not staging.is_symlink():
             shutil.rmtree(staging, ignore_errors = True)
+
+
+def _is_unreadable(target: Path) -> bool:
+    """Whether this account cannot look inside ``target``: a tree an elevated run staged under
+    mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
+    Renaming it is refused too, so only an elevated shell can clear it."""
+    try:
+        os.stat(target / OWNERSHIP_MARKER)
+    except PermissionError:
+        return True
+    except OSError:
+        pass
+    return False
 
 
 def _server_in_use(server: Optional[Path]) -> bool:
@@ -1089,6 +1135,17 @@ def install(
     target = (install_dir or default_install_dir()).resolve()
     if target.exists() and not target.is_dir():
         raise RuntimeError(f"audio.cpp install target is not a directory: {target}")
+    if _is_unreadable(target):
+        # Matched by setup.ps1, which shows the repair instead of a generic failure.
+        repair = (
+            f'from an elevated PowerShell with Remove-Item -Recurse -Force "{target}"'
+            if sys.platform == "win32"
+            else f"with sudo rm -rf '{target}'"
+        )
+        raise RuntimeError(
+            f"{target} cannot be read by this account (left by an elevated run); remove it "
+            f"{repair}, then run the install again"
+        )
     if target.exists() and not (target / OWNERSHIP_MARKER).is_file():
         entries = {p.name for p in target.iterdir()}
         if entries - _STUDIO_LEFTOVERS:
@@ -1223,7 +1280,7 @@ def _install_locked(
         # Checked again before the swap; here it saves the download.
         raise PermissionError(f"audiocpp_server in {target} is running")
     target.parent.mkdir(parents = True, exist_ok = True)
-    staging = Path(tempfile.mkdtemp(prefix = ".audio.cpp-staging-", dir = str(target.parent)))
+    staging = core.make_staging_dir(target.parent, ".audio.cpp-staging-")
     try:
         archive = staging / chosen
         print(f"audio.cpp: downloading {chosen} from {repo} {tag}", flush = True)
@@ -1360,7 +1417,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except PermissionError as exc:
         # Windows: a running audiocpp_server holds the tree open.
         print(
-            f"error: the audio.cpp runtime is in use ({exc}); stop Studio and retry",
+            f"error: the audio.cpp runtime is in use ({exc}); stop Unsloth Studio and retry",
             file = sys.stderr,
         )
         return EXIT_BUSY
