@@ -13,6 +13,8 @@ interface RlWorkspaceState {
   previewRow: Record<string, unknown> | null;
   setPreviewRow: (row: Record<string, unknown> | null) => void;
   library: RewardRecord[];
+  // False until the first listing lands: an empty library is not yet "every reward missing".
+  libraryLoaded: boolean;
   libraryError: string | null;
   refreshLibrary: () => Promise<void>;
 }
@@ -21,13 +23,14 @@ export const useRlWorkspaceStore = create<RlWorkspaceState>()((set) => ({
   previewRow: null,
   setPreviewRow: (previewRow) => set({ previewRow }),
   library: [],
+  libraryLoaded: false,
   libraryError: null,
   refreshLibrary: async () => {
     const epoch = getAuthSessionEpoch();
     try {
       const library = await listRewards();
       if (epoch === getAuthSessionEpoch()) {
-        set({ library, libraryError: null });
+        set({ library, libraryLoaded: true, libraryError: null });
       }
     } catch (err) {
       if (epoch === getAuthSessionEpoch()) {
@@ -43,6 +46,7 @@ if (typeof window !== "undefined") {
     useRlWorkspaceStore.setState({
       previewRow: null,
       library: [],
+      libraryLoaded: false,
       libraryError: null,
     }),
   );

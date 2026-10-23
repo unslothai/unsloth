@@ -21,6 +21,7 @@ test("signing out clears the reward library and the dataset sample", () => {
   useRlWorkspaceStore.setState({
     previewRow: { prompt: "account A's row" },
     library: [{ name: "a-private-reward" } as never],
+    libraryLoaded: true,
     libraryError: "x",
   });
   const delivered = fireWindowEvent(
@@ -31,6 +32,7 @@ test("signing out clears the reward library and the dataset sample", () => {
   const s = useRlWorkspaceStore.getState();
   assert.equal(s.previewRow, null);
   assert.deepEqual(s.library, []);
+  assert.equal(s.libraryLoaded, false);
   assert.equal(s.libraryError, null);
 });
 
@@ -50,4 +52,18 @@ test("a reward list that arrives after a sign-out is dropped", async () => {
   await pending;
   setAuthFetchHandler(null);
   assert.deepEqual(useRlWorkspaceStore.getState().library, []);
+});
+
+test("the library counts as loaded only once a listing arrives", async () => {
+  useRlWorkspaceStore.setState({
+    library: [],
+    libraryLoaded: false,
+    libraryError: null,
+  });
+  setAuthFetchHandler(async () => Response.json([{ name: "exact-answer" }]));
+  await useRlWorkspaceStore.getState().refreshLibrary();
+  setAuthFetchHandler(null);
+  const s = useRlWorkspaceStore.getState();
+  assert.equal(s.libraryLoaded, true);
+  assert.equal(s.library.length, 1);
 });

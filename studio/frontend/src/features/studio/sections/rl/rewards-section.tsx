@@ -82,12 +82,16 @@ const RULE_ICON: Record<RuleType, IconSvgElement> = {
 
 function RewardSummaryLine({
   record,
+  loaded,
 }: {
   record: RewardRecord | undefined;
-}): ReactElement {
+  loaded: boolean;
+}): ReactElement | null {
   const t = useT();
   if (!record) {
-    return <span className="text-destructive">{t("rl.rewards.invalid")}</span>;
+    return loaded ? (
+      <span className="text-destructive">{t("rl.rewards.invalid")}</span>
+    ) : null;
   }
   const summary = summarizeRule(record.rule);
   if (!summary.type) {
@@ -275,10 +279,11 @@ export function RewardsSection(): ReactElement {
       mapping: s.rlRoleMapping,
     })),
   );
-  const { library, libraryError, refreshLibrary, previewRow } =
+  const { library, libraryLoaded, libraryError, refreshLibrary, previewRow } =
     useRlWorkspaceStore(
       useShallow((s) => ({
         library: s.library,
+        libraryLoaded: s.libraryLoaded,
         libraryError: s.libraryError,
         refreshLibrary: s.refreshLibrary,
         previewRow: s.previewRow,
@@ -433,7 +438,7 @@ export function RewardsSection(): ReactElement {
                   </span>
                 </p>
                 <p className="truncate text-ui-11p5 text-muted-foreground/85">
-                  <RewardSummaryLine record={record} />
+                  <RewardSummaryLine record={record} loaded={libraryLoaded} />
                 </p>
               </div>
               <div className="flex items-center gap-1 text-ui-11 text-muted-foreground">
