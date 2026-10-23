@@ -1029,7 +1029,8 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
 
 def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
     """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
-    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part)."""
+    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
+    block pool and reads the whole-step pool on the current card."""
     held = 0
     try:
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
@@ -1037,11 +1038,47 @@ def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
     except Exception:  # noqa: BLE001
         pass
     try:
+        # The whole-step pool reading is per current card, so a named card other than it is made current for the read.
         from .diffusion_cuda_graph import live_pool_free_bytes
-        held += int(live_pool_free_bytes())
+
+        scope = contextlib.nullcontext()
+        if device is not None:
+            import torch
+            try:
+                current = int(torch.cuda.current_device())
+            except Exception:  # noqa: BLE001 - no current card to compare: switch to the named one
+                current = None
+            if current != int(device):
+                scope = torch.cuda.device(int(device))
+        with scope:
+            held += int(live_pool_free_bytes())
     except Exception:  # noqa: BLE001 -- no graph layer: nothing held
         pass
     return held
+
+
+def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
+    """Bytes this process's caching allocator holds reserved-but-unallocated on CUDA ``device`` (the current card
+    when None) that an ordinary allocation can take back, minus the CUDA graph pools that only their graphs may reuse
+    (``_graph_held_cache_bytes``). None when the allocator cannot be read. May be negative; callers credit only a
+    positive figure."""
+    try:
+        import torch
+        if device is None:
+            reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+        else:
+            reclaimable = int(torch.cuda.memory_reserved(device)) - int(
+                torch.cuda.memory_allocated(device)
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    pool_device = device
+    if pool_device is None:
+        try:
+            pool_device = torch.cuda.current_device()
+        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+            pool_device = None
+    return reclaimable - _graph_held_cache_bytes(pool_device)
 
 
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
@@ -1074,16 +1111,9 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     snapshot = snapshot_device_memory(target)
     if snapshot.free_mib is None:
         return snapshot
-    try:
-        import torch
-        reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
-    except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
+    reclaimable = cuda_reclaimable_bytes()
+    if reclaimable is None:  # no allocator reading: the plain snapshot still stands
         return snapshot
-    try:
-        device = torch.cuda.current_device()
-    except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
-        device = None
-    reclaimable -= _graph_held_cache_bytes(device)
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
