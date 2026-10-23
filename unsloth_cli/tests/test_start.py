@@ -1126,6 +1126,23 @@ def test_write_codex_parent_overlay_shares_a_token_refresh_without_symlinks(tmp_
     assert (source / "auth.json").read_text() == '{"refresh_token": "rt-2"}'
 
 
+def test_write_codex_parent_overlay_copies_state_dbs_without_symlinks(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    for name in ("state_5.sqlite", "state_5.sqlite-wal", "history.jsonl"):
+        (source / name).write_bytes(b"data")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    overlay = start.write_codex_parent_overlay(tmp_path / "session" / "parent")
+    for name in ("state_5.sqlite", "state_5.sqlite-wal", "history.jsonl"):
+        assert (overlay / name).read_bytes() == b"data"
+        assert not os.path.samefile(overlay / name, source / name)
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "needs symlink privilege")
 @pytest.mark.parametrize("home_exists", [False, True])
 def test_write_codex_parent_overlay_keeps_a_first_login(tmp_path, monkeypatch, home_exists):
