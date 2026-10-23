@@ -8910,13 +8910,45 @@ def _bootstrap_uv() -> bool:
     return True
 
 
+# CA trust floor. certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3. pip before 26.2.2
+# always verifies TLS with its own vendored certifi (pip dropped Python 3.9 before that release).
+_TRUST_FLOOR_CERTIFI = "certifi>=2026.10.19"
+_TRUST_FLOOR_PIP = "pip>=26.2.2"
+
+
+def _trust_floor_specs() -> list[str]:
+    """The trust-floor requirements this venv does not already satisfy."""
+    wanted = [_TRUST_FLOOR_CERTIFI]
+    if sys.version_info >= (3, 10):
+        wanted.append(_TRUST_FLOOR_PIP)
+    missing = []
+    for spec in wanted:
+        name, specifier = re.match(r"([a-z]+)(.*)", spec).groups()
+        installed = _installed_distribution_version(name)
+        if installed is None or _version_satisfies(installed, specifier) is not True:
+            missing.append(spec)
+    return missing
+
+
+def _ensure_trust_floor() -> None:
+    """Raise certifi (and pip on 3.10+) to the trust floor. Every setup, update and repair, both
+    modes. A lower bound only: a satisfied venv runs nothing, and nothing is ever downgraded.
+    Offline it warns and carries on; the next run with a network retries."""
+    missing = _trust_floor_specs()
+    if not missing:
+        return
+    if not pip_install_try("Raising the CA trust floor (" + ", ".join(missing) + ")", *missing):
+        _note("warning: could not install " + ", ".join(missing) + "; retrying on the next update")
+
+
 def _venv_pip_is_usable() -> bool:
     """Whether this interpreter already has a pip new enough for the pass.
 
     Read from metadata rather than by spawning it: the bootstrap below reinstalls pip from the
     index on every run, a download and a resolve for a package nothing changed. 23.0 is the
     floor because the constraint and override handling the pass relies on predates it
-    comfortably; a fresh uv venv has no pip at all and still bootstraps.
+    comfortably; a fresh uv venv has no pip at all and still bootstraps. On Python 3.10+ the
+    floor is the trust floor's pip, since an older pip verifies TLS with its own vendored certifi.
     """
     try:
         if importlib.util.find_spec("pip") is None:
@@ -8931,6 +8963,11 @@ def _venv_pip_is_usable() -> bool:
     except (AttributeError, ValueError):
         return False
     if major < 23:
+        return False
+    if (
+        sys.version_info >= (3, 10)
+        and _version_satisfies(installed, _TRUST_FLOOR_PIP[3:]) is not True
+    ):
         return False
     # Metadata survives a truncated pip, and everything without uv is `python -m pip`: one bounded
     # launch settles it.
@@ -12847,6 +12884,10 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
+
+    # 2a. Before the bulk installs and outside every skip path: the bootstrap above only
+    # guarantees an installer, not a current trust store.
+    _ensure_trust_floor()
 
     # A superseded dist-info makes version() and every RECORD consumer choose
     # an arbitrary package version. Repair it before any fast package operation,
