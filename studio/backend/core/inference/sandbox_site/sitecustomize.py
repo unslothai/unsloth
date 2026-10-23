@@ -368,7 +368,6 @@ class _HostPackagesFinder:
         if origin not in cls._extends:
             try:
                 import ast
-
                 with open(origin, "rb") as f:
                     tree = ast.parse(f.read())
                 cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
@@ -379,11 +378,15 @@ class _HostPackagesFinder:
     @classmethod
     def _top_level(cls, body):
         import ast
-
         for node in body:
             yield node
             if isinstance(node, ast.Try):
-                for block in (node.body, node.orelse, node.finalbody, *(h.body for h in node.handlers)):
+                for block in (
+                    node.body,
+                    node.orelse,
+                    node.finalbody,
+                    *(h.body for h in node.handlers),
+                ):
                     yield from cls._top_level(block)
 
     @staticmethod
