@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
 PROGRESS_MIN_INTERVAL_S = 0.2
+# A streamed player answer is flushed this often, so its text reads as typed.
+INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
 MEMORY_EVENTS = 4000
@@ -186,7 +188,8 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     gpu_ops: int = 0
-    cancel_hooks: dict[str, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
+    # Keyed by (node id, For Each iteration): parallel iterations of one node each keep their own hooks.
+    cancel_hooks: dict[tuple, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
     node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
     _last_progress: dict[str, float] = field(default_factory = dict)
     _pending_progress: dict[str, dict] = field(default_factory = dict)
@@ -524,7 +527,7 @@ class NodeContextImpl:
             _LATE_HOOKS.add(task)
             task.add_done_callback(_LATE_HOOKS.discard)
             return
-        self._rs.cancel_hooks.setdefault(self.node_id, []).append(fn)
+        self._rs.cancel_hooks.setdefault((self.node_id, self.iteration), []).append(fn)
 
     @property
     def resident(self) -> dict[str, Optional[str]]:
@@ -544,6 +547,7 @@ class FlowEngine:
     def __init__(self) -> None:
         self.runs: dict[str, RunState] = {}
         self._gpu_lock: Optional[asyncio.Lock] = None
+        self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.handlers: Optional[dict] = None
         # Tests swap these in.
@@ -636,16 +640,11 @@ class FlowEngine:
         inputs: Optional[dict] = None,
         params: Optional[dict] = None,
         hf_token: Optional[str] = None,
+        events: Optional[asyncio.Queue] = None,
     ) -> dict:
-        """Run one entrypoint node (and what it needs, cache first) now and return its outputs."""
-        plan = compile_flow(doc)
-        spec = plan.specs.get(entry)
-        if spec is None or entry not in plan.executable:
-            raise FlowNodeError(f"No runnable node {entry!r} in this flow")
-        if not spec.get("entrypoint"):
-            raise FlowNodeError(f"{spec['title']} is not an entry point a player can call")
-        if plan.owner.get(entry):
-            raise FlowNodeError("An entry point cannot sit inside a For Each group")
+        """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
+        ``events`` receives the run's events as they happen, text deltas included, for a streamed answer."""
+        plan, spec = self._entry(doc, entry)
         account = current_account()
         rs = RunState(
             id = "invoke-" + uuid.uuid4().hex,
@@ -670,17 +669,104 @@ class FlowEngine:
         token, key_id = await asyncio.to_thread(self.mint_key, account)
         rs.caller = flow_caller.make_caller(token, account, app, hf_token)
         rs.key_id = key_id
+        flusher = None
+        if events is not None:
+            rs.subscribers.add(events)
+            flusher = asyncio.create_task(self._flusher(rs, INVOKE_FLUSH_S))
         try:
             env = Env()
             await self._run_scope(
                 rs, [n for n in plan.order if n in need and plan.owner.get(n) is None], env
             )
+            if flusher is not None:
+                rs.flush()
             state = rs.node(entry)
             if state.status == "failed":
                 raise FlowNodeError(state.error or "The entry point failed")
             if state.status not in ("done", "cached"):
                 raise FlowNodeError(state.message or "The entry point did not run")
             return state.outputs or {}
+        finally:
+            if flusher is not None:
+                flusher.cancel()
+                rs.subscribers.discard(events)
+            await asyncio.to_thread(self.revoke_key, key_id)
+
+    def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
+        plan = compile_flow(doc)
+        spec = plan.specs.get(entry)
+        if spec is None or entry not in plan.executable:
+            raise FlowNodeError(f"No runnable node {entry!r} in this flow")
+        if not spec.get("entrypoint"):
+            raise FlowNodeError(f"{spec['title']} is not an entry point a player can call")
+        if plan.owner.get(entry):
+            raise FlowNodeError("An entry point cannot sit inside a For Each group")
+        return plan, spec
+
+    async def warm(
+        self,
+        *,
+        app: Any,
+        flow_id: str,
+        doc: dict,
+        entry: str,
+        hf_token: Optional[str] = None,
+    ) -> bool:
+        """Load the model an entry point answers with, so a player's first call does not wait for it.
+        Calls for the same entry share one load; True once the model is resident (or the entry needs none)."""
+        plan, spec = self._entry(doc, entry)
+        model_kind = spec.get("model_kind")
+        if not model_kind:
+            return True
+        account = current_account()
+        key = (account.account_id, flow_id, entry)
+        task = self._warming.get(key)
+        if task is None or task.done():
+            node = next(n for n in doc.get("nodes") or [] if n.get("id") == entry)
+            params = param_values(spec, node)
+            task = asyncio.create_task(
+                self._warm(app, flow_id, doc, plan, entry, spec, params, account, hf_token)
+            )
+            self._warming[key] = task
+            task.add_done_callback(lambda t, k = key: self._warming.pop(k, None))
+        # A player leaving mid-load does not abort it: the next conversation still wants the model.
+        return await asyncio.shield(task)
+
+    async def _warm(
+        self,
+        app: Any,
+        flow_id: str,
+        doc: dict,
+        plan: Any,
+        entry: str,
+        spec: dict,
+        params: dict,
+        account: Any,
+        hf_token: Optional[str],
+    ) -> bool:
+        rs = RunState(
+            id = "warm-" + uuid.uuid4().hex,
+            flow_id = flow_id,
+            account = account,
+            doc = doc,
+            plan = plan,
+            options = {"params": {}},
+            persist = False,
+            app = app,
+        )
+        rs.hf_token = hf_token
+        token, key_id = await asyncio.to_thread(self.mint_key, account)
+        rs.caller = flow_caller.make_caller(token, account, app, hf_token)
+        rs.key_id = key_id
+        ctx = NodeContextImpl(self, rs, entry, spec, params, {}, 0)
+        try:
+            # Same lane as the entry point itself, so a warm-up never loads under another GPU step.
+            async with self.gpu_lock():
+                await ctx.ensure_model(spec["model_kind"], params.get("model"))
+            return True
+        except Exception as exc:
+            logger.info("flows: warming %s of %s did not load a model: %s", entry, flow_id, exc)
+            return False
         finally:
             await asyncio.to_thread(self.revoke_key, key_id)
 
@@ -693,6 +779,15 @@ class FlowEngine:
             flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
+            # Re-rolling a For Each re-rolls what it runs: its body, nested loops included.
+            forced = set(rs.options.get("force_nodes") or [])
+            stack = [n for n in forced if n in rs.plan.bodies]
+            while stack:
+                for member in rs.plan.bodies.get(stack.pop(), ()):
+                    if member not in forced:
+                        forced.add(member)
+                        stack.append(member)
+            rs.options["force_nodes"] = sorted(forced)
             # Entrypoints (Next Scene, Scene Art, NPC Reply) answer the player through /invoke, not a full run.
             need = (
                 rs.plan.ancestors(targets)
@@ -705,9 +800,19 @@ class FlowEngine:
                     rs.node(nid).status = "idle"
             env = Env()
             flusher = asyncio.create_task(self._flusher(rs))
+            scope = asyncio.create_task(self._run_scope(rs, top, env))
             try:
-                await asyncio.wait_for(self._run_scope(rs, top, env), timeout = MAX_RUN_SECONDS)
+                done, _ = await asyncio.wait({scope}, timeout = MAX_RUN_SECONDS)
+                if not done:
+                    # Stop external jobs while their hooks are registered, then the node tasks themselves.
+                    rs.cancel_event.set()
+                    await self._fire_cancel_hooks(rs)
+                    raise asyncio.TimeoutError
+                scope.result()
             finally:
+                if not scope.done():
+                    scope.cancel()
+                    await asyncio.gather(scope, return_exceptions = True)
                 flusher.cancel()
                 rs.flush()
             if rs.options.get("bake") and not rs.cancelled:
@@ -740,9 +845,13 @@ class FlowEngine:
             )
             rs.emit(f"run.{rs.status}", data = {"outputs": rs.outputs, "error": rs.error})
 
-    async def _flusher(self, rs: RunState) -> None:
+    async def _flusher(
+        self,
+        rs: RunState,
+        interval: float = PROGRESS_MIN_INTERVAL_S,
+    ) -> None:
         while True:
-            await asyncio.sleep(PROGRESS_MIN_INTERVAL_S)
+            await asyncio.sleep(interval)
             rs.flush()
 
     async def _fire_cancel_hooks(self, rs: RunState) -> None:
@@ -766,9 +875,26 @@ class FlowEngine:
         env: Env,
         iteration: Optional[tuple] = None,
     ) -> None:
-        plan = rs.plan
         pending = list(node_ids)
         running: dict[asyncio.Task, str] = {}
+        try:
+            await self._scope_loop(rs, pending, running, env, iteration)
+        except asyncio.CancelledError:
+            # Node tasks are not children of this one: cancel and await them, or they outlive the run.
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions = True)
+            raise
+
+    async def _scope_loop(
+        self,
+        rs: RunState,
+        pending: list[str],
+        running: dict[asyncio.Task, str],
+        env: Env,
+        iteration: Optional[tuple],
+    ) -> None:
+        plan = rs.plan
         gpu_running = 0
         cpu_running = 0
         while pending or running:
@@ -940,6 +1066,11 @@ class FlowEngine:
                     flow_params = ctx.flow_params,
                 )
                 hit = flows_db.cache_get(key)
+                # A cached image, clip or video the user has since deleted is regenerated, not served as a 404.
+                if hit is not None:
+                    from core.flows.nodes._common import gallery_media_present
+                    if not await asyncio.to_thread(gallery_media_present, hit):
+                        hit = None
             except Exception:
                 logger.debug("flows: cache lookup failed", exc_info = True)
                 hit = None
@@ -1002,7 +1133,7 @@ class FlowEngine:
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
         finally:
-            rs.cancel_hooks.pop(nid, None)
+            rs.cancel_hooks.pop((nid, iteration), None)
         outputs = dict(outputs or {})
         if key is not None and spec["cacheable"]:
             try:
