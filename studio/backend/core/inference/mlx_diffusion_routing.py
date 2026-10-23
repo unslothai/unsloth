@@ -56,6 +56,13 @@ def _explicit(value: Any) -> bool:
     return value is not None and str(value).strip().lower() not in _UNSET_TOKENS
 
 
+def _positive(value: Any) -> bool:
+    try:
+        return value is not None and float(value) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def load_blocker(
     *,
     loras: Any = None,
@@ -117,10 +124,15 @@ def request_blocker(
     *,
     family: Optional[str] = None,
     mlx_params: Optional[frozenset[str]] = None,
+    mlx_guidance: Optional[bool] = None,
 ) -> Optional[str]:
-    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only."""
+    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only.
+    ``mlx_guidance``: whether the resident MLX variant applies CFG (None = unknown, not checked)."""
     caps = mlx_capabilities(family)
     get = kwargs.get
+    if mlx_guidance is False and _positive(get("guidance")):
+        # A guidance-distilled MLX variant (Z-Image-Turbo) drops CFG and the negative prompt; diffusers runs them.
+        return "classifier-free guidance (and its negative prompt)"
     workflow = get("workflow")
     if workflow not in (None, "txt2img") and workflow not in caps.workflows:
         return f"the {workflow} workflow"
@@ -325,6 +337,8 @@ class RoutedMlxEngine:
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
         self._epoch = 0
+        # Replacement loads between their first epoch bump and registering their options: no fallback registers.
+        self._replacing = 0
         # diffusers holds a fallback copy of THIS load (the diffusers singleton is shared with plain diffusers loads).
         self._diffusers_ours = False
         self._mlx_dropped = False
@@ -410,10 +424,13 @@ class RoutedMlxEngine:
         )
         return fits
 
-    def _drain_fallback(self) -> bool:
-        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``."""
+    def _drain_fallback(self, *, replacing: bool = False) -> bool:
+        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``.
+        ``replacing`` raises the replacement fence in the same step as the epoch bump."""
         with self._lock:
             self._epoch += 1
+            if replacing:
+                self._replacing += 1
             cancel = self._fallback_cancel
             done = self._fallback_done
         if cancel is not None:
@@ -425,18 +442,26 @@ class RoutedMlxEngine:
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
         """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
-        ours = self._drain_fallback()
-        if ours:
-            self._diffusers().unload()
-        with self._lock:
-            self._diffusers_ours = False
-            self._mlx_dropped = False
-            self._origin_identity = None
-            self._coexist = None
-            self._last = None
-        self._mlx().begin_load(repo_id, **kwargs)
-        with self._lock:
-            self._load_kwargs = {"repo_id": repo_id, **kwargs}
+        # Fenced until this load's options are saved: a request routed meanwhile saw the old model resident and
+        # would load the old options into diffusers (or unload the new MLX load).
+        ours = self._drain_fallback(replacing = True)
+        try:
+            if ours:
+                self._diffusers().unload()
+            with self._lock:
+                self._diffusers_ours = False
+                self._mlx_dropped = False
+                self._origin_identity = None
+                self._coexist = None
+                self._last = None
+            self._mlx().begin_load(repo_id, **kwargs)
+            with self._lock:
+                self._load_kwargs = {"repo_id": repo_id, **kwargs}
+        finally:
+            with self._lock:
+                # A second bump: a route decided inside the fence holds a stale epoch once it lifts.
+                self._epoch += 1
+                self._replacing -= 1
         return self.status()
 
     def _diffusers_load_kwargs(self) -> dict[str, Any]:
@@ -456,7 +481,7 @@ class RoutedMlxEngine:
         # Epoch check and registration are one step: a new load either sees this fallback in
         # _drain_fallback (and waits for it) or this request sees the new epoch and touches nothing.
         with self._lock:
-            if self._epoch != epoch:
+            if self._epoch != epoch or self._replacing:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             self._fallback_cancel = cancel
             self._fallback_done = done
@@ -529,6 +554,13 @@ class RoutedMlxEngine:
                     self._active_generate_account = None
             done.set()
 
+    def _mlx_guidance(self) -> Optional[bool]:
+        try:
+            value = self._mlx().status().get("supports_guidance")
+        except Exception:  # noqa: BLE001 -- unknown: not checked
+            return None
+        return None if value is None else bool(value)
+
     def _identity_snapshot(self) -> dict[str, Any]:
         """Each resident engine's identity, read once: the request validates and forwards these same values."""
         out: dict[str, Any] = {}
@@ -556,10 +588,13 @@ class RoutedMlxEngine:
             mlx, diffusers = self._mlx(), self._diffusers()
             mlx_params = frozenset(_parameters(mlx.generate))
             family = self._family()
-            blocker = request_blocker(
-                kwargs, family = getattr(family, "name", None), mlx_params = mlx_params
-            )
             mlx_resident = self._mlx_resident()
+            blocker = request_blocker(
+                kwargs,
+                family = getattr(family, "name", None),
+                mlx_params = mlx_params,
+                mlx_guidance = self._mlx_guidance() if mlx_resident else None,
+            )
             diffusers_resident = self._diffusers_resident()
             fallback_available = self._fallback_available(family)
             coexist = False

@@ -159,6 +159,8 @@ class _Diffusers(_Engine):
         max_shift: Optional[float] = None,
         upscale_model: Optional[str] = None,
         tile_vae: bool = False,
+        guidance: float = 0.0,
+        negative_prompt: Optional[str] = None,
     ) -> dict:
         return self._run(
             expected_load,
@@ -710,3 +712,132 @@ def test_a_superseded_fallback_never_unloads_the_new_load(rig):
     assert rig.log == []
     assert rig.mlx._state is not None and rig.mlx._state.repo_id == "someone/Other-GGUF"
     assert rig.engine.is_loaded
+
+
+def _pause_mlx_begin_load(rig):
+    entered, release = threading.Event(), threading.Event()
+    real_begin_load = rig.mlx.begin_load
+
+    def _paused(repo_id, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return real_begin_load(repo_id, **kwargs)
+
+    rig.mlx.begin_load = _paused
+    return entered, release
+
+
+def _in_thread(fn):
+    outcome: list = []
+
+    def _run():
+        try:
+            outcome.append(fn())
+        except Exception as exc:  # noqa: BLE001
+            outcome.append(exc)
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    return worker, outcome
+
+
+def test_no_fallback_registers_while_a_replacement_is_being_set_up(rig):
+    # The replacement bumped the epoch but has not registered its MLX load or options: the old model still
+    # reports ready, so a fallback now would load the old options into diffusers while MLX moves on.
+    entered, release = _pause_mlx_begin_load(rig)
+    replacer, replaced = _in_thread(
+        lambda: rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
+    )
+    assert entered.wait(5)
+    with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
+        _img2img(rig.engine)
+    assert ("diffusers", "load") not in rig.log
+    release.set()
+    replacer.join(5)
+    assert not replacer.is_alive() and not isinstance(replaced[0], Exception), replaced
+    assert rig.mlx._state.repo_id == "someone/Other-GGUF"
+    assert rig.diffusers._state is None
+    assert rig.engine._load_kwargs["repo_id"] == "someone/Other-GGUF"
+
+
+def test_a_route_decided_during_replacement_setup_never_registers_after_it(rig):
+    # Routed inside the fence (old model ready), registered after it lifts: still stale, never served.
+    entered, release = _pause_mlx_begin_load(rig)
+    routed, go = threading.Event(), threading.Event()
+    real_fallback = rig.engine._load_fallback
+
+    def _paused_fallback(**kwargs):
+        routed.set()
+        assert go.wait(5)
+        return real_fallback(**kwargs)
+
+    rig.engine._load_fallback = _paused_fallback
+    replacer, _ = _in_thread(
+        lambda: rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
+    )
+    assert entered.wait(5)
+    requester, outcome = _in_thread(lambda: _img2img(rig.engine)["engine"])
+    assert routed.wait(5)
+    release.set()
+    replacer.join(5)
+    assert not replacer.is_alive()
+    rig.log.clear()
+    go.set()
+    requester.join(5)
+    assert not requester.is_alive()
+    assert len(outcome) == 1 and isinstance(outcome[0], RuntimeError), outcome
+    assert str(outcome[0]) == DIFFUSION_CANCELLED_MSG
+    assert rig.log == []
+    assert rig.mlx._state.repo_id == "someone/Other-GGUF"
+    assert rig.diffusers._state is None
+
+
+def _guidance_distilled_mlx(rig, monkeypatch, *, supports_guidance):
+    real_status, real_run = rig.mlx.status, rig.mlx._run
+
+    def _status():
+        out = real_status()
+        if out.get("loaded"):
+            out["supports_guidance"] = supports_guidance
+        return out
+
+    def _generate(
+        *,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+        width: Optional[int] = 1024,
+        height: Optional[int] = 1024,
+        seed: Optional[int] = None,
+        guidance: float = 0.0,
+        expected_load: Any = None,
+    ) -> dict:
+        return real_run(expected_load, {"prompt": prompt, "guidance": guidance, "seed": seed})
+
+    monkeypatch.setattr(rig.mlx, "status", _status)
+    monkeypatch.setattr(rig.mlx, "generate", _generate)
+
+
+def test_explicit_guidance_the_mlx_variant_drops_runs_on_diffusers(rig, monkeypatch):
+    _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = False)
+    # The Turbo default (guidance 0) stays on MLX, a negative prompt it would ignore on diffusers too.
+    assert _txt2img(rig.engine, guidance = 0.0, negative_prompt = "blurry")["engine"] == "mlx"
+    assert _txt2img(rig.engine)["engine"] == "mlx"
+    assert ("diffusers", "load") not in rig.log
+    result = _txt2img(rig.engine, guidance = 4.0, negative_prompt = "blurry")
+    assert result["engine"] == "diffusers"
+    assert ("diffusers", "load") in rig.log
+
+
+def test_explicit_guidance_stays_on_an_mlx_variant_that_applies_it(rig, monkeypatch):
+    _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = True)
+    assert _txt2img(rig.engine, guidance = 4.0, negative_prompt = "blurry")["engine"] == "mlx"
+    assert ("diffusers", "load") not in rig.log
+
+
+def test_explicit_guidance_without_a_fallback_is_refused_not_dropped(rig, monkeypatch):
+    _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = False)
+    monkeypatch.setattr(families, "family_pipeline_available", lambda _f: False)
+    with pytest.raises(ValueError, match = "guidance .* is not supported on the MLX engine"):
+        _txt2img(rig.engine, guidance = 4.0)
+    assert ("mlx", "generate") not in rig.log
+    assert _txt2img(rig.engine, guidance = 0.0)["engine"] == "mlx"
