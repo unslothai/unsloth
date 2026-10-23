@@ -158,7 +158,11 @@ def test_examples_split_trl_packed_rows_at_seq_lengths():
     packed = pack_dataset(docs, seq_length = 9, strategy = "bfd")
     assert "seq_lengths" in packed.column_names and "position_ids" not in packed.column_names
     out = collect_examples(packed, 100, 2048)
-    assert sorted(ex["input_ids"] for ex in out) == [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12, 13]]
+    assert sorted(ex["input_ids"] for ex in out) == [
+        [1, 2, 3, 4],
+        [5, 6, 7, 8],
+        [9, 10, 11, 12, 13],
+    ]
     by_first = {ex["input_ids"][0]: ex["labels"] for ex in out}
     assert by_first == {
         1: [-100, -100, 3, 4],
@@ -1236,7 +1240,13 @@ def test_export_reattaches_the_head_of_a_hub_full_fine_tune(tmp_path, monkeypatc
     snapshot.mkdir()
     downloads, snapshots = [], []
 
-    def fake_download(repo_id, filename, token = None, revision = None, local_files_only = False):
+    def fake_download(
+        repo_id,
+        filename,
+        token = None,
+        revision = None,
+        local_files_only = False,
+    ):
         if local_files_only:
             snapshots.append((repo_id, filename, revision, token))
             (snapshot / filename).write_text("{}")
