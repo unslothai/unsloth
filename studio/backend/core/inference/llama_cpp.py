@@ -2895,16 +2895,22 @@ def _gguf_set_bytes(path: Path) -> int:
     try:
         if path.is_file():
             total += path.stat().st_size
-        m = _SHARD_RE.match(path.name)
+        m = _SHARD_FULL_RE.match(path.name)
         if m is None or not path.parent.is_dir():
             return total
-        prefix = m.group(1).lower()
+        # llama.cpp names a shard "<prefix>-<i>-of-<count>.gguf" from the first one's, so both must match: a
+        # drafter split as "<main prefix>-MTP-..." or a stale set with another count is not this set.
+        prefix, count = m.group(1).lower(), int(m.group(3))
         for sibling in path.parent.iterdir():
             if sibling.name == path.name:
                 continue
-            # Exact prefix: a drafter split as "<main prefix>-MTP-...-of-..." is its own set.
-            sibling_match = _SHARD_RE.match(sibling.name)
-            if sibling_match is None or sibling_match.group(1).lower() != prefix:
+            sibling_match = _SHARD_FULL_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group(1).lower() != prefix
+                or int(sibling_match.group(3)) != count
+                or not 1 <= int(sibling_match.group(2)) <= count
+            ):
                 continue
             try:
                 if sibling.is_file():

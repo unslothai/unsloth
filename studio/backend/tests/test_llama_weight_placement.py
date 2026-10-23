@@ -178,6 +178,9 @@ def test_a_split_drafter_counts_every_shard(tmp_path):
     # The main model's set in the same folder, whose prefix the drafter's starts with, is not the drafter's.
     for index in (1, 2):
         (tmp_path / f"Model-Q4_K_M-{index:05d}-of-00002.gguf").write_bytes(b"x" * 7)
+    # Nor is a stale set under the same prefix with another shard count.
+    for index in (1, 2, 3, 4):
+        (tmp_path / f"Model-Q4_K_M-MTP-{index:05d}-of-00004.gguf").write_bytes(b"x" * 1000)
     argv = ["llama-server", "-md", str(tmp_path / "Model-Q4_K_M-MTP-00001-of-00003.gguf")]
     assert _extra_weight_file_bytes(argv) == 300
     assert _gguf_set_bytes(tmp_path / "Model-Q4_K_M-00001-of-00002.gguf") == 14
