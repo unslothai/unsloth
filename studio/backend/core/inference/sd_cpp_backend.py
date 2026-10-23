@@ -34,6 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
@@ -3257,6 +3258,7 @@ class SdCppDiffusionBackend:
             )
         return upgraded
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -4423,6 +4425,7 @@ class SdCppDiffusionBackend:
             and workflow in (None, "reference")
         )
 
+    @holds_inference
     def generate(
         self,
         *,
