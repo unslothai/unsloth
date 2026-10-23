@@ -163,8 +163,6 @@ def test_opt_in_on_the_mps_less_cpu_backend_still_picks_mlx(monkeypatch):
     assert _predict() == _select() == ENGINE_MLX
 
 
-
-
 @pytest.mark.parametrize("value", [None, "", "auto", "AUTO"])
 def test_default_and_auto_pick_mlx_on_apple_silicon(monkeypatch, value):
     _apple(monkeypatch)
@@ -573,8 +571,6 @@ def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
     assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]
 
 
-
-
 @pytest.mark.parametrize("value", [None, "auto", "1"])
 @pytest.mark.parametrize("gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q5_1.gguf"])
 def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf):
@@ -609,7 +605,7 @@ def test_every_load_route_and_the_residency_estimate_pass_loras_to_engine_select
 
     root = Path(__file__).resolve().parents[1]
     for rel, minimum in (("routes/inference.py", 3), ("core/inference/gpu_residency.py", 1)):
-        source = (root / rel).read_text()
+        source = (root / rel).read_text(encoding = "utf-8")
         calls = [
             c
             for c in ast.walk(ast.parse(source))
