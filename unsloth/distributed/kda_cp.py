@@ -295,20 +295,24 @@ def _kimi_moe_gate_forward(self, hidden_states: torch.Tensor):
             f"Unsupported scoring function for MoE gating: {self.moe_router_activation_func}"
         )
     scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)
-    group_scores = (
-        scores_for_choice.view(bsz * seq_len, self.num_expert_group, -1)
-        .topk(min(2, self.num_experts // self.num_expert_group), dim = -1)[0]
-        .sum(dim = -1)
-    )
-    group_idx = torch.topk(group_scores, k = self.topk_group, dim = -1, sorted = False)[1]
-    group_mask = torch.zeros_like(group_scores)
-    group_mask.scatter_(1, group_idx, 1)
-    score_mask = (
-        group_mask.unsqueeze(-1)
-        .expand(bsz * seq_len, self.num_expert_group, self.num_experts // self.num_expert_group)
-        .reshape(bsz * seq_len, -1)
-    )
-    tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)
+    # Same group-limited routing as the official Kimi gate (inference path), made differentiable.
+    if self.num_expert_group > 1 and self.num_expert_group > self.topk_group:
+        group_scores = (
+            scores_for_choice.view(bsz * seq_len, self.num_expert_group, -1)
+            .topk(2, dim = -1)[0]
+            .sum(dim = -1)
+        )
+        group_idx = torch.topk(group_scores, k = self.topk_group, dim = -1, sorted = False)[1]
+        group_mask = torch.zeros_like(group_scores)
+        group_mask.scatter_(1, group_idx, 1)
+        score_mask = (
+            group_mask.unsqueeze(-1)
+            .expand(bsz * seq_len, self.num_expert_group, self.num_experts // self.num_expert_group)
+            .reshape(bsz * seq_len, -1)
+        )
+        tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))
+    else:
+        tmp_scores = scores_for_choice
     _, topk_idx = torch.topk(tmp_scores, k = self.top_k, dim = -1, sorted = False)
     topk_weight = scores.gather(1, topk_idx)
     if self.top_k > 1 and self.moe_renormalize:
@@ -323,6 +327,10 @@ def _kimi_sparse_moe_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
     orig_shape = hidden_states.shape
     topk_idx, topk_weight = self.gate(hidden_states)
     flat_hidden = hidden_states.view(-1, hidden_states.shape[-1])
+    # Kimi K3 routes through a latent space: down_proj -> experts -> (norm) -> up_proj.
+    use_latent = getattr(self, "use_latent_moe", False)
+    if use_latent:
+        flat_hidden = self.routed_expert_down_proj(flat_hidden)
 
     cnts = topk_idx.new_zeros((topk_idx.shape[0], len(self.experts)))
     cnts.scatter_(1, topk_idx, 1)
@@ -354,8 +362,12 @@ def _kimi_sparse_moe_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         .mul(topk_weight.unsqueeze(dim = -1))
         .sum(dim = 1)
         .to(flat_hidden.dtype)
-        .view(*orig_shape)
     )
+    if use_latent:
+        if getattr(self, "latent_moe_use_norm", False):
+            y = self.routed_expert_norm(y)
+        y = self.routed_expert_up_proj(y)
+    y = y.view(*orig_shape)
     if getattr(self.config, "num_shared_experts", None) is not None:
         y = y + self.shared_experts(identity)
     return y

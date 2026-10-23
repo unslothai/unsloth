@@ -598,40 +598,19 @@ def _tiny_kimi_linear(k3 = False):
             )
             self.gate = KimiMoEGate(cfg)
             self.shared_experts = KimiBlockSparseMLP(cfg.hidden_size, cfg.moe_intermediate_size)
-            if self.moe_hidden != cfg.hidden_size:
+            self.use_latent_moe = self.moe_hidden != cfg.hidden_size
+            self.latent_moe_use_norm = self.use_latent_moe
+            if self.use_latent_moe:
                 self.routed_expert_down_proj = nn.Linear(cfg.hidden_size, self.moe_hidden, bias = False)
                 self.routed_expert_up_proj = nn.Linear(self.moe_hidden, cfg.hidden_size, bias = False)
-
-    class KimiSparseMoeBlockK3(KimiSparseMoeBlock):
-        # K3 ships its own trainable MoE; patch_kimi_model must leave it alone.
-        def moe_train(self, x, topk_ids, topk_weight):
-            full = torch.zeros(x.shape[0], len(self.experts), dtype = topk_weight.dtype).scatter(
-                1, topk_ids, topk_weight
-            )
-            y = torch.zeros_like(x)
-            for e, expert in enumerate(self.experts):
-                y = y + expert(x) * full[:, e : e + 1].to(x.dtype)
-            return y
-
-        def forward(self, hidden_states):
-            shape = hidden_states.shape
-            flat = hidden_states.reshape(-1, shape[-1])
-            scores = torch.sigmoid(flat.float() @ self.gate.weight.float().T)
-            _, topk_ids = torch.topk(scores + self.gate.e_score_correction_bias, self.gate.top_k, dim = -1)
-            topk_weight = scores.gather(1, topk_ids)
-            topk_weight = topk_weight / (topk_weight.sum(-1, keepdim = True) + 1e-20)
-            x = self.routed_expert_down_proj(flat) if hasattr(self, "routed_expert_down_proj") else flat
-            y = self.moe_train(x, topk_ids, topk_weight * self.gate.routed_scaling_factor)
-            if hasattr(self, "routed_expert_up_proj"):
-                y = self.routed_expert_up_proj(y)
-            return y.view(shape) + self.shared_experts(hidden_states)
+                self.routed_expert_norm = KimiRMSNorm(self.moe_hidden)
 
     class KimiDecoderLayer(nn.Module):
         def __init__(self, cfg, idx):
             super().__init__()
             self.is_linear_attn = idx == 0
             self.self_attn = KimiDeltaAttention(cfg, idx) if self.is_linear_attn else KimiMLAAttention(cfg, idx)
-            self.block_sparse_moe = (KimiSparseMoeBlockK3 if k3 else KimiSparseMoeBlock)(cfg)
+            self.block_sparse_moe = KimiSparseMoeBlock(cfg)
             self.input_layernorm = KimiRMSNorm(cfg.hidden_size)
             self.post_attention_layernorm = KimiRMSNorm(cfg.hidden_size)
 
