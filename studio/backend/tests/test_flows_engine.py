@@ -541,3 +541,25 @@ async def test_forcing_a_for_each_reruns_its_body():
     rs = await _run(eng, d, force_nodes = ["fe"])
     assert rs.status == "completed", rs.error
     assert calls == ["a", "b", "a", "b"]
+
+
+@run_async
+async def test_an_error_outside_a_handler_fails_the_run():
+    eng = _engine({**BASE, "input.list": lambda ctx: _ret({"items": ["a"]})})
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each", max_items = "lots"),
+            node("t", "text.template", group = "fe"),
+            node("o", "output.result", name = "all"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+            edge("fe", "results", "o", "value"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "failed", rs.status
+    assert _status(rs, "fe") == "failed"
