@@ -1174,14 +1174,16 @@ def _float8_params(model):
     found = [
         (n, p)
         for n, p in model.named_parameters()
-        if p.dtype in _FLOAT8 or _is_torchao_weight(p)
+        # torchao's Float8 training weights (torchao.float8, enable_fsdp_float8_all_gather) implement
+        # FSDP2's all-gather hooks, so fully_shard keeps them.
+        if p.dtype in _FLOAT8
+        or (_is_torchao_weight(p) and not type(p).__module__.startswith("torchao.float8"))
     ]
     trainable = [n for n, p in found if p.requires_grad]
     if trainable:
         raise NotImplementedError(
             f"Unsloth: native FSDP2 cannot shard trainable float8 parameters (e.g. {trainable[0]}); FSDP2's "
-            "gather would cast them, and torchao's Float8Tensor (load_in_fp8) has no FSDP2 support. Train "
-            "LoRA on a frozen FP8 base, or load in 16-bit."
+            "gather would cast them. Train LoRA on a frozen FP8 base, or load in 16-bit."
         )
     if found:
         _print_rank0(
