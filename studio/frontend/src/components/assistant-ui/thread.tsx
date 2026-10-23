@@ -214,7 +214,7 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, prefillPercent } from "@/features/chat";
+import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -7919,12 +7919,14 @@ const GeneratingStatus: FC = () => {
       </span>
     );
   }
+  const timeLeft = formatPrefillTimeLeft(prefill);
   return (
     <span
       data-slot="prefill-progress"
       className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
     >
       Processing prompt {percent}%
+      {timeLeft ? ` · ${timeLeft}` : null}
       {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
     </span>
   );

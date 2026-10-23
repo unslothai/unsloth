@@ -10,8 +10,14 @@ import type { LiveDecodeProgress, LivePrefillProgress } from "../src/features/ch
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { formatLiveDecode, formatPrefillDetails, prefillLabelShown, prefillPercent, readGenerationProgress } =
-  await import("../src/features/chat/lib/generation-progress.ts");
+const {
+  formatLiveDecode,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillLabelShown,
+  prefillPercent,
+  readGenerationProgress,
+} = await import("../src/features/chat/lib/generation-progress.ts");
 const { describePlacement, loadedPlacementFrom } = await import(
   "../src/features/chat/lib/partial-offload.ts"
 );
@@ -39,6 +45,23 @@ test("prefill frames read into store shape, clamped, and give a whole percent", 
   assert.deepEqual(update.prefill, { processed: 5316, total: 5316, cached: 7000, tokPerS: 1326.4 });
   assert.equal(prefillPercent({ processed: 2048, total: 5316, cached: 0, tokPerS: null }), 38);
   assert.equal(prefillPercent({ processed: 10, total: null, cached: null, tokPerS: null }), null);
+});
+
+test("a follow-up in a long chat counts only the part the cache did not cover", () => {
+  // 29,000 of 30,000 tokens reused: halfway through the new 1,000, not 98% of the whole prompt.
+  const followUp = { processed: 29500, total: 30000, cached: 29000, tokPerS: 1000 };
+  assert.equal(prefillPercent(followUp), 50);
+  assert.equal(formatPrefillDetails(followUp, "en-US"), "500 / 1,000 tokens · 1,000 tok/s");
+  // llama.cpp evaluates at least one token, but a cache that covers it all is done, not NaN.
+  assert.equal(prefillPercent({ processed: 30000, total: 30000, cached: 30000, tokPerS: null }), 100);
+});
+
+test("the time left follows the rate so far and drops out under a second", () => {
+  assert.equal(formatPrefillTimeLeft({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }), "11s left");
+  assert.equal(formatPrefillTimeLeft({ processed: 5000, total: 200000, cached: 0, tokPerS: 1500 }), "2m 10s left");
+  // The first sample's rate is noise, and at the end there is nothing worth counting down.
+  assert.equal(formatPrefillTimeLeft({ processed: 22, total: 18844, cached: 0, tokPerS: 242 }), null);
+  assert.equal(formatPrefillTimeLeft({ processed: 18500, total: 18880, cached: 0, tokPerS: 1400 }), null);
 });
 
 test("malformed frames are dropped rather than drawn as NaN", () => {

@@ -6,6 +6,7 @@ import type {
   LiveGenerationProgress,
   LivePrefillProgress,
 } from "../stores/chat-runtime-store";
+import { formatEta } from "../utils/format-transfer";
 
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
@@ -62,15 +63,18 @@ export function readGenerationProgress(
   return null;
 }
 
-/** "9,216 / 23,700 tokens · 1,326 tok/s" for the Generation details setting. */
+/** "9,216 / 23,700 tokens · 1,326 tok/s" for the Generation details setting, counted past the
+ *  cached prefix like the percent. */
 export function formatPrefillDetails(
   prefill: LivePrefillProgress,
   locale?: string,
 ): string {
+  const cached = prefill.cached ?? 0;
+  const done = Math.max(0, prefill.processed - cached).toLocaleString(locale);
   const parts = [
     prefill.total
-      ? `${prefill.processed.toLocaleString(locale)} / ${prefill.total.toLocaleString(locale)} tokens`
-      : `${prefill.processed.toLocaleString(locale)} tokens`,
+      ? `${done} / ${Math.max(0, prefill.total - cached).toLocaleString(locale)} tokens`
+      : `${done} tokens`,
   ];
   // The label shows only once prefillLabelShown has a rate it trusts, so the rate is past the first sample.
   if (prefill.tokPerS !== null) {
@@ -107,6 +111,12 @@ export function prefillLabelShown(
   return left !== null && left >= PREFILL_LABEL_MIN_SECONDS;
 }
 
+/** "12s left" at the rate so far, like the load toast; null without a trusted rate or under a second. */
+export function formatPrefillTimeLeft(prefill: LivePrefillProgress): string | null {
+  const left = prefillSecondsLeft(prefill);
+  return left !== null && left >= 1 ? `${formatEta(left)} left` : null;
+}
+
 /** "4,306 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)", every number in the reader's locale. */
 export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): string {
   const parts = [
@@ -128,7 +138,12 @@ export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): s
   return parts.join(" · ");
 }
 
+/** Percent of the part of the prompt the cache did not cover, llama.cpp's "timed progress": a
+ *  follow-up in a long chat would otherwise start near 100% and crawl through the last few. */
 export function prefillPercent(prefill: LivePrefillProgress): number | null {
   if (!prefill.total) return null;
-  return Math.min(100, Math.max(0, Math.floor((prefill.processed / prefill.total) * 100)));
+  const cached = prefill.cached ?? 0;
+  const todo = prefill.total - cached;
+  if (todo <= 0) return 100;
+  return Math.min(100, Math.max(0, Math.floor(((prefill.processed - cached) / todo) * 100)));
 }
