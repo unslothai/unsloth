@@ -322,3 +322,241 @@ def test_cfg_parallel_router_splits_and_keeps_both_branches_on_the_primary():
     for a, b in zip(routed, plain):
         assert torch.equal(a, b)
     assert zs.zimage_cfg_split_status(pipe)["batched"] == 0
+
+
+def test_compiled_only_keeps_an_eager_denoiser_batched_and_splits_once_compiled():
+    """Eager tier: the split has no graph to protect and two serial calls are slower, so the guided call stays batched;
+    a compile engaged after the load (deferred / auto compile) splits from the next render on."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    args = _guided_args(_latent(10), torch.tensor([0.4]), 9, 12, 10)
+    with zs.render(pipe, 1):
+        eager = _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 0}
+    with torch.no_grad():
+        batched = model(*args, return_dict = False)[0]
+    for a, b in zip(eager, batched):
+        assert torch.equal(a, b)
+    _compile_blocks(model)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+@pytest.mark.parametrize("engage", ["regional_mark", "compiled_block", "cuda_graphs"])
+def test_compiled_only_splits_every_engaged_form(engage):
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    if engage == "regional_mark":
+        model._unsloth_regional_compile_kwargs = {"dynamic": True}
+    elif engage == "compiled_block":
+        model.layers[0].compile(backend = "eager", dynamic = True)
+    else:
+        pipe._unsloth_cuda_graphs = (object(),)
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(11), torch.tensor([0.4]), 45, 9, 11))
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_studio_load_arms_the_split_compiled_only():
+    import ast
+    import pathlib
+
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "install_zimage_cfg_split"
+    ]
+    assert calls
+    for call in calls:
+        flags = {k.arg: k.value for k in call.keywords}
+        assert (
+            isinstance(flags.get("compiled_only"), ast.Constant)
+            and flags["compiled_only"].value is True
+        )
+
+
+def test_compiled_only_failed_compile_runs_batched():
+    """A compile that fell back to eager at its first forward leaves the regional-compile marks on the transformer; the
+    load runs eager, so the guided call stays batched."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    model._unsloth_regional_compile_kwargs = {"dynamic": True}
+    model._unsloth_compile_guard = types.SimpleNamespace(error = "BackendCompilerFailed: boom")
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(12), torch.tensor([0.4]), 9, 12, 12))
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    model._unsloth_compile_guard.error = None
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(12), torch.tensor([0.4]), 9, 12, 12))
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_compiled_only_sees_graphs_on_a_shared_workflow_transformer():
+    """img2img / inpaint pipelines built by from_pipe share the transformer (and its graph wrapper) but not the root
+    pipe's ``_unsloth_cuda_graphs``: the live wrapper on the denoiser keeps the split."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _model()
+    root = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(root, offload_policy = "none", compiled_only = True)
+    wrapper = cg.GraphedForward(model)
+    wrapper.enabled = True  # armed but never installed: the test runs eager on CPU
+    workflow = types.SimpleNamespace(transformer = model)
+    try:
+        with zs.render(workflow, 1):
+            _run(model, *_guided_args(_latent(13), torch.tensor([0.4]), 9, 12, 13))
+        assert zs.zimage_cfg_split_status(root)["split"] == 1
+        wrapper.enabled = False
+        with zs.render(workflow, 1):
+            _run(model, *_guided_args(_latent(13), torch.tensor([0.4]), 9, 12, 13))
+        assert zs.zimage_cfg_split_status(root)["split"] == 1
+    finally:
+        cg._LIVE_WRAPPERS.discard(wrapper)
+
+
+def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
+    """An eager guided call that runs out of memory batched retries as the two half-batch calls, and keeps splitting
+    for the rest of that render; the next render tries batched again."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    args = _guided_args(_latent(14), torch.tensor([0.4]), 9, 12, 14)
+    want = _run(model, *args)
+    real = type(model).forward
+    batches = []
+
+    def forward(self, x, t, cap, **kw):
+        batches.append(len(x))
+        if len(x) == 2:
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return real(self, x, t, cap, **kw)
+
+    monkeypatch.setattr(type(model), "forward", forward)
+    with zs.render(pipe, 1):
+        got = _run(model, *args)
+        _run(model, *args)
+    assert batches == [2, 1, 1, 1, 1]
+    for a, b in zip(got, want):
+        assert torch.allclose(a, b, atol = 1e-5)
+    assert zs.zimage_cfg_split_status(pipe)["oom_split"] == 1
+    batches.clear()
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert batches[0] == 2
+    monkeypatch.setattr(
+        type(model), "forward", lambda self, *a, **k: (_ for _ in ()).throw(ValueError("x"))
+    )
+    with pytest.raises(ValueError), zs.render(pipe, 1):
+        _run(model, *args)
+
+
+def test_eager_oom_split_keeps_static_skip_branch_keys(monkeypatch):
+    """A batched eager call that runs out of memory consumed a static-skip ordinal; the two halves still key cond as
+    ``#0`` and uncond as ``#1``, so a later skipped step reuses each branch's own prediction."""
+    from core.inference import diffusion_step_skip as ss
+
+    class ZImageTransformer2DModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fail_batched = False
+            self.batches = []
+
+        def forward(
+            self,
+            x,
+            t,
+            cap,
+            return_dict = False,
+        ):
+            self.batches.append(len(x))
+            if self.fail_batched and len(x) == 2:
+                raise torch.OutOfMemoryError("CUDA out of memory")
+            return ([torch.full_like(item, float(c.item())) for item, c in zip(x, cap)],)
+
+    monkeypatch.setattr(zs, "_empty_cache", lambda: None)
+    model = ZImageTransformer2DModel().eval()
+    pipe = types.SimpleNamespace(transformer = model)
+    ss.install_static_step_skip(pipe)
+    try:
+        zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+        ss.reset_static_step_skip(pipe, 12, step_signal = True)
+        skip = model._unsloth_static_skip
+        outputs = []
+        with zs.render(pipe, 1), torch.no_grad():
+            for step in range(4):
+                model.fail_batched = step == 2
+                out = model(
+                    [torch.zeros(1), torch.zeros(1)],
+                    torch.tensor([1.0 - step / 12] * 2),
+                    [torch.tensor([10.0]), torch.tensor([-10.0])],
+                    return_dict = False,
+                )[0]
+                outputs.append([x.item() for x in out])
+                ss.mark_step_end(pipe)
+        assert not skip.plan[3] and skip.stats["skipped"] > 0
+        assert outputs == [[10.0, -10.0]] * 4
+        assert zs.zimage_cfg_split_status(pipe)["oom_split"] == 1
+    finally:
+        zs.uninstall_zimage_cfg_split(pipe)
+        ss.uninstall_static_step_skip(pipe)
+
+
+def test_compiled_only_eager_with_a_disabled_router_runs_batched():
+    """A CFG-parallel router that gave up (replica build or run failed) pairs nothing: the eager call stays batched."""
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    router = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.disabled_reason = "replica failed"
+    model.__dict__["forward"] = router
+    model.__dict__["_unsloth_cfg_router"] = router
+    try:
+        with zs.render(pipe, 1):
+            _run(model, *_guided_args(_latent(14), torch.tensor([0.4]), 9, 12, 14))
+        assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    finally:
+        model.__dict__.pop("forward", None)
+        model.__dict__.pop("_unsloth_cfg_router", None)
+
+
+def test_compiled_only_ignores_a_poisoned_graph_handle():
+    """A whole-step capture that failed for good stays in ``_unsloth_cuda_graphs`` but replays nothing."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    handle = types.SimpleNamespace(enabled = True, poisoned = True, fallback = None, fallback_handle = None)
+    pipe._unsloth_cuda_graphs = (handle,)
+    args = _guided_args(_latent(15), torch.tensor([0.4]), 9, 12, 15)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    handle.fallback_handle = types.SimpleNamespace(enabled = True, poisoned = False)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_compiled_only_honours_the_background_compile_eager_gate():
+    """A render recording for a pending background compile bypasses compiled calls and graphs: it runs batched."""
+    from core.inference import diffusion_bg_compile as bg
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    pipe._unsloth_cuda_graphs = (object(),)
+    args = _guided_args(_latent(16), torch.tensor([0.4]), 9, 12, 16)
+    with bg.force_eager(), zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1

@@ -10252,8 +10252,11 @@ class DiffusionBackend:
                     install_cfg_batch(
                         pipe, offload_policy = effective_policy, speed_mode = speed_mode, logger = logger
                     )
-                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
-                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new.
+                    # compiled_only: an eager denoiser keeps the batched guided call (no graph to protect).
+                    install_zimage_cfg_split(
+                        pipe, offload_policy = effective_policy, logger = logger, compiled_only = True
+                    )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
