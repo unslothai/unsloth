@@ -2514,6 +2514,13 @@ def _h3_planned_denoiser_bytes(
 
 def _h3_free_device_bytes(device: str) -> Optional[int]:
     """Live free VRAM, or None when it cannot be read. None means "cannot tell", never zero."""
+    free = _h3_signed_free_device_bytes(device)
+    return None if free is None else max(0, free)
+
+
+def _h3_signed_free_device_bytes(device: str) -> Optional[int]:
+    """:func:`_h3_free_device_bytes` before the clamp at 0: negative = how far the card already sits inside the
+    user's VRAM Budget reserve, which residency sizing must charge against its cache and resident credits."""
     if device != "cuda":
         return None
     try:
@@ -2524,7 +2531,7 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         # Windows ROCm over-reports free (#8403); pinning the denoiser on that reading is how a card that is already
         # full still looks roomy. The user's VRAM Budget keeps its share of the card free (0 at the default).
         free, total = trusted_mem_get_info()
-        return max(0, int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20))
+        return int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20)
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
 
@@ -2647,8 +2654,8 @@ def _h3_residency_budget_bytes(
     fragmentation: bool = True,
     top_gb: float = 0.0,
 ) -> int:
-    """Device bytes the resident set may occupy for this request: free + allocator cache + resident, minus the
-    request's largest phase. Negative = not even fully streamed fits. Unreadable is 0 (all streamed)."""
+    """Device bytes the resident set may occupy for this request: free + allocator cache + resident - budget reserve,
+    minus the request's largest phase. Negative = not even fully streamed fits. Unreadable is 0 (all streamed)."""
     try:
         import torch
 
@@ -2656,7 +2663,8 @@ def _h3_residency_budget_bytes(
         from .video_minimax_h3_residency import h3_phase_need_gb
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
 
-        free = _h3_free_device_bytes(device)
+        # Signed: a card already inside the budget reserve owes that deficit before cache and resident groups count.
+        free = _h3_signed_free_device_bytes(device)
         if free is None:
             return 0
         cached = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())

@@ -367,3 +367,53 @@ def test_video_h3_capacity_probe_charges_the_same_reserve_as_placement(fraction,
     fraction["value"] = 0.50
     # an idle card: what the plan sees before the download equals what placement sees after it
     assert vid._h3_device_capacity_bytes("cuda") == vid._h3_free_device_bytes("cuda") == total // 2
+
+
+def test_companion_card_rank_uses_the_fast_limit_in_fast_mode(fraction):
+    import core.inference.diffusion_multigpu as mg
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "a", total_mib = 24 * GiB, free_mib = 23 * GiB),
+        1: mg.DeviceProbe(ordinal = 1, name = "a", total_mib = 24 * GiB, free_mib = 20 * GiB),
+        2: mg.DeviceProbe(ordinal = 2, name = "b", total_mib = 192 * GiB, free_mib = 26010),
+    }
+    selection = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))
+    fraction["value"] = 0.96
+    # auto ranks by the safe budget (cuda:2 slightly ahead); fast admits by the fast budget, where cuda:1 holds more
+    fast = {
+        o: dm._fast_device_budget_mib(
+            DeviceMemory("cuda", "cuda", "discrete_vram", probes[o].free_mib, probes[o].total_mib)
+        )
+        for o in (1, 2)
+    }
+    assert fast[1] > fast[2]
+    assert mg.best_secondary(selection, probes) == 2
+    assert mg.best_secondary(selection, probes, mode = "fast") == 1
+
+
+def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.video as vid
+    import core.inference.video_minimax_h3_residency as res
+    from utils import hardware
+
+    # 2 GiB free of 24 GiB, 1 GiB allocator cache, 8 GiB of resident groups; the phase itself needs nothing here
+    monkeypatch.setattr(
+        hardware, "trusted_mem_get_info", lambda *a, **k: (2 * GiB << 20, 24 * GiB << 20)
+    )
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 9 * GiB << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 8 * GiB << 20)
+    monkeypatch.setattr(res, "h3_phase_need_gb", lambda *a, **k: 0.0)
+    residency = types.SimpleNamespace(resident_bytes = lambda: 8 * GiB << 20)
+
+    def budget():
+        return vid._h3_residency_budget_bytes(
+            residency, "cuda", width = 64, height = 64, frames = 1, te_streamed = True, te_scheme = None
+        )
+
+    assert budget() == 11 * GiB << 20  # default budget: free + cache + resident
+    fraction["value"] = 0.50  # keeps 12 GiB free: the card is already 10 GiB inside it
+    assert budget() == -(1 * GiB << 20)
+    assert (
+        vid._h3_free_device_bytes("cuda") == 0
+    )  # the plain free reading still never goes negative

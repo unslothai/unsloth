@@ -339,7 +339,7 @@ def test_refine_plan_for_multigpu(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     assert mg.refine_plan_for_multigpu(object(), plan) is plan
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
@@ -1095,7 +1095,7 @@ def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.fallback_plan is plan
@@ -1141,7 +1141,7 @@ def test_post_load_split_keeps_vae_tiling(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1
@@ -1563,7 +1563,7 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         assert mg.refine_plan_for_multigpu(object(), plan) is plan
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
@@ -1890,7 +1890,7 @@ def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
     }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
     legacy = _plan(explicit_offload = True)
     assert legacy.estimates.get("explicit_cpu_offload")
     moded = _plan(explicit_offload = True, requested_mode = "auto")

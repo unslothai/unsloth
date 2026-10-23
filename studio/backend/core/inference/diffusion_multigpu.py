@@ -305,16 +305,25 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
 
 
 def best_secondary(
-    selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
+    selection: MultiGpuSelection,
+    probes: Optional[dict[int, DeviceProbe]] = None,
+    *,
+    mode: Optional[str] = None,
 ) -> Optional[int]:
     if not selection.secondaries:
         return None
-    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
+    from .diffusion_memory import (
+        DeviceMemory,
+        _fast_device_budget_mib,
+        _safe_device_budget_mib,
+        _user_budget_reserve_mib,
+    )
 
-    # Raw free at the default budget (the order is unchanged there). Under a lowered one, the safe budget the
-    # secondary limits are cut from, i.e. the larger of the card's planner reserve and the user's: a big, partly used
-    # card can hold less than a small idle one.
+    # Raw free at the default budget (the order is unchanged there). Under a lowered one, the budget the secondary
+    # limit is cut from for ``mode`` (fast: the fast budget, else the safe one), i.e. the larger of the card's planner
+    # reserve and the user's: a big, partly used card can hold less than a small idle one.
     budgeted = _user_budget_reserve_mib(1 << 20) > 0
+    limit_of = _fast_device_budget_mib if mode == "fast" else _safe_device_budget_mib
 
     def usable(free: Optional[int], total: Optional[int]) -> int:
         if free is None:
@@ -322,7 +331,7 @@ def best_secondary(
         if not budgeted:
             return int(free)
         memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free), total)
-        return int(_safe_device_budget_mib(memory) or 0)
+        return int(limit_of(memory) or 0)
 
     if probes is None and selection.automatic:
         free = {o: _free_total_mib(o) for o in selection.secondaries}
@@ -743,10 +752,10 @@ def refine_plan_for_multigpu(
     sizes = _loaded_component_mib(pipe)
     if not sizes:
         return one_card_plan("component sizes are unreadable")
-    secondary = best_secondary(selection)
+    mode = getattr(plan, "requested_mode", None)
+    secondary = best_secondary(selection, mode = mode)
     if secondary is None:
         return one_card_plan("no second card")
-    mode = getattr(plan, "requested_mode", None)
     sec_limit = secondary_resident_limit_mib(secondary, mode)
     if sec_limit is None:
         return one_card_plan(f"free memory of cuda:{secondary} is unknown")
