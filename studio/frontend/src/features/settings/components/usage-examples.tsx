@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   Select,
   SelectContent,
@@ -30,7 +31,6 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
-  ArrowRight01Icon,
   ArrowUpRight01Icon,
   BotIcon,
   Copy01Icon,
@@ -945,7 +945,7 @@ export function UsageExamples({
             >
               <HugeiconsIcon icon={BotIcon} className="size-3.5" />
               {t("settings.apiKeys.openAgentsTab")}
-              <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+              <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
             </button>
           ) : (
             <a

@@ -287,6 +287,7 @@ export function NewProjectDialog({
             Cancel
           </Button>
           <Button
+            variant="dark"
             type="button"
             onClick={() => void commitCreate()}
             disabled={

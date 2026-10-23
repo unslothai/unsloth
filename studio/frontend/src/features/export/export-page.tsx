@@ -1727,7 +1727,7 @@ export function ExportPage() {
                             <Button
                               key={f.value}
                               type="button"
-                              variant={active ? "default" : "outline"}
+                              variant={active ? "dark" : "outline"}
                               size="sm"
                               onClick={() => toggleFormat(f.value)}
                               title={f.hint}
@@ -1852,7 +1852,7 @@ export function ExportPage() {
                       <div className="flex flex-wrap gap-2">
                         <Button
                           type="button"
-                          variant={loraAsGguf ? "outline" : "default"}
+                          variant={loraAsGguf ? "outline" : "dark"}
                           size="sm"
                           onClick={() => setLoraAsGguf(false)}
                           title="Adapter weights as safetensors."
@@ -1861,7 +1861,7 @@ export function ExportPage() {
                         </Button>
                         <Button
                           type="button"
-                          variant={loraAsGguf ? "default" : "outline"}
+                          variant={loraAsGguf ? "dark" : "outline"}
                           size="sm"
                           onClick={() => setLoraAsGguf(true)}
                           disabled={diffusionDisabledMethods.includes("gguf")}
@@ -1897,7 +1897,7 @@ export function ExportPage() {
                           <Button
                             type="button"
                             variant={
-                              adapterFormat === "mlx" ? "default" : "outline"
+                              adapterFormat === "mlx" ? "dark" : "outline"
                             }
                             size="sm"
                             onClick={() => setAdapterFormat("mlx")}
@@ -1908,7 +1908,7 @@ export function ExportPage() {
                           <Button
                             type="button"
                             variant={
-                              adapterFormat === "peft" ? "default" : "outline"
+                              adapterFormat === "peft" ? "dark" : "outline"
                             }
                             size="sm"
                             onClick={() => setAdapterFormat("peft")}
@@ -2002,7 +2002,7 @@ export function ExportPage() {
                         <Button
                           type="button"
                           variant={
-                            ggufTarget === "model" ? "default" : "outline"
+                            ggufTarget === "model" ? "dark" : "outline"
                           }
                           size="sm"
                           onClick={() => setGgufTarget("model")}
@@ -2013,7 +2013,7 @@ export function ExportPage() {
                         <Button
                           type="button"
                           variant={
-                            ggufTarget === "lora" ? "default" : "outline"
+                            ggufTarget === "lora" ? "dark" : "outline"
                           }
                           size="sm"
                           onClick={() => setGgufTarget("lora")}
@@ -2268,6 +2268,7 @@ export function ExportPage() {
               {!showPanel && (
                 <div className="flex items-center justify-end">
                   <Button
+                    variant="dark"
                     data-tour="export-cta"
                     disabled={!canExport}
                     onClick={handleOpenPanel}

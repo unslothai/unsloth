@@ -580,7 +580,7 @@ export function DatasetPreviewDialog({
           {/* Loading */}
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3">
-              <div className="rounded-xl corner-squircle bg-primary/5 p-4">
+              <div className="rounded-xl corner-squircle bg-wash-5 p-4">
                 <Spinner className="size-5 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground font-medium">

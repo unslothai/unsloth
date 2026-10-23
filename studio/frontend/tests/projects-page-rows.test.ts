@@ -42,7 +42,7 @@ test("a project row opens its chats in place", () => {
 
 test("the disclosure sits with the name it opens", () => {
   const name = PAGE.indexOf("{project.name}");
-  const chevron = PAGE.indexOf("<ChevronDownIcon", name);
+  const chevron = PAGE.indexOf("icon={ChevronDownStandardIcon}", name);
   assert.notEqual(name, -1, "the name moved");
   assert.notEqual(chevron, -1, "the disclosure moved");
   assert.match(
@@ -108,7 +108,7 @@ test("the pin and the menu are on show, the disclosure follows the cursor", () =
 test("the Updated column names the list's order and turns it around", () => {
   assert.ok(!PAGE.includes(">Modified<"), "the old column name is still rendered");
   assert.match(PAGE, /\n\s*Updated\n(?:\s*\{\/\*[^\n]*\*\/\}\n)?\s*<ArrowDownIcon/);
-  assert.match(PAGE, /import \{ ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
+  assert.match(PAGE, /import \{ ArrowDownIcon, MoreHorizontalIcon \} from "lucide-react";/);
   assert.match(
     PAGE,
     /onClick=\{\(\) => setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)\}/,
