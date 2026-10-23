@@ -524,16 +524,21 @@ def inference_running():
     global _inference_depth
     with _gap:
         _inference_depth += 1
-        _prewarm_stop.set()
-        worker = _prewarm_worker
-    if worker is not None and worker is not threading.current_thread():
-        worker.join()
+    _pause_prewarm()
     try:
         yield
     finally:
         with _gap:
             _inference_depth -= 1
         _start_prewarm()
+
+
+def _pause_prewarm() -> None:
+    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end."""
+    _prewarm_stop.set()
+    worker = _prewarm_worker
+    if worker is not None and worker is not threading.current_thread():
+        worker.join()
 
 
 def _start_prewarm() -> None:
@@ -654,6 +659,8 @@ def archive_turns(
     if not can_archive(thread_id):
         logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
+    # A request's own compaction goes first: the gap worker would contend for the embedder.
+    _pause_prewarm()
 
     # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
     # inference layer imports this module.

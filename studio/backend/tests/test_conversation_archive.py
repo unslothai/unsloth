@@ -1694,6 +1694,40 @@ def test_inference_stops_the_gap_worker_and_it_never_overlaps(conn, monkeypatch)
     assert len(overlapped) < 40
 
 
+def test_a_foreground_archive_stops_the_gap_worker_first(conn, monkeypatch):
+    """A new request's compaction must not queue behind a background job (it runs before the stream opens)."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    background = "fg-background-thread"
+    turns = _gap_thread(background, 40, tag = "fgbg")
+    foreground = "fg-foreground-thread"
+    fg_turns = _gap_thread(foreground, 2, tag = "fgfg")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+    worker_calls = []
+
+    def slow(texts, **kwargs):
+        if threading.current_thread().name == "archive-prewarm":
+            started.set()
+            worker_calls.append(len(texts))
+            time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    conversation_archive.note_branch(background, turns)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+
+    assert conversation_archive.archive_turns(foreground, fg_turns) == 2
+    worker = conversation_archive._prewarm_worker
+    assert worker is None or not worker.is_alive()
+    assert len(worker_calls) < 40
+
+
 def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
     thread_id = "edit-thread"
     turns = _gap_thread(thread_id, 2, tag = "edit")
