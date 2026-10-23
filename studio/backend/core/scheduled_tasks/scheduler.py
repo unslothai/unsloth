@@ -329,8 +329,11 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
             or await asyncio.to_thread(_training_is_active)
         ):
             raise RunFailed("model_busy")
+    # Kept only while the carried run's model is still the one loaded: a model loaded since is
+    # the user's latest choice, and the one to put back.
+    keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
     return _Swap(
-        carried.previous if carried is not None else loaded_identity(),
+        carried.previous if keep_carried else loaded_identity(),
         model = model,
         subject = task["ownerSubject"],
         timezone = task["timezone"],
@@ -582,8 +585,19 @@ def chat_history(thread_id: str) -> list[dict]:
     were the model's working, not the conversation."""
     from storage import studio_db
 
+    messages = studio_db.list_chat_messages(thread_id)
+    # The branch the chat shows, from its newest message up: a regenerated or edited turn leaves
+    # siblings the model must not read as one conversation.
+    by_id = {message["id"]: message for message in messages}
+    branch: list[dict] = []
+    message = messages[-1] if messages else None
+    seen: set[str] = set()
+    while message is not None and len(branch) < _HISTORY_MESSAGES and message["id"] not in seen:
+        seen.add(message["id"])
+        branch.append(message)
+        message = by_id.get(message.get("parentId"))
     history = []
-    for message in studio_db.list_chat_messages(thread_id)[-_HISTORY_MESSAGES:]:
+    for message in reversed(branch):
         text = _message_text(message)
         if message.get("role") in ("user", "assistant") and text.strip():
             history.append({"role": message["role"], "content": text})
@@ -704,6 +718,13 @@ def _discard_chat(thread_id: str) -> None:
     from storage import studio_db
     try:
         studio_db.delete_chat_threads([thread_id])
+    except Exception:
+        logger.exception("scheduled_tasks.discard_chat_failed")
+
+
+def _discard_run_output(run_id: str, kept_chat_id: Optional[str]) -> None:
+    try:
+        db.discard_run_output(run_id, kept_chat_id)
     except Exception:
         logger.exception("scheduled_tasks.discard_chat_failed")
 
@@ -951,7 +972,8 @@ class ScheduledTaskScheduler:
             # that sweep; removing its chat now spares the wait. The chat's id comes from the run's,
             # so this also reaches one whose save a shutdown left running in its thread.
             if saving and settled is not True:
-                await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
+                kept = None if task.get("newChatEachRun", True) else task.get("chatThreadId")
+                await asyncio.to_thread(_discard_run_output, run["id"], kept)
 
     @staticmethod
     def _still_wanted(account: AccountContext, task_id: str) -> bool:

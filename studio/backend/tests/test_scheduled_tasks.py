@@ -806,6 +806,7 @@ def test_a_run_that_fails_after_writing_its_chat_leaves_none_however_soon_studio
     monkeypatch.setattr(scheduler_module, "save_chat", save_then_fail)
     # As if Studio stopped the moment the run was recorded: nothing after that removes the chat.
     monkeypatch.setattr(scheduler_module, "_discard_chat", lambda thread_id: None)
+    monkeypatch.setattr(scheduler_module, "_discard_run_output", lambda run_id, kept: None)
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
     scheduler.worker_id = "worker-under-test"
     asyncio.run(scheduler._execute(OWNER, task, run))
@@ -1948,3 +1949,127 @@ def test_the_system_prompt_falls_back_to_utc_for_an_unknown_zone():
         {"timezone": "Gone/Zone"}, ms("2026-10-14T06:00:00+00:00")
     )
     assert "Wednesday, October 14, 2026 at 06:00 (Gone/Zone)" in prompt
+
+
+def ongoing_task_with_one_run():
+    task, first = claim_manual_run()
+    db.update_task(task["id"], {"newChatEachRun": False})
+    task = db.get_task(task["id"])
+    chat = scheduler_module.save_chat(task, first, Answer("First.", "", "m"), 1_000, 2_000)
+    assert db.finish_run(first["id"], "worker-under-test", status = "succeeded", thread_id = chat)
+    return db.get_task(task["id"]), chat
+
+
+def test_a_stale_snapshot_prune_keeps_a_scheduled_exchange_it_never_saw():
+    task, chat = ongoing_task_with_one_run()
+    seen = studio_db.list_chat_messages(chat)
+    db.request_run(task["id"])
+    _task, second = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    scheduler_module.save_chat(task, second, Answer("Second.", "", "m"), 3_000, 4_000)
+
+    # A tab opened before the second run deletes the first answer from its own view.
+    studio_db.sync_chat_messages(
+        chat, [seen[0]], prune_missing = True, deleted_message_ids = [seen[1]["id"]]
+    )
+
+    left = studio_db.list_chat_messages(chat)
+    assert [_message_text(m) for m in left] == [
+        "Write a haiku about mornings.",
+        "Write a haiku about mornings.",
+        "Second.",
+    ]
+    # Relinked past the deleted answer, so the chat stays one chain.
+    assert left[1]["parentId"] == seen[0]["id"]
+
+
+def test_an_explicit_delete_still_removes_a_scheduled_message():
+    task, chat = ongoing_task_with_one_run()
+    user, assistant = studio_db.list_chat_messages(chat)
+    studio_db.sync_chat_messages(
+        chat, [user], prune_missing = True, deleted_message_ids = [assistant["id"]]
+    )
+    assert [m["id"] for m in studio_db.list_chat_messages(chat)] == [user["id"]]
+
+
+@pytest.mark.parametrize("ending", ["failed", "stale", "deleted"])
+def test_an_unsettled_ongoing_run_leaves_no_exchange_behind(ending):
+    task, chat = ongoing_task_with_one_run()
+    db.request_run(task["id"])
+    _task, second = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    scheduler_module.save_chat(task, second, Answer("Unsettled.", "", "m"), 3_000, 4_000)
+    assert len(studio_db.list_chat_messages(chat)) == 4
+
+    if ending == "failed":
+        assert db.finish_run(second["id"], "worker-under-test", status = "failed", discard_chat = True)
+    elif ending == "stale":
+        assert db.recover_stale_runs(db.now_ms() + _STALE_MS) == 1
+    else:
+        assert db.delete_task(task["id"])
+
+    # The earlier, settled exchange stays.
+    assert [_message_text(m) for m in studio_db.list_chat_messages(chat)] == [
+        "Write a haiku about mornings.",
+        "First.",
+    ]
+
+
+def test_ongoing_history_follows_the_branch_the_chat_shows():
+    task, chat = ongoing_task_with_one_run()
+    user, first = studio_db.list_chat_messages(chat)
+    # The user regenerated the first answer: a sibling of it, newer.
+    studio_db.sync_chat_messages(
+        chat,
+        [
+            {
+                "id": "regen",
+                "threadId": chat,
+                "parentId": user["id"],
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Regenerated."}],
+                "createdAt": 2_500,
+            }
+        ],
+    )
+    history = scheduler_module.chat_history(chat)
+    assert [m["content"] for m in history] == ["Write a haiku about mornings.", "Regenerated."]
+
+
+def _message_text(message):
+    return scheduler_module._message_text(message)
+
+
+_STALE_MS = 10 * 60 * 1000
+
+
+def test_an_ongoing_exchange_whose_run_cannot_be_settled_is_removed(monkeypatch):
+    task, chat = ongoing_task_with_one_run()
+    db.request_run(task["id"])
+    _task, run = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Stranded."))
+    monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
+    monkeypatch.setattr(db, "finish_run", locked)
+    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, _task, run))
+
+    assert [_message_text(m) for m in studio_db.list_chat_messages(chat)] == [
+        "Write a haiku about mornings.",
+        "First.",
+    ]
+
+
+def test_a_carried_swap_restores_the_model_the_user_picked_since(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    holder = scheduler_module.SwapHolder()
+    first = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
+    run_held(world, monkeypatch, first, {"id": "run-1", "source": "schedule"}, holder)
+    # Between the runs the user loads another model, then walks away.
+    picked = ("/models/llama.gguf", "Q8_0", "unsloth/Llama-3.2-3B-GGUF")
+    world.loaded = picked
+    second = make_task(id = "task-2", model = SwapWorld.TASK_MODEL, allowModelLoad = True)
+    run_held(world, monkeypatch, second, {"id": "run-2", "source": "schedule"}, holder)
+    assert holder.pending.previous == picked

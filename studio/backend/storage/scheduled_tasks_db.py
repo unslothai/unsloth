@@ -11,7 +11,11 @@ import time
 import uuid
 from typing import Callable, Optional
 
-from storage.studio_db import delete_chat_threads_in, get_connection
+from storage.studio_db import (
+    delete_chat_threads_in,
+    delete_scheduled_run_messages_in,
+    get_connection,
+)
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
@@ -48,6 +52,29 @@ def chat_id_for_run(run_id: str) -> str:
     """The id of the chat a run writes. Derived from the run, so a chat whose run never settled
     (Studio stopped in between) can be found and removed without the run having recorded it."""
     return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
+
+
+def discard_run_output_in(
+    conn: sqlite3.Connection, run_id: str, kept_chat_id: Optional[str]
+) -> None:
+    """Remove what a run that did not succeed wrote, in the caller's transaction: the chat it
+    made, or its exchange in the chat its task keeps (``kept_chat_id``)."""
+    if kept_chat_id:
+        delete_scheduled_run_messages_in(conn, kept_chat_id, run_id)
+    delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
+
+
+def discard_run_output(run_id: str, kept_chat_id: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        discard_run_output_in(conn, run_id, kept_chat_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _task_from_row(row: sqlite3.Row) -> dict:
@@ -273,11 +300,13 @@ def delete_task(task_id: str) -> bool:
     try:
         conn.execute("BEGIN IMMEDIATE")
         running = conn.execute(
-            "SELECT id FROM scheduled_task_runs WHERE task_id = ? AND status = 'running'",
+            "SELECT r.id, t.chat_thread_id FROM scheduled_task_runs r"
+            " JOIN scheduled_tasks t ON t.id = r.task_id"
+            " WHERE r.task_id = ? AND r.status = 'running'",
             (task_id,),
         ).fetchall()
-        if running:
-            delete_chat_threads_in(conn, [chat_id_for_run(row["id"]) for row in running])
+        for row in running:
+            discard_run_output_in(conn, row["id"], row["chat_thread_id"])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         conn.commit()
         return cursor.rowcount > 0
@@ -525,15 +554,16 @@ def finish_run(
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT task_id FROM scheduled_task_runs"
-            " WHERE id = ? AND worker_id = ? AND status = 'running'",
+            "SELECT r.task_id, t.chat_thread_id FROM scheduled_task_runs r"
+            " JOIN scheduled_tasks t ON t.id = r.task_id"
+            " WHERE r.id = ? AND r.worker_id = ? AND r.status = 'running'",
             (run_id, worker_id),
         ).fetchone()
         if row is None:
             conn.rollback()
             return False
         if discard_chat:
-            delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
+            discard_run_output_in(conn, run_id, row["chat_thread_id"])
         # The chat can already be gone; the foreign key would refuse the whole update.
         if (
             thread_id is not None
@@ -578,7 +608,10 @@ def recover_stale_runs(stale_before: int) -> int:
             return 0
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            f"SELECT id, task_id FROM scheduled_task_runs WHERE {stale}", (stale_before,)
+            "SELECT r.id, r.task_id, t.chat_thread_id FROM scheduled_task_runs r"
+            " JOIN scheduled_tasks t ON t.id = r.task_id WHERE r.status = 'running'"
+            " AND COALESCE(r.heartbeat_at, r.started_at, r.created_at) < ?",
+            (stale_before,),
         ).fetchall()
         run_ids = [row["id"] for row in rows]
         conn.executemany(
@@ -590,8 +623,8 @@ def recover_stale_runs(stale_before: int) -> int:
         # One that stopped after writing its chat but before settling left the chat behind, and a
         # failed run has none. Deleted in this transaction, so no crash can record the run as failed
         # and keep its chat, and a save still under way cannot bring it back.
-        if run_ids:
-            delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+        for row in rows:
+            discard_run_output_in(conn, row["id"], row["chat_thread_id"])
         # As finish_run does: a task whose runs keep ending this way must not pile them up.
         for task_id in {row["task_id"] for row in rows}:
             _trim_history(conn, task_id)
