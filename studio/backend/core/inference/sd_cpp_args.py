@@ -141,6 +141,54 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
+# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
+# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
+_UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
+
+
+def quant_cublas_min_batch(cuda_cc: tuple[int, int]) -> Optional[int]:
+    """Rows from which ``cuda_cc`` takes the BF16 cuBLAS route, or None to keep MMQ."""
+    major, minor = int(cuda_cc[0]), int(cuda_cc[1])
+    if (major, minor) == (8, 0) or major in (9, 10):
+        return 1024
+    if major == 12:
+        return 4096
+    return None
+
+
+def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]:
+    """Quantized tensor types in the GGUF at ``path``, or None if unreadable. Reads only the mmapped tensor table."""
+    if not path or not str(path).lower().endswith(".gguf"):
+        return None
+    try:
+        from gguf import GGUFReader
+        reader = GGUFReader(str(path), "r")
+        return frozenset(t.tensor_type.name for t in reader.tensors) - _UNQUANTIZED_GGUF_TYPES
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default (MMQ)
+        return None
+
+
+def quant_cublas_env(
+    cuda_ccs: Sequence[tuple[int, int]],
+    environ: Optional[dict] = None,
+    weight_types: Optional[frozenset[str]] = None,
+) -> dict[str, str]:
+    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    import os
+
+    environ = os.environ if environ is None else environ
+    if QUANT_CUBLAS_ENV in environ or not cuda_ccs:
+        return {}
+    if not weight_types or not weight_types <= QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    rows = {quant_cublas_min_batch(cc) for cc in cuda_ccs}
+    if len(rows) != 1 or None in rows:
+        return {}
+    return {QUANT_CUBLAS_ENV: str(rows.pop())}
+
+
 # Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
