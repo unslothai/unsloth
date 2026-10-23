@@ -147,11 +147,28 @@ function ModelField({ spec, value, onChange }: FieldProps) {
   );
 }
 
+const DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.html,.htm";
+
+/** The file name of an uploaded document value, or null for anything else. */
+export function documentName(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as { kind?: unknown; ref?: unknown; name?: unknown };
+  if (v.kind !== "document" || typeof v.ref !== "string") return null;
+  return typeof v.name === "string" && v.name ? v.name : "Document";
+}
+
 function AssetField({ spec, value, onChange }: FieldProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const docName = documentName(value);
   const media = isMediaValue(value) ? (value as MediaValue) : null;
-  const accept = spec.accept ? `${spec.accept}/*` : undefined;
+  const hasValue = media !== null || docName !== null;
+  const accept =
+    spec.accept === "document"
+      ? DOCUMENT_ACCEPT
+      : spec.accept
+        ? `${spec.accept}/*`
+        : undefined;
   return (
     <div className="flex flex-col gap-2">
       {media && (
@@ -159,6 +176,11 @@ function AssetField({ spec, value, onChange }: FieldProps) {
           media={media}
           className="max-h-40 w-full rounded-md object-contain"
         />
+      )}
+      {docName !== null && (
+        <p className="truncate rounded-md border border-white/10 px-2 py-1.5 text-[12px] text-zinc-300">
+          {docName}
+        </p>
       )}
       <div className="flex gap-2">
         <button
@@ -168,9 +190,9 @@ function AssetField({ spec, value, onChange }: FieldProps) {
           className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-[12px] text-zinc-300 hover:bg-white/5 disabled:opacity-50"
         >
           <HugeiconsIcon icon={Upload01Icon} size={13} />
-          {busy ? "Uploading…" : media ? "Replace" : "Upload"}
+          {busy ? "Uploading…" : hasValue ? "Replace" : "Upload"}
         </button>
-        {media && (
+        {hasValue && (
           <button
             type="button"
             onClick={() => onChange(null)}

@@ -106,7 +106,7 @@ def _blank_query(match: "re.Match") -> str:
 def _is_media(value: Any) -> bool:
     return (
         isinstance(value, dict)
-        and value.get("kind") in ("image", "audio", "video")
+        and value.get("kind") in ("image", "audio", "video", "document")
         and isinstance(value.get("ref"), str)
     )
 
@@ -353,6 +353,9 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                     except (ValueError, RecursionError):
                         raise PackageError(f"{info.filename} is not valid JSON") from None
                     mime = "application/json"
+                elif mime is None:
+                    # Documents (Markdown, HTML, text) carry no magic bytes; their extension names the type.
+                    mime = asset_store.sniff_text(blob, asset_store.EXT_MIME.get(ext))
                 if mime is None or asset_store.MIME_EXT.get(mime) != ext:
                     raise PackageError(f"{info.filename} is not the media type its name says")
                 files[digest] = (blob, mime)

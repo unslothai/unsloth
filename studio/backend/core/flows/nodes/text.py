@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 from core.flows.nodes._common import as_text, first_json, lookup, render, template_vars
@@ -180,9 +181,46 @@ def _separator(value: Any) -> str:
     return text.replace("\\n", "\n").replace("\\t", "\t")
 
 
+# Chunking caps: a chunk list feeds For Each and retrieval, never an unbounded fan-out.
+MAX_CHUNKS = 10_000
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n{2,}")
+
+
+def chunk_text(text: str, size: int, overlap: int, unit: str) -> list[str]:
+    """Overlapping chunks of ``size`` characters, words or sentences; ``overlap`` repeats that many units."""
+    size = max(1, int(size))
+    overlap = max(0, min(int(overlap), size - 1))
+    if unit == "characters":
+        units, joiner = list(text), ""
+    elif unit == "sentences":
+        units, joiner = [u.strip() for u in _SENTENCE.split(text) if u.strip()], " "
+    else:
+        units, joiner = text.split(), " "
+    step = size - overlap
+    chunks: list[str] = []
+    for start in range(0, len(units), step):
+        piece = joiner.join(units[start : start + size]).strip()
+        if piece:
+            chunks.append(piece)
+        if start + size >= len(units):
+            break
+        if len(chunks) >= MAX_CHUNKS:
+            raise FlowNodeError(f"More than {MAX_CHUNKS} chunks; raise the chunk size")
+    return chunks
+
+
 @handler("text.split")
 async def split(ctx: NodeContext) -> dict:
     text = as_text(ctx.inputs.get("text"))
+    if ctx.params.get("mode") == "chunks":
+        return {
+            "items": chunk_text(
+                text,
+                ctx.params.get("chunk_size") or 1000,
+                ctx.params.get("overlap") or 0,
+                str(ctx.params.get("unit") or "characters"),
+            )
+        }
     sep = _separator(ctx.params.get("separator"))
     parts = text.split(sep) if sep else list(text)
     if ctx.params.get("trim", True):
