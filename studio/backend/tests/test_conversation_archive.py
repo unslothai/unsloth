@@ -1785,6 +1785,43 @@ def test_the_cap_holds_when_the_cache_churns_before_the_encode(conn, monkeypatch
     assert calls == []
 
 
+def test_an_embedder_swap_restart_still_honours_the_cap(conn, monkeypatch):
+    """A restart in the new space re-encodes former cache hits; it must stay within the request's cap."""
+    from core.rag import embeddings
+
+    thread_id = "swap-cap-thread"
+    turns = _gap_thread(thread_id, 6, tag = "swapcap")
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    extra = _turn("swapcap fresh question", "swapcap fresh answer")
+    _save_thread(thread_id, extra, append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def swapped(texts, **kwargs):
+        calls.append(len(texts))
+        vectors, _identity = real(texts, **kwargs)
+        return vectors, "llama-server:swapped"
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", swapped)
+    conversation_archive.archive_turns(thread_id, turns + extra)
+    assert calls[0] == 1
+    assert sum(calls[1:]) <= 2
+
+
+def test_noted_snapshots_of_stopped_requests_do_not_pile_up(monkeypatch):
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    message = [{"role": "user", "content": "x"}]
+    conversation_archive.note_branch("stopped-a", message, lambda: True)
+    conversation_archive.note_branch("live-b", message)
+    assert [key[1] for key in conversation_archive._noted_branches] == ["live-b"]
+    for index in range(20):
+        conversation_archive.note_branch(f"many-{index}", message)
+    assert len(conversation_archive._noted_branches) <= conversation_archive._NOTED_MAX
+
+
 def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
     """A batch failing late in a long pass must not discard the batches before it (#14519)."""
     from core.rag import embeddings

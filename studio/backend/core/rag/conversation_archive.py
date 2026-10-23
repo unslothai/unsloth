@@ -44,6 +44,7 @@ _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
 _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
 _VECTOR_CACHE_MAX = 8192
+_NOTED_MAX = 8
 
 # Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
 # user-authored text.
@@ -432,6 +433,7 @@ def _embed_pending_chunks(
     cancel_check: Optional[Callable[[], bool]] = None,
     expected_identity: Optional[str] = None,
     cached: Optional[list] = None,
+    max_encode: Optional[int] = None,
 ):
     """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
     write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
@@ -462,7 +464,8 @@ def _embed_pending_chunks(
             # An ST failure swaps to llama-server for good: restart in the new space, as ingestion does.
             logger.warning("conversation_archive.embedder_changed_mid_pass; re-embedding")
             vectors, identity, restarted, k = [None] * len(texts), None, True, 0
-            misses = list(range(len(texts)))
+            # Former cache hits are re-encoded too, so the restart honours the request's cap itself.
+            misses = list(range(len(texts) if max_encode is None else min(len(texts), max_encode)))
             continue
         identity = batch_identity
         for i, vector in zip(idx, out):
@@ -501,6 +504,12 @@ def note_branch(
     # Captured here: the worker is a plain thread, which would otherwise read the owner's databases.
     account = current_account()
     with _gap:
+        # A stopped request whose stream never opened would otherwise keep its transcript here indefinitely.
+        for key, job in list(_noted_branches.items()):
+            if job[3] is not None and job[3]():
+                del _noted_branches[key]
+        while len(_noted_branches) >= _NOTED_MAX:
+            del _noted_branches[next(iter(_noted_branches))]
         _noted_branches[(account.account_id, thread_id)] = (
             account,
             thread_id,
@@ -782,6 +791,7 @@ def archive_turns(
             cancel_check = cancel_check,
             expected_identity = expected_identity,
             cached = [vector for hits in snapshots for vector in hits],
+            max_encode = max(max_chunks, sum(needs[: len(pending)])),
         )
         logger.info(
             "conversation_archive.embed_done thread_id=%s vectors=%s/%s cancelled=%s elapsed_ms=%s",
