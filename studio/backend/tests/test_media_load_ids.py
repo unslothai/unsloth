@@ -138,10 +138,12 @@ def test_an_unseen_token_cancels_its_load_before_it_starts():
     engine = _Engine()
     assert _unload(engine, "t1") == ("cancelled", None)
     assert engine.unloads == 0
+    # The route's early check refuses it (and so does admission, for one already past that check).
     with pytest.raises(media_load_ids.LoadCancelledError):
         media_load_ids.refuse_cancelled("video", "t1")
+    assert _unload(engine, "t3") == ("cancelled", None)
     with pytest.raises(media_load_ids.LoadCancelledError):
-        _load(engine, "t1")
+        _load(engine, "t3")
     assert engine._load_token == 0 and not engine.loading
     # Another token, or none, loads as before.
     _load(engine, "t2")
@@ -190,12 +192,35 @@ def test_a_load_admitted_while_the_unload_waits_is_not_cancelled():
     assert engine.loading and engine.unloads == 0
 
 
-def test_remembered_tokens_are_bounded(monkeypatch):
-    monkeypatch.setattr(media_load_ids, "_REMEMBERED", 3)
+def test_a_cancellation_is_pushed_out_only_by_the_same_accounts_tokens(monkeypatch):
+    monkeypatch.setattr(media_load_ids, "_PER_ACCOUNT", 3)
     engine = _Engine()
-    for n in range(5):
-        _unload(engine, f"gone{n}")
-    assert [t for t, _a in media_load_ids._cancelled["video"]] == ["gone2", "gone3", "gone4"]
+    assert _as("a", _unload, engine, "mine") == ("cancelled", None)
+    # Another account cancelling many tokens cannot evict this account's cancellation.
+    for n in range(10):
+        _as("b", _unload, engine, f"theirs{n}")
+    assert [t for t in media_load_ids._cancelled[("video", "b")]] == [
+        "theirs7",
+        "theirs8",
+        "theirs9",
+    ]
+    with pytest.raises(media_load_ids.LoadCancelledError):
+        _as("a", _load, engine, "mine")
+
+
+def test_a_cancellation_is_consumed_by_its_load_or_expires(monkeypatch):
+    engine = _Engine()
+    assert _unload(engine, "t1") == ("cancelled", None)
+    with pytest.raises(media_load_ids.LoadCancelledError):
+        _load(engine, "t1")
+    # Its one load arrived and was refused: nothing is left of it.
+    assert not any("t1" in tokens for tokens in media_load_ids._cancelled.values())
+    clock = [1000.0]
+    monkeypatch.setattr(media_load_ids, "_now", lambda: clock[0])
+    assert _unload(engine, "t2") == ("cancelled", None)
+    clock[0] += media_load_ids._CANCELLED_TTL_S + 1
+    _load(engine, "t2")
+    assert engine.loading
 
 
 def _as(account: str, fn, *args):

@@ -25,13 +25,22 @@ between them. Loads without a token, and unloads without ``expected_load_id``, b
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-# Tokens remembered per slot, for the superseded / cancelled answers (bounded: oldest go first).
-_REMEMBERED = 512
+# A cancellation is kept until its load arrives and is refused (which consumes it) or this long
+# has passed. No hard bound on a load POST's lifetime exists to derive it from (the MCP forwards
+# in-process with no client timeout, studio_mcp/forward.py, and the route's waits before
+# admission, the chat context save and the arbiter's eviction, have none either), so it is set far
+# beyond any real one: a load still on its way after a day is not one an unload is racing.
+_CANCELLED_TTL_S = 24 * 3600.0
+# Memory guard per (slot, account): only an account's own newer tokens can push one out, never
+# another account's.
+_PER_ACCOUNT = 4096
+_now = time.monotonic
 MAX_TOKEN_LEN = 128
 
 
@@ -56,10 +65,12 @@ _current: dict[str, _Record] = {}
 # The load that published the resident state before the last admission, as (token, engine, state):
 # a newer load that failed leaves it resident.
 _published: dict[str, tuple[str, Any, Any]] = {}
-# Keyed by (token, account) of the account whose load was admitted with it.
-_seen: dict[str, "OrderedDict[Any, None]"] = {}
-# Keyed by (token, account): an unload cancels a token for its own account only.
-_cancelled: dict[str, "OrderedDict[Any, None]"] = {}
+# Per (slot, account) whose load was admitted with the token. Losing an old one only turns a
+# superseded answer into cancelled, which touches nothing either.
+_seen: dict[tuple[str, str], "OrderedDict[str, None]"] = {}
+# Per (slot, account) that sent the unload: token -> expiry (time.monotonic()). An unload cancels
+# a token for its own account only.
+_cancelled: dict[tuple[str, str], "OrderedDict[str, float]"] = {}
 
 
 def _account() -> str:
@@ -67,12 +78,26 @@ def _account() -> str:
     return current_account_id()
 
 
-def _remember(table: dict[str, "OrderedDict[Any, None]"], modality: str, token: Any) -> None:
-    tokens = table.setdefault(modality, OrderedDict())
-    tokens[token] = None
+def _remember(
+    table: dict,
+    modality: str,
+    token: str,
+    value: Any = None,
+) -> None:
+    tokens = table.setdefault((modality, _account()), OrderedDict())
+    tokens[token] = value
     tokens.move_to_end(token)
-    while len(tokens) > _REMEMBERED:
+    while len(tokens) > _PER_ACCOUNT:
         tokens.popitem(last = False)
+
+
+def _cancel(modality: str, token: str) -> None:
+    now = _now()
+    tokens = _cancelled.get((modality, _account()))
+    # Expiries are in insertion order (one TTL), so the expired ones are at the front.
+    while tokens and next(iter(tokens.values())) <= now:
+        tokens.popitem(last = False)
+    _remember(_cancelled, modality, token, now + _CANCELLED_TTL_S)
 
 
 def _media_lock():
@@ -84,7 +109,10 @@ def refuse_cancelled(modality: str, load_token: Optional[str]) -> None:
     """Raise LoadCancelledError when an unload already cancelled ``load_token``."""
     if load_token:
         with _lock:
-            if (load_token, _account()) in _cancelled.get(modality, ()):
+            tokens = _cancelled.get((modality, _account()), {})
+            expiry = tokens.pop(load_token, None)
+            # Consumed: its one load has now arrived, and is refused.
+            if expiry is not None and expiry > _now():
                 raise LoadCancelledError()
 
 
@@ -120,7 +148,7 @@ def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) 
         _current[modality] = _Record(token, engine, getattr(engine, "_load_token", None), prior)
         # Per account like _cancelled: another account's earlier use of a token never answers
         # superseded for this one, which then records its own cancellation.
-        _remember(_seen, modality, (token, _account()))
+        _remember(_seen, modality, token)
 
 
 def _describes(record: _Record, engine: Any) -> bool:
@@ -176,11 +204,11 @@ def unload_if_current(
         with _lock:
             record = _current.get(modality)
             if _slot_token(modality, engine) != load_token:
-                if (load_token, _account()) in _seen.get(modality, ()):
+                if load_token in _seen.get((modality, _account()), ()):
                     return "superseded", None
                 # Not admitted yet: refuse it when it comes, which a lost POST response cannot stop.
                 # Only for this account, so no account can cancel another's load in advance.
-                _remember(_cancelled, modality, (load_token, _account()))
+                _cancel(modality, load_token)
                 return "cancelled", None
         # Still under media_load_lock, so no load is admitted before this unload has run
         # (as retire_media_load does).

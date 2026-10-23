@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -1905,3 +1906,22 @@ def test_status_and_load_id_name_the_same_load(token_client):
     assert answer["load_id"] == "t1"
     assert admitted == [True]
     backend.loading = ()
+
+
+def test_the_unload_answers_are_declared_in_the_schema(token_client):
+    client, backend = token_client
+    schema = client.app.openapi()
+    answer = schema["paths"]["/api/inference/video/unload"]["post"]["responses"]["200"]
+    refs = json.dumps(answer)
+    for model in ("VideoLoadUnloadedResponse", "MediaUnloadOutcome", "VideoStatusResponse"):
+        assert f"#/components/schemas/{model}" in refs
+    outcome = schema["components"]["schemas"]["MediaUnloadOutcome"]
+    assert set(outcome["required"]) == {"unloaded", "outcome"}
+    # Without a token the answer is the status, field for field, as before.
+    assert _load_with(client, "t1").status_code == 200
+    plain = client.post("/api/inference/video/unload").json()
+    assert set(plain) == set(video_routes.VideoStatusResponse.model_fields)
+    assert _load_with(client, "t2").status_code == 200
+    named = client.post("/api/inference/video/unload", json = {"expected_load_id": "t2"}).json()
+    assert set(named) == set(plain) | {"unloaded", "outcome"}
+    assert (named["unloaded"], named["outcome"]) == (True, "unloaded")

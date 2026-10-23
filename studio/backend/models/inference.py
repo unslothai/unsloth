@@ -4625,6 +4625,20 @@ class MediaUnloadRequest(BaseModel):
     )
 
 
+class MediaUnloadOutcome(BaseModel):
+    """POST /images/unload or /video/unload with expected_load_id that touched nothing.
+
+    Nothing of the slot is described: the load in it may be another account's.
+    """
+
+    unloaded: Literal[False] = Field(..., description = "Always false: nothing was unloaded")
+    outcome: Literal["superseded", "cancelled"] = Field(
+        ...,
+        description = "superseded: that load ended or a newer one replaced it. cancelled: it has "
+        "not started yet, and is refused when it arrives.",
+    )
+
+
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
@@ -6077,6 +6091,20 @@ class DiffusionStatusResponse(BaseModel):
         description = "Default steps and guidance for the loaded model (file header before base repo); "
         "null when unloaded or on an engine that does not report it.",
     )
+
+
+class DiffusionLoadUnloadedResponse(DiffusionStatusResponse):
+    """POST /images/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /images/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+DiffusionUnloadResponse = Union[
+    DiffusionLoadUnloadedResponse, MediaUnloadOutcome, DiffusionStatusResponse
+]
 
 
 class DiffusionInferenceInfo(BaseModel):
@@ -7662,3 +7690,15 @@ class VideoStatusResponse(BaseModel):
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+
+
+class VideoLoadUnloadedResponse(VideoStatusResponse):
+    """POST /video/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /video/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+VideoUnloadResponse = Union[VideoLoadUnloadedResponse, MediaUnloadOutcome, VideoStatusResponse]

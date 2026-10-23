@@ -31,7 +31,6 @@ from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.datastructures import UploadFile
 
@@ -61,6 +60,7 @@ from models.inference import (
     GalleryProjectRequest,
     GalleryProjectResponse,
     GalleryVideo,
+    MediaUnloadOutcome,
     MediaUnloadRequest,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -73,7 +73,9 @@ from models.inference import (
     VideoJobListResponse,
     VideoLoadProgressResponse,
     VideoLoadRequest,
+    VideoLoadUnloadedResponse,
     VideoStatusResponse,
+    VideoUnloadResponse,
 )
 from utils.account_context import current_account_id, is_owner_context
 from utils.api_errors import openai_error_body
@@ -941,7 +943,7 @@ async def video_status(
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
-@router.post("/video/unload", response_model = VideoStatusResponse)
+@router.post("/video/unload", response_model = VideoUnloadResponse)
 @account_access.gpu_busy_route
 async def unload_video_model(
     request: Optional[MediaUnloadRequest] = None,
@@ -976,7 +978,7 @@ async def unload_video_model(
             media_load_ids.unload_if_current, "video", backend, expected_load_id, unload
         )
         if outcome != "unloaded":
-            return JSONResponse(content = {"unloaded": False, "outcome": outcome})
+            return MediaUnloadOutcome(unloaded = False, outcome = outcome)
     else:
         status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
     # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
@@ -994,8 +996,8 @@ async def unload_video_model(
         via_api_key = via_api_key,
     )
     if expected_load_id:
-        return JSONResponse(
-            content = {**jsonable_encoder(answer), "unloaded": True, "outcome": "unloaded"}
+        return VideoLoadUnloadedResponse(
+            **jsonable_encoder(answer), unloaded = True, outcome = "unloaded"
         )
     return answer
 

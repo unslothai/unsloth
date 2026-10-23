@@ -3796,7 +3796,10 @@ from models.inference import (
     SttLoadRequest,
     GenerateRequest,
     DiffusionLoadRequest,
+    MediaUnloadOutcome,
     MediaUnloadRequest,
+    DiffusionLoadUnloadedResponse,
+    DiffusionUnloadResponse,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
     MaskSegmentRequest,
@@ -53692,7 +53695,7 @@ async def clear_gallery_transcripts(current_subject: str = Depends(get_current_s
     return {"removed": removed}
 
 
-@studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
+@studio_router.post("/images/unload", response_model = DiffusionUnloadResponse)
 @account_access.gpu_busy_route
 async def unload_diffusion_model(
     request: Optional[MediaUnloadRequest] = None,
@@ -53730,7 +53733,7 @@ async def unload_diffusion_model(
             media_load_ids.unload_if_current, "diffusion", active, expected_load_id, guarded_unload
         )
         if outcome != "unloaded":
-            return JSONResponse(content = {"unloaded": False, "outcome": outcome})
+            return MediaUnloadOutcome(unloaded = False, outcome = outcome)
     else:
         # Before the teardown waits on the generation slot a launching warm start holds.
         _cancel_upsampler_warm_start()
@@ -53759,8 +53762,8 @@ async def unload_diffusion_model(
         via_api_key = via_api_key,
     )
     if expected_load_id:
-        return JSONResponse(
-            content = {**jsonable_encoder(answer), "unloaded": True, "outcome": "unloaded"}
+        return DiffusionLoadUnloadedResponse(
+            **jsonable_encoder(answer), unloaded = True, outcome = "unloaded"
         )
     return answer
 

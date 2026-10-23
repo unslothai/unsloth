@@ -3418,3 +3418,22 @@ def test_image_status_and_load_id_name_the_same_load(token_client):
     assert admitted.wait(5)
     assert answer["load_id"] == "t1"
     backend.loading = ()
+
+
+def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
+    import json
+
+    client, backend = token_client
+    schema = client.app.openapi()
+    answer = schema["paths"]["/api/inference/images/unload"]["post"]["responses"]["200"]
+    refs = json.dumps(answer)
+    for model in ("DiffusionLoadUnloadedResponse", "MediaUnloadOutcome", "DiffusionStatusResponse"):
+        assert f"#/components/schemas/{model}" in refs
+    assert _load_with_token(client, "t1").status_code == 200
+    plain = client.post("/api/inference/images/unload").json()
+    assert set(plain) == set(inference_routes.DiffusionStatusResponse.model_fields)
+    assert _load_with_token(client, "t2").status_code == 200
+    named = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert set(named) == set(plain) | {"unloaded", "outcome"}
+    stale = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert stale == {"unloaded": False, "outcome": "superseded"}
