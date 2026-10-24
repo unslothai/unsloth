@@ -184,7 +184,7 @@ def test_load_pipeline_resets_the_tag_after_unload():
     import ast
     import pathlib
 
-    src = pathlib.Path(aq.__file__).with_name("diffusion.py").read_text()
+    src = pathlib.Path(aq.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
     fn = next(
         n
         for n in ast.walk(ast.parse(src))
