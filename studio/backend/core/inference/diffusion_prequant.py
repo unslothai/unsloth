@@ -349,16 +349,27 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
         ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     else:
         ckpt = _torch_load_prequant(path, **kwargs)
-    _install_fp8_unit_scale()
+    _install_fp8_unit_scale_for(ckpt)
     return ckpt
 
 
-def _install_fp8_unit_scale() -> None:
+def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
     try:
         from .diffusion_fp8_unit_scale import install
-        install()
+        install(fast_accum = fast_accum)
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
+
+
+def _install_fp8_unit_scale_for(ckpt: Any) -> None:
+    """Install the sm_89 dispatcher only for a checkpoint whose torchao fp8 layers can take it: an int8 one holds none,
+    and one baked at fast accumulate (the builder's default) never reaches it. fp8 and nvfp4 (a policy over fp8) with
+    precise or unrecorded accumulate install, as before."""
+    meta = (ckpt.get("metadata") if isinstance(ckpt, dict) else None) or {}
+    if str(meta.get("scheme") or "").lower() == "int8":
+        return
+    fast_accum = meta.get("fast_accum")
+    _install_fp8_unit_scale(fast_accum = fast_accum if isinstance(fast_accum, bool) else None)
 
 
 # 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
@@ -2426,8 +2437,11 @@ def load_prequantized_transformer(
                 config_subfolder = config_subfolder,
                 logger = logger,
             )
-            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own.
-            _install_fp8_unit_scale()
+            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own. Their fp8
+            # layers are rebuilt at the load's accumulate, so only a precise one can take the dispatcher.
+            from .diffusion_transformer_quant import _resolve_fast_accum
+
+            _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
             from .diffusion_convrot import declares_rotation, is_rotated_linear, warm_rotation_cache
 
             comfy_rotated = any(is_rotated_linear(m) for m in transformer.modules())

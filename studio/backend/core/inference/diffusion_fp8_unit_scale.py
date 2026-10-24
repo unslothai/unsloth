@@ -7,9 +7,15 @@ On sm_89 torchao's row-wise ``_scaled_mm`` hits a slow CUTLASS stream-K kernel. 
 * precise accumulate: row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s; end to end klein-4B 1.034 -> 0.480 s/step,
   Z-Image-Turbo 1.708 -> 0.772 s/step.
 * fast accumulate: row-wise 85-108, per-tensor 91-127 TFLOP/s, no end-to-end gain, so left on torchao (bit-identical).
-Only difference vs row-wise: one bf16 rounding of the unscaled accumulator (relative error <= 2^-9).
+Only difference vs row-wise: one bf16 rounding of the unscaled accumulator, relative error <= 2^-8 of that product
+(bf16 unit roundoff: 8 significand bits, round to nearest). That bounds the ABSOLUTE output error by 2^-8 of
+``|acc * a_scale * b_scale|``; a bias that cancels the product leaves the output's relative error unbounded.
 
-``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` off, ``1`` every arch + both accumulate modes (testing), else auto.
+Installed only where it can engage: precise accumulate (Studio's default is fast) or ``force``. Installing tags the
+process-wide torch compile cache key, so an install that can never engage would only split later compiles' caches.
+
+``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` / ``off`` / ``none`` off, ``1`` every arch + both accumulate modes
+(testing), else auto. The same words as the compile-cache switch key (``diffusion_compile_cache._OFF_WORDS``).
 """
 
 from __future__ import annotations
@@ -21,6 +27,10 @@ UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
 # Unit-scale wins from M = 256 up (L4: row-wise 2.5-4x slower from 512); below, tens of microseconds either way.
 _DEFAULT_MIN_ROWS = 256
+# Eager epilogue chunk: its fp32 temporary stays near this many elements (64 MiB) instead of a full [M, N] buffer.
+_EAGER_EPILOGUE_ELEMS = 1 << 24
+_OFF_WORDS = ("0", "off", "false", "no", "none")
+_ON_WORDS = ("1", "on", "true", "yes", "force")
 _ADA_CAPS = ((8, 9),)
 
 _COUNTS = {"unit_scale": 0, "rowwise": 0}
@@ -29,9 +39,9 @@ _STATE: dict = {"installed": False, "orig": None, "caps": {}}
 
 def _mode() -> str:
     v = (os.environ.get(UNIT_SCALE_ENV) or "").strip().lower()
-    if v in ("0", "off", "false", "no"):
+    if v in _OFF_WORDS:
         return "off"
-    if v in ("1", "on", "true", "yes", "force"):
+    if v in _ON_WORDS:
         return "force"
     return "auto"
 
@@ -50,6 +60,46 @@ def _compiling() -> bool:
         return bool(torch.compiler.is_compiling())
     except Exception:  # noqa: BLE001 - no torch.compiler: nothing is being traced
         return False
+
+
+def _scale_epilogue(
+    acc: Any, a_scale: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
+) -> Any:
+    """``(acc * a_scale * b_scale + bias)`` in fp32, rounded once to ``output_dtype`` (the bf16 ``acc``'s dtype).
+
+    Compiled, inductor fuses it into one pass. Eager, the fp32 product is formed a row chunk at a time and written back
+    into ``acc``: the same elementwise ops in the same order, so bitwise the same output, but the peak is the
+    accumulator plus one chunk rather than the accumulator, an fp32 [M, N] buffer and a second bf16 output."""
+    import torch
+
+    if _compiling():
+        out = acc * a_scale.float()
+        out.mul_(b_scale.float())
+        if bias is not None:
+            out.add_(bias.float())
+        return out.to(output_dtype)
+    sa, sb = a_scale.float(), b_scale.float()
+    bf = bias.float() if bias is not None else None
+    rows = int(acc.shape[0])
+    step = max(1, _EAGER_EPILOGUE_ELEMS // max(1, int(acc.shape[1])))
+    out = acc if acc.dtype == output_dtype else torch.empty_like(acc, dtype = output_dtype)
+    for start in range(0, rows, step):
+        stop = min(rows, start + step)
+        # bf16 * fp32 promotes without an upcast copy of the chunk.
+        tmp = acc[start:stop] * sa[start:stop]
+        tmp.mul_(sb)
+        if bf is not None:
+            tmp.add_(bf)
+        out[start:stop].copy_(tmp)
+        # Freed before the next chunk is formed, else two chunks are live at once.
+        del tmp
+    return out
+
+
+def can_engage(fast_accum: Optional[bool]) -> bool:
+    """Whether a load running fp8 at ``fast_accum`` can ever take the dispatcher: precise accumulate, an unknown one
+    (None: install rather than lose the speed-up), or ``force``. Pure: no device query."""
+    return _mode() == "force" or fast_accum is not True
 
 
 def stats() -> dict:
@@ -91,12 +141,13 @@ def _device_caps() -> dict:
     return caps
 
 
-def install(logger: Any = None) -> bool:
-    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved."""
+def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
+    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved, and
+    in auto mode when the load runs fast accumulate (``fast_accum=True``), where it can never engage."""
     if _STATE["installed"]:
         return True
     mode = _mode()
-    if mode == "off":
+    if mode == "off" or not can_engage(fast_accum):
         return False
     caps = _device_caps()
     if mode == "auto" and not any(c in _ADA_CAPS for c in caps.values()):
@@ -156,12 +207,7 @@ def install(logger: Any = None) -> bool:
             )
             if isinstance(acc, tuple):  # torch < 2.5 returns (out, amax)
                 acc = acc[0]
-            # bf16 * fp32 promotes without an upcast copy; in place saves an fp32 [M, N] buffer eagerly, same result.
-            out = acc * a_scale.float()
-            out.mul_(b_scale.float())
-            if bias is not None:
-                out.add_(bias.float())
-            return out.to(output_dtype)
+            return _scale_epilogue(acc, a_scale, b_scale, bias, output_dtype)
         if not _compiling():
             _COUNTS["rowwise"] += 1
         return orig(
