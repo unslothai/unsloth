@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import sys
+import threading
 import types as _types
 from pathlib import Path
 
@@ -593,7 +594,7 @@ class _Upstream:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 seen.append(("POST", self.path, dict(self.headers), body))
-                self._reply(b"data: {\"type\": \"response.completed\"}\n\n", "text/event-stream")
+                self._reply(b'data: {"type": "response.completed"}\n\n', "text/event-stream")
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target = self.server.serve_forever, daemon = True).start()
@@ -629,7 +630,14 @@ def gateway():
     upstream.close()
 
 
-def _call(gw, method, path, payload = None, key = STUDIO_KEY, headers = None):
+def _call(
+    gw,
+    method,
+    path,
+    payload = None,
+    key = STUDIO_KEY,
+    headers = None,
+):
     import http.client
 
     conn = http.client.HTTPConnection("127.0.0.1", gw.server_address[1], timeout = 10)
@@ -686,3 +694,66 @@ def test_gateway_refuses_other_keys_browsers_and_paths(gateway):
     assert gateway["loads"] == [] and gateway["upstream"].seen == []
     status, _ = _call(gw, "GET", cx.HEALTH_PATH, key = None)
     assert status == 204
+
+
+def _slow(gateway, seconds = 0.3):
+    gw = gateway["gw"]
+    plain, finished = gw.ensure_loaded, threading.Event()
+
+    def slow(model_id):
+        threading.Event().wait(seconds)
+        try:
+            plain(model_id)
+        finally:
+            finished.set()
+
+    gw.ensure_loaded = slow
+    gw.keepalive_seconds = 0.02
+    return finished
+
+
+def test_gateway_keeps_a_streaming_turn_alive_while_the_model_loads(gateway):
+    _slow(gateway)
+    payload = {"model": "unsloth/c", "input": "hi", "stream": True}
+    status, data = _call(gateway["gw"], "POST", "/v1/responses", payload)
+    assert status == 200
+    assert data.count(cx.KEEPALIVE_COMMENT) >= 3
+    assert data.endswith(b'data: {"type": "response.completed"}\n\n')
+    assert gateway["loads"] == ["unsloth/c"]
+
+
+def test_gateway_reports_a_failed_streaming_load_as_response_failed(gateway):
+    _slow(gateway, 0.05)
+    gateway["failing"]["unsloth/c"] = "not enough memory"
+    payload = {"model": "unsloth/c", "input": "hi", "stream": True}
+    status, data = _call(gateway["gw"], "POST", "/v1/responses", payload)
+    assert status == 200
+    event = data.split(b"event: response.failed\ndata: ", 1)[1].split(b"\n\n", 1)[0]
+    failed = json.loads(event)
+    assert failed["type"] == "response.failed"
+    assert "not enough memory" in failed["response"]["error"]["message"]
+    assert gateway["upstream"].seen == []
+
+
+def test_gateway_is_quiet_when_codex_hangs_up_during_a_load(gateway, capfd):
+    import socket
+
+    finished = _slow(gateway, 0.3)
+    gw = gateway["gw"]
+    data = json.dumps({"model": "unsloth/c", "input": "hi", "stream": True}).encode()
+    sock = socket.create_connection(("127.0.0.1", gw.server_address[1]), timeout = 5)
+    sock.sendall(
+        b"POST /v1/responses HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{gw.server_address[1]}\r\n".encode()
+        + f"Authorization: Bearer {STUDIO_KEY}\r\n".encode()
+        + b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(data)}\r\n\r\n".encode()
+        + data
+    )
+    assert sock.recv(4096).startswith(b"HTTP/1.1 200")
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+    sock.close()
+    assert finished.wait(5)
+    threading.Event().wait(0.2)
+    assert gateway["upstream"].seen == []
+    assert "Traceback" not in capfd.readouterr().err

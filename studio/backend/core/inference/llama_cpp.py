@@ -3454,6 +3454,12 @@ def _note_gguf_metadata_read(gguf_path: str) -> bool:
         return True
 
 
+# ``{%- set clear_thinking = clear_thinking if clear_thinking is defined else false -%}``
+_KEEPS_REPLAYED_REASONING_RE = re.compile(
+    r"set\s+clear_thinking\s*=\s*clear_thinking\s+if\s+clear_thinking\s+is\s+defined\s+else\s+false\b"
+)
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -3572,6 +3578,14 @@ def detect_reasoning_flags(
         # other templates that happen to expose the same kwarg stay off.
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
+    elif _KEEPS_REPLAYED_REASONING_RE.search(tpl):
+        # GLM-5.x: ``clear_thinking`` defaults to false, so the template renders every replayed
+        # assistant turn's reasoning (llama-server logs "preserve_reasoning kwarg: true"). Stripping
+        # that reasoning from history once a new user turn arrives would change the prompt right
+        # after the first answered query, so llama-server could not reuse its prompt cache and an
+        # agent like Claude Desktop re-prefilled its whole conversation on every message.
+        flags["preserve_thinking_default"] = True
+        _log(f"{prefix}model keeps replayed reasoning (clear_thinking defaults to false)")
 
     from core.inference.template_capabilities import template_supports_tools
 

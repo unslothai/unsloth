@@ -30,6 +30,7 @@ import json
 import os
 import plistlib
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -351,8 +352,31 @@ HEALTH_PATH = "/_unsloth/codex-health"
 HEALTH_HEADER = "X-Unsloth-Codex-Gateway"
 
 
-def openai_error(status: int, message: str, kind: str = "invalid_request_error") -> bytes:
+def openai_error(
+    status: int,
+    message: str,
+    kind: str = "invalid_request_error",
+) -> bytes:
     return json.dumps({"error": {"message": message, "type": kind, "code": None}}).encode()
+
+
+# An SSE comment: every event-stream parser skips it, and it keeps the connection busy while a model loads.
+KEEPALIVE_COMMENT = b": keep-alive\n\n"
+
+
+def response_failed_event(message: str) -> bytes:
+    """A Responses API ``response.failed`` event: how a stream that already started reports an
+    error, which Codex shows in the chat."""
+    event = {
+        "type": "response.failed",
+        "response": {
+            "id": "resp_unsloth_" + secrets.token_hex(8),
+            "object": "response",
+            "status": "failed",
+            "error": {"code": "server_error", "message": message},
+        },
+    }
+    return f"event: response.failed\ndata: {json.dumps(event)}\n\n".encode()
 
 
 class Gateway(ThreadingHTTPServer):
@@ -384,6 +408,7 @@ class Gateway(ThreadingHTTPServer):
         self.is_loaded = is_loaded
         self.ensure_loaded = ensure_loaded
         self.load_lock = threading.Lock()
+        self.keepalive_seconds = _cd.KEEPALIVE_SECONDS
         self._thread = None
         super().__init__(listen, _GatewayHandler)
 
@@ -421,6 +446,9 @@ class Gateway(ThreadingHTTPServer):
             self.ensure_loaded(model_id)
 
     connection = _cd.Gateway.connection
+
+    def handle_error(self, request, client_address) -> None:
+        _cd.quiet_handle_error(self, request, client_address)
 
 
 class _GatewayHandler(_cd._GatewayHandler):
@@ -462,12 +490,17 @@ class _GatewayHandler(_cd._GatewayHandler):
             self._error(413, f"Request exceeds {_cd.MAX_REQUEST_BODY_BYTES} bytes")
             return
         requested = None
+        stream = False
         with contextlib.suppress(ValueError, UnicodeDecodeError):
             payload = json.loads(body) if body else None
             if isinstance(payload, dict) and isinstance(payload.get("model"), str):
                 requested = payload["model"]
+                stream = payload.get("stream") is True
         model_id = self.server.listed(requested) if requested else None
-        if model_id is not None:
+        if model_id is not None and not self.server.is_loaded(model_id):
+            if stream:
+                self._load_then_proxy(body, model_id)
+                return
             try:
                 self.server.ready(model_id)
             except Exception as exc:
@@ -475,14 +508,41 @@ class _GatewayHandler(_cd._GatewayHandler):
                 return
         self._proxy("POST", body, authorized = True)
 
-    def _proxy(self, method: str, body: bytes, authorized: bool = False) -> None:
-        target = self._target()
-        if target is None:
-            self._plain(404, "404 page not found")
+    def _load_then_proxy(self, body: bytes, model_id: str) -> None:
+        """A streaming turn on a listed model that isn't loaded: the event stream starts at once and
+        carries keep-alive comments while Studio loads it, then Studio's own stream; a failure is a
+        ``response.failed`` event Codex shows, not a dropped connection."""
+        self._open_stream("text/event-stream")
+        self._chunk(KEEPALIVE_COMMENT)
+
+        def fail(message: str) -> None:
+            self._chunk(response_failed_event(message))
+            self._end_chunks()
+
+        error = self._load_holding(lambda: self.server.ready(model_id), KEEPALIVE_COMMENT)
+        if error is not None:
+            fail(f"Unsloth Studio couldn't load {model_id}: {error}")
             return
-        if not authorized and not self._authorized():
-            self._error(401, "Invalid Unsloth key.")
+        try:
+            conn, response = self._open_upstream("POST", body)
+        except (OSError, http.client.HTTPException):
+            fail("Unsloth Studio didn't answer.")
             return
+        try:
+            if response.status == 200:
+                self._pipe(response)
+                self._end_chunks()
+                return
+            detail = response.read(_cd.MAX_ERROR_BODY_BYTES)
+            fail(
+                f"Unsloth Studio couldn't answer with {model_id}: "
+                + _cd.upstream_error_message(response.status, detail)
+            )
+        finally:
+            conn.close()
+
+    def _open_upstream(self, method: str, body: bytes) -> tuple:
+        """(connection, response) for this request sent on to Studio's /v1 with the session key."""
         headers = self._upstream_headers(body)
         if method == "GET" and not body:
             headers.pop("Content-Type", None)
@@ -491,14 +551,33 @@ class _GatewayHandler(_cd._GatewayHandler):
             headers["Content-Type"] = self.headers["Content-Type"]
         conn = self.server.connection()
         try:
-            try:
-                conn.request(method, target, body or None, headers)
-                response = conn.getresponse()
-            except (OSError, http.client.HTTPException):
-                self._error(502, "Unsloth Studio didn't answer.")
-                return
+            conn.request(method, self._target(), body or None, headers)
+            return conn, conn.getresponse()
+        except BaseException:
+            conn.close()
+            raise
+
+    def _proxy(
+        self,
+        method: str,
+        body: bytes,
+        authorized: bool = False,
+    ) -> None:
+        if self._target() is None:
+            self._plain(404, "404 page not found")
+            return
+        if not authorized and not self._authorized():
+            self._error(401, "Invalid Unsloth key.")
+            return
+        try:
+            conn, response = self._open_upstream(method, body)
+        except (OSError, http.client.HTTPException):
+            self._error(502, "Unsloth Studio didn't answer.")
+            return
+        try:
             self._relay(response, b"")
         finally:
+            # Also how Codex hanging up cancels the generation upstream.
             conn.close()
 
 

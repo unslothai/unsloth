@@ -898,6 +898,131 @@ def test_concurrent_slots_load_one_at_a_time(mapped_gateway):
     assert peak[0] == 1
 
 
+def _slow_loads(gw, seconds = 0.3):
+    """Loads take ``seconds``; keep-alives every 20 ms. Returns an Event set when a load ends."""
+    plain, finished = gw.ensure_loaded, threading.Event()
+
+    def slow(model_id):
+        threading.Event().wait(seconds)
+        try:
+            plain(model_id)
+        finally:
+            finished.set()
+
+    gw.ensure_loaded = slow
+    gw.keepalive_seconds = 0.02
+    return finished
+
+
+def test_a_streaming_turn_pings_while_its_model_loads(mapped_gateway):
+    gw, upstream, state = mapped_gateway
+    _slow_loads(gw)
+    upstream.replies.append(("sse", ["message_start", "message_stop"]))
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": [], "stream": True}
+    status, headers, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and headers["Content-Type"] == "text/event-stream"
+    pings = reply.count(cda.PING_EVENT)
+    assert pings >= 3
+    # Pings first, then Studio's stream as it came.
+    assert reply.index(b"event: message_start") > reply.rindex(cda.PING_EVENT)
+    assert reply.endswith(b"event: message_stop\ndata: {}\n\n")
+    assert state["loads"] == ["unsloth/big-GGUF"]
+    assert upstream.requests[-1][2]["model"] == "unsloth/big-GGUF"
+
+
+def test_a_plain_turn_is_padded_with_json_whitespace_while_its_model_loads(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    _slow_loads(gw)
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": []}
+    status, headers, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and headers["Content-Type"] == "application/json"
+    assert reply.startswith(b"   ") and json.loads(reply) == {"ok": 1}
+
+
+def test_a_failed_streaming_load_is_a_streamed_turn_that_says_why(mapped_gateway):
+    gw, upstream, state = mapped_gateway
+    _slow_loads(gw, 0.05)
+    state["fail"] = "not enough memory"
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": [], "stream": True}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200
+    assert b"event: message_stop" in reply and b"not enough memory" in reply
+    assert upstream.requests == []
+
+
+def test_studio_failing_after_the_load_is_a_turn_that_says_why(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    _slow_loads(gw, 0.05)
+    upstream.replies.append((503, {"detail": "Model is still warming up"}))
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": [], "stream": True}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and b"Model is still warming up" in reply
+    assert b"event: message_stop" in reply
+
+
+def test_claude_hanging_up_during_a_load_is_quiet_and_sends_nothing_upstream(mapped_gateway, capfd):
+    import socket
+
+    gw, upstream, state = mapped_gateway
+    finished = _slow_loads(gw, 0.3)
+    data = json.dumps(
+        {"model": "claude-opus-5", "max_tokens": 8, "messages": [], "stream": True}
+    ).encode()
+    sock = socket.create_connection(("127.0.0.1", gw.server_address[1]), timeout = 5)
+    sock.sendall(
+        b"POST /v1/messages HTTP/1.1\r\n"
+        + f"Host: 127.0.0.1:{gw.server_address[1]}\r\n".encode()
+        + f"Authorization: Bearer {TOKEN}\r\n".encode()
+        + f"Content-Length: {len(data)}\r\n\r\n".encode()
+        + data
+    )
+    assert sock.recv(4096).startswith(b"HTTP/1.1 200")
+    # RST on close, as a client giving up does.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+    sock.close()
+    assert finished.wait(5)
+    threading.Event().wait(0.2)
+    assert upstream.requests == []
+    assert "Traceback" not in capfd.readouterr().err
+    # The load ran on: the retry goes straight through, no second load.
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": []}
+    assert _call(gw, "POST", "/v1/messages", body)[0] == 200
+    assert state["loads"] == ["unsloth/big-GGUF"]
+
+
+def test_count_tokens_is_estimated_while_a_load_runs(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    _slow_loads(gw, 0.3)
+    turn = threading.Thread(
+        target = _call,
+        args = (gw, "POST", "/v1/messages", {"model": "claude-opus-5", "messages": []}),
+    )
+    turn.start()
+    threading.Event().wait(0.1)
+    body = {"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi" * 40}]}
+    status, _, reply = _call(gw, "POST", "/v1/messages/count_tokens", body)
+    assert status == 200 and json.loads(reply)["input_tokens"] > 1
+    turn.join()
+    assert [r[0] for r in upstream.requests] == ["/v1/messages"]
+
+
+def test_count_tokens_is_estimated_when_studio_cannot_count(gateway):
+    gw, upstream = gateway
+    upstream.replies.append((503, {"detail": "No model loaded"}))
+    body = {"model": "claude-fable-5", "messages": [{"role": "user", "content": "hi" * 40}]}
+    status, _, reply = _call(gw, "POST", "/v1/messages/count_tokens", body)
+    assert status == 200 and json.loads(reply)["input_tokens"] > 1
+    assert upstream.requests[-1][0] == "/v1/messages/count_tokens"
+
+
+def test_upstream_error_message_reads_every_shape():
+    assert cda.upstream_error_message(503, b'{"detail": "busy"}') == "busy"
+    assert cda.upstream_error_message(500, b'{"detail": {"message": "oom"}}') == "oom"
+    assert cda.upstream_error_message(400, b'{"error": {"message": "bad"}}') == "bad"
+    assert cda.upstream_error_message(502, b"") == "HTTP 502"
+    assert cda.upstream_error_message(500, b"plain text") == "plain text"
+
+
 def test_without_mappings_the_gateway_keeps_one_following_slot(gateway):
     gw, _ = gateway
     assert gw.current_mappings() == cda.DEFAULT_MAPPINGS

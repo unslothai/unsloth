@@ -71,6 +71,13 @@ UNSUPPORTED_IMAGE_NOTICE = (
 )
 MAX_REQUEST_BODY_BYTES = 64 << 20
 MAX_ERROR_BODY_BYTES = 64 << 10
+# While a model loads for a request, the gateway answers at once and writes one of these every few
+# seconds, so Claude (or Codex) holds the request open instead of giving up on a slow load. A big
+# GGUF read off an external drive can take minutes; Studio's own load route pads its reply the same way.
+KEEPALIVE_SECONDS = 5.0
+PING_EVENT = b'event: ping\ndata: {"type": "ping"}\n\n'
+# The client hung up: nothing to report, and nothing that warrants a traceback.
+CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 DEFAULT_MAX_TOKENS = 64_000
 # Cowork needs unrestricted egress for user-configured plugins and MCP servers.
 EGRESS_HOSTS = ["*"]
@@ -801,6 +808,7 @@ class Gateway(ThreadingHTTPServer):
         self.is_loaded = is_loaded
         self.ensure_loaded = ensure_loaded
         self.load_lock = threading.Lock()
+        self.keepalive_seconds = KEEPALIVE_SECONDS
         self.token = token
         self.routed = 0
         self._thread: Optional[threading.Thread] = None
@@ -822,6 +830,9 @@ class Gateway(ThreadingHTTPServer):
         with contextlib.suppress(Exception):
             self.shutdown()
         self.server_close()
+
+    def handle_error(self, request, client_address) -> None:
+        quiet_handle_error(self, request, client_address)
 
     def current_model(self) -> Optional[GatewayModel]:
         if isinstance(self.model, GatewayModel):
@@ -889,6 +900,42 @@ class Gateway(ThreadingHTTPServer):
         )
 
 
+def quiet_handle_error(server: ThreadingHTTPServer, request, client_address) -> None:
+    """A client that hung up mid-reply (Claude giving up on a slow load, a closed chat) is routine;
+    anything else still gets the standard traceback."""
+    if isinstance(sys.exc_info()[1], CLIENT_GONE):
+        return
+    ThreadingHTTPServer.handle_error(server, request, client_address)
+
+
+def token_estimate(body_length: int) -> bytes:
+    """A rough ``count_tokens`` answer, for when the real count would mean loading or waiting."""
+    return json.dumps({"input_tokens": max(1, body_length // 4)}).encode()
+
+
+def upstream_error_message(status: int, body: bytes) -> str:
+    """The human part of an error body from Studio (FastAPI ``detail``, OpenAI or Anthropic shape)."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    message = None
+    if isinstance(data, dict):
+        error = data.get("error")
+        detail = data.get("detail")
+        if isinstance(error, dict):
+            message = error.get("message")
+        elif isinstance(error, str):
+            message = error
+        if message is None and isinstance(detail, dict):
+            message = detail.get("message")
+        elif message is None and isinstance(detail, str):
+            message = detail
+    if not isinstance(message, str) or not message.strip():
+        message = body.decode("utf-8", "replace").strip()[:300] or f"HTTP {status}"
+    return message.strip()
+
+
 def _is_loopback_host(host: Optional[str]) -> bool:
     if not host:
         return False
@@ -920,7 +967,66 @@ class _GatewayHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002 - quiet: the CLI owns the terminal
         pass
 
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except CLIENT_GONE:
+            # Closing our end also drops the upstream request (see _forward), so Studio stops generating.
+            self.close_connection = True
+
     # -- plumbing ---------------------------------------------------------------------------
+
+    def _open_stream(self, content_type: str) -> None:
+        """Commit to a 200 now, body to follow in chunks: used while a model loads."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+    def _chunk(self, data: bytes) -> None:
+        if data:
+            self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            self.wfile.flush()
+
+    def _end_chunks(self) -> None:
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _load_holding(self, load: Callable, keepalive: bytes) -> Optional[BaseException]:
+        """Run ``load`` and write ``keepalive`` every few seconds until it finishes; return its error.
+
+        If the client hangs up, the write raises (CLIENT_GONE) and this request ends there, nothing
+        sent upstream. The load itself runs on, so a retry finds the model loaded instead of starting
+        over."""
+        done = threading.Event()
+        outcome: dict = {}
+
+        def run() -> None:
+            try:
+                load()
+            except BaseException as exc:  # noqa: BLE001 -- reported to the client as the turn's text
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target = run, name = "gateway-load", daemon = True).start()
+        while not done.wait(self.server.keepalive_seconds):
+            self._chunk(keepalive)
+        return outcome.get("error")
+
+    def _pipe(
+        self,
+        response: http.client.HTTPResponse,
+        prefix: bytes = b"",
+    ) -> None:
+        """Copy an upstream body into an already open chunked reply, as it arrives."""
+        self._chunk(prefix)
+        while True:
+            data = response.read1(65536)
+            if not data:
+                break
+            self._chunk(data)
 
     def _send(
         self,
@@ -1063,7 +1169,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self._error(400, f'unknown Claude model "{requested}"')
             return
         _, model, pinned = resolved
-        estimate = json.dumps({"input_tokens": max(1, len(body) // 4)}).encode()
+        estimate = token_estimate(len(body))
         stream = payload.get("stream") is True
         if model is None:
             if path == "/v1/messages/count_tokens":
@@ -1074,25 +1180,66 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self._send(200, reply, content_type, {"Cache-Control": "no-cache"})
             return
         if pinned is not None:
+            loaded = self.server.is_loaded is not None and self.server.is_loaded(pinned)
             if path == "/v1/messages/count_tokens":
-                if self.server.is_loaded is not None and not self.server.is_loaded(pinned):
-                    # Never load a model for a preflight count.
+                if not loaded or self.server.load_lock.locked():
+                    # Never load a model for a preflight count, nor wait on a load for one.
                     self._send(200, estimate)
                     return
-            else:
-                try:
-                    self.server.ready(pinned)
-                except Exception as exc:
-                    content_type, reply = no_model_reply(
-                        requested,
-                        stream,
-                        f"Unsloth Studio couldn't load {pinned} for this chat: {exc}",
-                    )
-                    self._send(200, reply, content_type, {"Cache-Control": "no-cache"})
-                    return
+            elif self.server.ensure_loaded is not None and not loaded:
+                self._load_then_forward(path, payload, model, pinned, requested, stream)
+                return
         payload["model"] = model.model_id
         self.server.routed += 1
         self._forward(path, payload, model)
+
+    def _load_then_forward(
+        self,
+        path: str,
+        payload: dict,
+        model: "GatewayModel",
+        pinned: str,
+        requested: str,
+        stream: bool,
+    ) -> None:
+        """Load ``pinned``, then answer, without leaving Claude waiting in silence: the reply starts
+        at once, with ping events (streaming) or JSON-legal leading spaces (not streaming) until the
+        model is ready. Anything that goes wrong after that is a turn that says what happened."""
+        if stream:
+            self._open_stream("text/event-stream")
+            keepalive = PING_EVENT
+        else:
+            self._open_stream("application/json")
+            keepalive = b" "
+        self._chunk(keepalive)
+
+        def say(text: str) -> None:
+            self._chunk(no_model_reply(requested, stream, text)[1])
+            self._end_chunks()
+
+        error = self._load_holding(lambda: self.server.ready(pinned), keepalive)
+        if error is not None:
+            say(f"Unsloth Studio couldn't load {pinned} for this chat: {error}")
+            return
+        payload["model"] = model.model_id
+        self.server.routed += 1
+        try:
+            conn, response, prefix = self._upstream(path, payload, model)
+        except (OSError, http.client.HTTPException):
+            say("Unsloth Studio didn't answer. Check that Studio is running, then try again.")
+            return
+        try:
+            if response.status == 200:
+                self._pipe(response, prefix)
+                self._end_chunks()
+                return
+            detail = prefix + response.read(max(0, MAX_ERROR_BODY_BYTES - len(prefix)))
+            say(
+                f"Unsloth Studio couldn't answer with {pinned}: "
+                + upstream_error_message(response.status, detail)
+            )
+        finally:
+            conn.close()
 
     def _upstream_headers(self, body: bytes) -> dict:
         # Claude authenticates to this gateway with a placeholder; never forward it (or cookies).
@@ -1118,13 +1265,11 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         )
         return conn, conn.getresponse()
 
-    def _forward(self, path: str, payload: dict, model: GatewayModel) -> None:
+    def _upstream(self, path: str, payload: dict, model: GatewayModel) -> tuple:
+        """(connection, response, already-read body prefix) for ``payload`` sent to Studio. A model
+        without vision that rejects an image is asked again with the images replaced by a notice."""
         original = copy.deepcopy(payload)
-        try:
-            conn, response = self._round_trip(path, payload)
-        except (OSError, http.client.HTTPException):
-            self._plain(502, "Unsloth gateway unavailable")
-            return
+        conn, response = self._round_trip(path, payload)
         prefix = b""
         try:
             if (
@@ -1146,8 +1291,26 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                     if retry_response is not None:
                         conn.close()
                         conn, response, prefix = retry_conn, retry_response, b""
+        except BaseException:
+            conn.close()
+            raise
+        return conn, response, prefix
+
+    def _forward(self, path: str, payload: dict, model: GatewayModel) -> None:
+        try:
+            conn, response, prefix = self._upstream(path, payload, model)
+        except (OSError, http.client.HTTPException):
+            self._plain(502, "Unsloth gateway unavailable")
+            return
+        try:
+            if path == "/v1/messages/count_tokens" and response.status >= 500:
+                # Studio can't count right now (a model is loading or switching): a rough count
+                # keeps Claude's preflight from failing the turn.
+                self._send(200, token_estimate(len(json.dumps(payload))))
+                return
             self._relay(response, prefix)
         finally:
+            # Also how a client that hung up cancels the generation upstream.
             conn.close()
 
     def _relay(self, response: http.client.HTTPResponse, prefix: bytes) -> None:
