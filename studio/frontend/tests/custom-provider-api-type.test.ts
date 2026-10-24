@@ -36,18 +36,18 @@ test("Responses survives provider requests and cache while legacy cache defaults
 });
 
 test("extra header drafts round-trip and reject reserved names", async () => {
-  const providers = await vite.ssrLoadModule("/src/features/chat/external-providers.ts");
-  const parsed = providers.parseExtraHeadersDraft(
+  const headers = await vite.ssrLoadModule("/src/features/chat/extra-headers.ts");
+  const parsed = headers.parseExtraHeadersDraft(
     "X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}\nX-Title: Unsloth\n",
   );
   assert.equal(parsed["X-LiteLLM-Session-Id"], "unsloth-{{CHAT_SESSION_ID}}");
   assert.equal(
-    providers.extraHeadersToDraft(parsed),
+    headers.extraHeadersToDraft(parsed),
     "X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}\nX-Title: Unsloth",
   );
-  assert.throws(() => providers.parseExtraHeadersDraft("Authorization: Bearer secret"));
-  const json = providers.parseExtraHeadersDraft('{"X-Title":"Studio"}');
+  assert.throws(() => headers.parseExtraHeadersDraft("Authorization: Bearer secret"));
+  const json = headers.parseExtraHeadersDraft('{"X-Title":"Studio"}');
   assert.equal(json["X-Title"], "Studio");
-  assert.equal(providers.normalizeProviderExtraHeaders({ Authorization: "nope", "X-Title": "ok" })["X-Title"], "ok");
-  assert.equal(providers.normalizeProviderExtraHeaders({ Authorization: "nope" }), undefined);
+  assert.equal(headers.normalizeProviderExtraHeaders({ Authorization: "nope", "X-Title": "ok" })["X-Title"], "ok");
+  assert.equal(headers.normalizeProviderExtraHeaders({ Authorization: "nope" }), undefined);
 });

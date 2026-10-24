@@ -28,7 +28,7 @@ import {
   CUSTOM_PROVIDER_PRESETS,
   connectionApiFields,
   type ExternalProviderConfig,
-  normalizeProviderExtraHeaders,
+  extraHeadersFromSaved,
   getExternalProviderApiKey,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -320,7 +320,7 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
-        extraHeaders: normalizeProviderExtraHeaders(config.extra_headers),
+        extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&
           config.api_type !== "responses" && config.api_type !== "systemone"

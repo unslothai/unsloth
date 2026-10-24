@@ -64,6 +64,7 @@ import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
+import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -76,11 +77,9 @@ import {
   customPresetSkipsApiKeyField,
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   connectionApiFields,
-  extraHeadersToDraft,
   getExternalProviderApiKey,
   isCustomProviderType,
   isDecisionConnection,
-  parseExtraHeadersDraft,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
