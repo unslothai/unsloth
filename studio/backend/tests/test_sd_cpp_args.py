@@ -1201,17 +1201,14 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
             [(10, 0)], environ = {}, weight_types = all_types(files)
         )
 
-    # A Q8_0 diffusion GGUF beside a k-quant text encoder: the process-wide override would reroute the encoder.
     with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
     assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
     assert route(with_k_te) == {}
     assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
-    # Q8_0 and dense companions keep the route; safetensors companions load dense.
     q8_only = SdCppModelFiles(
         diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
     )
     assert all_types(q8_only) == frozenset({"Q8_0"})
     assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
-    # An unreadable companion GGUF, or a non-GGUF diffusion model, is unknown.
     assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
     assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None

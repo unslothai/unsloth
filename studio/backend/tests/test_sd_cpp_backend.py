@@ -3012,7 +3012,7 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers, device = "cuda")
-    assert seen == ["/m/z.gguf"]  # the safetensors encoder and VAE load dense: nothing else to read
+    assert seen == ["/m/z.gguf"]
     assert servers[-1].env is None
     assert dict(b._state.child_env) == {}
 
@@ -3020,7 +3020,7 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
 @pytest.mark.parametrize(
     "companions,expected",
     [
-        ({"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))}, None),  # the TE would leave MMQ too
+        ({"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))}, None),
         (
             {
                 "llm": ("/m/llm.gguf", frozenset({"Q8_0"})),
@@ -3028,7 +3028,7 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
             },
             None,
         ),
-        ({"llm": ("/m/llm.gguf", None)}, None),  # unreadable companion: unknown keeps MMQ
+        ({"llm": ("/m/llm.gguf", None)}, None),
         (
             {"llm": ("/m/llm.gguf", frozenset({"Q8_0"})), "vae": ("/m/vae.gguf", frozenset())},
             "1024",
@@ -3038,7 +3038,6 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
 def test_a_q8_0_diffusion_gguf_with_a_k_quant_companion_keeps_mmq(
     monkeypatch, companions, expected
 ):
-    # GGML_CUDA_QUANT_CUBLAS_MIN_BATCH is process-wide: it reroutes the text encoder and VAE as well.
     monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
     monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
     types_by_path = {"/m/z.gguf": frozenset({"Q8_0"})}

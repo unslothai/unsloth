@@ -3679,7 +3679,6 @@ class SdCppDiffusionBackend:
 
             @functools.lru_cache(maxsize = 1)
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
-                # Every loaded file, not just the denoiser: the override reroutes all quantized matmuls in the process.
                 return sd_cpp_args_mod.model_files_quantized_weight_types(files)
 
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
