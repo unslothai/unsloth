@@ -11808,9 +11808,14 @@ async def _maybe_auto_switch_model(
     # pinned preview checkpoint it just loaded.
     if _auto_switch_opted_out(fastapi_request):
         return
-    if isinstance(_swap_scope, dict) and _swap_scope.get(LOADED_MODELS_ONLY_SCOPE_KEY):
-        # Not routed to a kept slot: only the resident may answer, under the same access check.
-        if not await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if (
+        named_model
+        and isinstance(_swap_scope, dict)
+        and _swap_scope.get(LOADED_MODELS_ONLY_SCOPE_KEY)
+    ):
+        # A named model not routed to a kept slot: only the resident may answer, under the same
+        # access check. An omitted one (the reload-only sentinel) keeps the path below.
+        if not await asyncio.to_thread(_loaded_identity_satisfies, named_model):
             raise HTTPException(status_code = 404, detail = "Model not found")
         await _refuse_foreign_resident()
         if claim_resident:
