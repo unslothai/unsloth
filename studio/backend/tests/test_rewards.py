@@ -541,6 +541,15 @@ def test_a_misspelled_score_key_is_refused():
         rewards.validate_rule(length)
 
 
+def test_a_misspelled_rule_field_is_refused():
+    rule = {"type": "exact_match", "normalise": ["lower"], "score": {"match": 1.0}}
+    with pytest.raises(rewards.RewardError, match = "exact_match rules take no normalise"):
+        rewards.validate_rule(rule)
+    numeric = {"type": "numeric", "bands": [{"within": 0, "score": 1}], "normalize": ["strip"]}
+    with pytest.raises(rewards.RewardError, match = "numeric rules take no normalize"):
+        rewards.validate_rule(numeric)
+
+
 def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
     from core.training.rewards import score_rule, validate_rule
 
