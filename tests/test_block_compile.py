@@ -1595,7 +1595,7 @@ def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
 
     M._wrap(StormDecoderLayer, {}, 1)
     layer = StormDecoderLayer().train()
-    for k in range(40):
+    for k in range(60):
         layer.tag = "a" * (k + 1)
         x = torch.randn(2, 5, 8, requires_grad = True)
         out = layer(x)
@@ -1603,4 +1603,24 @@ def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
         out.sum().backward()
     torch._dynamo.reset()
     assert seen[0]["isolate_recompiles"] is True
-    assert counter.frame_count == seen[0]["recompile_limit"] == M._region_recompile_limit(1) == 16
+    assert counter.frame_count == seen[0]["recompile_limit"] == M._region_recompile_limit(1) == 32
+
+
+def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
+    # UNSLOTH_BLOCK_CUDAGRAPHS adds a second (graphs-off) compile per block; it must carry the same
+    # isolate_recompiles / recompile_limit as the main one.
+    M = _load()
+    if not M._ISOLATE_RECOMPILES:
+        pytest.skip("torch < 2.13: no per-region recompile limit")
+    seen = []
+    monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: seen.append(kwargs) or fn)
+
+    class GraphsDecoderLayer(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            return hidden_states
+
+    M._wrap(GraphsDecoderLayer, {"triton.cudagraphs": True}, 2)
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert kwargs["isolate_recompiles"] is True
+        assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48

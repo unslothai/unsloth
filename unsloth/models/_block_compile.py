@@ -63,15 +63,16 @@ _ISOLATE_RECOMPILES = _isolate_supported()
 
 
 def _region_recompile_limit(kinds):
-    """Graphs one block region may hold before it runs eager: 4 per kind (grad x flex retry),
-    doubled, plus slack. A recompile storm in one block stops here instead of at the global 1024."""
+    """Graphs one block region may hold before it runs eager. Real workloads measured at most 4 per
+    kind (Gemma3 GRPO: 20 for 2 kinds), so 16 per kind plus slack; a recompile storm in one block
+    stops here instead of at the global 1024."""
     env = os.environ.get("UNSLOTH_BLOCK_COMPILE_RECOMPILE_LIMIT", "")
     try:
         if int(env) > 0:
             return int(env)
     except ValueError:
         pass
-    return max(8 * kinds + 8, 16)
+    return max(16 * kinds + 16, 32)
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
@@ -788,6 +789,7 @@ def _wrap(
             fullgraph = False,
             dynamic = None,
             options = {**compile_options, "triton.cudagraphs": False},
+            **isolate,
         )
     graph_shapes = set()
     graphs_off = [False]
