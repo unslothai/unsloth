@@ -2283,8 +2283,7 @@ def _resolve_model(
     if requested and match is None:
         load_requested = True
         if attach_public_id is None and loaded_match is not None:
-            # Read the named resident's own slot. A full load resets omitted
-            # settings just as it does for an inferred attach.
+            # A full load resets omitted settings, so read the named resident's own slot to carry them.
             status_snapshot = _inference_status(base, key, loaded_match["id"])
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
@@ -2462,8 +2461,7 @@ def _resolve_model(
                 "cannot re-authorize. Re-run with --model naming it to apply these settings."
             )
         if attach_public_id is not None or loaded_match is not None:
-            # A resident reload is a full load, not a PATCH. Preserve omitted
-            # settings whether the caller names the resident or infers it.
+            # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
             payload.update(_resident_runtime_payload(status_snapshot, payload))
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
