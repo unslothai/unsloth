@@ -458,11 +458,8 @@ def check_shard_units(
     units,
     ignored_params = (),
 ):
-    """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
-    unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
-    disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
-    graph break per block (an error under fullgraph). Experts, routers and LoRA stay inside their block's
-    unit. Raises RuntimeError naming the offending unit."""
+    """No FSDP unit inside a compiled decoder block or another unit: FSDP2 hooks are dynamo disabled,
+    so that is a graph break per block. Raises RuntimeError naming the offending unit."""
     blocks = set()
     for module in model.modules():
         if isinstance(module, nn.ModuleList) and _is_block_list(module, ()):
@@ -557,12 +554,8 @@ def _refuse_gpu_quantized_on_cpu_mesh(model):
 
 
 def _shard_device(model, requested = None):
-    """The device FSDP2 shards onto: the model's own, except that a model still entirely on the CPU
-    (loaded with device_map = None; meta tensors stay meta) goes to this rank's GPU when CUDA is used,
-    like the Trainer would have placed it: fully_shard moves each unit's states to the mesh device as
-    it shards it, _place_replicated the replicated ones. A deliberate CPU / disk offload (any
-    device_map entry on cpu / disk) and CPU 4-bit weights are refused instead. requested = "cpu" (the
-    Trainer's use_cpu) keeps the CPU mesh."""
+    """The device FSDP2 shards onto: the model's own, or this rank's GPU for an all-CPU model. CPU /
+    disk offload and CPU 4-bit weights are refused; requested = "cpu" keeps the CPU mesh."""
     if requested is not None and torch.device(requested).type == "cpu":
         _refuse_gpu_quantized_on_cpu_mesh(model)
         return torch.device("cpu")
@@ -838,11 +831,9 @@ def _unify_dtypes(
     param_dtype,
     can_ignore = True,
 ):
-    """FSDP2 wants one original dtype over a unit's trainable parameters (all of them on torch < 2.8).
-    Unsloth's full finetuning keeps 16-bit linears next to float32 norms; one GPU updates each in its own
-    dtype. To keep that, a small minority dtype group (norms) is left out of the unit: replicated, its
-    gradient averaged over ranks like DDP. A large one, or a torch without `ignored_params`, gets float32
-    masters instead (gathered in `param_dtype`). Returns (ignored parameter set, number upcast)."""
+    """FSDP2 wants one original dtype per unit's trainable parameters. A small minority dtype group
+    (norms) is left out (replicated, DDP-averaged); a large one gets float32 masters.
+    Returns (ignored parameter set, number upcast)."""
     frozen_too = _fsdp2_checks_frozen_dtypes()
     groups = [list(u.parameters()) for u in units]
     inside = set()
@@ -1057,13 +1048,9 @@ def _recompute_skips_input_cast(original):
 
 
 def _patch_recompute_input_cast():
-    """torch < 2.13 skips FSDP2's forward-input cast when a checkpointed unit is recomputed in backward, so
-    the recompute sees the uncast (e.g. float32) inputs while the forward saw param_dtype ones: anything
-    cast to the input dtype (LoRA A / B, a dequantized 4-bit weight) is saved in another dtype and
-    non-reentrant checkpointing raises CheckpointError (Kaggle T4, torch 2.10, fp16 MoE / VLM 4-bit).
-    torch 2.13 casts there (`return self._cast_forward_inputs(args, kwargs)`); do the same on older
-    builds. Must run before fully_shard registers the hook. Native FSDP2 only;
-    UNSLOTH_FSDP2_RECOMPUTE_CAST=0 turns it off (diagnostics)."""
+    """torch < 2.13 skips FSDP2's input cast on checkpoint recompute, so recompute sees uncast inputs and
+    non-reentrant checkpointing raises CheckpointError. Cast there like torch 2.13 does. Must run before
+    fully_shard registers the hook; UNSLOTH_FSDP2_RECOMPUTE_CAST=0 turns it off."""
     if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_CAST", "1").strip().lower() in (
         "0",
         "false",
@@ -1296,16 +1283,8 @@ def _refuse_block_swap(model):
 
 
 def shard_model(model, config: Optional[FSDP2Config] = None):
-    """fully_shard(unit) for each unit of `find_shard_units`, then fully_shard(model): the root holds
-    embeddings, final norm, lm_head and any leftover parameters, so Unsloth's direct lm_head.weight
-    read in the fused CE runs while the root is unsharded. Pass the outermost module the training
-    loop calls (the PeftModel for LoRA): peft calls the inner model's `.forward` directly, which
-    would skip an inner root's hooks. Idempotent.
-
-    Layout (fsdp2_perf.plan_fsdp2_layout): when the model fits on one GPU and reshard_after_forward is
-    auto, frozen weights stay replicated (never gathered, like DDP), only trainable ones are sharded and
-    kept gathered from forward to backward with next-block prefetch, and a small trainable set (LoRA) is
-    one root unit. Otherwise each block reshards after forward."""
+    """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
+    leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
     _refuse_block_swap(model)
@@ -1702,13 +1681,44 @@ def native_fsdp2_unsharded(model):
                 _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
+def _ga_mode(model = None):
+    """What non-final gradient accumulation micro-batches (Trainer / accelerate no_sync) do,
+    `UNSLOTH_FSDP2_GA_SYNC`:
+    "skip" = no reduce-scatter; units resharded after each backward and gathered again next micro-batch;
+    "defer" = no reduce-scatter and units kept unsharded until the last micro-batch (torchtitan
+      fsdp_defer_gradient_reduction): no re-all-gather, gradients bitwise equal to "skip", the gathered
+      weights stay resident (sharded layout: + one compute-dtype copy of the trainable weights);
+    "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
+      accumulators held across micro-batches, the leanest and the slowest;
+    "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
+      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
+    if mode in ("skip", "defer", "each"):
+        return mode
+    layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
+    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
+    mode = _ga_mode(model)
+    if mode == "each":
+        yield
+        return
+    defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if defer:
+        model.set_reshard_after_backward(False)
+        if hasattr(model, "set_is_last_backward"):
+            model.set_is_last_backward(False)
     try:
         yield
     finally:
         model.set_requires_gradient_sync(True)
+        if defer:
+            model.set_reshard_after_backward(True)
+            if hasattr(model, "set_is_last_backward"):
+                model.set_is_last_backward(True)
 
 
 def _native_models(accelerator):
@@ -2104,12 +2114,8 @@ def _peft_saved_key(key, adapter):
 
 
 def _peft_save_keys(root, adapter):
-    """model key -> checkpoint key for `adapter`, from PEFT's own save path
-    (peft.utils.get_peft_model_state_dict, peft/utils/save_and_load.py): every key rule the installed
-    PEFT applies on save (adapter name removal, DoRA's lora_magnitude_vector, modules_to_save, later
-    ones) is inverted here. PEFT is handed empty placeholder tensors (no collective, no copy) and the
-    returned keys are matched back by tensor identity; {} when PEFT cannot be asked, and the rule above
-    stands in."""
+    """model key -> checkpoint key for `adapter`, inverted from PEFT's own save path using placeholder
+    tensors matched by identity; {} when PEFT cannot be asked."""
     try:
         from peft.utils import get_peft_model_state_dict
     except Exception:
@@ -2531,8 +2537,29 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
+    # The Trainer scales each rank's loss by world size, so float16 activation grads are world times
+    # one GPU's and overflow at its scale. Divide init_scale by the DP size unless the user set it.
+    world = _data_parallel_size(getattr(trainer, "model", None))
+    if world > 1 and "init_scale" not in kwargs:
+        kwargs["init_scale"] = 2.0**16 / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
+
+
+def _data_parallel_size(model):
+    mesh = getattr(model, "__dict__", {}).get("_unsloth_fsdp2_mesh") if model is not None else None
+    try:
+        if mesh is not None:
+            return int(mesh.size())
+    except Exception:
+        pass
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            return int(dist.get_world_size())
+    except Exception:
+        pass
+    return 1
 
 
 def _native_optimizer(optimizer):
@@ -2946,12 +2973,8 @@ def _refuse_projection_optim(training_args):
 
 
 def _refuse_accelerate_fp8(training_args):
-    """accelerate's FP8 training (mixed_precision = "fp8": Transformer Engine, torchao or MS-AMP)
-    converts the model's Linear layers in Accelerator.prepare, after native sharding captured the
-    DTensors, so the optimizer would target replacement parameters FSDP2 does not manage. The Trainer
-    gets it from ACCELERATE_MIXED_PRECISION (accelerate launch / config) unless fp16 / bf16 is set:
-    transformers 5 stores the result as args.mixed_precision, 4.x leaves it in the env. Unsloth's own
-    float8 weights are not affected (kept replicated, never converted by accelerate)."""
+    """accelerate FP8 training converts Linear layers in prepare, after sharding captured the DTensors,
+    so the optimizer would target parameters FSDP2 does not manage."""
     mode = getattr(training_args, "mixed_precision", None) if training_args is not None else None
     if mode is None:
         mode = os.environ.get("ACCELERATE_MIXED_PRECISION", "no")
@@ -2969,11 +2992,8 @@ def _refuse_accelerate_fp8(training_args):
 
 
 def _refuse_accelerate_backends(training_args):
-    """Every accelerate backend native FSDP2 cannot run under (fsdp2_launch.NATIVE_BACKEND_TABLE:
-    DeepSpeed, Megatron-LM, XLA, NPU / MLU / SDAA / MUSA / HPU / XPU / Neuron devices, SageMaker DP, a
-    ParallelismConfig env), from the env and the TrainingArguments (`deepspeed`, `deepspeed_plugin`,
-    `hf_deepspeed_config`, ...): the import-time check only sees the launch env, and accelerate would
-    otherwise build that backend over the DTensor model. Before any model change."""
+    """Refuse accelerate backends native FSDP2 cannot run under (fsdp2_launch.NATIVE_BACKEND_TABLE),
+    from the env and the TrainingArguments. Before any model change."""
     from ..fsdp2_launch import refuse_native_backend_conflicts
     refuse_native_backend_conflicts(training_args, _trainer_uses_cpu(training_args))
 

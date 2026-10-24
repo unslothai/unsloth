@@ -10616,7 +10616,11 @@ class DiffusionBackend:
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     install_cfg_batch(
-                        pipe, offload_policy = effective_policy, speed_mode = speed_mode, logger = logger
+                        pipe,
+                        offload_policy = effective_policy,
+                        speed_mode = speed_mode,
+                        transformer_quant = transformer_quant_engaged,
+                        logger = logger,
                     )
                     # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new.
                     # compiled_only: an eager denoiser keeps the batched guided call (no graph to protect).

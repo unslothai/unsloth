@@ -98,6 +98,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv(C.ENV_MAX_GB, raising = False)
     monkeypatch.delenv("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", raising = False)
     C._HEADER_MEMO.clear()
+    getattr(C, "_UNREACHABLE", {}).clear()
     return root
 
 
@@ -1110,6 +1111,114 @@ def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkey
 
     assert load(hf_token = "hf_request_token") == "e" * 64
     assert seen == ["hf_request_token"]
+
+
+def _sharded_hub_snapshot(tmp_path: Path, n: int) -> list[str]:
+    import hashlib
+
+    repo_dir = tmp_path / "hub" / "models--org--sharded"
+    (repo_dir / "blobs").mkdir(parents = True)
+    snap = repo_dir / "snapshots" / ("c" * 40) / "transformer"
+    snap.mkdir(parents = True)
+    links = []
+    for i in range(n):
+        data = f"shard {i}".encode()
+        blob = repo_dir / "blobs" / hashlib.sha256(data).hexdigest()
+        blob.write_bytes(data)
+        link = snap / f"diffusion_pytorch_model-{i + 1:05d}-of-{n:05d}.safetensors"
+        os.symlink(blob, link)
+        links.append(str(link))
+    return links
+
+
+@pytest.fixture
+def blackholed_hub(monkeypatch):
+    """Every Hub request times out via a mocked transport; yields the requested URLs."""
+    import huggingface_hub
+
+    seen: list = []
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    getattr(C, "_UNREACHABLE", {}).clear()
+    set_factory = getattr(huggingface_hub, "set_client_factory", None)
+    if set_factory is None:  # older huggingface_hub (requests)
+        import requests
+
+        def metadata(url, **_k):
+            seen.append(str(url))
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+        monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+        yield seen
+        return
+    import httpx
+
+    def handler(request):
+        seen.append(str(request.url))
+        raise httpx.ReadTimeout("timed out", request = request)
+
+    set_factory(lambda: httpx.Client(transport = httpx.MockTransport(handler)))
+    try:
+        yield seen
+    finally:
+        from huggingface_hub.utils._http import default_client_factory
+        set_factory(default_client_factory)
+
+
+def test_a_blackholed_hub_costs_one_probe_per_process_not_one_per_shard_per_lookup(
+    env, tmp_path, blackholed_hub
+):
+    """Unreachable but not flagged offline: 4 shards x 3 lookups used to cost 12 timeouts."""
+    shards = _sharded_hub_snapshot(tmp_path, 4)
+    for _ in range(3):
+        assert C._hub_source_stale(shards) is False
+    assert len(blackholed_hub) == 1
+    assert "org/sharded" in blackholed_hub[0]
+
+
+def test_an_http_answer_is_not_taken_for_an_unreachable_hub(env, tmp_path, monkeypatch):
+    """A gated / 5xx answer is per repo: it must not silence other probes."""
+    import huggingface_hub
+    from huggingface_hub.errors import HfHubHTTPError
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    calls = []
+
+    def metadata(url, **_k):
+        calls.append(url)
+        raise HfHubHTTPError("503 Service Unavailable")
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+    shards = _sharded_hub_snapshot(tmp_path, 2)
+    assert C._hub_source_stale(shards) is False
+    assert len(calls) == 2 and not C._UNREACHABLE
+
+
+def test_the_hub_is_asked_again_once_the_unreachable_verdict_expires(env, tmp_path, monkeypatch):
+    import huggingface_hub
+
+    shards = _sharded_hub_snapshot(tmp_path, 2)
+    blob = os.path.basename(os.path.realpath(shards[0]))
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    calls = []
+
+    def down(url, **_k):
+        calls.append(url)
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", down)
+    assert C._hub_source_stale(shards) is False
+    assert len(calls) == 1
+    C._UNREACHABLE[C._endpoint()] -= C._REMOTE_TTL_SECONDS + 1
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, **_k: calls.append(url) or types.SimpleNamespace(etag = "f" * 64),
+    )
+    assert C._hub_source_stale(shards) is True
+    assert len(calls) == 2 and blob != "f" * 64
 
 
 def test_an_entry_the_loader_rejected_is_a_miss_until_replaced(env, tmp_path, scheme):
