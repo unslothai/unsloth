@@ -2518,7 +2518,13 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
     return payload if isinstance(payload, dict) else None
 
 
-_CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# Cosmos3 components video never loads: the pipeline takes no vision_encoder, and Studio passes sound_tokenizer=None.
+COSMOS3_UNUSED_COMPONENTS = frozenset({"sound_tokenizer", "vision_encoder"})
+_CALLER_SUPPLIED_COMPONENTS = {
+    "HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"}),
+    "Cosmos3OmniPipeline": COSMOS3_UNUSED_COMPONENTS,
+    "Cosmos3OmniDiffusersPipeline": COSMOS3_UNUSED_COMPONENTS,
+}
 # Remote-code components loaded via an in-tree port, judged by the layout that port reads (else a config-only
 # MOSS-Image transformer/ would pass).
 _IN_TREE_PORT_LIBRARIES = {

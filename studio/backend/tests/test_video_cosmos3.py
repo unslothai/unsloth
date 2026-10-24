@@ -14,6 +14,7 @@ import importlib.machinery
 import importlib.util
 import inspect
 import json
+import shutil
 import math
 import sys
 import types
@@ -459,6 +460,14 @@ def test_the_download_plan_stages_every_component_the_pipeline_reads(tmp_path, r
         wanted = {name for name in _listing(repo) if name.startswith(folder)}
         assert wanted and wanted <= set(planned), folder
     root = _write_planned_tree(tmp_path / "snapshot", repo)
+    assert local_pipeline_components_are_complete(root, "model_index.json")
+    # sound_tokenizer is passed as None, so diffusers' hub-id load skips it too; vision_encoder it still demands.
+    assert not any(name.startswith("sound_tokenizer/") for name in planned)
+    vision = {name for name in _listing(repo) if name.startswith("vision_encoder/")}
+    assert vision <= set(planned)
+    # A folder holding only what video loads is a complete pipeline.
+    for unused in ("sound_tokenizer", "vision_encoder"):
+        shutil.rmtree(root / unused, ignore_errors = True)
     assert local_pipeline_components_are_complete(root, "model_index.json")
 
 

@@ -6979,11 +6979,14 @@ class VideoBackend:
         siblings = list(info.siblings or [])
         ltx25_pack = is_ltx25_pack(s.rfilename for s in siblings)
         # LTX-2.5 and Cosmos3 also ship a modular_model_index.json; neither is H3's layout.
-        from .video_cosmos3 import is_cosmos3_listing
+        from .video_cosmos3 import NONE_COMPONENTS as COSMOS3_NONE_COMPONENTS, is_cosmos3_listing
 
+        cosmos3 = is_cosmos3_listing(s.rfilename for s in siblings)
+        # Only components passed as None: diffusers' hub-id load still requires every other weight in the listing.
+        cosmos3_unused = tuple(f"{c}/" for c in COSMOS3_NONE_COMPONENTS) if cosmos3 else ()
         is_h3_modular = (
             not ltx25_pack
-            and not is_cosmos3_listing(s.rfilename for s in siblings)
+            and not cosmos3
             and any(s.rfilename == "modular_model_index.json" for s in siblings)
         )
         h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
@@ -7036,6 +7039,8 @@ class VideoBackend:
             if skip_components and is_prequant_covered_weight(name, skip_components):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
+                continue
+            if cosmos3_unused and name.startswith(cosmos3_unused):
                 continue
             if ltx23 and "/" in name and not name.startswith(VideoBackend._LTX23_BASE_PREFIXES):
                 continue

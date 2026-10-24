@@ -20,6 +20,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
+# Passed as None to from_pretrained: Studio renders video only.
+NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
@@ -116,7 +118,7 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
     """``from_pretrained`` kwargs: no sound tokenizer; guardrail off only on the explicit opt-out."""
-    kwargs: dict[str, Any] = {"sound_tokenizer": None}
+    kwargs: dict[str, Any] = dict.fromkeys(NONE_COMPONENTS)
     if safety_checker_opted_out():
         kwargs["enable_safety_checker"] = False
         if checkpoint_enables_safety_checker(repo_id, index):
