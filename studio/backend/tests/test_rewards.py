@@ -532,6 +532,15 @@ def test_rules_that_score_the_whole_reply_refuse_an_extraction_step():
         rewards.validate_rule(rule)
 
 
+def test_a_misspelled_score_key_is_refused():
+    rule = {"type": "exact_match", "extract": None, "score": {"match": 1.0, "mis": -1.0}}
+    with pytest.raises(rewards.RewardError, match = "score.mis"):
+        rewards.validate_rule(rule)
+    length = {"type": "length", "max_chars": 10, "score": {"over": -1, "uder": 1}}
+    with pytest.raises(rewards.RewardError, match = "score.uder"):
+        rewards.validate_rule(length)
+
+
 def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
     from core.training.rewards import score_rule, validate_rule
 
