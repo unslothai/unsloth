@@ -4156,8 +4156,10 @@ export function ModelConfigPage({
       {/* pt-4.75 puts the Remember text's cap top 24px under the rule, the same as the space under the buttons. */}
       <div className="flex flex-col gap-3.5 border-t border-border pt-4.75">
         <div className="flex min-w-0 items-center gap-2">
+          {/* As tall as its label's text: 1em of text-ui-13, with the corner and tick scaled to match. */}
           <Checkbox
             id={rememberId}
+            className="size-[1em] rounded-[0.375em] text-ui-13 [&_[data-slot=checkbox-indicator]>svg]:size-[0.875em]"
             aria-describedby={saveStatusId}
             checked={remember}
             onCheckedChange={(checked) => {
