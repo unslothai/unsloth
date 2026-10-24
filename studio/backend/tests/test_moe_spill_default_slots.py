@@ -632,3 +632,32 @@ def test_slots_given_back_for_the_cache_are_not_cut_again_by_the_drafter_fallbac
     assert all(_flag(c, "--parallel") == "4" for c in later[:2]), later
     assert not any(a == b for a, b in zip(later, later[1:])), "identical relaunch"
     assert not backend._slots_cut_for_drafter
+
+
+def test_a_first_launch_that_turns_unpinned_logs_its_own_stage(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The first spawn drops a cache its load mode no longer pins and gives the slots
+    back; the log names that launch, not a retry that never ran."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    real = llama_cpp_module._argv_loads_pinned
+    # Emission (no cache yet in argv) still sees a pinned load; the spawn does not.
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_argv_loads_pinned",
+        lambda argv, env = None: "--moe-cache-mib" not in list(argv) and real(argv, env),
+    )
+    lines = []
+    monkeypatch.setattr(
+        llama_cpp_module.logger,
+        "info",
+        lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+    )
+    backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD)
+
+    assert "--moe-cache-mib" not in cmd, cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+    gave_back = [l for l in lines if "serving slots go back" in l]
+    assert gave_back == [
+        "MoE cache: not on the unpinned launch, so the serving slots go back 2 -> 4."
+    ], lines

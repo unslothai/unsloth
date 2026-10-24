@@ -33226,11 +33226,10 @@ class LlamaCppBackend:
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
                         _cached_cmd = run_cmd
-                        run_cmd = self._drop_moe_cache(
-                            run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
-                        )
+                        _stage = f"{label.lstrip('-') or 'unpinned'} launch"
+                        run_cmd = self._drop_moe_cache(run_cmd, _stage)
                         if run_cmd != _cached_cmd:
-                            run_cmd = _undo_cache_only_spill_cut("retry", run_cmd)
+                            run_cmd = _undo_cache_only_spill_cut(_stage, run_cmd)
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
