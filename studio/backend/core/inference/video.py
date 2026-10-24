@@ -3151,11 +3151,9 @@ def _video_native_cache_spec(
     kind: str,
     source_dir: Optional[str],
 ) -> Optional[dict]:
-    """The native build an OFFLOADED conventional load's runtime quant makes, as a cache spec, else None.
+    """Cache spec of the native build an OFFLOADED CUDA load's runtime quant makes, else None. Never raises.
 
-    Asked with the same inputs as the quant step below (``native_scheme`` / ``native_kwargs``), so a hit replays
-    exactly the build that step would make. Offload on CUDA only: there the torchao-free int8 is the only build, and
-    no hosted torchao checkpoint matches it (no ConvRot, other activation quant). Never raises."""
+    Must use the same inputs as the quant step (``native_scheme`` / ``native_kwargs``) so a hit replays that build."""
     try:
         if kind != "pipeline" or getattr(fam, "modular_workflow", None):
             return None
@@ -9060,9 +9058,7 @@ class VideoBackend:
                 raise_on_unified_memory_shortfall(
                     plan, family = getattr(fam, "name", None), logger = logger
                 )
-        # Offloaded: the runtime quant is the torchao-free build, which no hosted checkpoint matches. Replay this
-        # machine's earlier build of it, every expert or none, so the dense denoiser shards are neither read nor
-        # re-quantized.
+        # Offloaded: no hosted checkpoint matches the native build; replay this machine's own (all experts or none).
         native_cache_spec = (
             _video_native_cache_spec(
                 fam,
@@ -9478,7 +9474,6 @@ class VideoBackend:
             if native_scheme is not None
             else {}
         )
-        # The cached native experts stand in for the quant below only when it would build exactly them.
         native_cached = (
             bool(native_cache_hits)
             and native_cache_spec is not None

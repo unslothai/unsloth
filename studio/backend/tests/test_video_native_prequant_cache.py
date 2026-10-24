@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (torchao-free) prequant cache for offloaded video DiTs, per expert (Wan2.2-A14B's transformer +
-transformer_2): bit-identical round trip, keys, all-or-nothing reads, and the offload routing gate.
-
-Hermetic: a tiny random two-expert WanTransformer3DModel saved as a local "base" directory, quantized on the CPU
-with the same native W8A8 ConvRot build an offloaded load makes, and a private cache root per test.
-"""
+"""Native prequant cache for offloaded two-expert video DiTs: round trip, keys, all-or-nothing reads, routing."""
 
 from __future__ import annotations
 
@@ -178,19 +173,16 @@ def test_key_tracks_build_and_source(base_dir):
         base_repo = base_dir,
         component = "transformer",
     )
-    # Another build (weight-only, no ConvRot) of the same weights is a miss.
     assert (
         NC.lookup(fam, _spec(act_int8 = False), base_repo = base_dir, component = "transformer") is None
     )
     assert _spec(act_int8 = False)["rot_group"] == 0 and _spec()["rot_group"] == 256
-    # A different base id is a miss.
     assert (
         NC.lookup(
             fam, spec, base_repo = base_dir + "-other", source_base = base_dir, component = "transformer"
         )
         is None
     )
-    # Replaced dense weights are a miss.
     torch.manual_seed(99)
     diffusers.WanTransformer3DModel(**_tiny_config()).save_pretrained(
         str(Path(base_dir) / "transformer"), safe_serialization = True
@@ -301,7 +293,6 @@ def test_video_save_writes_one_entry_per_expert(base_dir):
     V._save_native_quant_to_cache(fam, views, spec, base = base_dir, source = base_dir)
     for component in COMPONENTS:
         assert NC.lookup(fam, spec, base_repo = base_dir, component = component) is not None
-    # A read-back build is not written again.
     hits = V._read_native_quant_from_cache(
         fam, spec, base = base_dir, source = base_dir, config_kwargs = {}
     )

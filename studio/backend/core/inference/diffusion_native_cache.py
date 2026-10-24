@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of torchao-free (native) runtime-quantized denoisers, one entry per denoiser component.
+"""Local cache of native (torchao-free) runtime-quantized denoisers, one entry per component.
 
-An offloaded video DiT is quantized with ``diffusion_native_quant`` (plain int8 / fp8 buffers that survive the
-offload hooks), not torchao, so neither a hosted torchao checkpoint nor ``diffusion_prequant_cache``'s torchao
-layout can stand in for it. This module stores that exact build: the quantized module's own ``state_dict`` (every
-tensor is plain) plus, per swapped Linear, the facts its constructor needs. A hit rebuilds the module without
-reading the dense shards or re-quantizing, byte for byte what the build that wrote it held.
-
-The entries live in ``diffusion_prequant_cache``'s root and share its key recipe (dense source fingerprint,
-family, class, component, toolchain), its locks, manifest commit, digest check and LRU eviction. The key also
-carries ``native``: the native layout version, scheme, W8A8, ConvRot group, scale snapping and the Linear filter,
-so a torchao lookup never computes these keys and an entry is only served to the same native build.
+Shares ``diffusion_prequant_cache``'s root, locks, manifest and eviction; the key adds the native build spec so an
+entry is only served to the identical native build.
 """
 
 from __future__ import annotations
@@ -215,7 +207,7 @@ def save(
             )
             return None
         if info.get("cache_path"):
-            return None  # read back from this cache: nothing new to write
+            return None
         recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
         keyed = _key_for(fam, spec, source_base or base_repo, component, base_id = recorded_base)
         if keyed is None:
@@ -445,7 +437,7 @@ def load(
                 "native": True,
                 "cache_path": str(path),
             }
-        except Exception:  # noqa: BLE001 - markers are best-effort
+        except Exception:  # noqa: BLE001
             pass
         _cache.note_hit(path, logger)
         return model
