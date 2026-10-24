@@ -3445,10 +3445,59 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     return True
 
 
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
