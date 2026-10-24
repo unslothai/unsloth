@@ -2085,10 +2085,15 @@ async def stream_with_studio_tools(
             finally:
                 if not drained and not pump.done():
                     cancel_event.set()
-                try:
-                    await asyncio.shield(pump)
-                except (asyncio.CancelledError, Exception):
-                    pass
+                # Joined however often this is cancelled meanwhile: closed while the pump's
+                # worker is inside next(), the generator raises instead of closing.
+                while not pump.done():
+                    try:
+                        await asyncio.shield(pump)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
                 tool_stream.close()
 
             completion = controller.record_result(decision, result)
