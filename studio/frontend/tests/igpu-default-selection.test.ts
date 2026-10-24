@@ -66,6 +66,14 @@ test("the default VRAM total leaves a GPU torch cannot run out", () => {
   assert.equal(defaultGpuMemoryTotalGb([R9700, R9700, IGPU_NO_KERNELS]), 63.72);
 });
 
+test("a shared-memory GPU beside a card torch cannot run counts alone", () => {
+  const noKernelCard: MemoryTotalDevice = {
+    memory_total_gb: 16,
+    no_torch_kernels: true,
+  };
+  assert.equal(defaultGpuMemoryTotalGb([IGPU_SHARED, noKernelCard]), 36.23);
+});
+
 test("an iGPU alone, or discrete cards alone, count as before", () => {
   assert.equal(defaultGpuMemoryTotalGb([IGPU_SHARED]), 36.23);
   assert.equal(defaultGpuMemoryTotalGb([R9700, R9700]), 63.72);
