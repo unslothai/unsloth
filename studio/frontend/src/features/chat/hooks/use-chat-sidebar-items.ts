@@ -39,6 +39,8 @@ export interface SidebarItem {
   modifiedAt?: number;
   modelIds?: string[];
   isFork?: boolean;
+  /** Made by a scheduled task's run. */
+  isScheduled?: boolean;
   projectId?: string | null;
 }
 
@@ -96,6 +98,7 @@ export function groupThreads(
         ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
         ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         isFork: Boolean(t.forkedFromThreadId),
+        ...(t.scheduledTaskId ? { isScheduled: true } : {}),
         projectId: t.projectId ?? null,
       });
     }

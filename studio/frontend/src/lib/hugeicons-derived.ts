@@ -115,3 +115,25 @@ export const TextToSpeechIcon: IconSvgElement = [
     },
   ],
 ];
+
+/** `icon` with an accent dot; colours go in `style` because HugeiconsIcon overwrites child stroke attributes. */
+export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
+  return [
+    ...icon,
+    [
+      "circle",
+      {
+        cx: "19",
+        cy: "5",
+        r: "3.75",
+        key: "notice-dot",
+        style: {
+          fill: "var(--primary)",
+          stroke: "var(--icon-dot-ring, var(--sidebar))",
+          strokeWidth: 2.5,
+          paintOrder: "stroke",
+        },
+      },
+    ],
+  ] as unknown as IconSvgElement;
+}
