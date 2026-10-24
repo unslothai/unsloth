@@ -2788,6 +2788,9 @@ def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
 
 def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
     """A cache row must load from its exact repo directory, not a case-folded peer."""
+    (tmp_path / "Case").mkdir()
+    if (tmp_path / "case").exists():
+        pytest.skip("case-insensitive file system: the two repo directories are one")
     scanned_repo = tmp_path / "models--Org--Repo"
     scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
     scanned_snapshot.mkdir(parents = True)
@@ -11408,6 +11411,12 @@ def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU, raising = False)
     assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is False
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    # The check also asks for torch, which a runner without it would answer False.
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: object() if name == "torch" else None
+    )
     assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is True
 
 
