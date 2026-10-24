@@ -15,6 +15,12 @@ from core.flows.story import compile_story_report, walk_check
 from core.flows.world import normalize_world, resolve_world_report
 
 from .flows_player_fakes import FakeCtx, run
+import asyncio
+from typing import Any, Callable
+from core.flows.compiler import parse_document
+from core.flows.engine import FlowEngine
+from core.flows.nodes import text as text_nodes
+from core.flows.registry import load_handlers
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -334,3 +340,127 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
     assert saved and saved[0][0]["ref"] == placed["ref"]
     sheet = rs.nodes["sheet"].outputs["image"]
     assert pixels(sheet).size[0] >= 3 * 512
+
+
+def _run_example_b(name: str, stubs: dict) -> tuple[Any, dict]:
+    """Run a bundled example through the engine: the real CPU blocks, stubs for the model and file blocks."""
+    eng = FlowEngine()
+    eng.handlers = {**load_handlers(), **stubs}
+    eng.mint_key = lambda account: ("sk-unsloth-test", None)
+    eng.revoke_key = lambda key_id: None
+    doc = _example(name)
+
+    async def go():
+        parsed, errors = parse_document(doc)
+        assert not errors, errors
+        rs = await eng.start_run(app = None, flow_id = doc["id"], doc = parsed, options = {})
+        await asyncio.wait_for(rs.task, timeout = 30)
+        return rs
+
+    rs = asyncio.run(go())
+    assert rs.status == "completed", {n: s.error for n, s in rs.nodes.items() if s.error}
+    return rs, rs.outputs
+
+
+def _calls(seen: list) -> Callable:
+    async def handler(ctx):
+        seen.append((ctx.node_id, dict(ctx.params), dict(ctx.inputs)))
+        return {}
+
+    return handler
+
+
+async def _a_document(ctx):
+    return {"file": {"kind": "document", "ref": "document:resume.pdf", "name": "resume.pdf"}}
+
+
+def test_document_audiobook_reads_each_passage_and_joins_them():
+    spoken, joined = [], []
+    text = " ".join(f"word{i}" for i in range(1000))
+
+    async def load(ctx):
+        assert ctx.inputs["file"]["ref"] == "document:resume.pdf"
+        return {"text": text, "truncated": False}
+
+    async def speak(ctx):
+        spoken.append(ctx.inputs["text"])
+        return {"audio": {"kind": "audio", "ref": f"audio:{len(spoken)}"}}
+
+    async def concat(ctx):
+        joined.append([c["ref"] for c in ctx.inputs["clips"]])
+        return {"audio": {"kind": "audio", "ref": "audio:book"}}
+
+    saved: list = []
+    rs, outputs = _run_example_b(
+        "document-audiobook",
+        {
+            "input.file": _a_document,
+            "doc.load": load,
+            "audio.speak": speak,
+            "audio.concat": concat,
+            "output.library": _calls(saved),
+        },
+    )
+    # 1000 words in 120-word passages is 9; For Each reads the first 8, in order.
+    assert outputs["passages"][0].startswith("word0 ") and len(outputs["passages"]) == 9
+    assert spoken == outputs["passages"][:8]
+    assert joined == [[f"audio:{i}" for i in range(1, 9)]]
+    assert rs.nodes["listen"].outputs == {"value": {"kind": "audio", "ref": "audio:book"}}
+    assert saved[0][2]["value"] == [{"kind": "audio", "ref": "audio:book"}]
+
+
+def test_resume_tailor_matches_then_writes_from_the_resume():
+    prompts: dict[str, str] = {}
+    fit = {
+        "matches": [{"requirement": "SQL", "evidence": "Wrote daily SQL reports"}],
+        "gaps": ["Tableau", "dbt"],
+        "keywords": ["SQL", "dashboards"],
+    }
+
+    async def load(ctx):
+        return {
+            "text": "Ana Lima. Analyst at Acme: wrote daily SQL reports in pandas.",
+            "truncated": False,
+        }
+
+    async def generate(ctx):
+        prompts[ctx.node_id] = text_nodes._prompt(ctx, "prompt", "prompt")
+        if ctx.node_id == "fit":
+            return {"text": json.dumps(fit), "json": fit}
+        made = {"bullets": ["Built daily SQL reports"], "cover_letter": "Dear team, ..."}
+        return {"text": json.dumps(made), "json": made}
+
+    _, outputs = _run_example_b(
+        "resume-tailor", {"input.file": _a_document, "doc.load": load, "llm.generate": generate}
+    )
+    assert outputs == {
+        "missing skills": ["Tableau", "dbt"],
+        "tailored bullets": ["Built daily SQL reports"],
+        "cover letter": "Dear team, ...",
+    }
+    # Both steps see the job post and the resume; the writer also gets the match notes.
+    for step in ("fit", "write"):
+        assert "Data Analyst, Riverside Health" in prompts[step]
+        assert "wrote daily SQL reports in pandas" in prompts[step]
+    assert '"requirement"' not in prompts["fit"] and '"requirement"' in prompts["write"]
+
+
+def test_study_cards_dedupes_questions_and_prints_the_deck():
+    cards = [
+        {"question": "Where does the Calvin cycle run?", "answer": "In the stroma."},
+        {"question": "What does RuBisCO fix?", "answer": "Carbon dioxide."},
+        {"question": "where does the calvin cycle run?", "answer": "The stroma."},
+    ]
+    seen: list[str] = []
+
+    async def generate(ctx):
+        seen.append(text_nodes._prompt(ctx, "prompt", "prompt"))
+        return {"text": json.dumps({"cards": cards}), "json": {"cards": cards}}
+
+    rs, outputs = _run_example_b("study-cards", {"llm.generate": generate})
+    assert "RuBisCO fixes carbon dioxide" in seen[0]
+    assert outputs["cards"] == cards[:2]
+    assert outputs["duplicates removed"] == 1
+    assert rs.nodes["show"].outputs["value"] == (
+        "Q: Where does the Calvin cycle run?\nA: In the stroma.\n\nQ: What does RuBisCO fix?\nA: Carbon dioxide."
+    )

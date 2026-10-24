@@ -25,6 +25,26 @@ COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/ma
 KREA = {"repo": "krea/Krea-2-Turbo", "variant": None}
 ZIMAGE = {"repo": "Tongyi-MAI/Z-Image-Turbo", "variant": None}
 FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev", "variant": None}
+RESUME_FIT = {
+    "type": "object",
+    "properties": {
+        "matches": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "requirement": {"type": "string"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["requirement", "evidence"],
+            },
+        },
+        "gaps": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+        "keywords": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+    },
+    "required": ["matches", "gaps", "keywords"],
+}
 REQ = {
     "chat": {
         "ref": "writer",
@@ -3584,6 +3604,249 @@ def background_swap() -> B:
     return b
 
 
+def document_audiobook() -> B:
+    b = B(
+        "document-audiobook",
+        "Document Audiobook",
+        "pipeline",
+        "Load a PDF, Word or text file, cut it into short passages, read each one aloud and join them into one "
+        "audiobook in your Library.",
+        tags = ["documents", "audio", "tts", "for each"],
+        seed = 2028,
+    ).need("tts")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n(
+        "parts",
+        "text.split",
+        2,
+        1,
+        label = "Passages",
+        mode = "chunks",
+        unit = "words",
+        chunk_size = 120,
+        overlap = 0,
+    )
+    b.e("read.text", "parts.text")
+    b.n("each", "logic.for_each", 3, 1, group = "read_loop", max_items = 8)
+    b.n(
+        "speak",
+        "audio.speak",
+        4,
+        1,
+        group = "read_loop",
+        label = "Read aloud",
+        model = TTS,
+        voice = "af_heart",
+    )
+    b.group("read_loop", "For each passage", (3, 0.4, 2.2, 1.6), "#10b981")
+    b.e("parts.items", "each.items")
+    b.e("each.item", "speak.text")
+    b.e("speak.audio", "each.collect")
+    b.n("join", "audio.concat", 5.4, 1, gap_ms = 400)
+    b.e("each.results", "join.clips")
+    b.n("listen", "output.preview", 6.4, 0.5)
+    b.e("join.audio", "listen.value")
+    b.n("save", "output.library", 6.4, 1.5, folder = "Audiobooks")
+    b.e("join.audio", "save.value")
+    b.n("text", "output.result", 3, 2.6, name = "passages")
+    b.e("parts.items", "text.value")
+    b.note(
+        "tip",
+        "Upload a document in the first block, then Run. It reads the first 8 passages (about 1,000 words); "
+        "raise Max items in For Each for longer books.",
+        0,
+        2.2,
+        2,
+        0.7,
+    )
+    return b
+
+
+def resume_tailor() -> B:
+    b = B(
+        "resume-tailor",
+        "Resume Tailor",
+        "pipeline",
+        "Upload your resume and paste a job post: a local model maps what you already match, lists the gaps, "
+        "then writes tailored resume bullets and a short cover letter from your real experience.",
+        tags = ["documents", "llm", "json", "career"],
+        seed = 2029,
+    ).need("chat")
+    b.n("resume", "input.file", 0, 0.5, label = "Your resume")
+    b.n("read", "doc.load", 1, 0.5)
+    b.e("resume.file", "read.file")
+    b.n(
+        "job",
+        "input.text",
+        0,
+        1.6,
+        label = "Job post",
+        value = "Data Analyst, Riverside Health. We need someone who writes SQL every day, builds dashboards in "
+        "Tableau or Power BI, cleans messy data in Python (pandas), and explains findings to non-technical "
+        "teams. Nice to have: A/B testing, healthcare data, dbt.",
+    )
+    b.n(
+        "fit",
+        "llm.generate",
+        2,
+        1,
+        label = "Match to the job",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 1200,
+        system = "You are a careful career coach. Compare the resume in the context with the job post. A match "
+        "needs evidence quoted or paraphrased from the resume; anything the job asks for that the resume does "
+        "not show is a gap. Never invent experience.",
+        prompt = "Job post:\n{{prompt}}",
+        json_schema = RESUME_FIT,
+    )
+    b.e("job.text", "fit.prompt")
+    b.e("read.text", "fit.context")
+    b.n("gaps", "json.get", 3, 1.9, path = "gaps")
+    b.e("fit.json", "gaps.json")
+    b.n("missing", "output.result", 4, 1.9, name = "missing skills")
+    b.e("gaps.value", "missing.value")
+    b.n(
+        "write",
+        "llm.generate",
+        3,
+        0.6,
+        label = "Write for this job",
+        model = CHAT,
+        temperature = 0.5,
+        max_tokens = 1500,
+        system = "You rewrite resumes. Use only facts from the resume and the match notes in the context; "
+        "reuse the job's keywords where they are true. Bullets start with a strong verb and stay under 25 words. "
+        "The cover letter is three short paragraphs and does not claim the gaps.",
+        prompt = "Job post:\n{{prompt}}\n\nWrite 5 to 7 tailored resume bullets and a cover letter.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "bullets": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 8,
+                    "items": {"type": "string"},
+                },
+                "cover_letter": {"type": "string"},
+            },
+            "required": ["bullets", "cover_letter"],
+        },
+    )
+    b.e("job.text", "write.prompt")
+    b.e("read.text", "write.context")
+    b.e("fit.json", "write.context")
+    b.n("bullets", "json.get", 4, 0.2, path = "bullets")
+    b.e("write.json", "bullets.json")
+    b.n("letter", "json.get", 4, 1, path = "cover_letter")
+    b.e("write.json", "letter.json")
+    b.n("show_bullets", "output.result", 5, 0.2, name = "tailored bullets")
+    b.e("bullets.value", "show_bullets.value")
+    b.n("show_letter", "output.result", 5, 1, name = "cover letter")
+    b.e("letter.value", "show_letter.value")
+    b.note(
+        "tip",
+        "Upload your resume (PDF, Word or text) in the first block and paste the job post, then Run.",
+        0,
+        2.6,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def study_cards() -> B:
+    b = B(
+        "study-cards",
+        "Study Cards",
+        "pipeline",
+        "Paste your notes and get a deck of quiz questions with answers, duplicates removed, ready to study.",
+        tags = ["learning", "llm", "json", "list"],
+        seed = 2030,
+    ).need("chat")
+    b.n(
+        "notes",
+        "input.text",
+        0,
+        1,
+        label = "Your notes",
+        value = "Photosynthesis turns light energy into chemical energy in chloroplasts. The light reactions "
+        "happen in the thylakoid membranes: chlorophyll absorbs light, water is split and oxygen is released, "
+        "and the energy is stored in ATP and NADPH. The Calvin cycle runs in the stroma: the enzyme RuBisCO "
+        "fixes carbon dioxide onto RuBP, and ATP and NADPH from the light reactions turn the product into the "
+        "sugar G3P. Plants use G3P to build glucose, sucrose and starch. Light, carbon dioxide and temperature "
+        "all limit the rate of photosynthesis.",
+    )
+    b.n(
+        "write",
+        "llm.generate",
+        1,
+        1,
+        label = "Write cards",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 1500,
+        system = "You write flashcards for students. Each card tests one fact from the notes; the question is "
+        "short and specific, the answer is one sentence. Never add facts that are not in the notes.",
+        prompt = "Make 8 to 12 flashcards from these notes:\n\n{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "cards": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 16,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string"},
+                            "answer": {"type": "string"},
+                        },
+                        "required": ["question", "answer"],
+                    },
+                }
+            },
+            "required": ["cards"],
+        },
+    )
+    b.e("notes.text", "write.prompt")
+    b.n("cards", "json.get", 2, 1, path = "cards")
+    b.e("write.json", "cards.json")
+    b.n(
+        "unique",
+        "list.dedupe",
+        3,
+        1,
+        label = "One per question",
+        key = {"op": "lower", "args": [{"var": "item.question"}]},
+    )
+    b.e("cards.value", "unique.items")
+    b.n("deck", "output.result", 4, 0.3, name = "cards")
+    b.e("unique.items", "deck.value")
+    b.n("removed", "output.result", 4, 1.9, name = "duplicates removed")
+    b.e("unique.removed", "removed.value")
+    b.n(
+        "as_text",
+        "list.map",
+        4,
+        1.1,
+        label = "Question and answer",
+        expression = {
+            "op": "concat",
+            "args": ["Q: ", {"var": "item.question"}, "\nA: ", {"var": "item.answer"}],
+        },
+    )
+    b.e("unique.items", "as_text.items")
+    b.n("sheet", "list.join", 5, 1.1, separator = "\\n\\n")
+    b.e("as_text.items", "sheet.items")
+    b.n("show", "output.preview", 6, 1.1)
+    b.e("sheet.text", "show.value")
+    b.note("tip", "Paste your own notes in the first block, then Run.", 0, 2.2, 1.6, 0.5)
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -3631,6 +3894,9 @@ BUILDERS = (
     review_insights,
     image_alt_text,
     background_swap,
+    document_audiobook,
+    resume_tailor,
+    study_cards,
 )
 
 
