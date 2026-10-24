@@ -207,7 +207,7 @@ class RunState:
     key_id: Optional[int] = None
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
-    # What each slot held when the run started, so "unload when the run ends" only frees models this run loaded.
+    # What each slot held at the start: "unload when the run ends" frees only what this run loaded.
     initial_resident: dict[str, list[str]] = field(default_factory = dict)
     # Cacheable nodes that computed this run: a step behind one will not be a cache hit, so loading ahead pays off.
     fresh: set[str] = field(default_factory = set)
@@ -1277,8 +1277,7 @@ class FlowEngine:
         load, rs.prefetch_load = rs.prefetch_load, None
         if load is None or rs.caller is None:
             return
-        # Cancelling the wait leaves the load job running: unloading is how a load is stopped, so the next run
-        # never finds this run's guess evicting its models.
+        # Cancelling the wait leaves the load job running; unloading is what stops it.
         from studio_mcp import loading
 
         slot, repo = load
