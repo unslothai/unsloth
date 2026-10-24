@@ -3142,6 +3142,155 @@ def _save_runtime_quant_to_cache(
         logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
 
 
+def _video_native_cache_spec(
+    fam: Any,
+    *,
+    target: Any,
+    transformer_quant: Optional[str],
+    plan: Any,
+    kind: str,
+    source_dir: Optional[str],
+) -> Optional[dict]:
+    """Cache spec of the native build an OFFLOADED CUDA load's runtime quant makes, else None. Never raises.
+
+    Must use the same inputs as the quant step (``native_scheme`` / ``native_kwargs``) so a hit replays that build."""
+    try:
+        if kind != "pipeline" or getattr(fam, "modular_workflow", None):
+            return None
+        if getattr(target, "device", None) != "cuda" or plan is None:
+            return None
+        if plan_keeps_transformer_resident(plan):
+            return None
+        requested = normalize_transformer_quant(transformer_quant)
+        if requested is None:
+            return None
+        pinned = None if requested == TQ_AUTO else requested
+        scheme = native_quant_scheme(
+            target,
+            _auto_offload_scheme(transformer_quant) if pinned is None else pinned,
+            family = fam.name,
+            offload = True,
+        )
+        if scheme is None:
+            return None
+        if stored_denoiser_precision(source_dir) is not None:
+            return None  # the quant step declines a widened checkpoint
+        from .diffusion_native_cache import native_spec
+
+        return native_spec(
+            scheme,
+            fam.name,
+            act_int8 = scheme == TQ_INT8 and native_int8_act(target),
+        )
+    except Exception:  # noqa: BLE001 -- unanswerable: no cache, the dense build runs
+        return None
+
+
+def _native_spec_for(scheme: Optional[str], fam: Any, act_int8: Any) -> Optional[dict]:
+    try:
+        from .diffusion_native_cache import native_spec
+        return native_spec(scheme, getattr(fam, "name", None), act_int8 = bool(act_int8))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_native_quant_to_cache(
+    fam: Any,
+    views: Any,
+    spec: dict,
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    cancel_check: Any = None,
+) -> None:
+    """Cache every expert of a native runtime build, one entry per component. Never raises."""
+    try:
+        from .diffusion_native_cache import save
+        from .video_denoiser_prequant import denoiser_components
+
+        components = denoiser_components(fam)
+        views = list(views or ())
+        if len(components) != len(views):
+            logger.info("diffusion.prequant_cache: native skipped (denoiser views != components)")
+            return
+        for component, view in zip(components, views):
+            save(
+                getattr(view, "transformer", None),
+                fam,
+                spec,
+                base_repo = base,
+                source_base = source,
+                component = component,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+    except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+        logger.warning("diffusion.prequant_cache: native skipped (%s)", exc)
+
+
+def _read_native_quant_from_cache(
+    fam: Any,
+    spec: Optional[dict],
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    config_kwargs: dict,
+    cancel_check: Any = None,
+) -> dict[str, Any]:
+    """``{component: module}`` for EVERY denoiser from the native cache, or ``{}`` (all or nothing). Never raises."""
+    if spec is None:
+        return {}
+    try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)  # a no-op once the load closed it above
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        logger.debug("dynamo pre-import skipped: %r", exc)
+    try:
+        import diffusers
+
+        from .diffusion_native_cache import load, lookup
+        from .video_denoiser_prequant import denoiser_components
+
+        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        if transformer_cls is None:
+            return {}
+        components = denoiser_components(fam)
+        paths = {}
+        for component in components:
+            path = lookup(
+                fam, spec, base_repo = base, source_base = source, component = component, logger = logger
+            )
+            if path is None:
+                return {}
+            paths[component] = path
+        out: dict[str, Any] = {}
+        for component, path in paths.items():
+            module = load(
+                path,
+                transformer_cls,
+                str(source or base),
+                component = component,
+                spec = spec,
+                config_kwargs = config_kwargs,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+            if module is None:
+                return {}
+            out[component] = module
+        logger.info(
+            "video.transformer_quant: read %d native %s denoiser(s) for %s from the local prequant "
+            "cache; the dense denoiser shards are not loaded",
+            len(out),
+            spec.get("scheme"),
+            getattr(fam, "name", None),
+        )
+        return out
+    except Exception as exc:  # noqa: BLE001 - a cache problem is a miss
+        logger.warning("diffusion.prequant_cache: native read skipped (%s)", exc)
+        return {}
+
+
 # The planner DECIDED against the seed (not "never ran"); a load must not re-take it after teardown.
 DENOISER_SEED_DECLINED = "__declined__"
 
@@ -8924,6 +9073,36 @@ class VideoBackend:
                 raise_on_unified_memory_shortfall(
                     plan, family = getattr(fam, "name", None), logger = logger
                 )
+        # Offloaded: no hosted checkpoint matches the native build; replay this machine's own (all experts or none).
+        native_cache_spec = (
+            _video_native_cache_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            if kind == "pipeline" and not denoiser_injected
+            else None
+        )
+        native_cache_hits = _read_native_quant_from_cache(
+            fam,
+            native_cache_spec,
+            base = base,
+            source = _base_local_dir or fetch_base,
+            config_kwargs = {}
+            if _base_local_dir
+            else {
+                "cache_dir": hub_cache_dir(),
+                "local_files_only": local_files_only,
+                **({"token": hf_token} if hf_token else {}),
+                **_pinned_base_kwargs(),
+            },
+            cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+        )
+        self._raise_if_video_load_superseded(_load_token)
+        pipe_kwargs.update(native_cache_hits)
         # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download
         # already dropped those shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up
         # here. ltx23 never reaches this: it gets the hub id.
@@ -9310,6 +9489,45 @@ class VideoBackend:
             if native_scheme is not None
             else {}
         )
+        native_cached = (
+            bool(native_cache_hits)
+            and native_cache_spec is not None
+            and video_offload
+            and native_scheme == native_cache_spec.get("scheme")
+            and bool(native_kwargs.get("act_int8")) == bool(native_cache_spec.get("act_int8"))
+            and _video_native_cache_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            == native_cache_spec
+        )
+        if native_cache_hits and not native_cached:
+            # Not the build this load makes after all: put the dense experts back and let the quant below run.
+            logger.warning(
+                "video.transformer_quant: the cached native denoiser(s) do not match this load's "
+                "build; loading the dense denoiser shards instead"
+            )
+            dense_cls = getattr(diffusers, fam.transformer_class)
+            for component in native_cache_hits:
+                pipe.register_modules(
+                    **{
+                        component: dense_cls.from_pretrained(
+                            _base_local_dir or fetch_base,
+                            subfolder = component,
+                            torch_dtype = dtype,
+                            cache_dir = hub_cache_dir(),
+                            local_files_only = local_files_only,
+                            **({"token": hf_token} if hf_token else {}),
+                            **_pinned_base_kwargs(),
+                        )
+                    }
+                )
+            native_cache_hits = {}
+            views = _views_for(pipe, fam)
         # Auto quantises a video DiT only to keep it resident: with bf16 resident, int8 fails the default LPIPS bar.
         if (
             kind == "pipeline"
@@ -9364,6 +9582,18 @@ class VideoBackend:
                 "video.transformer_quant: %s pre-quantized denoiser(s) seeded for %s; skipping "
                 "the runtime quantise",
                 denoiser_seed_scheme,
+                fam.name,
+            )
+        elif native_cached:
+            transformer_quant_engaged = native_scheme
+            transformer_quant_source = (
+                native_quant_reason(getattr(pipe, "transformer", None), native_scheme)
+                + "; read back from this machine's prequant cache of the same build"
+            )
+            logger.info(
+                "video.transformer_quant: %s native denoiser(s) read from the local prequant cache "
+                "for %s; skipping the runtime quantise",
+                native_scheme,
                 fam.name,
             )
         elif (
@@ -9453,8 +9683,24 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
+                if (
+                    native_cache_spec is not None
+                    and native_scheme == engaged[0]
+                    and native_cache_spec
+                    == _native_spec_for(native_scheme, fam, native_kwargs.get("act_int8"))
+                ):
+                    # The native build is read back under auto too: the cache replays the pick, never makes it.
+                    _save_native_quant_to_cache(
+                        fam,
+                        views,
+                        native_cache_spec,
+                        base = base,
+                        source = _base_local_dir or fetch_base,
+                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                    )
+                    self._raise_if_video_load_superseded(_load_token)
                 # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
-                if transformer_quant_pinned is not None:
+                elif transformer_quant_pinned is not None:
                     _save_runtime_quant_to_cache(
                         fam,
                         views,
