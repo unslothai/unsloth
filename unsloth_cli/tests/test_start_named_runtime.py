@@ -152,3 +152,18 @@ def test_named_resident_slots_cut_for_drafter_stay_defaulted(monkeypatch, effect
     }
     payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(gguf_variant = "Q4_K_M"))
     assert ("n_parallel" in payload) is carried
+
+
+@pytest.mark.parametrize("mode, carried", [("auto", False), ("manual", True)])
+def test_named_resident_auto_tensor_split_not_pinned(monkeypatch, mode, carried):
+    status = {
+        "is_gguf": True,
+        "gguf_variant": "Q8_0",
+        "gpu_memory_mode": mode,
+        "tensor_parallel": True,
+        "tensor_split": [0.6, 0.4],
+    }
+    payload = _named_reload_payload(
+        monkeypatch, status, start.LoadOptions(gguf_variant = "Q8_0", tensor_parallel = True)
+    )
+    assert ("tensor_split" in payload) is carried

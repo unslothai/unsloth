@@ -2468,6 +2468,9 @@ def _resolve_model(
                 if status_snapshot.get("requested_llama_extra_args"):
                     carried = {}
                 carried.pop("llama_extra_args", None)
+                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+                    carried.pop("tensor_split", None)
                 # Slots Auto cut to keep a drafter must stay defaulted: an explicit count makes the same command reload (_runtime_matches_intent).
                 slots, effective = (
                     status_snapshot.get("requested_parallel_slots"),
