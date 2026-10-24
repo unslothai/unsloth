@@ -3794,6 +3794,51 @@ def _openai_llama_admission_enforced_max_tokens(
     )
 
 
+async def _openai_llama_admission_counted_max_tokens(
+    payload,
+    *,
+    request: Optional[Request],
+    llama_backend,
+    conversation,
+    injected_tools = None,
+    pausable: bool = True,
+    exact_only: bool = False,
+) -> Optional[int]:
+    """`_openai_llama_admission_enforced_max_tokens` on the tokenizer's count of what is sent.
+    The character estimate overcounts plain text, so a prompt that fits was sent
+    `max_tokens=1`. A count that is not exact (failed, or media estimated on top) keeps the
+    estimate's cap, or returns None under ``exact_only`` so the caller keeps its own."""
+    allowance = _openai_llama_admission_enforced_max_tokens(
+        payload,
+        request = request,
+        llama_backend = llama_backend,
+        conversation = conversation,
+        injected_tools = injected_tools,
+        pausable = pausable,
+    )
+    if allowance is None:
+        return None
+    counted, exact = await asyncio.to_thread(
+        _count_gguf_admission_prompt_detail,
+        llama_backend,
+        payload,
+        conversation,
+        injected_tools,
+    )
+    if not exact:
+        return None if exact_only else allowance
+    return _openai_llama_admission_enforced_max_tokens(
+        payload,
+        request = request,
+        llama_backend = llama_backend,
+        conversation = conversation,
+        injected_tools = injected_tools,
+        pausable = pausable,
+        prompt_tokens = int(counted),
+        prompt_counted = True,
+    )
+
+
 def _openai_llama_admission_retry_max_tokens(
     retry_body,
     *,
@@ -49808,7 +49853,7 @@ async def anthropic_messages(
         openai_tools = openai_client_tools if client_tools else []
         # Held to its share: registered raw and never chosen, so the cap it is SENT keeps its
         # reservation true.
-        _anthropic_passthrough_allowance = _openai_llama_admission_enforced_max_tokens(
+        _anthropic_passthrough_allowance = await _openai_llama_admission_counted_max_tokens(
             payload,
             request = request,
             llama_backend = llama_backend,
@@ -50049,7 +50094,7 @@ async def anthropic_messages(
         )
 
     # ── No-tool path ──────────────────────────────────────────
-    _anthropic_plain_output_allowance = _openai_llama_admission_enforced_max_tokens(
+    _anthropic_plain_output_allowance = await _openai_llama_admission_counted_max_tokens(
         payload,
         request = request,
         llama_backend = llama_backend,
@@ -52428,19 +52473,33 @@ async def _build_openai_passthrough_body_async(
     request: Optional[Request] = None,
 ) -> dict:
     if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
-        return await asyncio.to_thread(
+        body = await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
             backend_ctx = backend_ctx,
             llama_backend = llama_backend,
             request = request,
         )
-    return _build_openai_passthrough_body(
+    else:
+        body = _build_openai_passthrough_body(
+            payload,
+            backend_ctx = backend_ctx,
+            llama_backend = llama_backend,
+            request = request,
+        )
+    # The builder priced the cap on the estimate; correct it on the count of what is sent.
+    allowance = await _openai_llama_admission_counted_max_tokens(
         payload,
-        backend_ctx = backend_ctx,
-        llama_backend = llama_backend,
         request = request,
+        llama_backend = llama_backend,
+        conversation = body.get("messages") or [],
+        injected_tools = body.get("tools"),
+        pausable = False,
+        exact_only = True,
     )
+    if allowance is not None:
+        body["max_tokens"] = allowance
+    return body
 
 
 async def _openai_passthrough_stream(
