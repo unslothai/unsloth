@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The first-person 3D world renderer. Only world-player.tsx imports this, and only with import(), so three.js
-// stays in its own chunk and loads only when someone switches a world to 3D. It drives the same WorldGameHandle
-// and WorldBridge as the 2D Phaser player, on the same procedural map, so saves, quests, dialogue and the village
-// simulation work unchanged.
+// First-person 3D renderer, loaded only via import() so three.js stays out of the startup bundle. It implements the
+// same WorldGameHandle / WorldBridge as the 2D Phaser player on the same map, so saves, quests and the sim carry over.
 
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
@@ -210,7 +208,6 @@ export function createWorld3d(
   sun.position.set(Math.cos(elev) * 0.6, Math.sin(elev), Math.cos(elev) * 0.8);
   scene.add(sun);
   let skyDome: three.Mesh | null = null;
-  // Sky dome: darker overhead, paler at the horizon, so the sky is not one flat colour.
   {
     const dome = keep(new three.SphereGeometry(300, 24, 12));
     const zenith = sky.clone().multiplyScalar(0.62);
@@ -241,7 +238,6 @@ export function createWorld3d(
       ),
     );
     skyDome.renderOrder = -1;
-    // Distant hills fade into the horizon colour, not the zenith.
     (scene.fog as three.Fog).color.copy(horizon);
     scene.add(skyDome);
   }
@@ -249,7 +245,6 @@ export function createWorld3d(
   const camera = new three.PerspectiveCamera(72, 1, 0.05, 400);
   camera.rotation.order = "YXZ";
 
-  // Ground: one flat-coloured quad per tile, corners from the shared height field.
   const tint: Partial<Record<TileKind, three.Color>> = {};
   for (const [kind, img] of Object.entries(art.tiles)) {
     const c = img && meanColor(img);
@@ -267,7 +262,6 @@ export function createWorld3d(
     for (let x = 0; x < W; x++) {
       const kind = kindAt(map, x, y);
       if (kind === "water") waterTiles.push({ x, y });
-      // Trees, rocks and walls stand on the ground of the biome around them.
       const groundKind: TileKind =
         kind === "tree" || kind === "rock" || kind === "flowers"
           ? spec.biome === "desert" || spec.biome === "beach"
@@ -343,7 +337,6 @@ export function createWorld3d(
     scene.add(new three.Mesh(wg, wm));
   }
 
-  // Trees, rocks, walls and flowers: one instanced mesh per part.
   const decor = decorCells(map);
   const houses = houseCells(spec, map);
   const houseAt = new Set(houses.map((p) => `${p.x},${p.y}`));
@@ -463,7 +456,6 @@ export function createWorld3d(
       }
       const bw = x1 - x0 + 1;
       const bd = y1 - y0 + 1;
-      // The map's border ring is not a house.
       if (bw > 10 || bd > 10) continue;
       const roof = new three.Mesh(
         keep(new three.ConeGeometry(Math.SQRT1_2, 1, 4)),
@@ -654,7 +646,6 @@ export function createWorld3d(
   prompt.visible = false;
   scene.add(prompt);
 
-  // The player is the camera.
   const spawn = start && !isSolid(map, start.x, start.y) ? start : map.spawn;
   const me = { x: spawn.x + 0.5, y: spawn.y + 0.5 };
   {
@@ -789,7 +780,6 @@ export function createWorld3d(
   const onPointerDown = (e: PointerEvent) => {
     if (controls.isLocked || bridge.locked()) return;
     drag = { x: e.clientX, y: e.clientY };
-    // Clicking a villager walks over and talks, as on the map.
     const rect = renderer.domElement.getBoundingClientRect();
     raycaster.setFromCamera(
       new three.Vector2(
@@ -891,7 +881,6 @@ export function createWorld3d(
       !locked && !controls.isLocked && !dragLook ? "block" : "none";
     cross.style.display = controls.isLocked ? "block" : "none";
 
-    // Turning: arrows always, and toward a villager you are talking to.
     if (!locked) {
       const turn =
         (keys.has("ArrowLeft") ? 1 : 0) - (keys.has("ArrowRight") ? 1 : 0);
@@ -945,7 +934,6 @@ export function createWorld3d(
     );
     skyDome?.position.copy(camera.position);
 
-    // Villagers wander the same way they do on the map.
     for (const n of npcs) {
       const close = Math.hypot(n.pos.x - me.x, n.pos.y - me.y) < 1.8;
       let walking = false;
@@ -990,7 +978,6 @@ export function createWorld3d(
         heightAt(terrain, n.pos.x, n.pos.y) + bob,
         n.pos.y,
       );
-      // The capsule fallback turns to face where it walks, or you when you are close.
       const look =
         close || talking === n.id
           ? Math.atan2(me.x - n.pos.x, me.y - n.pos.y)
@@ -1036,7 +1023,6 @@ export function createWorld3d(
         it.sprite.position.y = it.base + Math.sin(now / 450 + it.at.x) * 0.06;
     }
 
-    // Nearest thing in reach.
     let best: Interactable | null = null;
     let bestD = REACH;
     let bp: three.Vector3 | null = null;
