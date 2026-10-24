@@ -2268,6 +2268,7 @@ def _resolve_model(
     status_snapshot = None
     # Whether the inferred settings can restart the resident. Computed once: the preload gate, the warning, the consent refusal and force_reload must all agree, and asking twice against a snapshot taken at different times is how they drift apart.
     inferred_differs = False
+    same_checkpoint = True
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
@@ -2285,6 +2286,25 @@ def _resolve_model(
     match = None if requested and load_has_overrides else loaded_match
     if requested and match is None:
         load_requested = True
+        if attach_public_id is None and loaded_match is not None:
+            # A full load resets omitted settings, so read the named resident's own slot to carry them.
+            status_snapshot = _inference_status(base, key, loaded_match["id"])
+            # The listing shows a local checkpoint by basename, so ./foo matches a resident old/foo: inherit only from the checkpoint this load resolves to.
+            wanted_path = os.path.abspath(os.path.expanduser(requested))
+            # A snapshot naming another model (replaced since the listing, or a server ignoring ?model=) describes nothing of this one.
+            same_checkpoint = _model_id_matches(
+                status_snapshot.get("active_model"),
+                loaded_match["id"],
+                allow_casefold = allow_casefold,
+            ) and (
+                _is_hub_model_id(requested)
+                or any(
+                    os.path.abspath(os.path.expanduser(str(status_snapshot.get(field))))
+                    == wanted_path
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status_snapshot.get(field)
+                )
+            )
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2434,12 +2454,8 @@ def _resolve_model(
                 payload["gguf_variant"] = resident_variant
         elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
             # Same for a named model already served, read from the slot serving it.
-            try:
-                status = _model_status(base, key, loaded_match["id"])
-            except Exception:
-                status = {}
-            if status.get("is_gguf") and status.get("gguf_variant"):
-                payload["gguf_variant"] = status["gguf_variant"]
+            if status_snapshot.get("is_gguf") and status_snapshot.get("gguf_variant"):
+                payload["gguf_variant"] = status_snapshot["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
         if "load_in_4bit" in overrides:
@@ -2450,7 +2466,9 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             # -1 means "pick the layers", which is right when the user is switching INTO manual, but on an inferred attach to a resident already in manual it would throw away the layer count it was pinned to. Leave it for the round-trip.
             already_manual = (
-                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
+                same_checkpoint
+                and bool(status_snapshot)
+                and status_snapshot.get("gpu_memory_mode") == "manual"
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
@@ -2464,11 +2482,22 @@ def _resolve_model(
                 f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
                 "cannot re-authorize. Re-run with --model naming it to apply these settings."
             )
-        if attach_public_id is not None:
-            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies every defaulted LoadRequest field into the new intent, so a knob we leave out is reset rather than kept. Carry the resident's own values for the ones the user did not name, or changing the context alone would drop their KV dtype, slot count, batch sizes and GPU placement.
-            payload.update(_resident_runtime_payload(status_snapshot, payload))
+        if attach_public_id is not None or loaded_match is not None:
+            # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
+            carried = _resident_runtime_payload(status_snapshot, payload)
+            if attach_public_id is None:
+                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
+                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
+                    carried = {}
+                carried.pop("llama_extra_args", None)
+                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+                    carried.pop("tensor_split", None)
+                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+                carried.pop("n_parallel", None)
+            payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
-            if status_snapshot and inferred_differs:
+            if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
