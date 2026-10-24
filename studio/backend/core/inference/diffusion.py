@@ -8057,6 +8057,12 @@ class DiffusionBackend:
                 from .diffusion_nvfp4_install import record_install_reason
 
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
+                # Drop the previous load's NVFP4 cache tag; an NVFP4 load sets it again.
+                try:
+                    from .diffusion_nvfp4_act_quant import reset_compile_cache_tag
+                    reset_compile_cache_tag()
+                except Exception as exc:  # noqa: BLE001 - keying only
+                    logger.debug("nvfp4 cache tag reset skipped: %r", exc)
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
