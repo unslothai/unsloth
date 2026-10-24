@@ -11,6 +11,8 @@ __all__ = [
     "fsdp2_units",
     "fsdp2_gathered",
     "fsdp2_gather_active",
+    "mesh_writer_rank",
+    "writes_off_rank0",
     "install_dcp_bnb_state_dict",
     "reduce_unsharded_trainable_grads",
 ]
@@ -71,7 +73,7 @@ def _dist():
     return None
 
 
-_SAVE_COUNTER = [0]
+_SAVE_COUNTER = {}
 
 
 def _save_timeout():
@@ -83,12 +85,77 @@ def _save_timeout():
         return datetime.timedelta(days = 7)
 
 
-def _wait_for_writer(dist, writer):
-    """The other ranks wait for rank 0's write, so no later collective overtakes it. A store key, not
-    a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
-    collective timeout, and NCCL ranks blocked in a barrier would abort before rank 0 arrives."""
-    _SAVE_COUNTER[0] += 1
-    key = f"unsloth_fsdp2_save_{_SAVE_COUNTER[0]}"
+def _unit_mesh(unit):
+    """The mesh an FSDP2 unit shards its parameters over, whatever state the parameters are in."""
+    try:
+        group = unit._get_fsdp_state()._fsdp_param_group
+        return group.mesh_info.mesh if group is not None else None
+    except Exception:
+        return None
+
+
+def mesh_writer_rank(model):
+    """Global rank that writes a collective save of `model`: the lowest rank of the mesh its FSDP2
+    parameters live on. Rank 0 for the default mesh over every rank (and without a process group); a
+    sub-mesh that leaves out rank 0 (several models on disjoint ranks, FSDP2Config.mesh) writes from
+    its own first rank, since rank 0 never sees that model's gathered weights."""
+    dist = _dist()
+    if dist is None:
+        return 0
+    DTensor = _dtensor_class()
+    mesh = None
+    if isinstance(model, torch.nn.Module):
+        if DTensor is not None:
+            mesh = next(
+                (p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None
+            )
+        if mesh is None:
+            # An eval forward or set_reshard_after_forward(False) can leave every parameter
+            # unsharded (plain tensors): the FSDP units still hold their mesh.
+            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
+        if mesh is None:
+            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+    try:
+        return int(mesh.mesh.min()) if mesh is not None else 0
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def writes_off_rank0(model, writer_rank):
+    """transformers 5 `PreTrainedModel.save_pretrained` writes only on global rank 0 once a process
+    group exists (`should_save_on_this_rank`, transformers/distributed/mixin.py), whatever
+    `is_main_process` says: a sub-mesh writer (`writer_rank` != 0) would silently write nothing.
+    Lets every PreTrainedModel inside `model` write on this rank for the block; a no-op on rank 0 and
+    on transformers without that check."""
+    patched = []
+    if writer_rank != 0 and isinstance(model, torch.nn.Module):
+        for module in model.modules():
+            if callable(getattr(module, "should_save_on_this_rank", None)) and (
+                "should_save_on_this_rank" not in module.__dict__
+            ):
+                module.should_save_on_this_rank = lambda is_main_process: bool(is_main_process)
+                patched.append(module)
+    try:
+        yield
+    finally:
+        for module in patched:
+            module.__dict__.pop("should_save_on_this_rank", None)
+
+
+def _wait_for_writer(dist, writer, writer_rank = 0):
+    """The other ranks wait for the writer's write, so no later collective overtakes it. A store key,
+    not a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
+    collective timeout, and NCCL ranks blocked in a barrier would abort before the writer arrives.
+    Keys are per writer rank (`mesh_writer_rank`), so disjoint sub-meshes saving at the same time do
+    not release each other."""
+    _SAVE_COUNTER[writer_rank] = _SAVE_COUNTER.get(writer_rank, 0) + 1
+    count = _SAVE_COUNTER[writer_rank]
+    key = (
+        f"unsloth_fsdp2_save_{count}"
+        if writer_rank == 0
+        else f"unsloth_fsdp2_save_r{writer_rank}_{count}"
+    )
     try:
         store = dist.distributed_c10d._get_default_store()
     except Exception:
@@ -221,14 +288,16 @@ def fsdp2_gathered(
     if not units or DTensor is None:
         yield None
         return
-    dist = _dist()
-    rank = dist.get_rank() if dist is not None else 0
-    writer = rank == 0
     for unit in units:
         # An eval forward leaves the last block and the lm_head unit gathered; make every
         # parameter a DTensor again so all ranks gather the same list.
         if hasattr(unit, "reshard"):
             unit.reshard()
+    # After the reshard: an unsharded parameter is a plain tensor and carries no mesh.
+    dist = _dist()
+    rank = dist.get_rank() if dist is not None else 0
+    writer_rank = mesh_writer_rank(model)
+    writer = rank == writer_rank
     owners = {}
     for module in model.modules():
         for name, param in module._parameters.items():
@@ -278,7 +347,8 @@ def fsdp2_gathered(
         _ACTIVE.append(writer)
         _STAGED_4BIT.append(staged)
         pushed = True
-        yield writer
+        with writes_off_rank0(model, writer_rank if writer else 0):
+            yield writer
     finally:
         if pushed:
             _ACTIVE.pop()
@@ -289,7 +359,7 @@ def fsdp2_gathered(
                 module._parameters[name] = old
         replaced.clear()
         if dist is not None:
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
 
 
 def _is_4bit_base(base_layer):

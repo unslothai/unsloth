@@ -1608,15 +1608,30 @@ def native_full_state_dict(
     trainable_only = False,
     cpu_offload = True,
 ):
-    """Collective: every rank must call. Full (unsharded) state dict on rank 0, {} on the others."""
+    """Collective: every rank of the model's mesh must call. Full (unsharded) state dict on the
+    writer, {} on the others. The writer is rank 0, or the lowest rank of a sub-mesh that leaves
+    rank 0 out (fsdp2_save.mesh_writer_rank)."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
+    from .fsdp2_save import mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model) if cpu_offload else 0
     options = StateDictOptions(
-        full_state_dict = True,
-        cpu_offload = cpu_offload,
+        full_state_dict = writer_rank == 0,
+        cpu_offload = cpu_offload and writer_rank == 0,
         ignore_frozen_params = bool(trainable_only),
     )
-    return get_model_state_dict(model, options = options)
+    state = get_model_state_dict(model, options = options)
+    return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
+
+
+def _gather_to_writer(state, writer_rank):
+    """A sharded (DTensor) state dict made full and moved to the CPU on global rank `writer_rank` only,
+    {} elsewhere: what StateDictOptions(full_state_dict, cpu_offload) does for rank 0, which is not
+    part of a sub-mesh that leaves it out (it would return {} on every rank of that mesh)."""
+    from torch.distributed._state_dict_utils import _gather_state_dict
+
+    return _gather_state_dict(state, cpu_offload = True, ranks_only = (writer_rank,))
 
 
 def _reshard_after_forward_off(unit):
@@ -2009,24 +2024,30 @@ def native_save_optimizer(
     should_save = None,
 ):
     """Collective (every rank must call): the full, unsharded optimizer state keyed by parameter FQN
-    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0. A plain
+    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0 (the lowest
+    rank of a sub-mesh that leaves rank 0 out, fsdp2_save.mesh_writer_rank). A plain
     `optimizer.state_dict()` on rank 0 holds only rank 0's DTensor shards, so a resume from it is wrong."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
 
     model = _native_root(model)
     optimizer = _inner_optimizer(optimizer)
+    from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model)
     state = get_optimizer_state_dict(
         model,
         optimizer,
-        options = StateDictOptions(full_state_dict = True, cpu_offload = True),
+        options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
     )
-    if should_save is None:
-        should_save = _rank0()
+    if writer_rank != 0:
+        state = _gather_to_writer(state, writer_rank)
+    dist = _dist()
+    if should_save is None or writer_rank != 0:
+        # A sub-mesh that leaves rank 0 out: only its first rank holds the full state, so a caller's
+        # global-rank-zero flag (TrainingArguments.should_save) would write nothing or {}.
+        should_save = dist is None or dist.get_rank() == writer_rank
     if path is None:
         return state
-    from .fsdp2_save import _dist, _wait_for_writer
-
-    dist = _dist()
     writer = bool(should_save)
     try:
         if writer:
@@ -2036,7 +2057,7 @@ def native_save_optimizer(
             # The other ranks wait for the write, so no later collective overtakes it. A store key,
             # not a barrier: a large full-finetuning state can take longer to write than the
             # collective timeout. Every rank passes the same path (the Trainer does).
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
     return state
 
 
@@ -2288,6 +2309,20 @@ def _save_unwrapped(
         trainer.model = held
 
 
+def _trainer_save_writer(trainer, root):
+    """(writes, writer_rank) for a Trainer save of the sharded `root`. TrainingArguments.should_save is
+    global process 0 (the local one under save_on_each_node), which is not part of a sub-mesh that
+    leaves rank 0 out: there the mesh's first rank (fsdp2_save.mesh_writer_rank) holds the gathered
+    state and writes, or nobody would and the mesh would wait on a key rank 0 never sets."""
+    from .fsdp2_save import _dist, mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(root)
+    if writer_rank == 0:
+        return bool(trainer.args.should_save), 0
+    dist = _dist()
+    return dist is not None and dist.get_rank() == writer_rank, writer_rank
+
+
 def _install_trainer_hooks():
     try:
         from transformers import Trainer
@@ -2320,23 +2355,24 @@ def _install_trainer_hooks():
 
             include = _fsdp2_peft_saved_frozen(root, {})
             with fsdp2_gathered(root, trainable_only = True, include = include) as writer:
-                if writer is not False and self.args.should_save:
+                if writer is not False and _trainer_save_writer(self, root)[0]:
                     _save_unwrapped(self, root, output_dir)
         else:
-            from .fsdp2_save import _dist, _wait_for_writer
+            from .fsdp2_save import _dist, _wait_for_writer, writes_off_rank0
 
             state_dict = native_full_state_dict(root)
-            writer = bool(self.args.should_save)
+            writer, writer_rank = _trainer_save_writer(self, root)
             try:
                 if writer:
-                    _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+                    with writes_off_rank0(root, writer_rank):
+                        _save_unwrapped(self, root, output_dir, state_dict = state_dict)
             finally:
                 # As in fsdp2_gathered: the other ranks wait for the (possibly multi-GB) write
                 # through the store, so they cannot run ahead into the optimizer save's or the next
                 # step's collectives and hit their timeout while rank 0 is still writing.
                 dist = _dist()
                 if dist is not None:
-                    _wait_for_writer(dist, writer)
+                    _wait_for_writer(dist, writer, writer_rank)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
@@ -2406,14 +2442,15 @@ def _install_trainer_hooks():
         if not is_native_fsdp2(model) or getattr(self, "is_fsdp_enabled", False):
             return original_save_optimizer(self, output_dir)
         # Collective full optimizer state (the original saves rank 0's shards only), then the scheduler.
+        should_save = _trainer_save_writer(self, _native_root(model))[0]
         native_save_optimizer(
             model,
             self.optimizer,
             os.path.join(output_dir, _OPTIMIZER_NAME),
-            should_save = self.args.should_save,
+            should_save = should_save,
         )
         scheduler = getattr(self, "lr_scheduler", None)
-        if self.args.should_save and scheduler is not None:
+        if should_save and scheduler is not None:
             torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
 
     original_load_optimizer = Trainer._load_optimizer_and_scheduler
