@@ -2454,18 +2454,22 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
-    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
-    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
-    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
-    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
-    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
-    discrete peer answers."""
+# One `lspci -nn` answer per run: _infer_linux_amd_gfx_arch has several callers. Keyed on the
+# lspci path and the runner too, so a stubbed subprocess.run never reads another stub's answer.
+_LSPCI_MEMO: "tuple | None" = None
+
+
+def _lspci_nn_stdout() -> "str | None":
+    """`lspci -nn` output, or None when lspci is missing or fails."""
+    global _LSPCI_MEMO
     lspci = shutil.which("lspci")
     if not lspci:
         return None
+    runner = subprocess.run
+    if _LSPCI_MEMO is not None and _LSPCI_MEMO[0] == lspci and _LSPCI_MEMO[1] is runner:
+        return _LSPCI_MEMO[2]
     try:
-        result = subprocess.run(
+        result = runner(
             [lspci, "-nn"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -2477,11 +2481,25 @@ def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
     except Exception:
         return None
     if result.returncode != 0:
+        return None  # a failed query is not kept: the next caller asks again
+    _LSPCI_MEMO = (lspci, runner, result.stdout)
+    return result.stdout
+
+
+def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
+    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
+    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
+    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
+    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
+    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
+    discrete peer answers."""
+    stdout = _lspci_nn_stdout()
+    if stdout is None:
         return None
     # A Krackan Point 2 line (gfx1153, no Linux torch wheel) is only the fallback: a covered
     # adapter later in the list still answers, as for the CPU-name case.
     krackan2 = beside_krackan2
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
             continue
         if not re.search(r"AMD|ATI", line):
