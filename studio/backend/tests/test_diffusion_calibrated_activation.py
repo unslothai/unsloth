@@ -252,6 +252,11 @@ def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transforme
     assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
 
 
+# Planner inputs logged by a real max-tier load of qwen-image-2.1-Q8_0.gguf with transformer_quant=none: a plain GGUF
+# transformer, placed with .to() on this tier (no offload groups, so a request can release only the encoders' groups).
+QWEN21_Q8_GGUF = dict(
+    model_dense_mib = 17_210, companion_dense_mib = 9_560, text_encoder_dense_mib = 8_916
+)
 # Planner inputs logged by a real max-tier load of unsloth/Qwen-Image-2.1-GGUF (auto: hosted INT8 DiT + INT8 TE).
 QWEN21_AUTO_INT8 = dict(
     model_dense_mib = 18_128, companion_dense_mib = 10_680, text_encoder_dense_mib = 9_345
@@ -266,6 +271,9 @@ QWEN21_AUTO_INT8 = dict(
         (24, 2_700, QWEN21_GGUF),
         (24, 1_229, QWEN21_AUTO_INT8),
         (24, 3_000, QWEN21_AUTO_INT8),
+        # the tightest resident cells: a capped B200 rendered 2048x2048 there, with and without CFG, without an OOM
+        (22, 1_850, QWEN21_Q8_GGUF),
+        (24, 3_850, QWEN21_Q8_GGUF),
     ],
 )
 def test_a_resident_transformer_is_not_demoted_for_the_2048_worst_case(total_gib, used_mib, sizes):

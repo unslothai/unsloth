@@ -2921,9 +2921,11 @@ def _calibrated_faster_tier(
     undercounts it) is demoted to the fastest tier that does fit: nothing it holds has offload hooks, so a request
     could not release any of it. A flat pick that keeps the transformer resident with the text encoders streamed is
     never demoted for the 2048 canvas: like ComfyUI, which sizes each sampling call's weight residency from that
-    call's own activation estimate, the generation guard re-checks the requested resolution and releases resident
-    offload groups (then tiles the decode) for an oversized request, so a 1024 render does not pay a whole-module
-    upload for a 2048 worst case. Every check grows with the budget, so more VRAM never picks a slower tier."""
+    call's own activation estimate, the generation guard re-checks the requested resolution and releases the encoders'
+    resident offload groups (then tiles the decode) for an oversized request, so a 1024 render does not pay a
+    whole-module upload for a 2048 worst case. The transformer carries no offload groups on this tier (any quant), and
+    the measured 2048 peak beside it stayed under the budget the max_canvas figure refused (capped B200, INT8 and Q8_0
+    GGUF, with and without CFG). Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
