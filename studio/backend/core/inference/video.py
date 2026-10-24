@@ -4028,12 +4028,17 @@ def _h3_pre_move_copy_if_uncached(
     repo_id: str,
     filename: str,
     cancel_event: Optional[threading.Event] = None,
+    *,
+    verify: bool = True,
 ) -> Optional[Path]:
     """``video_minimax_h3.h3_pre_move_copy_if_uncached``, failing closed (fetch as usual) on any error except a
-    cancellation, which surfaces as the load's own cancel."""
+    cancellation, which surfaces as the load's own cancel. Planners pass ``verify=False``: they decide from the pinned
+    size (or an already known sha256) and never hash a copied 27 GB file inside a size request; the load verifies."""
     from .video_minimax_h3 import H3HashCancelled, h3_pre_move_copy_if_uncached
     try:
-        return h3_pre_move_copy_if_uncached(repo_id, filename, cancel_event = cancel_event)
+        return h3_pre_move_copy_if_uncached(
+            repo_id, filename, cancel_event = cancel_event, verify = verify
+        )
     except H3HashCancelled:
         raise RuntimeError(VIDEO_CANCELLED_MSG)
     except Exception:  # noqa: BLE001
@@ -7165,7 +7170,7 @@ class VideoBackend:
                 self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
             )
             if h3_te_repo and any(
-                _h3_pre_move_copy_if_uncached(h3_te_repo, name) is not None
+                _h3_pre_move_copy_if_uncached(h3_te_repo, name, verify = False) is not None
                 for name, _ in h3_te_files
             ):
                 # On disk under its pre-move name: nothing to stage, but still part of the footprint required_bytes
@@ -7405,7 +7410,7 @@ class VideoBackend:
                     revision = getattr(info, "sha", None) if meta_repo == repo else None
                     if not DiffusionBackend._hub_file_is_loadable(
                         repo, filename, revision, size
-                    ) and (_h3_pre_move_copy_if_uncached(repo, filename) is None):
+                    ) and (_h3_pre_move_copy_if_uncached(repo, filename, verify = False) is None):
                         missing_files.setdefault(repo, set()).add(filename)
                         entry["bytes"] += size
                         total += size

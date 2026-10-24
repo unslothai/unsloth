@@ -13935,3 +13935,87 @@ def test_h3_hashing_a_copied_pre_move_entry_honours_the_load_cancel(monkeypatch,
         h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, cancel_event = cancel)
     with pytest.raises(RuntimeError):
         VideoBackend()._fetch_h3_te_quant("int8", None, cancel_event = cancel)
+
+
+def test_h3_planners_never_hash_a_copied_pre_move_entry(monkeypatch, tmp_path):
+    """A copied (no symlinks, e.g. Windows) cache has no blob name to read the sha256 from. The size planners decide
+    from the pinned size (or an already known sha256) and leave the full read to the load, which honours cancel and
+    still refuses a same-size file with other bytes."""
+    import hashlib
+
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE, h3_pre_move_copy_if_uncached
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES
+
+    _cuda_bf16_target(monkeypatch)
+    _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    size = len(_PRE_MOVE_BYTES)
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ):
+        _seed_hub_cache(
+            cache, "unsloth/MiniMax-H3-GGUF", old, "0" * 64, _PRE_MOVE_BYTES, symlink = False
+        )
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "0" * 64,
+        _PRE_MOVE_BYTES,
+        symlink = False,
+    )
+    _pre_move_cache_roots(monkeypatch, cache)
+    hashes = []
+    real_sha256 = hashlib.sha256
+    monkeypatch.setattr(hashlib, "sha256", lambda *a, **k: hashes.append(1) or real_sha256(*a, **k))
+
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", size),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", size),
+            ],
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, name, *_a, **_k: not name.startswith("vae/")),
+    )
+    native = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert native["entries"] == [] and native["total_bytes"] == 0
+
+    conditioner = H3_TE_QUANT_FILES["int8"]
+    monkeypatch.setattr(VideoBackend, "_h3_te_quant_scheme_verified", lambda self, *a, **k: "int8")
+    monkeypatch.setattr(
+        VideoBackend,
+        "_h3_te_quant_hub_files",
+        staticmethod(lambda scheme, api: ("unsloth/MiniMax-H3-FP8", [(conditioner, 27)])),
+    )
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        text_encoder_quant = "int8",
+    )
+    assert conditioner not in {f for e in plan["entries"] for f in e["files"]}
+    assert hashes == []
+
+    # The load still reads every byte, and a same-size entry with other bytes is refused there.
+    video = cache / "models--unsloth--MiniMax-H3-GGUF" / "snapshots" / ("c" * 40)
+    (video / "vae/minimax_h3_video_vae_fp16.safetensors").write_bytes(b"x" * size)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is None
+    assert hashes
+    # Once a hash is known, the planner uses it: the mismatch is now staged rather than counted present.
+    assert (
+        h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, verify = False) is None
+    )

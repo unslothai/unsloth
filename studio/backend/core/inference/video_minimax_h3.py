@@ -1320,10 +1320,16 @@ class H3HashCancelled(RuntimeError):
     """The load that asked for a pre-move copy was cancelled while its bytes were being hashed."""
 
 
-def _file_sha256(path: Path, cancel_event: Any = None) -> Optional[str]:
+def _file_sha256(
+    path: Path,
+    cancel_event: Any = None,
+    *,
+    compute: bool = True,
+) -> Optional[str]:
     """sha256 of ``path``. An HF cache snapshot entry links to ``blobs/<sha256>``, its content address, so that name is
     the answer without reading GBs; a copied entry (no symlinks, e.g. Windows) is hashed once per process, checking
-    ``cancel_event`` between chunks so an unload is not held for a 27 GB disk scan."""
+    ``cancel_event`` between chunks so an unload is not held for a 27 GB disk scan. Without ``compute`` only those
+    cheap answers are given (blob name, or this process's memo), else None: a planner never reads the bytes."""
     import hashlib
     import re
 
@@ -1334,6 +1340,8 @@ def _file_sha256(path: Path, cancel_event: Any = None) -> Optional[str]:
         stat = real.stat()
         key = (str(real), stat.st_size, stat.st_mtime_ns)
         if key not in _SHA256_MEMO:
+            if not compute:
+                return None
             digest = hashlib.sha256()
             with open(real, "rb") as handle:
                 for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
@@ -1350,7 +1358,12 @@ def _matches_pinned(
     path: Optional[Path],
     filename: str,
     cancel_event: Any = None,
+    *,
+    verify: bool = True,
 ) -> bool:
+    """Whether ``path`` holds the pinned bytes of ``filename``. Without ``verify`` (the size planners) the pinned size
+    decides unless a cheap sha256 (blob name, memo) is already known: no multi-GB read inside a plan request. The load
+    always verifies, so a same-size file with other bytes is still refused there."""
     pinned = H3_PRE_MOVE_COPIES.get(filename)
     if pinned is None or path is None:
         return False
@@ -1359,6 +1372,9 @@ def _matches_pinned(
             return False
     except OSError:
         return False
+    if not verify:
+        known = _file_sha256(path, compute = False)
+        return known is None or known == pinned[0]
     return _file_sha256(path, cancel_event) == pinned[0]
 
 
@@ -1415,12 +1431,14 @@ def h3_pre_move_copy_if_uncached(
     cache_dirs: Optional[tuple[Optional[str], ...]] = None,
     *,
     cancel_event: Any = None,
+    verify: bool = True,
 ) -> Optional[Path]:
     """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None.
 
     Only when the official-path file is not cached under any root: a cached official copy always wins, and a file with
     no pre-move copy is fetched as usual. The planners and the loaders ask this one question, so a plan never stages a
-    download the load then skips (or the reverse). Cache lookups only, no network."""
+    download the load then skips (or the reverse). Cache lookups only, no network. ``verify=False`` (planners) skips
+    hashing a copied file not yet hashed in this process (see ``_matches_pinned``); loaders keep the default."""
     if filename not in H3_PRE_MOVE_COPIES or Path(repo_id).expanduser().exists():
         return None
     from huggingface_hub import try_to_load_from_cache
@@ -1437,7 +1455,7 @@ def h3_pre_move_copy_if_uncached(
             continue
         if isinstance(hit, str):
             return None
-    return h3_pre_move_cached_copy(filename, roots, cancel_event = cancel_event)
+    return h3_pre_move_cached_copy(filename, roots, cancel_event = cancel_event, verify = verify)
 
 
 def h3_pre_move_cached_copy(
@@ -1445,6 +1463,7 @@ def h3_pre_move_cached_copy(
     cache_dirs: Optional[tuple[Optional[str], ...]] = None,
     *,
     cancel_event: Any = None,
+    verify: bool = True,
 ) -> Optional[Path]:
     """A hash-identical copy of ``filename`` already in an HF cache under its pre-move name, else None. Cache lookup
     only: no network, and nothing is downloaded from any of the listed repos."""
@@ -1461,7 +1480,9 @@ def h3_pre_move_cached_copy(
                 hit = try_to_load_from_cache(repo, old_name, cache_dir = cache_dir)
             except Exception:  # noqa: BLE001 -- an unreadable root just falls through
                 continue
-            if isinstance(hit, str) and _matches_pinned(Path(hit), filename, cancel_event):
+            if isinstance(hit, str) and _matches_pinned(
+                Path(hit), filename, cancel_event, verify = verify
+            ):
                 return Path(hit)
     return None
 
