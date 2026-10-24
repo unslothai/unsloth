@@ -728,9 +728,7 @@ def refuse_unless_fits(
 ) -> None:
     """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
 
-    For loads inside a generation (MLX diffusers fallback), which must not unload another model. ``cancel``: an
-    evictor holding the arbiter lock waits for this generation to drain, so the wait for the lock gives up once the
-    drain sets it."""
+    For loads inside a generation (MLX diffusers fallback). Gives up on ``cancel``: a lock-holding evictor awaits our drain."""
     from utils.account_context import current_account_id
 
     while not arb._lock.acquire(timeout = 0.05):
