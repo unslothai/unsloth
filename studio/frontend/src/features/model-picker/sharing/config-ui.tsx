@@ -67,7 +67,11 @@ export function SharedRunConfigActions({
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >
-        <HugeiconsIcon icon={Share01Icon} strokeWidth={1.75} />
+        <HugeiconsIcon
+          icon={Share01Icon}
+          strokeWidth={1.75}
+          className="size-4"
+        />
       </Button>
       {sharing && (
         <ShareRunConfigDialog
