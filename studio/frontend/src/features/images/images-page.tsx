@@ -7267,7 +7267,6 @@ export function ImagesPage({
                       onChange={(e) => setSeed(e.target.value)}
                       className="flex-1"
                     />
-                    {/* A pair at the input's height, so both sit centred on it with an even gap. */}
                     <div className="flex shrink-0 items-center">
                     <Button
                       type="button"

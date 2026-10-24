@@ -1191,7 +1191,7 @@ export function ResourcesTab() {
   );
 }
 
-/** Backend, Python and package versions. System passes its live reading; About reads its own. */
+/** About renders this too, from its own system query. */
 export function EnvironmentSection({
   systemInfo,
   backendLabel,

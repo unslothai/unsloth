@@ -9,7 +9,6 @@ import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
-/** A URL in a pill with its copy button inside, at the right end. */
 export function UrlPill({ url, className }: { url: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);

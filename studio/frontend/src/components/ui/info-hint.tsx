@@ -20,8 +20,7 @@ export function InfoHint({
 }: {
   children: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
-  /** Open on pointer hover only, not on focus or click: for a hint whose text is also in the
-   *  label for screen readers, so a click on it does not leave the tooltip stuck open. */
+  /** Hover only, so a click cannot leave it open; pair it with sr-only text. */
   hoverOnly?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);

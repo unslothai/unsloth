@@ -77,7 +77,7 @@ export interface AudioSourceInputHandle {
   markExpired: () => void;
 }
 
-/** The Library header's tabs, flat: no track, the active one a grey pill. Arrow keys move between them. */
+/** The Library header's tabs, flat: no track, a grey pill for the active one. */
 function SourceTabs({
   tabs,
   value,

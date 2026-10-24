@@ -5753,8 +5753,7 @@ export function AppSidebar() {
     P: RowMenuParts,
   ) {
     const isProjectPinned = pinnedProjectIdSet.has(project.id);
-    // Every chat in the project, read in full: the sidebar lists only a folder's first page, and
-    // none for a collapsed folder, so its loaded rows are not the whole project.
+    // Read in full: the sidebar holds one page per folder, and none while it is collapsed.
     const archiveProjectChats = async () => {
       let all: SidebarItem[];
       try {

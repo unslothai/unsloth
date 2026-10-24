@@ -3119,7 +3119,7 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
-	/* Audio, Images and Video: their textareas and drop zones take 20px, a touch under the 21px tier. */
+	/* Audio, Images and Video: 20px textareas and drop zones. */
 	[data-media-rail-root] {
 		--radius-xl: 20px;
 	}
@@ -5012,8 +5012,7 @@ html[data-chat-font] .aui-root {
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
-/* Centred only while loading: the finished toast reuses this toast's id and so its class, and a
-   two-line "loaded" title then needs the base rule's icon on the first line. */
+/* Only while loading: the finished toast keeps this class through the shared toast id. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {
 	align-items: center !important;
 }

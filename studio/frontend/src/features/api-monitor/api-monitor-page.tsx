@@ -1490,8 +1490,7 @@ export function ApiMonitorPage(): ReactElement {
               <Fact label="Model" className="max-w-full">
                 {served.length === 1 ? (
                   <>
-                    {/* The reveal group is the name and its copy button only, so hovering the
-                        settings or code buttons beside them does not light up Copy. */}
+                    {/* Its own reveal group: hovering settings or code must not show Copy. */}
                     <span className="group/copy flex min-w-0 items-center gap-1">
                       <span className="truncate font-mono">{served[0].name}</span>
                       <CopyButton
