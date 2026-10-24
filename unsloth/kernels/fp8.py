@@ -963,7 +963,7 @@ def torchao_block_matmul(
         or long_indexing(act_q, weight_q)
         or (act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31)
         or block_size[0] != block_size[1]
-        or (act_q.is_cuda and _prefer_triton_block_matmul_at(act_q.device))
+        or _prefer_triton_block_matmul_at(act_q.device, act_q.numel() // act_q.shape[-1])
     ):
         return w8a8_block_fp8_matmul_triton(
             act_q, weight_q, act_scale, weight_scale, block_size, output_dtype = output_dtype
@@ -979,30 +979,38 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
-def _prefer_triton_block_matmul_at(device):
-    # Outputs match bit for bit, so this is speed only. sm_100 runs the TMA kernel inside
-    # w8a8_block_fp8_matmul_triton (~2x torchao 0.18). On sm_89 (L4) torchao 0.18 is 1.73x slower than
-    # the pointer kernel at K = 14336 (Llama-8B down_proj) and ~7% faster at K = 4096, a net loss per layer.
-    if torch.version.hip is not None:
+def _prefer_triton_block_matmul_at(device, M):
+    # Outputs match bit for bit, so this is speed only (torchao 0.18, Llama-8B shapes):
+    # sm_89 (L4): torchao is 1.73x slower than the pointer kernel at K = 14336, a net loss per layer.
+    # sm_100: above 64 rows w8a8_block_fp8_matmul_triton takes BLOCK_SIZE_M = 128 and the TMA kernel
+    # (~2x torchao); at 64 rows or fewer it runs the pointer kernel, which torchao beats by 1.1-2.3x.
+    if device.type != "cuda" or torch.version.hip is not None:
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()
     if tuple(torch.cuda.get_device_capability(index)) == (8, 9):
         return True
-    return _FP8_TMA_GEMM and _TensorDescriptor is not None and _fp8_tma_gemm_arch_at(index)
+    return (
+        M > 64 and _FP8_TMA_GEMM and _TensorDescriptor is not None and _fp8_tma_gemm_arch_at(index)
+    )
 
 
 def _select_fp8_block_matmul():
+    # torchao_block_matmul hands each call to the Triton function where that is faster; pick Triton
+    # outright only when every GPU prefers it at every M (sm_89), which also keeps the fused small-M
+    # kernel there (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
     if torchao_blockwise_gemm is None:
         return w8a8_block_fp8_matmul_triton
     count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    if count and all(_prefer_triton_block_matmul_at(torch.device("cuda", i)) for i in range(count)):
+    if count and all(
+        _prefer_triton_block_matmul_at(torch.device("cuda", i), 1) for i in range(count)
+    ):
         return w8a8_block_fp8_matmul_triton
     return torchao_block_matmul
 
 
 # fbgemm <= 1.3.0 silently corrupts blockwise outputs for some shapes (fixed in 1.4.0), so never
 # use it for block FP8. Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses),
-# except on sm_89 and sm_100 where the Triton kernels beat torchao (_prefer_triton_block_matmul_at).
+# except where the Triton kernels beat torchao (_prefer_triton_block_matmul_at).
 fp8_block_matmul = _select_fp8_block_matmul()
 
 

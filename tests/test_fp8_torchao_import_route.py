@@ -68,10 +68,10 @@ def _devices(
     [
         (False, [False], "triton"),
         (False, [True], "triton"),
-        (True, [False], "torchao"),  # H100 / L4 / A100
-        (True, [True], "triton"),  # B200: the TMA kernel
-        (True, [True, True], "triton"),
-        (True, [True, False], "torchao"),  # mixed host: torchao hands sm_100 calls back per call
+        (True, [False], "torchao"),  # H100 / sm_120
+        (True, [True], "torchao"),  # B200: torchao_block_matmul hands M > 64 to the TMA kernel
+        (True, [True, True], "torchao"),
+        (True, [True, False], "torchao"),
         (True, [], "torchao"),
     ],
 )
@@ -84,15 +84,22 @@ def test_select(monkeypatch, has_torchao, tma_arch, expect):
     assert F8._select_fp8_block_matmul() is want
 
 
-@pytest.mark.parametrize("switch", ["kill_switch", "no_descriptor"])
-def test_select_without_tma_prefers_torchao(monkeypatch, switch):
+@pytest.mark.parametrize("switch", ["on", "kill_switch", "no_descriptor"])
+def test_tma_prefers_triton_above_64_rows(monkeypatch, switch):
     _devices(monkeypatch, [True])
-    monkeypatch.setattr(F8, "torchao_blockwise_gemm", lambda *a, **k: None)
     if switch == "kill_switch":
         monkeypatch.setattr(F8, "_FP8_TMA_GEMM", False)
-    else:
+    elif switch == "no_descriptor":
         monkeypatch.setattr(F8, "_TensorDescriptor", None)
-    assert F8._select_fp8_block_matmul() is F8.torchao_block_matmul
+    dev = torch.device("cuda", 0)
+    got = [F8._prefer_triton_block_matmul_at(dev, M) for M in (1, 16, 64, 65, 128, 8192)]
+    assert got == ([False] * 3 + [True] * 3 if switch == "on" else [False] * 6)
+
+
+def test_non_cuda_never_prefers_triton(monkeypatch):
+    _devices(monkeypatch, [True], (8, 9))
+    assert not F8._prefer_triton_block_matmul_at(torch.device("meta"), 8192)
+    assert not F8._prefer_triton_block_matmul_at(torch.device("cpu"), 8192)
 
 
 @pytest.mark.parametrize(
@@ -115,8 +122,28 @@ def test_rocm_keeps_torchao(monkeypatch):
 
 def test_prefer_triton_per_device(monkeypatch):
     _devices(monkeypatch, [False, True])
-    assert not F8._prefer_triton_block_matmul_at(torch.device("cuda", 0))
-    assert F8._prefer_triton_block_matmul_at(torch.device("cuda", 1))
+    assert not F8._prefer_triton_block_matmul_at(torch.device("cuda", 0), 8192)
+    assert F8._prefer_triton_block_matmul_at(torch.device("cuda", 1), 8192)
+    assert not F8._prefer_triton_block_matmul_at(torch.device("cuda", 1), 64)
+    _devices(monkeypatch, [False], (8, 9))
+    assert F8._prefer_triton_block_matmul_at(torch.device("cuda", 0), 1)
+
+
+def test_torchao_block_matmul_splits_by_rows(monkeypatch):
+    # The opaque op computes M from the concrete tensor, so a compiled caller adds no guard on M.
+    calls = []
+    monkeypatch.setattr(F8, "_prefer_triton_block_matmul_at", lambda device, M: M > 64)
+    monkeypatch.setattr(F8, "w8a8_block_fp8_matmul_triton", lambda *a, **k: calls.append("triton"))
+    monkeypatch.setattr(
+        F8, "torchao_blockwise_gemm", lambda *a, **k: calls.append("torchao") or a[0]
+    )
+    meta = lambda *shape: torch.empty(*shape, device = "meta", dtype = torch.float8_e4m3fn)
+    w_s = torch.empty(2, 4, device = "meta")
+    for M in (1, 64, 65, 4096):
+        F8.torchao_block_matmul(
+            meta(M, 512), meta(256, 512), torch.empty(M, 4, device = "meta"), w_s, [128, 128]
+        )
+    assert calls == ["torchao", "torchao", "triton", "triton"]
 
 
 @pytest.mark.parametrize(
