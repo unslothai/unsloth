@@ -59,9 +59,8 @@ _TRACK_HOOK_ATTR = "_unsloth_prefix_kv_track"
 
 
 def track_prefix_kv(transformer: Any) -> bool:
-    """Remember (weakly) the prefix KV caches a pipeline hands the denoiser, so the render can drop them once the
-    last denoise step is done. Qwen-Image-2.1's pipeline keeps its caches as ``__call__`` locals through VAE decode,
-    ~2 GiB per guidance branch with a 1 MP condition image."""
+    """Weakly record the denoiser's prefix KV caches: Qwen-Image-2.1 keeps them as ``__call__`` locals through
+    VAE decode (~2 GiB per guidance branch at 1 MP)."""
     if transformer is None or getattr(transformer, _TRACK_HOOK_ATTR, None) is not None:
         return False
     if not _takes_prefix_kv(transformer):
@@ -92,8 +91,7 @@ def track_prefix_kv(transformer: Any) -> bool:
 
 
 def release_prefix_kv(transformer: Any) -> int:
-    """Empty every prefix KV cache recorded by :func:`track_prefix_kv` (its per-layer tensors set to None); returns
-    the bytes dropped. Only safe once the render's last denoiser call has been issued."""
+    """Set tracked caches' per-layer tensors to None; returns bytes freed. Only safe after the last denoiser call."""
     import torch
 
     seen = getattr(transformer, _SEEN_ATTR, None) if transformer is not None else None
