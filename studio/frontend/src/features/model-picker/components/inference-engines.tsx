@@ -285,11 +285,8 @@ export function InferenceEnginesSection({ embedded = false }: { embedded?: boole
   if (embedded) {
     return (
       <div data-settings-label={t("managedEngines.title")}>
-        <p className="text-sm font-medium text-foreground">
-          {t("managedEngines.title")}
-        </p>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          {t("managedEngines.description")}
+          {t("managedEngines.embeddedDescription")}
         </p>
         {rows}
       </div>

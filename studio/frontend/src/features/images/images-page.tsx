@@ -7261,18 +7261,20 @@ export function ImagesPage({
                   hint="Leave empty for a fresh random seed each run."
                   className="pt-2"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <Input
                       placeholder="Random if empty"
                       value={seed}
                       onChange={(e) => setSeed(e.target.value)}
                       className="flex-1"
                     />
+                    {/* A pair at the input's height, so both sit centred on it with an even gap. */}
+                    <div className="flex shrink-0 items-center gap-1">
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Random seed"
                       title="Random seed each run"
                       disabled={seed === ""}
@@ -7284,7 +7286,7 @@ export function ImagesPage({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Reuse last seed"
                       title={lastSeed === null ? "No image generated yet" : `Reuse last seed (${lastSeed})`}
                       disabled={lastSeed === null}
@@ -7294,6 +7296,7 @@ export function ImagesPage({
                     >
                       <Recycle className="size-4" strokeWidth={1.5} />
                     </Button>
+                    </div>
                   </div>
                 </Field>
 

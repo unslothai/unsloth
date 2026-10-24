@@ -494,6 +494,7 @@ export const en = {
     },
   },
   managedEngines: {
+    embeddedDescription: "Optional and experimental. Pick an installed one in a model's run settings.",
     gpu: "GPUs",
     gpuHelp: "Choose which GPUs to use.",
     parallelism: "Multi-GPU mode",
