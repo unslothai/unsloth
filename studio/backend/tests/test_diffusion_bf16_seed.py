@@ -173,3 +173,30 @@ def test_the_request_guard_reads_the_bf16_seed_from_the_reserve(store):
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     # 2 MP: 2 x 3581 x 1.15 = 8236 -> 8448
     assert dm.measured_request_extra_mib(pipe, width = 2048, height = 1024) == 8448 - 4352
+
+
+def test_the_deferred_profile_invalidates_the_bf16_seed(store):
+    """Generation 3 engages the compiled tier the eager seed never measured: requests size from the flat estimate."""
+    pipe = types.SimpleNamespace(
+        _unsloth_dense_tier_seeds = True,
+        _unsloth_peak_identity = ("flux.1", "dense:bfloat16", "off"),
+        _unsloth_measured_reserve = (
+            4352,
+            "flux.1",
+            "off",
+            22681,
+            None,
+            None,
+            None,
+            False,
+            True,
+            False,
+            True,
+        ),
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    pipe._unsloth_peak_static = True
+    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = 1, family = "flux.1")
+    assert (
+        dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == max(0, int(flat) - 4352) > 0
+    )

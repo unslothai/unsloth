@@ -5144,7 +5144,8 @@ def measured_request_extra_mib(
         or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
-        (learned or need is None)
+        # the bf16 seed is an eager-tier measurement like a learned peak: the same markers invalidate it
+        (learned or need is None or sized["dense_bf16"])
         and (
             getattr(pipe, "_unsloth_peak_static", False)
             or getattr(pipe, "_unsloth_loras", None)
