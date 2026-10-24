@@ -25,7 +25,11 @@ class ProcessGroupNCCL:
     pass
 
 
-def _dist(impl, name = "nccl", world = 2):
+def _dist(
+    impl,
+    name = "nccl",
+    world = 2,
+):
     group = types.SimpleNamespace(_get_backend = lambda device: impl())
     return types.SimpleNamespace(
         distributed_c10d = types.SimpleNamespace(_get_default_group = lambda: group),
