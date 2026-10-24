@@ -36,6 +36,17 @@ _AUTO_ROLE_NAMES = {
     "system": ("system", "system_prompt"),
 }
 _RL_ROW_KEYS = ("prompt", "answer", "chosen", "rejected")
+# Names TRL's GRPOTrainer passes to every reward itself (grpo_trainer.py, the reward_func call and
+# the reward_kwargs it adds), so a dataset column with one of them collides or is overwritten.
+_REWARD_CALL_KEYS = (
+    "prompts",
+    "completions",
+    "completion_ids",
+    "trainer_state",
+    "log_extra",
+    "log_metric",
+    "environments",
+)
 PYTHON_REWARD_ISOLATION_FIELD = "grpo_python_reward_isolation"
 REWARD_ISOLATION_METRIC = "sandbox/python_rewards_os_isolation"
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
@@ -170,7 +181,9 @@ def format_rl_dataset(
     # "*": Python rewards can read any column, so keep them all. A role column stays under its own
     # name too, since a rule's compare_to may name the column mapped to answer.
     wanted = columns if "*" in keep_columns else keep_columns
-    extra = [c for c in wanted if c in columns and c not in _RL_ROW_KEYS]
+    extra = [
+        c for c in wanted if c in columns and c not in _RL_ROW_KEYS and c not in _REWARD_CALL_KEYS
+    ]
 
     def convert(row: dict) -> dict:
         prompt = _as_messages(row[roles["prompt"]], "user")

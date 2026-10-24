@@ -41,6 +41,17 @@ def test_grpo_mapping_system_prompt_and_kept_reward_columns():
     assert out[0]["unit"] == "kg"
 
 
+def test_kept_columns_never_shadow_the_reward_call_arguments():
+    # TRL calls reward_func(prompts=..., completions=..., completion_ids=..., **columns), so a
+    # column with one of those names raised TypeError on the first scored batch.
+    ds = Dataset.from_list(
+        [{"question": "q", "answer": "a", "prompts": "x", "completions": "y", "unit": "kg"}]
+    )
+    out, _ = format_rl_dataset(ds, "grpo", keep_columns = ("*",))
+    assert "prompts" not in out.column_names and "completions" not in out.column_names
+    assert out[0]["unit"] == "kg"
+
+
 def test_preference_rows_strip_the_user_turn_from_full_conversations():
     # ultrafeedback_binarized stores chosen/rejected as the whole conversation.
     convo = lambda reply: [

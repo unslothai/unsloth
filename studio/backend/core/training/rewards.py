@@ -187,7 +187,7 @@ def validate_rule(rule: dict) -> dict:
         json_type = schema.get("type", "object")
         if json_type not in JSON_TYPES:
             raise RewardError(f"schema.type takes one of {', '.join(JSON_TYPES)}.")
-        required = schema.get("required", []) or []
+        required = schema.get("required", [])
         if not isinstance(required, list) or not all(isinstance(k, str) for k in required):
             raise RewardError("schema.required must be a list of key names.")
         out["schema"] = {"type": json_type, "required": required}
