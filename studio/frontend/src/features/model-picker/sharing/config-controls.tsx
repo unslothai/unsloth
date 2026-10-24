@@ -106,11 +106,7 @@ export function SharedRunConfigControls({
       title="Share"
       disabled
     >
-      <HugeiconsIcon
-        icon={Share01Icon}
-        strokeWidth={1.75}
-        className="size-[1em]"
-      />
+      <HugeiconsIcon icon={Share01Icon} strokeWidth={1.75} />
     </Button>
   );
   return (
