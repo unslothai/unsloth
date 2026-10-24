@@ -456,3 +456,24 @@ def test_a_per_key_drop_keeps_the_graph_key(reason):
     assert per_key.placement._declined is None  # the placement still records
     pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (per_key,))
     assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")
+
+
+def test_fit_for_request_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    def room(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop after the reading")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 24 << 30))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(vr, "resident_mib", lambda module: 0)
+    monkeypatch.setattr(vr, "room_mib", room)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    vr.fit_for_request(pipe, device = "cuda:0", floor_mib = 1, width = 64, height = 64, frames = 1)
+    assert seen["free_mib"] == 1000
+    assert seen["unused_cache_mib"] == 100

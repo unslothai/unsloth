@@ -118,6 +118,19 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_hub_unreachable_verdict():
+    # Per-process Hub verdict must not leak between tests.
+    def _forget():
+        reach = sys.modules.get("core.inference.hub_reachability")
+        if reach is not None:
+            reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
     def _forget():
         for name, module in list(sys.modules.items()):

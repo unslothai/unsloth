@@ -4612,9 +4612,42 @@ class AnthropicMessagesResponse(BaseModel):
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
 
 
+class MediaUnloadRequest(BaseModel):
+    """Optional body of POST /images/unload and /video/unload."""
+
+    expected_load_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Unload only the load started with this load_token, and only while it is in "
+        "flight or resident. A load that ended or was replaced is left alone (outcome superseded); "
+        "one that has not started yet is refused when it arrives (outcome cancelled). Omit to "
+        "unload whatever is loaded.",
+    )
+
+
+class MediaUnloadOutcome(BaseModel):
+    """POST /images/unload or /video/unload with expected_load_id that touched nothing.
+
+    Nothing of the slot is described: the load in it may be another account's.
+    """
+
+    unloaded: Literal[False] = Field(..., description = "Always false: nothing was unloaded")
+    outcome: Literal["superseded", "cancelled"] = Field(
+        ...,
+        description = "superseded: that load ended or a newer one replaced it. cancelled: it has "
+        "not started yet, and is refused when it arrives.",
+    )
+
+
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /images/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Diffusion repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
@@ -5876,6 +5909,16 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -6133,6 +6176,20 @@ class DiffusionStatusResponse(BaseModel):
         description = "Default steps and guidance for the loaded model (file header before base repo); "
         "null when unloaded or on an engine that does not report it.",
     )
+
+
+class DiffusionLoadUnloadedResponse(DiffusionStatusResponse):
+    """POST /images/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /images/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+DiffusionUnloadResponse = Union[
+    DiffusionLoadUnloadedResponse, MediaUnloadOutcome, DiffusionStatusResponse
+]
 
 
 class DiffusionInferenceInfo(BaseModel):
@@ -7017,6 +7074,12 @@ class VideoJobDeleteResponse(BaseModel):
 class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /video/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Video repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
@@ -7563,6 +7626,16 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -7707,3 +7780,15 @@ class VideoStatusResponse(BaseModel):
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+
+
+class VideoLoadUnloadedResponse(VideoStatusResponse):
+    """POST /video/unload with expected_load_id that unloaded that load: the state it left behind."""
+
+    unloaded: Literal[True] = Field(..., description = "Always true: that load was unloaded")
+    outcome: Literal["unloaded"] = Field(..., description = "Always unloaded")
+
+
+# What POST /video/unload answers: the state it left behind without expected_load_id, and with it
+# either that, marked unloaded, or the outcome alone.
+VideoUnloadResponse = Union[VideoLoadUnloadedResponse, MediaUnloadOutcome, VideoStatusResponse]

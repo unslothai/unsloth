@@ -3004,15 +3004,12 @@ class CfgParallelRouter:
         return mirror
 
     def _secondary_free_total_mib(self) -> tuple[Optional[int], Optional[int]]:
-        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks."""
+        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks, minus CUDA graph pools."""
         free, total = _free_total_mib(self.secondary.index)
         if free is not None:
             with contextlib.suppress(Exception):
-                torch = _torch()
-                free += (
-                    torch.cuda.memory_reserved(self.secondary)
-                    - torch.cuda.memory_allocated(self.secondary)
-                ) // (1 << 20)
+                from .diffusion_memory import cuda_reusable_cache_bytes
+                free += cuda_reusable_cache_bytes(self.secondary) // (1 << 20)
         return free, total
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
@@ -3255,6 +3252,17 @@ def end_cfg_render(pipe: Any) -> None:
         return
     if router is not None:
         router.end_render()
+
+
+def release_cfg_prefix_kv(pipe: Any) -> None:
+    """Drop the replica's prefix-KV copies (and their hold on the primary's tensors) after the last denoise step."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return
+    if router is not None:
+        router.kv_mirrors.clear()
+        router.kv_declined.clear()
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:
