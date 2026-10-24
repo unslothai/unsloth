@@ -200,18 +200,19 @@ def shrink_video_for_llama(
     ``sampled_fps`` raises the rate ceiling. Keeps only video and the timing of every
     real frame. Missing tools, failures and an over-``max_bytes`` result pass through.
     """
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
-        return video_b64
+    from utils.media_playlist import refuse_playlist
+
     try:
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
         return video_b64
-    from utils.media_playlist import refuse_playlist
-
-    # `-protocol_whitelist file` still lets a playlist read local files: refuse one outright.
+    # Refused before the tool check: without ffmpeg the clip still goes to llama-server's own
+    # FFmpeg, and `-protocol_whitelist file` still lets a playlist read local files.
     refuse_playlist(raw)
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        return video_b64
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
