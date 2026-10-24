@@ -864,6 +864,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832)),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
+        # Finite in plain float16, like Wan2.2-TI2V-5B: on fp16-only cards (T4) the DiT stays float16 instead of the
+        # blanket video float32 promotion (8x the T4's fp16 tensor-core rate, and twice the resident bytes). ComfyUI
+        # runs every Wan2.1 DiT in float16 first (WAN21_T2V.supported_inference_dtypes). UMT5 keeps its overflowing
+        # `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
+        fp16_guard = "native",
         # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
         # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
         # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
