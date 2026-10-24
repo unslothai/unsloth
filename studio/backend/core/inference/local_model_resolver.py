@@ -1088,6 +1088,26 @@ def recently_downloaded(repo_id: str) -> bool:
     return repo_id.strip().lower() in _just_downloaded
 
 
+def local_gguf_torn_only(repo_id: str) -> bool:
+    """Whether the HF cache holds GGUF builds of *repo_id* that the index left out because none is whole."""
+    if not isinstance(repo_id, str) or repo_id.strip().count("/") != 1:
+        return False
+    try:
+        from hub.utils.gguf import list_local_gguf_variants
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+        for repo_dir in iter_repo_cache_dirs("model", repo_id.strip()):
+            snapshots = repo_dir / "snapshots"
+            if not snapshots.is_dir():
+                continue
+            for snapshot in snapshots.iterdir():
+                variants, _ = list_local_gguf_variants(str(snapshot))
+                if any(getattr(v, "quant", None) for v in variants):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def _snapshot_is_trusted(
     timestamp: float,
     now: float,

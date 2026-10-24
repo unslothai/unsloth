@@ -176,3 +176,51 @@ def test_an_older_whole_revision_keeps_the_row_complete_beside_a_newer_torn_one(
     (old / "m-Q4_K_M.gguf").unlink()
     os.utime(old, (1, 1))
     assert is_gguf_repo_partial("org/m-GGUF", repo) is True
+
+
+def test_a_request_for_a_torn_only_repo_is_refused_not_answered_by_the_resident(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver as resolver
+
+    repo = tmp_path / "models--publisher--My-Model"
+    snapshot = repo / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "My-Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **_kw: [tmp_path])
+    assert resolver.local_gguf_torn_only("publisher/My-Model") is True
+    assert resolver.local_gguf_torn_only("publisher/Other") is False
+
+    loaded = type(
+        "L",
+        (),
+        {
+            "is_loaded": True,
+            "model_identifier": "unsloth/A-GGUF",
+            "hf_variant": "Q4_K_M",
+            "_openai_advertised_id": None,
+        },
+    )()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda name, **_kw: None)
+    monkeypatch.setattr(resolver, "index_is_built", lambda: True)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
+    )
+    request = type("R", (), {"url": type("U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("publisher/My-Model", request))
+    assert excinfo.value.status_code == 404
+    assert "partly downloaded" in str(excinfo.value.detail)
+    assert asyncio.run(inference_route._reject_unservable_model("publisher/Other", request)) is None
