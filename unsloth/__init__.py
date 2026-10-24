@@ -1694,8 +1694,7 @@ else:
         _sys_mod = __import__("sys").modules
         _sys_mod.pop(f"{__name__}._gpu_init", None)
         del _sys_mod
-        from ._cpu_init import *
-        from ._cpu_init import __version__
+        from ._cpu_init import *  # __all__ carries __version__
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.

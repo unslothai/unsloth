@@ -211,4 +211,5 @@ __all__ = [
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
     "DEVICE_COUNT",
+    "__version__",
 ]
