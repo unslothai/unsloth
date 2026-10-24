@@ -2746,6 +2746,11 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
+      showGenerationDetails: "생성 세부 정보",
+      showGenerationDetailsDescription:
+        "응답이 생성되는 동안 속도와 토큰 수를 실시간으로 표시하고, 로컬 모델의 레이어가 어디에 배치되었는지 보여줍니다.",
+      showGenerationDetailsKeywords:
+        "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",

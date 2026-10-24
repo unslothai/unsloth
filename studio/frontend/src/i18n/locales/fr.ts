@@ -2793,6 +2793,11 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
+      showGenerationDetails: "Détails de génération",
+      showGenerationDetailsDescription:
+        "Affiche la vitesse et le nombre de jetons en direct pendant une réponse, et où se trouvent les couches d'un modèle local.",
+      showGenerationDetailsKeywords:
+        "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       modelDisclaimer: "Afficher l'avertissement du modèle",

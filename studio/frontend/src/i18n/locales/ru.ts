@@ -2772,6 +2772,11 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
+      showGenerationDetails: "Подробности генерации",
+      showGenerationDetailsDescription:
+        "Показывать скорость и число токенов в реальном времени во время ответа и где размещены слои локальной модели.",
+      showGenerationDetailsKeywords:
+        "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",

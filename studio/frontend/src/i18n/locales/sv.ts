@@ -2954,6 +2954,11 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetailsDescription:
+        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+      showGenerationDetailsKeywords:
+        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",

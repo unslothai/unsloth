@@ -2764,6 +2764,11 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
+      showGenerationDetails: "जनरेशन विवरण",
+      showGenerationDetailsDescription:
+        "जवाब बनते समय लाइव गति और टोकन गिनती दिखाएँ, और लोकल मॉडल की परतें कहाँ रखी गईं।",
+      showGenerationDetailsKeywords:
+        "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",

@@ -2064,6 +2064,11 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
+        if ("type" in parsed && parsed.type === "generation_progress") {
+          yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
         const {
           usage: parsedUsage,
           timings: parsedTimings,

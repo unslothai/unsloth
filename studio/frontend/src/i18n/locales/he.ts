@@ -2871,6 +2871,11 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
+      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetailsDescription:
+        "הצגת מהירות ומספר אסימונים בזמן אמת בזמן שתשובה נוצרת, והיכן הוצבו השכבות של מודל מקומי.",
+      showGenerationDetailsKeywords:
+        "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
