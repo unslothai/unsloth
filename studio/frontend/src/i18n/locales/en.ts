@@ -494,7 +494,6 @@ export const en = {
     },
   },
   managedEngines: {
-    embeddedDescription: "Optional and experimental. Pick an installed one in a model's run settings.",
     gpu: "GPUs",
     gpuHelp: "Choose which GPUs to use.",
     parallelism: "Multi-GPU mode",
@@ -505,8 +504,8 @@ export const en = {
     dataHelp: "Spread requests across GPUs. Dense models must fit on each GPU; MoE models may share experts.",
     tensorParallel: "Split layer computations across {count} GPUs.",
     inUse: "Unload the model before repairing, restoring or removing its engine.",
-    title: "Inference engines",
-    description: "Optional engines for supported local text and vision models. Select an installed engine in the model's run settings. Experimental.",
+    title: "More engines",
+    description: "Extra engines that can run supported text and vision models faster, especially when many requests come in at once. Install one here, then choose it in a model's run settings. Experimental.",
     picker: "Inference engine",
     precision: "Precision",
     precisionAuto: "Model default",

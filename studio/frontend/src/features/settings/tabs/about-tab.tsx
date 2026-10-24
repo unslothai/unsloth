@@ -175,9 +175,8 @@ export function AboutTab() {
 
       <StudioVersionSection desktopAppVersion={desktopAppVersion} />
 
-      <EngineVersionsSection>
-        <InferenceEnginesSection embedded={true} />
-      </EngineVersionsSection>
+      <EngineVersionsSection />
+      <InferenceEnginesSection />
 
       <StandaloneEnvironmentSection />
 

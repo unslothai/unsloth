@@ -260,7 +260,7 @@ export function EngineInstall({
   );
 }
 
-export function InferenceEnginesSection({ embedded = false }: { embedded?: boolean } = {}) {
+export function InferenceEnginesSection() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
@@ -282,16 +282,6 @@ export function InferenceEnginesSection({ embedded = false }: { embedded?: boole
       ))}
     </>
   );
-  if (embedded) {
-    return (
-      <div data-settings-label={t("managedEngines.title")}>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {t("managedEngines.embeddedDescription")}
-        </p>
-        {rows}
-      </div>
-    );
-  }
   return (
     <SettingsSection
       title={t("managedEngines.title")}

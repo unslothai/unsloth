@@ -24,7 +24,6 @@ import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Delete02Icon,
-  DiceFaces03Icon,
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
@@ -37,6 +36,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
@@ -182,7 +182,6 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -7269,7 +7268,7 @@ export function ImagesPage({
                       className="flex-1"
                     />
                     {/* A pair at the input's height, so both sit centred on it with an even gap. */}
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex shrink-0 items-center">
                     <Button
                       type="button"
                       variant="ghost"
@@ -7280,7 +7279,7 @@ export function ImagesPage({
                       disabled={seed === ""}
                       onClick={() => setSeed("")}
                     >
-                      <HugeiconsIcon icon={DiceFaces03Icon} className="size-4" />
+                      <Shuffle className="size-4" strokeWidth={1.5} />
                     </Button>
                     <Button
                       type="button"
@@ -7294,7 +7293,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <Recycle className="size-4" strokeWidth={1.5} />
+                      <HistoryIcon className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>

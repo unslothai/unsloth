@@ -13,7 +13,7 @@ import {
 } from "@/hooks/use-llama-update-check";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -24,8 +24,7 @@ type EngineRow = {
   offer: ComponentOffer | null;
 };
 
-/** `children` render under the version rows, divided off: the optional vLLM and SGLang engines. */
-export function EngineVersionsSection({ children }: { children?: ReactNode } = {}) {
+export function EngineVersionsSection() {
   const t = useT();
   const hw = useHardwareInfo();
   const isOwner = useIsAccountOwner();
@@ -173,9 +172,6 @@ export function EngineVersionsSection({ children }: { children?: ReactNode } = {
             className="h-1.5 w-full rounded-full bg-muted"
           />
         </div>
-      ) : null}
-      {children ? (
-        <div className="mt-2 border-t border-border/60 pt-3">{children}</div>
       ) : null}
     </SettingsSection>
   );

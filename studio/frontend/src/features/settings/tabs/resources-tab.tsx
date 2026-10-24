@@ -1061,9 +1061,8 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
-      <EngineVersionsSection>
-        <InferenceEnginesSection embedded={true} />
-      </EngineVersionsSection>
+      <EngineVersionsSection />
+      <InferenceEnginesSection />
 
       <ModelMemorySection ref={modelMemoryRef} />
 
