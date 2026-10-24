@@ -563,3 +563,28 @@ async def test_an_error_outside_a_handler_fails_the_run():
     rs = await _run(eng, d)
     assert rs.status == "failed", rs.status
     assert _status(rs, "fe") == "failed"
+
+
+@run_async
+async def test_a_cancelled_invoke_stops_its_model_call_through_the_cancel_hooks():
+    # A dropped invoke must run the model call's cancel hook, or llama-server keeps generating.
+    started = asyncio.Event()
+    stopped = []
+
+    async def next_scene(ctx):
+        async def cancel():
+            stopped.append(ctx.node_id)
+
+        ctx.on_cancel(cancel)
+        started.set()
+        await asyncio.sleep(60)
+        return {"scene": {}}
+
+    eng = _engine({**BASE, "story.next_scene": next_scene})
+    parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
+    task = asyncio.create_task(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n", inputs = {}))
+    await asyncio.wait_for(started.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped == ["n"]

@@ -723,9 +723,21 @@ class FlowEngine:
             flusher = asyncio.create_task(self._flusher(rs, INVOKE_FLUSH_S))
         try:
             env = Env()
-            await self._run_scope(
-                rs, [n for n in plan.order if n in need and plan.owner.get(n) is None], env
+            scope = asyncio.create_task(
+                self._run_scope(
+                    rs, [n for n in plan.order if n in need and plan.owner.get(n) is None], env
+                )
             )
+            try:
+                await asyncio.wait({scope})
+            except asyncio.CancelledError:
+                # The caller left: stop the model call through its hooks while they are registered.
+                rs.cancel_event.set()
+                await asyncio.shield(self._fire_cancel_hooks(rs))
+                scope.cancel()
+                await asyncio.gather(scope, return_exceptions = True)
+                raise
+            scope.result()
             if flusher is not None:
                 rs.flush()
             state = rs.node(entry)

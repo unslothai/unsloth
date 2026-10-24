@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from collections import OrderedDict
 from typing import Any, Optional
@@ -36,6 +37,8 @@ RECALL_K = 8
 # Village memories are short and repeat across calls, so vectors stay here instead of in every save and request.
 _VECTORS: "OrderedDict[str, list[float]]" = OrderedDict()
 _VECTORS_MAX = 20000
+# A live reply waits at most this long for the embedder; past it, memories rank by keywords and the vectors are cached.
+REPLY_RECALL_BUDGET_S = 0.6
 
 WORLD_SYSTEM = """You design a tiny cozy top-down RPG world.
 Give every NPC a distinct personality, a one-line greeting and a `sprite_prompt` describing their look.
@@ -217,6 +220,7 @@ async def _recall(
     query: str,
     now: float,
     k: int = RECALL_K,
+    budget: Optional[float] = None,
 ) -> list[dict]:
     """The top memories for `query` (recency, importance, relevance); keyword relevance when no embedder answers."""
     try:
@@ -231,13 +235,26 @@ async def _recall(
     if ctx.params.get("relevance", "embeddings") == "embeddings":
         texts = [r["text"] for r in stream["records"]]
         missing = list(dict.fromkeys(t for t in texts if t not in _VECTORS))
-        vectors = await embed(ctx, [query] + missing)
-        if vectors:
-            query_vec = vectors[0]
-            for text, vec in zip(missing, vectors[1:]):
+        pending = asyncio.ensure_future(embed(ctx, [query] + missing))
+
+        def keep(task: "asyncio.Future") -> None:
+            vectors = None if task.cancelled() or task.exception() else task.result()
+            for text, vec in zip(missing, (vectors or [])[1:]):
                 _VECTORS[text] = vec
             while len(_VECTORS) > _VECTORS_MAX:
                 _VECTORS.popitem(last = False)
+
+        pending.add_done_callback(keep)
+        try:
+            vectors = await (
+                asyncio.wait_for(asyncio.shield(pending), budget) if budget is not None else pending
+            )
+        except asyncio.TimeoutError:
+            vectors = None
+            ctx.log("Memories ranked by keywords this turn: the embedding model was slow to answer")
+        if vectors:
+            query_vec = vectors[0]
+            keep(pending)
             for r in stream["records"]:
                 vec = _VECTORS.get(r["text"])
                 if vec is not None and len(vec) == len(query_vec):
@@ -275,7 +292,9 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
             {},
         )
         query = f"{state.get('player_message') or ''} {npc.get('name') or ''}"
-        memories = await _recall(ctx, state["memory"], query, _hours(state))
+        memories = await _recall(
+            ctx, state["memory"], query, _hours(state), budget = REPLY_RECALL_BUDGET_S
+        )
     try:
         system, prompt = npc_prompt(state, str(ctx.params.get("rules") or ""), memories)
     except WorldError as exc:
