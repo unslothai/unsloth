@@ -2244,7 +2244,12 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
     unstepped = _match_saved_optimizer_keys(state, directory, root)
+    # Hyperparameter keys the checkpoint lacks (another optimizer class, or an older torch) keep this
+    # optimizer's values; dcp.load would refuse them as missing.
+    unsaved = _drop_unsaved_group_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
+    for index, key, value in unsaved:
+        state["param_groups"][index].setdefault(key, value)
     if unstepped:
         # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
         # groups, without state. Anything else without state is not this optimizer's checkpoint.
@@ -2263,6 +2268,23 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
     return state
+
+
+def _drop_unsaved_group_keys(state, directory):
+    """Removes (and returns as (group index, key, value)) the param group entries of the dcp.load
+    target that the checkpoint does not hold."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    dropped = []
+    for index, group in enumerate(state.get("param_groups") or []):
+        prefix = f"param_groups.{index}."
+        if not isinstance(group, dict) or not any(k.startswith(prefix) for k in metadata):
+            continue  # not flattened per key: leave it to dcp.load
+        for key in [k for k in group if k != "params"]:
+            if prefix + key not in metadata:
+                dropped.append((index, key, group.pop(key)))
+    return dropped
 
 
 def _match_saved_optimizer_keys(
@@ -2290,6 +2312,14 @@ def _match_saved_optimizer_keys(
         entry = per_param[fqn]
         for name in [n for n in entry if f"state.{fqn}.{n}" not in metadata]:
             del entry[name]
+        for name, value in list(entry.items()):
+            # Saved as a tensor where this optimizer keeps a plain value (torch AdamW's tensor step
+            # resumed into bitsandbytes' int step): read the tensor, the rename converts it.
+            md = metadata[f"state.{fqn}.{name}"]
+            size = getattr(md, "size", None)
+            dtype = getattr(getattr(md, "properties", None), "dtype", None)
+            if not isinstance(value, torch.Tensor) and size is not None and dtype is not None:
+                entry[name] = torch.empty(tuple(size), dtype = dtype)
         if not entry:
             del per_param[fqn]
             unstepped.append(fqn)
