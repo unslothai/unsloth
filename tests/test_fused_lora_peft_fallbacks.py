@@ -360,3 +360,28 @@ def test_routing_compiles_without_graph_breaks(monkeypatch):
     model.base_model.disable_adapter_layers()
     check(X.detach(), grad = False)  # fused
     check(X.detach().requires_grad_(), grad = True)  # PEFT
+
+
+@pytest.mark.parametrize("device,dtype,path", CASES)
+@pytest.mark.parametrize("unload", ["merge_and_unload", "unload"])
+@pytest.mark.parametrize("grad_mode", ["no_grad", "enable_grad"])
+def test_unloaded_plain_linear_projections_run_the_fused_paths(
+    monkeypatch, device, dtype, path, unload, grad_mode
+):
+    # merge_and_unload() / unload() swap the LoRA layers back to plain nn.Linear while the fused
+    # apply_qkv / apply_o / MLP forwards stay installed on the attention and MLP modules, so the
+    # routing guards must accept a projection with no lora_A / lora_B (forward / generate after merging).
+    model, _ = _peft_block(device, dtype, 0.0)
+    block = getattr(model, unload)()
+    assert type(block.o_proj) is torch.nn.Linear
+    assert "lora_A" not in block.o_proj._modules
+    X = torch.randn(2, 5, H, device = device, dtype = dtype)
+    ctx = torch.no_grad if grad_mode == "no_grad" else torch.enable_grad
+    with ctx():
+        fused = PATHS[path][0](block)(X)
+        ref = PATHS[path][1](block)(X)
+    tol = {} if path == "mlp" else dict(rtol = 0, atol = 0)
+    for a, b in zip(
+        fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)
+    ):
+        torch.testing.assert_close(a, b, **tol)

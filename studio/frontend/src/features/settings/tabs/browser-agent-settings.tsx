@@ -102,7 +102,7 @@ function PermissionsTable() {
   };
 
   const row = (name: string, rule: SiteRule, site: string | null) => (
-    <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-3">
+    <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-5">
       <div className="flex min-h-8 items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={name}>
           {name}

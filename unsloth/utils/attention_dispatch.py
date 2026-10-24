@@ -111,7 +111,72 @@ def _training_sdpa(*args, **kwargs):
     if args and _avoids_cudnn(args[0], True):
         with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
             return scaled_dot_product_attention(*args, **kwargs)
+    if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
+        return _cudnn_length_bucketed_sdpa(*args, **kwargs)
     return scaled_dot_product_attention(*args, **kwargs)
+
+
+# Wherever SDPA picks cuDNN attention for a training call (H100 on torch 2.14: the default
+# priority), every new sequence length builds a new cuDNN plan, ~170 ms forward plus backward on
+# H100. Padded batches change length every step, so that cost landed on nearly every step. Padding
+# Q / K / V along the sequence to a multiple of this bucket bounds the plans to max_len / bucket.
+# Only causal calls with no mask and q_len == k_len: padded keys come after every real query, so
+# causal masking hides them and the real rows are what the unpadded call returns. 0 disables.
+try:
+    _CUDNN_LENGTH_BUCKET = max(int(os.environ.get("UNSLOTH_SDPA_CUDNN_BUCKET", "128")), 0)
+except ValueError:
+    _CUDNN_LENGTH_BUCKET = 128
+
+
+def _cudnn_length_bucket_applies(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
+    if not _CUDNN_LENGTH_BUCKET or _CUDNN_CHOICE is None:
+        return False
+    # Under context parallelism the tensors can be sequence shards: padding a shard would put unmasked
+    # zero keys inside the global sequence.
+    if get_cp_manager() is not None:
+        return False
+    if attn_mask is not None or not is_causal or dropout_p:
+        return False
+    if not (isinstance(Q, Tensor) and Q.is_cuda and Q.dim() == 4 and K.dim() == 4 and V.dim() == 4):
+        return False
+    if Q.dtype not in (torch.float16, torch.bfloat16) or Q.shape[-2] != K.shape[-2]:
+        return False
+    _, choice = _sdpa_backend_state(
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        True,
+        bool(kwargs.get("enable_gqa", False)),
+    )
+    return choice == _CUDNN_CHOICE
+
+
+def _cudnn_length_bucketed_sdpa(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
+    # Always pad by 1..bucket rows and slice: a zero pad specialises under dynamo (a recompile when the
+    # length becomes a bucket multiple), so an exact multiple carries one spare bucket instead.
+    q_len = Q.shape[-2]
+    pad = _CUDNN_LENGTH_BUCKET - q_len % _CUDNN_LENGTH_BUCKET
+    Q, K, V = (F.pad(x, (0, 0, 0, pad)) for x in (Q, K, V))
+    out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
+    return out[..., :q_len, :]
 
 
 def _rerouted_sdpa(*args, **kwargs):
@@ -130,8 +195,12 @@ try:
         _SDPBackend.EFFICIENT_ATTENTION,
         _SDPBackend.MATH,
     ]
+    _CUDNN_CHOICE = (
+        int(_SDPBackend.CUDNN_ATTENTION) if hasattr(_SDPBackend, "CUDNN_ATTENTION") else None
+    )
 except Exception:
     _rerouted_sdpa = scaled_dot_product_attention
+    _CUDNN_CHOICE = None
 
 
 def _per_device_backends(capabilities):

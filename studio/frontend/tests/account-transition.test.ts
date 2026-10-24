@@ -631,3 +631,120 @@ test("transcript recovery survives reauthentication but is cleared on account ch
     }
   }
 });
+
+test("chat preferences survive account switches without being shared", async () => {
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice) });
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: b.browser });
+  const load = async (name: string) => {
+    const { useChatPreferencesStore } = await import(
+      `../src/features/chat/stores/chat-preferences-store.ts?account-test=${name}`
+    );
+    return useChatPreferencesStore;
+  };
+  const choices = (store: Awaited<ReturnType<typeof load>>) => {
+    const state = store.getState();
+    return [state.sendShortcut, state.autoScrollWhileGenerating, state.thinkingVisibility];
+  };
+  try {
+    const a = await load("alice");
+    a.getState().setSendShortcut("mod-enter");
+    a.getState().setAutoScrollWhileGenerating(false);
+    a.getState().setThinkingVisibility("collapsed");
+    assert.deepEqual(choices(await load("alice-reload")), ["mod-enter", false, "collapsed"]);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    const other = await load("bob");
+    assert.deepEqual(choices(other), ["enter", true, "auto"]);
+    other.getState().setThinkingVisibility("expanded");
+    await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("alice-return")), ["mod-enter", false, "collapsed"]);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("bob-return")), ["enter", true, "expanded"]);
+    // Reset preferences removes the active entry; the old snapshot must not resurrect it.
+    b.data.delete("unsloth_chat_preferences");
+    await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("bob-reset")), ["enter", true, "auto"]);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+test("chat preference snapshots follow account IDs, including rename and recreation", async () => {
+  const saved = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice),
+    unsloth_chat_preferences: saved,
+  });
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "renamed", accountId: "alice-id" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "alice", accountId: "new-alice-id" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.has("unsloth_chat_preferences"), false);
+});
+
+test("owner preferences survive the legacy marker upgrade", async () => {
+  const saved = JSON.stringify({ state: { thinkingVisibility: "collapsed" }, version: 1 });
+  const b = browserWith({ unsloth_chat_preferences: saved });
+  await transitionBrowserAccount("alice", "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "unsloth", accountId: "owner" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+});
+
+test("failed account cleanup leaves chat preferences available for a retry", async () => {
+  const saved = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice",
+    unsloth_chat_preferences: saved,
+  }, "blocked");
+  await assert.rejects(transitionBrowserAccount(
+    { username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser,
+  ));
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+});
+
+test("a failed session publication keeps each account's chat preferences its own", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const bobPrefs = JSON.stringify({ state: { sendShortcut: "mod-enter-multiline" }, version: 1 });
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice) });
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", alicePrefs);
+  await assert.rejects(transitionBrowserAccount(bob, "/chat", () => {
+    throw new Error("token storage failed");
+  }, b.browser));
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+});
+
+test("a full storage never blocks an account switch or leaks preferences", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice",
+    unsloth_chat_preferences: alicePrefs,
+  });
+  const setItem = b.browser.localStorage.setItem;
+  b.browser.localStorage.setItem = (key: string, value: string) => {
+    if (key.startsWith("unsloth.account-chat-preferences.v1:"))
+      throw new DOMException("full", "QuotaExceededError");
+    setItem(key, value);
+  };
+  assert.equal(
+    await transitionBrowserAccount({ username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser),
+    true,
+  );
+  assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "account:bob-id:bob");
+  assert.equal(b.data.has("unsloth_chat_preferences"), false);
+});

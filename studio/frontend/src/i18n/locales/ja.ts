@@ -73,7 +73,7 @@ export const ja = {
       cursorDescription: "モデルがページ上でクリック、入力、ドラッグする位置にポインターを表示します",
       askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
-      permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",
+      permissionsDescription: "既定の動作とサイトごとの例外を設定します。パスワードや支払い情報の欄は入力されません。",
       site: "サイトまたはパターン",
       sitePlaceholder: "example.com または *.example.com",
       default: "既定",
