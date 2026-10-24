@@ -96,8 +96,7 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
 
 
 def render_provider_extra_headers(
-    headers: dict[str, str] | None,
-    variables: dict[str, str] | None = None,
+    headers: dict[str, str] | None, variables: dict[str, str] | None = None
 ) -> dict[str, str]:
     """Replace ``{{ VAR }}`` placeholders. Unknown names become empty strings."""
     if not headers:
@@ -107,9 +106,7 @@ def render_provider_extra_headers(
     def replace(match: re.Match[str]) -> str:
         return values.get(match.group(1), "")
 
-    return {
-        name: _HEADER_TEMPLATE_RE.sub(replace, value) for name, value in headers.items()
-    }
+    return {name: _HEADER_TEMPLATE_RE.sub(replace, value) for name, value in headers.items()}
 
 
 class ProviderRegistryEntry(BaseModel):

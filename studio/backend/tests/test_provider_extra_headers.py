@@ -77,9 +77,7 @@ def test_extra_headers_persist_and_reach_the_wire(tmp_path, monkeypatch):
         base_url = "https://gateway.example/v1",
         extra_headers = HEADERS,
     )
-    providers_db.create_provider(
-        id = "litellm", **payload.model_dump(exclude = {"encrypted_api_key"})
-    )
+    providers_db.create_provider(id = "litellm", **payload.model_dump(exclude = {"encrypted_api_key"}))
     row = providers_db.get_provider("litellm")
     assert row["extra_headers"] == HEADERS
     assert providers_db.update_provider("litellm", extra_headers = {"X-Title": "Studio"})
