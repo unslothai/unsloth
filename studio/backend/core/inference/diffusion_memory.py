@@ -1116,6 +1116,19 @@ def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
     return reclaimable - _graph_held_cache_bytes(pool_device)
 
 
+def cuda_reusable_cache_bytes(device: Any = None) -> int:
+    """``cuda_reclaimable_bytes`` (excludes CUDA graph pools) floored at 0 for any device form; resolved to an int
+    index because ``_graph_held_cache_bytes`` would silently skip the graph-pool count for a torch.device."""
+    index = None
+    if device is not None:
+        try:
+            import torch
+            index = device if isinstance(device, int) else torch.device(device).index
+        except Exception:  # noqa: BLE001 - unparseable: read the current card
+            index = None
+    return max(0, cuda_reclaimable_bytes(index) or 0)
+
+
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back as free,
     without flushing it.

@@ -73,15 +73,15 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's unused cache, less the user's VRAM Budget reserve (raw at the default)."""
+    """Device free memory plus torch's reusable cache (not CUDA graph pools), less the user's VRAM Budget reserve (raw at the default)."""
     try:
         import torch
 
-        from .diffusion_memory import user_budget_reserve_bytes
+        from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
 
         free, total = torch.cuda.mem_get_info(device)
-        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return max(0, int(free) + max(0, int(cached)) - user_budget_reserve_bytes(device, total))
+        cached = cuda_reusable_cache_bytes(device)
+        return max(0, int(free) + cached - user_budget_reserve_bytes(device, total))
     except Exception:  # noqa: BLE001
         return None
 

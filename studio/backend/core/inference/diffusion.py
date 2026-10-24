@@ -2596,7 +2596,7 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
 def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
     """MiB short for encoding ``x`` untiled, the decode's rule (free less the VRAM Budget reserve); None off CUDA
     or on unknown figures."""
-    from .diffusion_memory import user_budget_reserve_bytes
+    from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
     from .diffusion_vae_tiling import FREE_FRACTION, _fused, _geometry, encode_mib_per_latent
 
     try:
@@ -2609,7 +2609,7 @@ def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
         if per_latent is None or ratio <= 0:
             return None
         free, total = torch.cuda.mem_get_info(x.device)
-        free += torch.cuda.memory_reserved(x.device) - torch.cuda.memory_allocated(x.device)
+        free += cuda_reusable_cache_bytes(x.device)
         free -= user_budget_reserve_bytes(x.device, total)
         elem = next(vae.encoder.parameters()).element_size()
         # enable_fp16_vae_decode's fp32_encode upcasts the fp16 encoder and input for the encode itself
