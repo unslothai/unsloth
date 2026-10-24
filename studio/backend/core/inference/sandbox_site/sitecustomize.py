@@ -306,11 +306,123 @@ try:
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
+
 # Approved host calls keep chat-installed packages importable, including Python started by Terminal.
-# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+# Served by a last-resort finder, not sys.path: a folder on sys.path also exposes its *.dist-info to
+# importlib.metadata, so entry-point plugin autoload (pytest11 and the like) would import chat-planted code
+# the approved command never named. The finder runs after every other one, so it only supplies top-level
+# modules the host lacks (no stdlib or installed-package shadowing, no .pth execution); submodules then
+# resolve through the package's own __path__. Metadata is answered only for an exact distribution name
+# (importlib.metadata.version("pkg")) with no explicit path, never for the name-less scan that plugin
+# discovery uses.
+# A PEP 420 namespace package (google, azure, ...) recomputes its __path__ from sys.path alone, so a
+# submodule the host's portion lacks is looked up in the folder's portion of that namespace, again last.
+# The namespace's __path__ (PEP 420, pkgutil- or pkg_resources-style) then gets that portion appended.
+class _HostPackagesFinder:
+    _skip = frozenset(("sitecustomize", "usercustomize"))
+
+    def __init__(self, folder):
+        self._folder = folder
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        import importlib.machinery
+
+        if "." not in name:
+            if path is not None or name in self._skip:
+                return None
+            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+        parent, _, _ = name.rpartition(".")
+        module = sys.modules.get(parent)
+        spec = getattr(module, "__spec__", None)
+        if spec is None or spec.submodule_search_locations is None:
+            return None
+        # Only namespace packages: a regular package's submodules come from its own __path__ alone.
+        pkgutil_style = spec.origin not in (None, "namespace")
+        if pkgutil_style and not self._extends_path(spec.origin):
+            return None
+        portion = os.path.join(self._folder, *parent.split("."))
+        if not os.path.isdir(portion):
+            return None
+        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        if found is not None:
+            # What extend_path / declare_namespace (or PEP 420) would have collected had the folder been
+            # on sys.path: this one portion directory, last, so later lookups, pkgutil.iter_modules and
+            # importlib.resources see it too. A PEP 420 _NamespacePath recomputes from sys.path when
+            # sys.path changes, which drops it again until the next submodule is served from it.
+            search = getattr(module, "__path__", None)
+            if search is not None and hasattr(search, "append") and portion not in list(search):
+                search.append(portion)
+        return found
+
+    _extends = {}
+
+    @classmethod
+    def _extends_path(cls, origin):
+        # A pkgutil-style (extend_path) or pkg_resources-style (declare_namespace) namespace package
+        # collects its portions by scanning sys.path while its __init__ runs, so it never sees this folder.
+        # Only the statements that declare one count: `__path__ = <...>extend_path(__path__, __name__)`
+        # or `<...>declare_namespace(__name__)`, at module level or in a module-level try body / else /
+        # finally (not an except handler, which may not have run). A comment,
+        # a string, an unused import or a call under if/def/class leaves the package regular.
+        if origin not in cls._extends:
+            try:
+                import ast
+                with open(origin, "rb") as f:
+                    tree = ast.parse(f.read())
+                cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
+            except Exception:  # noqa: BLE001 - an unreadable __init__ is treated as a regular package
+                cls._extends[origin] = False
+        return cls._extends[origin]
+
+    @classmethod
+    def _top_level(cls, body):
+        import ast
+        for node in body:
+            yield node
+            if isinstance(node, ast.Try):
+                # Only blocks that run when the try body completes: a declaration that sits only in
+                # an except handler may never have run, so it does not open the package.
+                for block in (node.body, node.orelse, node.finalbody):
+                    yield from cls._top_level(block)
+
+    @staticmethod
+    def _declares_namespace(node):
+        import ast
+
+        def call_of(value, name, args):
+            if not isinstance(value, ast.Call) or value.keywords:
+                return False
+            func = value.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            return called == name and [getattr(a, "id", None) for a in value.args] == args
+
+        if isinstance(node, ast.Assign):
+            return any(getattr(t, "id", None) == "__path__" for t in node.targets) and call_of(
+                node.value, "extend_path", ["__path__", "__name__"]
+            )
+        return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
+
+    def find_distributions(self, context = None):
+        name = getattr(context, "name", None)
+        # An explicit path is the caller's search scope: the stock path finder already honours it
+        # (folder included if listed), so only the default sys.path scope gets the folder added.
+        if not name or "path" in getattr(context, "__dict__", {}):
+            return iter(())
+        import importlib.metadata
+
+        return importlib.metadata.MetadataPathFinder.find_distributions(
+            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+        )
+
+
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
-if _host_packages and _host_packages not in sys.path:
-    sys.path.append(_host_packages)
+if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
+    sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
 # Helper modules the approved script imports by name come from the chat folder, after everything

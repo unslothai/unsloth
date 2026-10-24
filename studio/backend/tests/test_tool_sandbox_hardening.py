@@ -19,6 +19,37 @@ from core.inference.os_sandbox import ToolLaunchPlan
 
 _POSIX = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX launch layout")
 
+# Names of the chat-planted pytest11 entry points a name-less scan sees. Python 3.9's
+# importlib.metadata.entry_points() takes no group and returns a dict of groups; 3.10+ selects.
+_PYTEST11_SCAN = (
+    "_eps = m.entry_points()\n"
+    "_eps = _eps.select(group = 'pytest11') if hasattr(_eps, 'select') else _eps.get('pytest11', ())\n"
+    "print('SCAN', sorted(e.name for e in _eps if e.name.startswith('chat')))\n"
+)
+
+
+@pytest.mark.parametrize("shape", ["dict", "selectable"])
+def test_the_pytest11_scan_reads_both_entry_point_api_shapes(shape, capsys):
+    """The scan the approved-call checks run works on the 3.9 dict API and the 3.10+ select API."""
+    import types
+
+    hit = types.SimpleNamespace(name = "chatplugin")
+    other = types.SimpleNamespace(name = "hostplugin")
+
+    class Selectable(list):
+        def select(self, group):
+            return [hit, other] if group == "pytest11" else []
+
+    def entry_points(**kwargs):
+        if shape == "dict":
+            if kwargs:
+                raise TypeError("entry_points() got an unexpected keyword argument 'group'")
+            return {"pytest11": (hit, other), "console_scripts": ()}
+        return Selectable()
+
+    exec(_PYTEST11_SCAN, {"m": types.SimpleNamespace(entry_points = entry_points)})
+    assert capsys.readouterr().out == "SCAN ['chatplugin']\n"
+
 
 def _planted_workdir(tmp_path):
     workdir = tmp_path / "chat"
@@ -84,6 +115,154 @@ def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_pa
         assert "PKG from-session-packages" in out, out
         assert "ROWS [['a', 'b']]" in out, out
         assert "PLANTED" not in out, out
+
+
+def _plant_chat_plugin(packages, marker):
+    """A pytest11 entry point a chat pip-installed into its package folder, which copies a host file when loaded."""
+    secret = marker.parent / "host-secret.txt"
+    secret.write_text("outside-chat-secret", encoding = "utf-8")
+    (packages / "chat_autoload.py").write_text(
+        f"import pathlib\npathlib.Path({str(marker)!r}).write_text(pathlib.Path({str(secret)!r}).read_text())\n",
+        encoding = "utf-8",
+    )
+    info = packages / "chat_autoload-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chat-autoload\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    (info / "entry_points.txt").write_text(
+        "[pytest11]\nchat_autoload = chat_autoload\n", encoding = "utf-8"
+    )
+
+
+@_POSIX
+def test_an_approved_pytest_call_does_not_autoload_chat_installed_plugins(tmp_path, monkeypatch):
+    """Session packages must not be visible to entry-point discovery: pytest would import a planted plugin."""
+    workdir = _planted_workdir(tmp_path)
+    (workdir / "csv.py").unlink()
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    host.mkdir()
+    marker = host / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    (workdir / "test_ok.py").write_text(
+        "import chatpkg\n\ndef test_ok():\n    assert chatpkg.VALUE == 'from-session-packages'\n",
+        encoding = "utf-8",
+    )
+    host_file = host / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        shlex.quote(sys.executable)
+        + " -m pytest -q -o addopts= -p no:cacheprovider test_ok.py && cat "
+        + shlex.quote(str(host_file))
+    )
+    assert tools._reaches_host_paths("terminal", command)
+    out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+    assert "1 passed" in out and "a,b" in out, out
+    assert not marker.exists(), "a chat-installed pytest plugin ran on the host"
+
+
+@_POSIX
+def test_an_approved_script_still_imports_chat_installed_packages(tmp_path, monkeypatch):
+    """Explicit imports (packages, submodules, their own metadata) keep working; name-less scans see nothing."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    (packages / "chatlib").mkdir()
+    (packages / "chatlib" / "__init__.py").write_text("from .sub import X\n", encoding = "utf-8")
+    (packages / "chatlib" / "sub.py").write_text("X = 'chatlib-sub'\n", encoding = "utf-8")
+    info = packages / "chatlib-2.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chatlib\nVersion: 2.0\n", encoding = "utf-8"
+    )
+    marker = tmp_path / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        "import importlib.metadata as m, chatlib, chatlib.sub, chatpkg\n"
+        "print('LIB', chatlib.X, chatlib.sub.X, chatpkg.VALUE, m.version('chatlib'))\n"
+        + _PYTEST11_SCAN
+        + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    assert "LIB chatlib-sub chatlib-sub from-session-packages 2.0" in out, out
+    assert "SCAN []" in out, out
+    assert not marker.exists(), out
+
+
+@_POSIX
+def test_an_approved_script_imports_chat_portions_of_host_namespace_packages(tmp_path, monkeypatch):
+    """A PEP 420 namespace the host already provides still reaches the portion the chat installed."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    for root, owner in ((host, "host"), (packages, "chat")):
+        (root / "chatns" / "inner").mkdir(parents = True)
+        (root / "chatns" / f"{owner}_mod.py").write_text(f"V = '{owner}'\n", encoding = "utf-8")
+        (root / "chatns" / "inner" / f"{owner}_leaf.py").write_text(
+            f"V = '{owner}-leaf'\n", encoding = "utf-8"
+        )
+        (root / "chatns" / "shared.py").write_text(f"V = '{owner}-shared'\n", encoding = "utf-8")
+    (packages / "chatns" / "chatreg").mkdir()
+    (packages / "chatns" / "chatreg" / "__init__.py").write_text("V = 'reg'\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import chatns.host_mod, chatns.chat_mod, chatns.shared, chatns.chatreg\n"
+        "import chatns.inner.host_leaf, chatns.inner.chat_leaf\n"
+        "print('NS', chatns.host_mod.V, chatns.chat_mod.V, chatns.shared.V, chatns.chatreg.V,"
+        " chatns.inner.host_leaf.V, chatns.inner.chat_leaf.V)\n"
+        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    # The host's own portion still wins for a name both provide.
+    assert "NS host chat host-shared reg host-leaf chat-leaf" in out, out
+
+
+@_POSIX
+def test_an_approved_script_imports_chat_portions_of_host_pkgutil_namespaces(tmp_path, monkeypatch):
+    """A pkgutil.extend_path namespace (backports, ...) the host provides reaches the chat's portion; a regular one does not."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    extend = "__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n"
+    # Only mentions the namespace helpers (a comment, an unused import, a string, a dead branch):
+    # still a regular package.
+    mentions = (
+        "# not a namespace: no extend_path or declare_namespace here\n"
+        "from pkgutil import extend_path\n"
+        "NOTE = 'declare_namespace(__name__)'\n"
+        "if False:\n    __path__ = extend_path(__path__, __name__)\n"
+    )
+    for root, owner in ((host, "host"), (packages, "chat")):
+        for pkg, init in (("chatpkgutil", extend), ("chatregular", ""), ("chatmention", mentions)):
+            (root / pkg).mkdir(parents = True)
+            (root / pkg / "__init__.py").write_text(init, encoding = "utf-8")
+            (root / pkg / f"{owner}_mod.py").write_text(f"V = '{owner}'\n", encoding = "utf-8")
+            (root / pkg / "shared.py").write_text(f"V = '{owner}-shared'\n", encoding = "utf-8")
+    marker = tmp_path / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import importlib.metadata as m, pkgutil\n"
+        "import chatpkgutil.host_mod, chatpkgutil.chat_mod, chatpkgutil.shared, chatregular.host_mod\n"
+        "print('PKG', chatpkgutil.host_mod.V, chatpkgutil.chat_mod.V, chatpkgutil.shared.V,"
+        " sorted(i.name for i in pkgutil.iter_modules(chatpkgutil.__path__)))\n"
+        "for name in ('chatregular', 'chatmention'):\n"
+        "    try:\n        __import__(name + '.chat_mod')\n        print('REGULAR leaked', name)\n"
+        "    except ModuleNotFoundError:\n        print('REGULAR closed', name)\n"
+        + _PYTEST11_SCAN
+        + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    # The host's own portion still wins for a name both provide.
+    assert "PKG host chat host-shared ['chat_mod', 'host_mod', 'shared']" in out, out
+    assert "REGULAR closed chatregular" in out and "REGULAR closed chatmention" in out, out
+    assert "REGULAR leaked" not in out, out
+    assert "SCAN []" in out, out
+    assert not marker.exists(), out
 
 
 @_POSIX
