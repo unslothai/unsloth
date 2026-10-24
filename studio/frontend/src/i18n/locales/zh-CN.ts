@@ -72,7 +72,7 @@ export const zhCN = {
       cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
-      permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
+      permissionsDescription: "设置默认值和按网站的例外。绝不会填写密码和支付信息字段。",
       site: "网站或模式",
       sitePlaceholder: "example.com 或 *.example.com",
       default: "默认",

@@ -73,7 +73,7 @@ export const he = {
       cursorDescription: "מציג סמן במקום שבו מודלים לוחצים, מקלידים וגוררים בדף",
       askEveryTime: "לשאול בכל פעם",
       permissionsTitle: "הרשאות הסוכן",
-      permissionsDescription: "בחירת ברירות מחדל והוספת חריגים לאתרים מסוימים. שדות סיסמה ותשלום לעולם אינם ממולאים, לא משנה מה מוגדר כאן.",
+      permissionsDescription: "הגדרת ברירות מחדל וחריגים לפי אתר. שדות סיסמה ותשלום לעולם אינם ממולאים.",
       site: "אתר או תבנית",
       sitePlaceholder: "example.com או *.example.com",
       default: "ברירת מחדל",
