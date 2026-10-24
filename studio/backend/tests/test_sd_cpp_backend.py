@@ -1460,6 +1460,7 @@ def _run_server_load(
     gguf_filename = "z.gguf",
     family_override = None,
     gpu_ordinal = None,
+    asset_paths = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1476,7 +1477,10 @@ def _run_server_load(
     monkeypatch.setattr(
         b,
         "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+        lambda *a, **k: dict(
+            asset_paths
+            or {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"}
+        ),
     )
     monkeypatch.setattr(
         bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
@@ -3008,9 +3012,51 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers, device = "cuda")
-    assert seen == ["/m/z.gguf"]  # the diffusion model, not the encoder or VAE
+    assert seen == ["/m/z.gguf"]
     assert servers[-1].env is None
     assert dict(b._state.child_env) == {}
+
+
+@pytest.mark.parametrize(
+    "companions,expected",
+    [
+        ({"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))}, None),
+        (
+            {
+                "llm": ("/m/llm.gguf", frozenset({"Q8_0"})),
+                "vae": ("/m/vae.gguf", frozenset({"Q5_K"})),
+            },
+            None,
+        ),
+        ({"llm": ("/m/llm.gguf", None)}, None),
+        (
+            {"llm": ("/m/llm.gguf", frozenset({"Q8_0"})), "vae": ("/m/vae.gguf", frozenset())},
+            "1024",
+        ),
+    ],
+)
+def test_a_q8_0_diffusion_gguf_with_a_k_quant_companion_keeps_mmq(
+    monkeypatch, companions, expected
+):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    types_by_path = {"/m/z.gguf": frozenset({"Q8_0"})}
+    types_by_path.update(dict(companions.values()))
+    seen: list = []
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod,
+        "gguf_quantized_weight_types",
+        lambda path: seen.append(path) or types_by_path[path],
+    )
+    paths = {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"}
+    paths.update({kind: path for kind, (path, _types) in companions.items()})
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda", asset_paths = paths)
+    want = None if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected}
+    assert servers[-1].env == want
+    assert dict(b._state.child_env) == (want or {})
+    assert "/m/llm.gguf" in seen
 
 
 def test_a_user_quant_cublas_value_reaches_sd_server_unchanged(monkeypatch):
