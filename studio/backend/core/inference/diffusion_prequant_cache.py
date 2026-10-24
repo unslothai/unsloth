@@ -35,6 +35,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from . import hub_reachability as _reach
+
 ENV_MODE = "UNSLOTH_DIFFUSION_PREQUANT_CACHE"
 ENV_DIR = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR"
 ENV_MAX_GB = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB"
@@ -585,6 +587,10 @@ _REMOTE_TTL_SECONDS = 300.0
 _REMOTE_TIMEOUT_SECONDS = 5.0
 _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
+# Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
+_UNREACHABLE = _reach._UNREACHABLE
+_connection_failed = _reach.connection_failed
+_endpoint = _reach.endpoint
 
 
 def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
@@ -601,9 +607,25 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
     return (
         repo,
         "/".join(parts[i + 2 :]),
-        os.path.basename(os.path.realpath(str(path))),
+        _repo_blob_name(str(path), os.path.join(*parts[:i], "blobs")),
         parts[i + 1],
     )
+
+
+def _repo_blob_name(path: str, blobs_dir: str) -> str:
+    """Name of the ``<repo>/blobs`` entry a snapshot file links to, i.e. its etag. huggingface_hub >= 1.32 links that
+    entry on to a shared store (``<cache>/blobs/<xx>/<xet hash>``), so only the first hop into ``blobs_dir`` counts."""
+    blobs = os.path.normcase(os.path.realpath(blobs_dir))
+    current = path
+    for _ in range(8):
+        if os.path.normcase(os.path.realpath(os.path.dirname(current))) == blobs:
+            return os.path.basename(current)
+        try:
+            target = os.readlink(current)
+        except (OSError, ValueError):
+            break  # not a link: a copied file (no symlinks) or the chain's end
+        current = os.path.join(os.path.dirname(current), target)
+    return os.path.basename(os.path.realpath(path))
 
 
 def _is_content_hash(name: str) -> bool:
@@ -621,6 +643,9 @@ def _remote_etag(
         hit = _REMOTE_MEMO.get(memo)
     if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_SECONDS:
         return hit[1]
+    endpoint = _endpoint()
+    if _reach.hub_unreachable(endpoint):
+        return None  # the Hub did not answer moments ago: unanswerable, without another timeout
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.utils import EntryNotFoundError
@@ -640,9 +665,12 @@ def _remote_etag(
         value = str(etag) if etag else None  # already normalized (no quotes, no W/ prefix)
     except EntryNotFoundError:
         value = _GONE
-    except Exception:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+    except Exception as exc:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+        _reach.note_hub_failure(exc, endpoint)
         return None
+    _reach.note_hub_success(endpoint)
     with _lock:
+        _UNREACHABLE.pop(endpoint, None)
         _REMOTE_MEMO[memo] = (time.monotonic(), value)
     return value
 

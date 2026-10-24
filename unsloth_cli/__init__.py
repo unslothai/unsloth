@@ -242,8 +242,8 @@ if not _windows_studio_mutation_entry:
     app.add_typer(
         start_app,
         name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
-        "against Unsloth.",
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
+        "VS Code) against Unsloth.",
     )
     app.add_typer(
         mcp_app, name = "mcp", help = "Connect coding agents to the Unsloth Studio MCP server."

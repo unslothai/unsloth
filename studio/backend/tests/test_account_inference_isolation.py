@@ -65,8 +65,6 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    # A browser session: the isolation these tests check is between ACCOUNTS, not between
-    # caller classes.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
@@ -94,7 +92,6 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(
             assert response.status_code == 200
             body = response.json()
             assert body.get("yours") is False, body
-            # The chat status shape lists resident models, so its hidden answer lists none.
             assert body["loaded"] == ([] if path == "status" and modality == "chat" else True)
     assert not run_as(ALICE, access.resident_hidden, modality)
     assert not run_as(OWNER, access.resident_hidden, modality)
@@ -637,7 +634,6 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
             "loaded": True,
             "yours": False,
         }
-        # Hidden, but still the declared shape: `active` reads false, not KeyError.
         hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
         assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})
@@ -721,6 +717,12 @@ def test_every_model_load_worker_is_pinned_to_its_account():
 
     from core.inference import diffusion, sd_cpp_backend, video as video_backend
 
+    def _is_run_load(value):
+        # A target may be wrapped (carry_load_budget(self._run_load)); the worker is still _run_load.
+        if isinstance(value, ast.Call) and value.args:
+            value = value.args[0]
+        return isinstance(value, ast.Attribute) and value.attr == "_run_load"
+
     for module in (diffusion, sd_cpp_backend, video_backend):
         tree = ast.parse(inspect.getsource(module))
         starters = [
@@ -728,10 +730,7 @@ def test_every_model_load_worker_is_pinned_to_its_account():
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and any(
-                keyword.arg == "target"
-                and isinstance(keyword.value, ast.Attribute)
-                and keyword.value.attr == "_run_load"
-                for keyword in node.keywords
+                keyword.arg == "target" and _is_run_load(keyword.value) for keyword in node.keywords
             )
         ]
         assert starters, module.__name__

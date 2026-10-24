@@ -13,10 +13,11 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useMemo, useState } from "react";
+import { sortProjectsByActivity } from "../hooks/use-chat-projects";
 import { useChatActive } from "../runtime-provider";
 import type { ProjectRecord } from "../types";
 
-/** Rows before "View all projects". The list arrives newest first, so these are the recent ones. */
+/** Rows before "View all projects": the most recently used. */
 const RECENT_PROJECT_LIMIT = 6;
 
 export function ProjectSwitcher({
@@ -39,12 +40,12 @@ export function ProjectSwitcher({
 }): ReactElement {
   // A switcher, not the list: the rest are a click away under "View all projects".
   const recentProjects = useMemo(() => {
-    const recent = projects.slice(0, RECENT_PROJECT_LIMIT);
+    // The server lists by edit time, which a chat never moves: most recently used is what recent means.
+    const recent = sortProjectsByActivity(projects).slice(0, RECENT_PROJECT_LIMIT);
     if (!currentProject || recent.some((p) => p.id === currentProject.id)) {
       return recent;
     }
-    // A project's own updatedAt only moves when it is edited, so the open one is often not among
-    // the newest. It keeps its place here: without it the switcher shows no tick at all.
+    // The open one keeps its place: without it the switcher shows no tick at all.
     return [...recent.slice(0, RECENT_PROJECT_LIMIT - 1), currentProject];
   }, [projects, currentProject]);
   const showLoadingRow = isLoading && projects.length === 0;
@@ -69,7 +70,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-[10px] pl-3 pr-2.5 transition-colors hover:bg-nav-surface-hover data-[state=open]:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
@@ -96,7 +97,7 @@ export function ProjectSwitcher({
         side="bottom"
         align="start"
         sideOffset={0}
-        className="unsloth-plus-menu ring-0 min-w-56 max-w-72 font-heading"
+        className="min-w-56 max-w-72"
       >
         {/* Scroll the list here, not the container, so the rounded corners on
             the scrollbar side are not squared off. */}

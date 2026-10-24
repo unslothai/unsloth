@@ -143,15 +143,19 @@ def hidream_te4_kwargs(
                 )
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
-    text_encoder_4 = LlamaForCausalLM.from_pretrained(
-        HIDREAM_LLAMA_REPO,
-        output_hidden_states = True,
-        output_attentions = True,
-        torch_dtype = dtype,
-        token = hf_token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
-    )
+    from .safetensors_pread import pread_safetensors
+
+    # loaded before the pipeline's own scope: a 16 GB bf16 Llama converted on Windows reads through pread too
+    with pread_safetensors(convert_to = dtype):
+        text_encoder_4 = LlamaForCausalLM.from_pretrained(
+            HIDREAM_LLAMA_REPO,
+            output_hidden_states = True,
+            output_attentions = True,
+            torch_dtype = dtype,
+            token = hf_token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
     if fp8_engages:
         try:
             from .diffusion_precision import _cast_fp8

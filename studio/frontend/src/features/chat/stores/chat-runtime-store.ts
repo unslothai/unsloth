@@ -18,6 +18,7 @@ import { persistReasoningEnabled } from "@/features/model-picker/components/mode
 import {
   loadedContextFields,
   type MlxKvQuant,
+  type MlxOffload,
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
@@ -121,6 +122,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
   ResearchMcpSource,
@@ -2623,13 +2625,15 @@ type ChatRuntimeStore = {
   alwaysAllowToolsBySession: Map<string, Set<string>>;
   /** Calls paused for allow/deny, keyed by scoped frontend tool-call id. Each carries the
    *  backend `approvalId` and the run's `sessionId` so the exact call resolves;
-   *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
+   *  `autoAllowKey` scopes "Always allow" per chat; `threadId` names the asking chat ("" for a
+   *  run with no saved chat yet). Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
     {
       approvalId: string;
       sessionId: string;
       autoAllowKey: string;
+      threadId: string;
       imageDisclosure?: ImageDisclosure;
     }
   >;
@@ -2662,6 +2666,17 @@ type ChatRuntimeStore = {
   mlxKvQuantNote: string | null;
   mlxInt8Prefill: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
+   *  fraction it applied (null = none), and why a request was not applied. */
+  mlxPleOffload: MlxOffload;
+  mlxExpertOffload: MlxOffload;
+  loadedMlxPleOffloadRequested: MlxOffload;
+  loadedMlxExpertOffloadRequested: MlxOffload;
+  loadedMlxPleOffload: number | null;
+  loadedMlxExpertOffload: number | null;
+  mlxPleOffloadReason: string | null;
+  mlxExpertOffloadReason: string | null;
+  loadedMlxOffloadDiskBytes: number | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -2908,6 +2923,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    threadId: string,
     imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
@@ -4623,6 +4639,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantNote: null,
   mlxInt8Prefill: false,
   loadedMlxInt8PrefillRequested: false,
+  mlxPleOffload: null,
+  mlxExpertOffload: null,
+  loadedMlxPleOffloadRequested: null,
+  loadedMlxExpertOffloadRequested: null,
+  loadedMlxPleOffload: null,
+  loadedMlxExpertOffload: null,
+  mlxPleOffloadReason: null,
+  mlxExpertOffloadReason: null,
+  loadedMlxOffloadDiskBytes: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -5139,6 +5164,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      // Its parked calls too, or the row never trades its spinner for the approval mark.
+      if (moved.runningByThreadId) {
+        const confirmations = adoptFirstTurnConfirmations(
+          state.toolConfirmations,
+          threadId,
+        );
+        if (confirmations) moved.toolConfirmations = confirmations;
+      }
       return Object.keys(moved).length > 0 ? moved : state;
     }),
   runKeyForOwner: (fallbackKey, owner) => {
@@ -5616,6 +5649,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantNote: null,
       mlxInt8Prefill: false,
       loadedMlxInt8PrefillRequested: false,
+      mlxPleOffload: null,
+      mlxExpertOffload: null,
+      loadedMlxPleOffloadRequested: null,
+      loadedMlxExpertOffloadRequested: null,
+      loadedMlxPleOffload: null,
+      loadedMlxExpertOffload: null,
+      mlxPleOffloadReason: null,
+      mlxExpertOffloadReason: null,
+      loadedMlxOffloadDiskBytes: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
@@ -6030,12 +6072,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     approvalId,
     sessionId,
     autoAllowKey,
+    threadId,
     imageDisclosure,
   ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
+        [toolCallId]: {
+          approvalId,
+          sessionId,
+          autoAllowKey,
+          threadId,
+          imageDisclosure,
+        },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tool the provider ran must survive into the next turn's prompt.
-
-Hosted and local tools coexist in one turn: Gemini can return a code-execution
-result while asking for a local ``web_search``. The hosted output reaches the
-client as its own ``_toolEvent`` frame, but the loop rebuilds the assistant
-message from the text and tool calls it saw, so that output was absent from the
-replayed conversation and the model answered from the local results alone.
-
-Unsloth's own tool events carry a top-level ``type`` and never appear as
-``_toolEvent``, so local results are not replayed twice.
-"""
+"""Hosted tool results must survive into the next prompt; the loop rebuilt messages without them."""
 
 from __future__ import annotations
 
@@ -92,8 +82,7 @@ def _finish(reason: str = "tool_calls") -> str:
 
 class FakeTransport:
     heals_text_tool_calls = False
-    # The OAI-compat transport sanitizes at ingress, so the loop must not strip
-    # the provider's own _toolEvent frames.
+    # OAI-compat transport sanitizes at ingress, so the loop must not strip provider _toolEvent frames.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -189,9 +178,6 @@ def _replayed(transport) -> str:
     return json.dumps(transport.requests[1]["messages"])
 
 
-# ── the gap ──────────────────────────────────────────────────────────
-
-
 def test_a_hosted_result_reaches_the_follow_up_request(executed):
     """The provider searched, then asked us to run a tool. Both must survive."""
     transport = FakeTransport(
@@ -248,9 +234,6 @@ def test_the_models_own_prose_is_kept_alongside(executed):
     assert "hosted output" in replayed
 
 
-# ── what must not be replayed ────────────────────────────────────────
-
-
 def test_a_repeated_end_event_is_recorded_once(executed):
     transport = _one_turn_transport(
         _tool_end("once only"),
@@ -281,10 +264,7 @@ def test_a_start_event_alone_adds_nothing(executed):
 
 @pytest.mark.parametrize("result", [None, 42, {"a": 1}])
 def test_a_malformed_result_is_ignored(executed, result):
-    """A non-string is a malformed frame rather than an outcome, so it records
-    nothing. An empty string IS an outcome, covered by
-    ``test_a_silent_hosted_execution_still_reaches_the_next_turn``.
-    """
+    """A non-string result is a malformed frame and records nothing; an empty string still counts."""
     transport = _one_turn_transport(
         _tool_end(result),
         _text("hello"),
@@ -303,11 +283,7 @@ def test_an_event_without_a_call_id_is_ignored(executed):
 
 
 def test_a_frontend_image_sentinel_is_not_replayed(executed):
-    """__IMAGES__ carries a full data URI for the card, not for the model.
-
-    Replaying it verbatim puts megabytes of base64 into the next request. Local
-    results already go through the same stripper.
-    """
+    """__IMAGES__ carries a data URI for the card, not the model; replaying it floods the next request."""
     huge = "data:image/png;base64," + ("A" * 20000)
     transport = _one_turn_transport(
         _tool_end(
@@ -322,10 +298,7 @@ def test_a_frontend_image_sentinel_is_not_replayed(executed):
 
 
 def test_the_start_events_operation_labels_the_result(executed):
-    """tool_end generally omits tool_name, and for Gemini code execution the code
-    that ran is only in the start event, so a result recorded alone replays as an
-    unlabelled value.
-    """
+    """The label comes from tool_start: tool_end omits tool_name and Gemini code is only in the start."""
     transport = _one_turn_transport(
         _hosted_event(
             {
@@ -347,11 +320,7 @@ def test_the_start_events_operation_labels_the_result(executed):
 
 
 def test_a_generated_image_is_noted_without_its_bytes(executed):
-    """image_generation reports an empty result and carries the picture apart.
-
-    Requiring non-empty text dropped it entirely, and replaying the base64 is
-    the sentinel mistake again, so record only that it happened.
-    """
+    """An image_generation result is empty text, so record only that it happened, never the base64."""
     transport = _one_turn_transport(
         _hosted_event(
             {
@@ -389,15 +358,8 @@ def test_a_turn_with_no_hosted_tool_replays_exactly_as_before(executed):
     assert "result]" not in replayed
 
 
-# ── image-only, oversized and stalled turns ──────────────────────────
-
-
 def test_a_plot_with_no_stdout_is_still_reported(executed):
-    """Gemini code execution can return nothing but the image sentinel.
-
-    Stripping it leaves an empty string and image_b64 is unset on that path, so
-    unnoticed the entry looks empty and the follow-up is told nothing was made.
-    """
+    """A plot with no stdout strips to an empty string and must still be reported, not skipped."""
     transport = _one_turn_transport(
         _hosted_event(
             {
@@ -433,11 +395,7 @@ def test_a_large_hosted_result_is_capped(executed):
 
 
 def test_a_stalled_turn_keeps_its_hosted_result(executed):
-    """The model searched, then only said what it was about to do.
-
-    That takes the stall reprompt, which returns to the provider from above the
-    main replay, so the request could no longer see the search output.
-    """
+    """The stall reprompt skips the main replay, so it must carry the hosted search result too."""
     transport = FakeTransport(
         [
             [
@@ -455,12 +413,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
 
 
 def test_a_stalled_continuation_stays_one_assistant_turn(executed):
-    """The stalled turn's replay must merge into a resumed partial.
-
-    The partial plus what the model just added are one turn. Appending leaves
-    two assistant messages in a row, splitting a sentence across a turn boundary
-    and getting rejected by a server that enforces role alternation.
-    """
+    """A resumed stall merges into the partial as one assistant turn, since two in a row get rejected."""
     transport = FakeTransport(
         [
             [
@@ -513,16 +466,8 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
     assert "gradient checkpointing lands" in resumed[0]["content"]
 
 
-# ── the label is the operation, not the transport's plumbing ─────────
-
-
 def test_gemini_code_execution_replays_the_code_not_its_thought_signature(executed):
-    """Gemini stows the native part on the same `arguments` the header renders.
-
-    ``arguments.google.native_part`` replays Gemini's required history shape and
-    carries an opaque ``thoughtSignature``. As prose that is a kilobyte of base64
-    cut mid-token, pushing the header to its cap on every hosted execution.
-    """
+    """Replay shows the Gemini code, not the thoughtSignature that shares its arguments with the header."""
     signature = "SIG" + ("X" * 3000)
     transport = FakeTransport(
         [
@@ -579,12 +524,7 @@ def test_gemini_code_execution_replays_the_code_not_its_thought_signature(execut
 
 
 def test_openai_image_generation_replays_the_prompt_it_actually_used(executed):
-    """The prompt is only on the end event; the start opens with an empty one.
-
-    OpenAI emits ``image_generation_call`` before it knows the prompt, so reading
-    the start alone replayed ``"prompt": ""``. Those arguments also carry the
-    paired reasoning item, multi-kilobyte on a zero-data-retention org.
-    """
+    """The image prompt arrives only on the end event; reading the start alone replays an empty prompt."""
     plumbing = {
         "openai_image_generation_call_id": "ig_abc",
         "openai_response_id": "resp_123",
@@ -627,16 +567,8 @@ def test_openai_image_generation_replays_the_prompt_it_actually_used(executed):
     assert "BBBB" not in replayed
 
 
-# ── the cap and the envelope are the local ones, not copies ──────────
-
-
 def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
-    """An install that lowers the local cap lowers the hosted one too.
-
-    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` shrinks what a result may occupy on a
-    smaller context; a hosted copy held to its own hard-coded 16k would ignore
-    that on exactly those installs.
-    """
+    """Hosted results obey the configured local cap, so UNSLOTH_TOOL_RESULT_MAX_CHARS governs both."""
     monkeypatch.setattr(loop_mod.tools_module, "_MAX_OUTPUT_CHARS", 500)
     transport = _one_turn_transport(
         _tool_end("D" * 4000, tool_call_id = "hosted-1", tool_name = "code_execution"),
@@ -648,12 +580,7 @@ def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
 
 
 def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
-    """Only the sandbox tools emit the ``__FILES__`` envelope.
-
-    A fetched page ending in a well formed one is content, so the stripper is
-    given the tool's name, as the local path does. Otherwise the tail of the
-    document is dropped before the follow-up turn sees it.
-    """
+    """Only sandbox tools emit __FILES__, so a fetched page that ends with one keeps its tail."""
     page = 'How the envelope looks\n__FILES__:[{"name": "plot.png", "size": 12}]'
     transport = _one_turn_transport(
         _hosted_event(
@@ -678,16 +605,8 @@ def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
     assert "plot.png" in replayed, "the page's own __FILES__ line was stripped"
 
 
-# ── a call that ran is a call the next turn hears about ──────────────
-
-
 def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):
-    """Gemini reports code that printed nothing as an empty result.
-
-    ``codeExecutionResult.output`` is "" for a run that only wrote a file, and
-    the code is carried on the tool_start alone, never as assistant text, so
-    skipping an empty result drops the whole execution.
-    """
+    """An empty Gemini output is still an execution, since its code exists only on tool_start."""
     transport = _one_turn_transport(
         _hosted_event(
             {
@@ -706,11 +625,7 @@ def test_a_silent_hosted_execution_still_reaches_the_next_turn(executed):
 
 
 def test_a_start_with_no_end_is_still_left_out(executed):
-    """The other half of the same rule: a call that never finished says nothing.
-
-    A stream cut between the halves leaves a start alone, and reporting that
-    would tell the next turn an execution completed that never did.
-    """
+    """A tool_start with no matching end is left out, or the next turn would think it completed."""
     transport = _one_turn_transport(
         _hosted_event(
             {
@@ -728,12 +643,7 @@ def test_a_start_with_no_end_is_still_left_out(executed):
 
 
 def test_a_long_hosted_argument_says_it_was_cut(executed):
-    """Anthropic passes the model's whole tool input through as arguments.
-
-    A ``create`` carries the entire file body there and answers only "Created",
-    so the label is the sole record of what was written and a silent cut reads
-    as the whole of it.
-    """
+    """Anthropic tool input carries the whole file body, so a cut argument must say it was truncated."""
     body = "# line\n" * 600
     transport = _one_turn_transport(
         _hosted_event(
@@ -758,12 +668,7 @@ def test_a_long_hosted_argument_says_it_was_cut(executed):
 
 
 def test_a_stalled_turn_keeps_its_thought_signature(executed):
-    """Gemini 3 will not take its own turn back without the signature.
-
-    The outbound translator pins the ``thoughtSignature`` back on from
-    ``assistant.extra_content`` and nowhere else. The stall reprompt returns to
-    the provider from above the main replay, so it has to carry it too.
-    """
+    """Gemini 3 will not take a turn back without thoughtSignature, so the stall reprompt must carry it."""
     signature = "SIGNATURE-abc123"
     transport = FakeTransport(
         [
@@ -801,14 +706,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
 
 
 def test_an_empty_argument_the_model_meant_survives(executed):
-    """Anthropic's text editor deletes by replacing with the empty string.
-
-    ``str_replace`` with ``new_str: ""`` is an intentional deletion, and the
-    schema allows it, so dropping the key leaves the next turn unable to tell a
-    deletion from a replacement whose value was never captured. The provisional
-    empty prompt this once guarded against is overwritten by the end event
-    anyway, since the two halves merge in order.
-    """
+    """An empty str_replace new_str is a real deletion, so dropping the empty key would hide it."""
     transport = FakeTransport(
         [
             [
@@ -841,11 +739,7 @@ def test_an_empty_argument_the_model_meant_survives(executed):
 
 
 def test_a_page_that_writes_the_image_marker_is_not_an_image(executed):
-    """The sentinel is an envelope, not any line mentioning the marker.
-
-    A fetched page documenting the output protocol contains the literal text.
-    Reading that as a picture reports an image the turn never produced.
-    """
+    """The image sentinel is an envelope, so a fetched page that quotes the marker is not an image."""
     transport = _one_turn_transport(
         _hosted_event(
             {

@@ -85,7 +85,7 @@ test("the fields reader unquotes, keeps JSON whole and skips non-fields like re_
   ]);
 });
 
-test("Clip skip, CFG rescale, variation seed and hires keys are read and named as not applied", () => {
+test("Clip skip, CFG rescale and variation seed are named as not applied; hires keys are read", () => {
   const r = parseA1111Parameters(
     "a cat\nSteps: 25, Sampler: Euler a, CFG scale: 5, Seed: 1, Size: 1024x1024, Clip skip: 3, CFG Rescale: 0.7, Variation seed: 99, Variation seed strength: 0.3, Hires upscale: 1.5, Hires steps: 10, Hires upscaler: R-ESRGAN 4x+, Denoising strength: 0.4, VAE: sdxl_vae.safetensors, ADetailer model: face_yolov8n.pt",
   );
@@ -94,21 +94,22 @@ test("Clip skip, CFG rescale, variation seed and hires keys are read and named a
   assert.equal(r.cfg_rescale, 0.7);
   assert.equal(r.variation_seed, 99);
   assert.equal(r.variation_strength, 0.3);
-  assert.deepEqual(r.hires, {
-    "Hires upscale": "1.5",
-    "Hires steps": "10",
-    "Hires upscaler": "R-ESRGAN 4x+",
-  });
+  // The hires keys map onto Hires fix; the Denoising strength beside them is its denoise, not img2img.
+  assert.equal(r.hires, undefined);
+  assert.equal(r.hires_scale, 1.5);
+  assert.equal(r.hires_steps, 10);
+  assert.equal(r.hires_upscaler, "R-ESRGAN 4x+");
+  assert.equal(r.hires_denoise, 0.4);
   assert.equal(r.strength, undefined);
   assert.equal(r.workflow, undefined);
   assert.deepEqual(importNotApplied(r), [
     "Clip skip 3",
     "CFG rescale 0.7",
     "variation seed 99 (strength 0.3)",
-    "hires fix (Hires upscale: 1.5, Hires steps: 10, Hires upscaler: R-ESRGAN 4x+)",
     "VAE: sdxl_vae.safetensors",
-    "ADetailer model: face_yolov8n.pt",
   ]);
+  // ADetailer's keys restore Studio's Detailer instead of being named as not applied.
+  assert.equal((r.detailer as { model?: string } | undefined)?.model, "face_yolov8n.pt");
   assert.deepEqual(unknownRecipeKeys(r), []);
   for (const label of [
     "RescaleCFG: 0.5",
@@ -288,7 +289,7 @@ test("the Images page wires paste into the same restore path as a drop", () => {
   );
   assert.match(
     page,
-    /\.\.\.importNotApplied\(\n\s+recipe,\n\s+status\?\.loaded \? status\.family : null,\n\s+Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\),\n\s+\),/,
+    /\.\.\.importNotApplied\(\n\s+recipe,\n\s+status\?\.loaded \? status\.family : null,\n\s+Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\),\n\s+sdCaps,\n\s+\),/,
   );
   assert.match(
     page,

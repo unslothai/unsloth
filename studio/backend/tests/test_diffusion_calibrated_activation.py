@@ -21,7 +21,7 @@ from core.inference.diffusion_memory import (
     plan_diffusion_memory,
 )
 
-# Planner inputs logged by real loads (MiB): transformer + companions, companions, text encoders.
+# Planner inputs (MiB) logged by real loads.
 QWEN21_GGUF = dict(model_dense_mib = 17_897, companion_dense_mib = 10_247, text_encoder_dense_mib = 8_959)
 ZIMAGE_BF16 = dict(model_dense_mib = 31_326, companion_dense_mib = 7_820, text_encoder_dense_mib = 7_629)
 FLUX1_BF16 = dict(model_dense_mib = 32_184, companion_dense_mib = 9_478, text_encoder_dense_mib = 9_318)
@@ -249,7 +249,43 @@ def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transforme
     act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
     assert _plan(16, QWEN21_GGUF, act) == _plan(16, QWEN21_GGUF, None)
     plan = _plan(22, QWEN21_GGUF, act)
-    assert plan.offload_policy == OFFLOAD_MODEL and plan.vae_tiling is False
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+
+
+# Real max-tier load of qwen-image-2.1-Q8_0.gguf, transformer_quant=none (plain GGUF, no offload groups).
+QWEN21_Q8_GGUF = dict(
+    model_dense_mib = 17_210, companion_dense_mib = 9_560, text_encoder_dense_mib = 8_916
+)
+# Real max-tier load of unsloth/Qwen-Image-2.1-GGUF (auto: INT8 DiT + INT8 TE).
+QWEN21_AUTO_INT8 = dict(
+    model_dense_mib = 18_128, companion_dense_mib = 10_680, text_encoder_dense_mib = 9_345
+)
+
+
+@pytest.mark.parametrize(
+    "total_gib, used_mib, sizes",
+    [
+        (22, 1_229, QWEN21_GGUF),
+        (24, 2_400, QWEN21_GGUF),
+        (24, 2_700, QWEN21_GGUF),
+        (24, 1_229, QWEN21_AUTO_INT8),
+        (24, 3_000, QWEN21_AUTO_INT8),
+        # tightest cells: a capped B200 rendered 2048x2048 here without OOM
+        (22, 1_850, QWEN21_Q8_GGUF),
+        (24, 3_850, QWEN21_Q8_GGUF),
+    ],
+)
+def test_a_resident_transformer_is_not_demoted_for_the_2048_worst_case(total_gib, used_mib, sizes):
+    # Demoting would upload the whole transformer per 1024 render (~1.7x slower on a capped B200).
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
+    total = int(total_gib * GIB)
+    card = DeviceMemory("cuda", "cuda", "discrete_vram", total - used_mib, total)
+    kwargs = dict(target = _target(), device_memory = card, runtime_headroom_mib = 8192, **sizes)
+    flat = plan_diffusion_memory(**kwargs)
+    assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_transformer is False
+    plan = plan_diffusion_memory(calibrated_activation = act, **kwargs)
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+    assert not any("2048 denoise" in reason for reason in plan.reasons)
 
 
 def test_the_shipped_qwen_image_21_figures_never_stream_the_transformer_on_16gb():
@@ -349,7 +385,6 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
     def on(dtype):
         return types.SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = dtype)
 
-    # Whether Z-Image promotes depends on the installed diffusers matching its fp16 guard recipe: pin both outcomes.
     monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: True)
     assert d._calibrated_activation(zimage, on(torch.float16)) is None
     monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: False)
@@ -360,7 +395,6 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
 
 
 def test_a_reference_family_the_guard_cannot_size_keeps_the_flat_plan(monkeypatch):
-    # Klein's references are unsized by the guard (no reference_resolutions); Qwen-Image-2.1 declares them.
     import core.inference.diffusion as d
     from core.inference.diffusion_families import detect_family
 
@@ -398,13 +432,13 @@ def _resident_after_placement(plan, sizes):
 def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted_tier(
     max_speed, tile_side, sizes
 ):
-    # Resident transformer lowers the free VRAM the guard reads; the 2048 canvas must still run tiled, not 400.
     act = calibrated_image_activation("qwen-image-2.1", max_speed = max_speed)
     promoted = 0
     for step in range(10 * 4, 48 * 4 + 1):
         gib = step / 4
         plan = _plan(gib, sizes, act)
-        if "calibrated_headroom_mib" not in plan.estimates:
+        resident = plan.offload_policy == OFFLOAD_GROUP and not plan.stream_transformer
+        if "calibrated_headroom_mib" not in plan.estimates and not resident:
             continue
         promoted += 1
         total = int(gib * GIB)
@@ -448,7 +482,7 @@ def _fits(verdict):
     )
 
 
-# Six 512px references at the Qwen-Image-2.1 condition weight: ~5980 MiB untiled, under the flat 8192 MiB plan.
+# ~5980 MiB untiled at the Qwen-Image-2.1 condition weight, under the flat 8192 MiB plan.
 SIX_REFS = dict(width = 512, height = 512, condition_pixels = int(6 * 512 * 512 * 0.32))
 
 
@@ -456,7 +490,7 @@ def test_references_on_a_calibrated_tier_are_checked_against_the_free_budget():
     total = 16 * GIB
     free = 4_266 + 1_229
     flat = _guard(free, total, calibrated = False, **SIX_REFS)
-    assert flat.action != dm.ACTIVATION_REFUSE  # the flat plan budgeted 8192 MiB for it
+    assert flat.action != dm.ACTIVATION_REFUSE
     verdict = _guard(free, total, calibrated = True, **SIX_REFS)
     assert verdict.action == dm.ACTIVATION_REFUSE
     assert "balanced memory mode" in verdict.message
@@ -529,7 +563,6 @@ def test_unconditioned_requests_on_a_calibrated_tier_are_unchanged(free, tile_si
     ],
 )
 def test_flat_tiers_ignore_the_controlnet_flag(free, kw):
-    # Flat tiers keep today's verdict: the flat plan already budgets conditioned work.
     base = _guard(free, 16 * GIB, calibrated = False, **dict(kw))
     with_cn = _guard(free, 16 * GIB, calibrated = False, controlnet = True, **dict(kw))
     assert with_cn.action == base.action

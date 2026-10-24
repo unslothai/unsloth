@@ -150,6 +150,7 @@ from unsloth.models._attn_mask_compat import (
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
+from ..kernels.rope_embedding import decode_rope_inplace
 from ..kernels.fused_add_rms_layernorm import (
     fast_add_rms_layernorm_inference,
     fast_add_rms_layernorm_inference_ok,
@@ -763,24 +764,26 @@ def LlamaAttention_fast_forward_inference(
     self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)  # +1 slack
     cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index or 0)
 
-    cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
-    sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+    # One in-place launch for both rotations; False (nothing written) where it does not apply.
+    if not decode_rope_inplace(Qn, Kn, cos, sin, position_ids):
+        cos = cos[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
+        sin = sin[position_ids].unsqueeze(1).to(device = Qn.device, dtype = Qn.dtype)
 
-    h = self.half_head_dim
+        h = self.half_head_dim
 
-    RH_Q = self.RH_Q
-    RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
-    RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    RH_Q[:, :, :, :h].neg_()
-    Qn *= cos
-    Qn.addcmul_(RH_Q, sin)
+        RH_Q = self.RH_Q
+        RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
+        RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
+        RH_Q[:, :, :, :h].neg_()
+        Qn *= cos
+        Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[:, :n_kv_heads, :, :]
-    RH_K[:, :, :, :h] = Kn[:, :, :, h:]
-    RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    RH_K[:, :, :, :h].neg_()
-    Kn *= cos
-    Kn.addcmul_(RH_K, sin)
+        RH_K = RH_Q[:, :n_kv_heads, :, :]
+        RH_K[:, :, :, :h] = Kn[:, :, :, h:]
+        RH_K[:, :, :, h:] = Kn[:, :, :, :h]
+        RH_K[:, :, :, :h].neg_()
+        Kn *= cos
+        Kn.addcmul_(RH_K, sin)
 
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
     self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
@@ -1057,6 +1060,7 @@ def LlamaAttention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         prefix_seg_info = _pg_seg,
@@ -2370,6 +2374,16 @@ class _PerDeviceRopeCache:
         position_ids = None,
         seq_len = None,
     ):
+        if position_ids is not None and seq_len is None:
+            # Stock transformers call (a plain model built after the patch): per-position cos/sin.
+            rows = int(position_ids.max()) + 1
+            if rows > self.current_rope_size:
+                self._grow_rope_cache(rows, x.dtype)
+            self._need_rope_rows(rows)
+            device_index = self._ensure_rope_cache(x.device.index)
+            cos, sin = self._slice_rope_cache(device_index, rows)
+            position_ids = position_ids.to(cos.device)
+            return cos[position_ids].to(x.dtype), sin[position_ids].to(x.dtype)
         if seq_len is not None and seq_len > self.current_rope_size:
             self._grow_rope_cache(seq_len, x.dtype)
         self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
@@ -2891,6 +2905,19 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
     return True
 
 
+def _lora_variant_note(model, adapter) -> str:
+    """Summary note when the adapter is a PEFT LoRA variant: its layers run PEFT's forward at runtime."""
+    for module in model.modules():
+        variants = module.__dict__.get("lora_variant")
+        if variants and adapter in variants:
+            name = type(variants[adapter]).__name__
+            return (
+                f" The adapter is a PEFT LoRA variant ({name}), so its layers run PEFT's own forward "
+                "instead of the fused LoRA kernels."
+            )
+    return ""
+
+
 def _fused_lora_skip_reason(
     lora_dropout,
     bias,
@@ -3075,6 +3102,43 @@ def _record_pre_patch_changes(snapshot):
             for name in set(saved) | set(now):
                 if now.get(name, _MISSING) is not saved.get(name, _MISSING):
                     changed_attrs.setdefault((cls, name), saved.get(name, _MISSING))
+
+
+def _gate_pre_patch_to_unsloth_models(snapshot):
+    """pre_patch edits transformers classes; run patched methods only on Unsloth-marked modules, else
+    the pre-patch original (a plain model built later lacks the state the fast paths need)."""
+    for modeling in snapshot:
+        record = vars(modeling).get("_unsloth_pre_patch_originals")
+        if record is None:
+            continue
+        for (cls, name), original in record[1].items():
+            fast = vars(cls).get(name, _MISSING)
+            if name.startswith("__") or not inspect.isfunction(fast):
+                continue
+            if getattr(fast, "_unsloth_gated", False):
+                continue
+            if original is not _MISSING and not callable(original):
+                continue
+            setattr(cls, name, _gated_method(cls, name, fast, original))
+
+
+def _gated_method(cls, name, fast, original):
+    @functools.wraps(fast)
+    def gated(self, *args, **kwargs):
+        if getattr(self, "_unsloth_fast_path", False):
+            return fast(self, *args, **kwargs)
+        if original is _MISSING:
+            return getattr(super(cls, self), name)(*args, **kwargs)
+        return original(self, *args, **kwargs)
+
+    gated._unsloth_gated = True
+    return gated
+
+
+def mark_unsloth_fast_path(model):
+    """Opt every module of an Unsloth-loaded model into the patched forwards."""
+    for module in model.modules():
+        module._unsloth_fast_path = True
 
 
 def restore_transformers_family(model_types):
@@ -3356,6 +3420,7 @@ class FastLlamaModel:
         snapshot = _snapshot_transformers_modules(model_patcher)
         model_patcher.pre_patch()
         _record_pre_patch_changes(snapshot)
+        _gate_pre_patch_to_unsloth_models(snapshot)
         # A download counter, to see whether environments are breaking or HF is down.
         get_statistics(kwargs.get("local_files_only", False))
 
@@ -4104,6 +4169,7 @@ class FastLlamaModel:
             **_tokenizer_cache_kwargs,
         )
 
+        mark_unsloth_fast_path(model)
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
         set_deepspeed_moe_leaf_modules(model)
@@ -4368,6 +4434,9 @@ class FastLlamaModel:
         prefetch_depth = prefetch_depth_arg(kwargs)
         # A pre-wrapped model returns early below, before patch_peft_model; reject before PEFT injects layers.
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
+        # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
+        if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
+            layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
@@ -4442,6 +4511,10 @@ class FastLlamaModel:
                     layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
             peft_config = model.peft_config["default"].to_dict()
+            # A scalar-made adapter keeps the int in to_dict(); compare as a list.
+            _stored_layers = peft_config.get("layers_to_transform")
+            if isinstance(_stored_layers, int) and not isinstance(_stored_layers, bool):
+                peft_config["layers_to_transform"] = [_stored_layers]
             _same_layered = (
                 isinstance(target_modules, str)
                 and layers_to_transform is not None
@@ -5212,7 +5285,7 @@ class FastLlamaModel:
 
         unfused_reason = _fused_lora_skip_reason(
             lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
-        )
+        ) + _lora_variant_note(model, active_adapter)
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
@@ -5235,6 +5308,7 @@ class FastLlamaModel:
         # Since transformers 4.53, must turn off explicitly
         for module in model.modules():
             module.max_seq_length = max_seq_length
+        mark_unsloth_fast_path(model)
 
         internal_model = model
         while hasattr(internal_model, "model"):

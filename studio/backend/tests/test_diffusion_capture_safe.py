@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for ``diffusion_capture_safe.py`` (HunyuanImage-2.1's capture-safe forward).
-
-CPU only. The rewrite is checked against synthetic modules carrying the stock merge block in both
-LoRA styles diffusers has shipped (inline in 0.36, a decorator from 0.37), against a drifted block,
-and, when the installed diffusers has the class, against a tiny random HunyuanImage transformer.
-"""
+"""CPU checks of the capture-safe rewrite against stock and drifted merge blocks, both LoRA styles."""
 
 from __future__ import annotations
 
@@ -143,7 +138,7 @@ def _reference_merge(e1, m1, e2, m2):
 
 
 _MASKS = [
-    # (mllm mask rows, byt5 mask rows): right-padded, interleaved, all padding, all valid
+    # (mllm mask rows, byt5 mask rows)
     ([[1, 1, 1, 0, 0, 0, 0]], [[1, 1, 0, 0, 0]]),
     ([[1, 0, 1, 1, 0, 0, 1], [0, 0, 0, 0, 0, 0, 1]], [[0, 1, 0, 1, 1], [0, 0, 0, 0, 0]]),
     ([[0] * 7, [1] * 7], [[1] * 5, [0] * 5]),
@@ -195,7 +190,6 @@ def _aten_ops(fn):
     return rec.ops
 
 
-# Ops whose output shape depends on tensor VALUES: each one needs the count on the host.
 _DATA_DEPENDENT = (
     "aten.index.Tensor",
     "aten.nonzero",
@@ -243,9 +237,7 @@ def test_rewrite_matches_the_stock_forward_and_keeps_lora_handling(
     got = safe(obj, **kw)
     assert torch.equal(want[0], got[0])
     assert torch.equal(want[1], got[1])
-    # LoRA scaling ran on both paths: the decorator re-applied, or the inline code kept.
     assert mod.SCALES == [0.5, 0.5]
-    # The byt5-free call skips the block on both paths.
     kw2 = dict(encoder_hidden_states = kw["encoder_hidden_states"], encoder_attention_mask = m1)
     assert torch.equal(cls.forward(obj, **kw2)[0], safe(obj, **kw2)[0])
 

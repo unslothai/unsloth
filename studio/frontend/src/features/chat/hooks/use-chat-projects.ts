@@ -26,6 +26,9 @@ let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
 const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
+// Mounts refetch only past this age: a gallery mounts a project menu per tile.
+const MOUNT_REVALIDATE_AFTER_MS = 5000;
+let projectsLoadedAt = 0;
 let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onChatActivity(): void {
@@ -46,6 +49,7 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
+  projectsLoadedAt = Date.now();
   if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
@@ -136,7 +140,9 @@ export function useChatProjects(): {
     // browser tab or API client.
     // one function per consumer: a shared reference is one DOM listener the first unmount would remove
     const onActivity = () => onChatActivity();
-    void refresh(projectsLoaded);
+    void refresh(
+      projectsLoaded && Date.now() - projectsLoadedAt > MOUNT_REVALIDATE_AFTER_MS,
+    );
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     return () => {
@@ -147,6 +153,16 @@ export function useChatProjects(): {
   }, []);
 
   return { projects, isLoading, hasLoaded };
+}
+
+/** Newest chat or own last edit: `updatedAt` alone moves only on a rename or instructions change. */
+export function projectActivityAt(project: ProjectRecord): number {
+  return Math.max(project.lastActivityAt ?? 0, project.updatedAt);
+}
+
+/** Most recently used first, the order the sidebar shows. */
+export function sortProjectsByActivity(projects: readonly ProjectRecord[]): ProjectRecord[] {
+  return [...projects].sort((a, b) => projectActivityAt(b) - projectActivityAt(a));
 }
 
 export async function createChatProject(
