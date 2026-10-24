@@ -200,7 +200,6 @@ def test_engagement_gates(monkeypatch):
 
 
 def test_an_offloaded_vae_engages_when_the_pipeline_executes_on_cuda(monkeypatch):
-    # Model / sequential offload park the VAE on the host between renders; its hooks onload it for the decode.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     pipe = _Pipe(_vae())
     assert vse.open_stream_encode(pipe, 8, engage = True) is None

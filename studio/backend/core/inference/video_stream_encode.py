@@ -562,8 +562,7 @@ def claim_stream(
 
 
 def _decodes_on_cuda(pipe: Any, decoder: Any, torch: Any) -> bool:
-    """The decoder runs on CUDA: resident there, or parked on the host by model / sequential offload (whose hooks
-    onload it for the decode) while the pipeline executes on CUDA. Raises StopIteration with no parameters."""
+    """True if resident on CUDA, or offloaded to host while the pipeline executes on CUDA."""
     if next(decoder.parameters()).device.type == "cuda":
         return True
     try:
@@ -580,8 +579,7 @@ def open_stream_encode(
     engage: bool,
     logger: Any = None,
 ) -> Optional[StreamEncode]:
-    """A session for an ``AutoencoderKLWan`` decoding on CUDA (resident or offloaded) with libx264 frame threads,
-    or None."""
+    """A session for an ``AutoencoderKLWan`` decoding on CUDA with libx264 frame threads, or None."""
     if not engage or not stream_encode_enabled():
         return None
     from .video_encode import frame_threads_enabled
