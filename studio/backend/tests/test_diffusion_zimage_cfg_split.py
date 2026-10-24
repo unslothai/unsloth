@@ -548,7 +548,7 @@ def test_studio_guard_passes_the_auto_step_cache_prediction():
     import ast
     import pathlib
 
-    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     calls = [
         node
@@ -745,4 +745,4 @@ def test_studio_guard_disengages_a_pending_auto_cache_before_pricing():
 
 def _diffusion_source():
     import pathlib
-    return pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    return pathlib.Path(zs.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")

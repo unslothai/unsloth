@@ -302,7 +302,8 @@ class BackgroundCompile:
                 with mode:
                     self.module(*args, **kwargs)
                 if torch.cuda.is_available():
-                    torch.cuda.synchronize()
+                    from .diffusion_cuda_graph import synchronize_outside_capture
+                    synchronize_outside_capture()
             self.compile_s = time.perf_counter() - t0
             self._finish("done")
             if self.logger is not None:
