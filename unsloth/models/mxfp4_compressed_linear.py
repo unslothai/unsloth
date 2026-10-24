@@ -698,8 +698,7 @@ def install_compressed_tensors_keep_packed() -> bool:
     return True
 
 
-# PEFT merge on a packed base: `weight.data += delta` would hit a throwaway decode, silently a no-op.
-# Merge densifies to an exact-decode nn.Linear (bytes kept aside); unmerging the last adapter restores them.
+# PEFT merge: weight.data += delta silently no-ops on packed base; merge densifies, unmerge restores
 
 _PACKED_STATE = "_unsloth_mxfp4_packed_state"
 

@@ -58,8 +58,7 @@ __all__ = [
 # transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
-# Default LoRA targets are the standard nn.Linear modules in the shared Gemma-4 backbone: the 128
-# MoE experts are fused 3D Parameters, not nn.Linear, so PEFT LoRA cannot target them.
+# The fused 3D MoE experts are not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
     "q_proj",
     "k_proj",
@@ -211,8 +210,7 @@ def _load_diffusion_config(
         from transformers import DiffusionGemma4Config
 
         aliased = DiffusionGemma4Config.from_dict(cd)
-        # Only this object knows the rewrite happened: the checkpoint on disk still says diffusion_gemma,
-        # so anything rebuilding the config from model_name hits the AutoConfig failure just caught.
+        # The checkpoint still says diffusion_gemma, so a rebuild from model_name would fail.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -318,8 +316,7 @@ class FastDiffusionModel:
         else:
             model_cls = _resolve_diffusion_model_class(config)
 
-        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
-        # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        # No subfolder: the pipeline loads every component; narrowing would leave unet, vae and text_encoder to Xet
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -379,8 +376,7 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped local_files_only off kwargs above, so the helper gets the resolved value rather
-            # than the caller's raw mapping.
+            # local_files_only was popped from kwargs above, so planner_hub_kwargs gets the resolved value, not the raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,

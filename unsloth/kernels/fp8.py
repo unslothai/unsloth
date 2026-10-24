@@ -333,8 +333,7 @@ def weight_dequant(
             raise ValueError(f"Incompatible shapes {x.shape = }, {s.shape = }")
         return y
     else:
-        # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
-        # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
+        # Block scales: the any-shape helper also gives fast_dequantize callers the pre-sm89 fallback.
         return _blockwise_weight_dequant_any_shape(
             x, s, getattr(s, "block_size", None) or [128, 128], dtype
         )
@@ -751,9 +750,7 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
-# fbgemm <= 1.3.0 silently corrupts blockwise outputs for some shapes (fixed in 1.4.0), so never
-# use it for block FP8. Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses);
-# torchao is ~3x faster than triton but 15-30% slower than fbgemm on H100.
+# fbgemm <= 1.3.0 silently corrupts blockwise outputs for some shapes, so never use it for block FP8; prefer fbgemm>=1.4.0 > torchao > triton.
 fp8_block_matmul = (
     torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
 )
@@ -1354,9 +1351,7 @@ _DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
 
 
 def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
-    # no_grad to match the triton kernel this stands in for, which builds no graph. Not
-    # torch.compiled: the callers are already compiled regions, and compiling the loop here
-    # unrolls one graph per chunk, which measured slower than eager.
+    # no_grad like the triton kernel; not compiled, since per-chunk graphs were slower than eager.
     with torch.no_grad():
         m, n = weight.shape
         out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
@@ -1586,10 +1581,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             weight = weight.contiguous()
 
         if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight, torch.float8_e4m3fn):
-            # Hidden dim not divisible by the activation block, or a dtype this device cannot compile
-            # (act_quant and the gemm below both take fp8e4nv pointers, so pre-sm89 must skip both):
-            # dequant plus plain matmul, using the un-expanded scale so a scalar per-tensor scale
-            # keeps the fast path in forward and backward.
+            # Odd hidden dim or pre-sm89 fp8 skips act_quant and gemm: dequant plus matmul, keeping the un-expanded scale
             W_deq = _blockwise_weight_dequant_any_shape(
                 weight, original_weight_scale, block_size, X.dtype
             )
@@ -2046,10 +2038,8 @@ if FbgemmFp8Linear is not None:
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
 
-# FP8GroupedLinear's fused grouped matmul has no autograd formula, so training backward fails:
-# dequant the frozen fp8 weight for a differentiable bmm while eval keeps the fused kernel. Gate
-# on self.training, not is_grad_enabled, so the grad-checkpoint no-grad forward and its recompute
-# match.
+# Fused grouped matmul has no backward: dequant for training, gate on self.training so
+# the checkpoint no-grad forward and its recompute match.
 if FP8GroupedLinear is not None:
     _fp8_grouped_forward_orig = FP8GroupedLinear.forward
 

@@ -348,8 +348,7 @@ def _config_uses_remote_code(config):
             for k in auto_map
         )
 
-    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
-    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    # Sub-configs nest: walk every level, since a remote child read as native breaks the compiler
     try:
         from transformers import PretrainedConfig as _config_class
     except Exception:
@@ -475,10 +474,7 @@ def _has_sequence_classification_architecture(config):
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
 
 
-# Most to least specific, so a config mapped under several gets its own family's
-# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
-# the class picked here decides processor selection (asserted by
-# test_every_class_the_resolver_can_return_takes_a_processor).
+# Each name must also be in vision.py _multimodal_auto_classes(), since it picks the processor
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
@@ -751,8 +747,7 @@ def _resolve_omni_auto_model(
                 return auto_class
         except Exception:
             continue
-    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
-    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    # Never fall back to the concrete class: no auto mapping holds it, so it downgrades to AutoTokenizer
     return None
 
 
@@ -3255,8 +3250,7 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
-                    # Only when the image-text class has no mapping, so anything that
-                    # resolves today keeps the class it resolves to now.
+                    # Only when the image-text class has no mapping, so anything that resolves today keeps the class it resolves to now.
                     if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)

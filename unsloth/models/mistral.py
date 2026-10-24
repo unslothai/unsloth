@@ -119,9 +119,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     sw_cfg = getattr(self.config, "sliding_window", None)
-    # A non-positive window means "no local attention", the same as absent: passing 0 through made
-    # window_size (0, 0) for flash and an all-false SDPA mask, since q_pos - (0 - 1) sits above the
-    # causal upper bound.
+    # A non-positive window means no local attention: 0 would give an all-false SDPA mask.
     if sw_cfg is None or sw_cfg == "null" or (isinstance(sw_cfg, int) and sw_cfg <= 0):
         sw = kv_seq_len
     else:
@@ -144,8 +142,7 @@ def MistralAttention_fast_forward(
             "window_size": window_size,
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; misuse (KV cache or padding mask) raises; None is default
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -158,10 +155,8 @@ def MistralAttention_fast_forward(
         training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
-        # The window the flash path already gets through window_size. SDPA needs it too, and not only in
-        # the branch above: training takes `elif self.training: pass`, so no 4D mask is synthesized, and
-        # with xformers off and flash absent every sequence past config.sliding_window silently attended
-        # its whole causal history.
+        # SDPA needs the window too: training builds no 4D mask, so without it every sequence past
+        # sliding_window attended its whole causal history.
         sliding_window = None if window_size == (-1, -1) else sw,
         prefix_seg_info = _pg_seg,
     )
@@ -194,9 +189,7 @@ def MistralForCausalLM_fast_forward(
     past_key_values = _cache_as_legacy_tuple(past_key_values)
     if past_key_values is not None and len(past_key_values) == 0:
         past_key_values = None
-    # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
-    # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
-    # Not using xformers - need to create attention masks
+    # PrefixGrouper brings its own mask; a synthesized one would force a fallback.
     if (
         causal_mask is None
         and past_key_values is None
@@ -318,8 +311,7 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         labels = labels.to(lm_head_device)
 
-    # Merge legacy / new spellings before branching so the decode-time last-token slice fires on the
-    # normal path too. Skip int max() if either is a tensor (HF selective-decode form).
+    # Merge spellings first so the decode last-token slice hits the normal path; no int max() on tensors
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
         num_logits_to_keep = 0
     else:
@@ -360,8 +352,7 @@ def MistralForCausalLM_fast_forward(
                 self.config
             )
 
-            # Packed-boundary guard, see llama.py. This branch returns, so mask_packed_sequence_boundaries()
-            # below is never reached.
+            # This branch returns early, so mask_packed_sequence_boundaries() below is never reached
             labels = mask_packed_boundary_labels(
                 labels,
                 kwargs.get("packed_seq_lengths"),
@@ -482,8 +473,7 @@ class FastMistralModel(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(MistralForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) slowed training (#168), so the old rotary embeddings are retained.
         import transformers.models.mistral.modeling_mistral
 
         transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding = LlamaRotaryEmbedding

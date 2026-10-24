@@ -48,8 +48,8 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
-# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+# Deferred: a module-scope bind from `unsloth.save` closes an import cycle
+# (tests/test_cold_import_order.py).
 
 
 def unsloth_save_pretrained_torchao(*args, **kwargs):
@@ -83,9 +83,8 @@ def _ensure_sentence_attention_masks(model):
         getattr(config, "_attn_implementation", "")
     ):
         return False
-    # Zoo's Gemma3 attention preserves FP32 Q/K but consumes SDPA masks. With
-    # a Flash backend, Transformers omits those masks and ST can flatten rows;
-    # that implementation does not consume the resulting sequence boundaries.
+    # Zoo's Gemma3 attention keeps FP32 Q/K but needs SDPA masks; with Flash, Transformers omits
+    # them and ST's flattened rows lose their sequence boundaries.
     patched = any(
         getattr(module.forward, "__module__", "").startswith("unsloth_zoo.temporary_patches.gemma")
         for module in model.modules()
@@ -1454,26 +1453,7 @@ class FastSentenceTransformer(FastModel):
             "sentence_transformers.base.modules.transformer.Transformer",
         }
 
-    # Which config key each loader resolves as a dotted import path, keyed by the class
-    # that resolves it. Dense imports AND CALLS config["activation_function"],
-    # WordEmbeddings imports config["tokenizer_class"], Router and Asym import every
-    # config["types"] value, all ungated on some versions, so an allowed in-namespace
-    # "type" reaches them. The prefixes are upstream's own rules and are applied on every
-    # version: util.import_module_class is not a version test, since 5.5 exports it while
-    # its WordEmbeddings.load still calls import_from_string on tokenizer_class.
-    #
-    # By class and not by key name: SpladePooling lists
-    # activation_function in its own config_keys too, but the value there is the literal
-    # "relu" or "log1p_relu" and it is compared, never imported (SpladePooling.py:
-    # `if self.activation_function == "log1p_relu"`). Matching on the key name alone
-    # refused every SPLADE sparse model for naming a value that no loader imports.
-    #
-    # Complete for the module path as of 5.1: the only config-driven import_from_string
-    # calls in the package are Dense.load on activation_function, WordEmbeddings.load on
-    # tokenizer_class, Router.load on types, and SentenceTransformer's own modules.json
-    # type, which _resolve_module_class covers. Asym is an alias of Router from 5.0
-    # (`Asym = Router`), so it arrives here as Router; the entry is kept for versions
-    # where it is its own class.
+    # Match dotted-path keys per loader class, not key name (SpladePooling is literal); keep Asym pre-5.0
     _MODULE_CONFIG_CLASS_REFS = {
         "Dense": (("activation_function", "torch."),),
         "WordEmbeddings": (("tokenizer_class", "sentence_transformers."),),
@@ -1515,17 +1495,12 @@ class FastSentenceTransformer(FastModel):
         if trust_remote_code:
             return
 
-        # Nothing to check unless this class is one that resolves a dotted path out of its
-        # own config. Every other module reads plain values, so looking for these keys in
-        # its config found a name nobody imports and refused a load that works.
+        # Only classes that resolve dotted paths from their own config need this check; others would wrongly refuse working loads.
         rules = FastSentenceTransformer._class_ref_rules(module_class)
         if not rules:
             return
 
-        # Read what the loader will read: each module names its own file (Router
-        # "router_config.json", WordEmbeddings "wordembedding_config.json"), and Router falls back to
-        # "config.json", which is also Module's default and so Dense's. Hard-coding "config.json"
-        # would skip exactly the two modules this check exists for.
+        # Read the file the loader will read; hard-coding config.json would skip Router and WordEmbeddings.
         config_names = []
         config_file_name = getattr(module_class, "config_file_name", None)
         if isinstance(config_file_name, str):
@@ -1547,12 +1522,7 @@ class FastSentenceTransformer(FastModel):
                 with open(config_path, encoding = "utf8") as f:
                     config = json.load(f)
             except (OSError, ValueError) as exception:
-                # The file is there and cannot be read, which is not the same as not being
-                # there: the loader opens this same path next and its read may succeed, so
-                # skipping here meant a Dense activation, a WordEmbeddings tokenizer or a
-                # Router type could be imported with nothing having checked it. The
-                # refusal the caller's message promised was only ever about the fetch;
-                # this is the read.
+                # Present but unreadable is not absent: the loader may read it next, so refuse.
                 import sentence_transformers
 
                 if Version(sentence_transformers.__version__).major < 6:
@@ -1591,11 +1561,7 @@ class FastSentenceTransformer(FastModel):
                 elif isinstance(config.get(key), str):
                     refs.append((key, config[key], prefix))
 
-            # Upstream reads its own file and only falls back when the parsed content is
-            # falsey (Router.py: `if not config:`), so once a real config has been read
-            # there is no second file the loader will look at. Reading both and taking the
-            # union refused a repository whose router_config.json is clean because an
-            # unrelated config.json sat beside it, which is a load upstream completes.
+            # Upstream falls back only when its own file parses falsey, so never union both files.
             if config:
                 break
 
@@ -1731,11 +1697,7 @@ class FastSentenceTransformer(FastModel):
         )
         if path:
             if resolved is not None:
-                # _module_path resolves through hf_hub_download, so online this is the
-                # commit the branch points at right now and offline it is the cached
-                # snapshot, which is the only thing the load could use either. Both are
-                # the snapshot the load would reach on its own, so recording it here
-                # pins the load to what was checked without asking the hub again.
+                # Pin the load to the snapshot that was checked.
                 resolved["revision"] = FastSentenceTransformer._snapshot_revision(path)
             return path
 
@@ -1751,11 +1713,7 @@ class FastSentenceTransformer(FastModel):
         def _cached_answer():
             """What the local cache already knows, or None if it knows nothing."""
             try:
-                # No default of our own: HUGGINGFACE_HUB_CACHE is the legacy constant and
-                # does not follow HF_HUB_CACHE, so naming it searched a different cache
-                # from the one hf_hub_download writes, and a recorded absence there was
-                # missed. Passing None lets the hub apply the same default it applies to
-                # the download below.
+                # None: HUGGINGFACE_HUB_CACHE is legacy and does not follow HF_HUB_CACHE.
                 return try_to_load_from_cache(
                     model_name,
                     "modules.json",
@@ -1765,14 +1723,8 @@ class FastSentenceTransformer(FastModel):
             except Exception:
                 return None
 
-        # Deliberately not consulted before the download. A recorded absence is keyed to
-        # whatever commit the local refs file points at, which for a branch is a stale
-        # pointer, so answering "this repo has no modules.json" from it decided a security
-        # question against a snapshot nobody had checked was current, and reported no
-        # commit, which left the load unpinned. A branch that gains a modules.json between
-        # the two then loads an unchecked module type. The cache is still the answer when
-        # the hub cannot be reached, which is what the LocalEntryNotFoundError handler
-        # below uses it for, so an offline load behaves as it did.
+        # Not consulted before the download: a cached absence is keyed to a possibly stale branch ref.
+        # Still used offline (LocalEntryNotFoundError below).
         try:
             downloaded = hf_hub_download(
                 model_name,
@@ -1785,26 +1737,15 @@ class FastSentenceTransformer(FastModel):
                 resolved["revision"] = FastSentenceTransformer._snapshot_revision(downloaded)
             return downloaded
         except LocalEntryNotFoundError as exception:
-            # Checked before EntryNotFoundError, which it subclasses: not reachable is not the same
-            # answer as not present, and catching it there read one as the other.
+            # Before EntryNotFoundError, which it subclasses: unreachable is not absent.
             cached = _cached_answer()
             if isinstance(cached, str):
                 if resolved is not None:
                     resolved["revision"] = FastSentenceTransformer._snapshot_revision(cached)
                 return cached
             if cached is not None:
-                # Unreachable, and the cache already recorded that this repo has no
-                # modules.json. "The load can only use the cache too" was the reasoning
-                # here and it is wrong: this request failed, not every request, so the
-                # delegated load can recover and fetch the current branch, which may have
-                # gained a module type since the cached answer. Returning success with no
-                # pin let exactly that through.
-                #
-                # So the load is pinned to the commit the cache holds for this revision,
-                # recovered from a file that lives in the same snapshot. That is the
-                # snapshot whose absence was recorded, which makes the load consistent
-                # with what was checked, and offline it is what would have been served
-                # anyway.
+                # Unreachable with a cached absence: pin the load to the cached snapshot's commit, since the load
+                # itself may reach a newer branch.
                 snapshot_commit = ""
                 for probe in (
                     "config.json",
@@ -1829,9 +1770,7 @@ class FastSentenceTransformer(FastModel):
                     if resolved is not None:
                         resolved["revision"] = snapshot_commit
                     return None
-                # No commit to pin to, so there is no way to make the load match what was
-                # checked. Fail closed below 6.0, the same rule as every other branch that
-                # could not establish an answer.
+                # No commit to pin: fail closed below 6.0.
                 import sentence_transformers
 
                 if Version(sentence_transformers.__version__).major >= 6:
@@ -1855,31 +1794,16 @@ class FastSentenceTransformer(FastModel):
                 ) from exception
             unverifiable = exception
         except EntryNotFoundError as exception:
-            # The repo really has no modules.json at this revision. Pin anyway: absence is
-            # the thing being validated, and a branch that gains one before the load would
-            # otherwise bring in an unchecked module type.
-            #
-            # The commit comes off the 404 itself, not from a second lookup. Resolving the
-            # branch again could answer with a newer commit than the one that established
-            # the absence, which would pin the load to a snapshot nothing had checked: the
-            # same inversion as validating one commit and loading another, moved one step
-            # along. The hub returns x-repo-commit on the 404, so the response names
-            # exactly the commit whose answer was "no modules.json", and it costs nothing.
+            # Pin even a true absence, since a branch may gain modules.json; commit from 404 x-repo-commit
             if resolved is not None:
                 sha = FastSentenceTransformer._commit_of_response(exception)
                 if not sha and FastSentenceTransformer._is_commit(revision):
-                    # The caller already named an immutable commit, so the 404 was
-                    # answered at it and there is nothing for a second resolution to
-                    # disagree with. No header needed.
+                    # A caller-supplied commit SHA is immutable, so the 404 was answered at it and needs no second resolution.
                     sha = revision.lower()
                 if sha:
                     resolved["revision"] = sha
                 else:
-                    # No commit from the response and none from the caller, so there is no
-                    # way to make the load match the absence that was just established:
-                    # the delegated request resolves the branch again and can get one that
-                    # has since gained a modules.json. Fail closed below 6.0, the same
-                    # rule as every other branch that cannot establish an answer.
+                    # No commit to pin: fail closed below 6.0.
                     import sentence_transformers
                     if Version(sentence_transformers.__version__).major < 6:
                         raise ValueError(
@@ -1943,26 +1867,18 @@ class FastSentenceTransformer(FastModel):
         immutable commit, and whenever there was no modules.json to read, and the caller
         then loads exactly as it did before.
         """
-        # Consent means the code may run, so there is nothing to gate and nothing to import here.
-        # Resolving anyway would also break a repo-local class: below 6 the delegated loader fetches
-        # it with get_class_from_dynamic_module, where this helper's fallback cannot.
+        # Consent means the code may run; resolving would also break a repo-local class below 6.
         if trust_remote_code:
             return ""
 
-        # The delegated loads honour SENTENCE_TRANSFORMERS_HOME, and hf_hub_download does not, so
-        # resolve it here too: otherwise _module_path looks in the wrong cache, swallows the miss,
-        # and the gate passes on a modules.json it never read.
+        # Resolve the cache here: hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME, else gate passes unread
         cache_dir = cache_dir or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         resolved = {}
         modules_json_path = FastSentenceTransformer._modules_json_for_gating(
             model_name, token, cache_dir = cache_dir, revision = revision, resolved = resolved
         )
         validated = resolved.get("revision", "")
-        # Everything below this point reads from the snapshot modules.json came out of, not
-        # from the caller's revision. Passing the original through meant modules.json could
-        # resolve commit A while each module config resolved commit B, and since the caller
-        # pins the load to A, a clean config in B was validated while A's unchecked value
-        # was the one that ran. That inverts the race rather than closing it.
+        # Read configs from modules.json snapshot, not the caller revision; mixed commits go unchecked
         config_revision = validated or revision
         if not modules_json_path:
             return validated
@@ -1970,12 +1886,7 @@ class FastSentenceTransformer(FastModel):
             with open(modules_json_path, encoding = "utf8") as f:
                 modules_config = json.load(f)
         except (OSError, ValueError) as exception:
-            # Fail closed, for the same reason the fetch error does. The file is in hand
-            # and still unreadable, and the delegated loader opens the very same path
-            # straight afterwards: a transient read error or a retry that succeeds there
-            # would import a type nothing ever looked at. "Could not check" is not
-            # "nothing to check". Only worth refusing over below 6.0, where
-            # sentence-transformers does not gate the type itself.
+            # Fail closed: unreadable now, the loader opens the same path next. Only below 6.0.
             import sentence_transformers
             if Version(sentence_transformers.__version__).major >= 6:
                 logging.debug(
@@ -1995,8 +1906,7 @@ class FastSentenceTransformer(FastModel):
                 f"`trust_remote_code=True` to allow custom code to be run."
             ) from exception
         if not isinstance(modules_config, list):
-            # Not a refusal: a modules.json that is not a list names no modules at all,
-            # and the loader iterates it, so it cannot build a module from this either.
+            # Not a refusal: a non-list modules.json names no modules, so the loader builds none either.
             return validated
 
         for module_config in modules_config:
@@ -2041,10 +1951,7 @@ class FastSentenceTransformer(FastModel):
 
         return validated
 
-    # The module classes whose own loader resolves a dotted path out of their config: Dense
-    # reads activation_function, WordEmbeddings reads tokenizer_class, Router and Asym read
-    # types. Every other shipped class reads plain values only, so an ordinary embedder
-    # (Transformer, Pooling, Normalize) costs no extra request below.
+    # Classes whose loader imports a dotted path from their config.
     _CONFIG_REF_MODULE_CLASSES = frozenset({"Asym", "Dense", "Router", "WordEmbeddings"})
 
     @staticmethod
@@ -2077,10 +1984,7 @@ class FastSentenceTransformer(FastModel):
         import sentence_transformers
 
         if Version(sentence_transformers.__version__).major >= 6:
-            # Upstream resolves these through its own gate from 6.0, so there is nothing
-            # to add and no reason to spend a request. Deliberately the version and not
-            # hasattr(import_module_class): 5.5 exports that helper while its module
-            # loaders still resolve the name ungated.
+            # The version, not hasattr(import_module_class): 5.5 exports it while still resolving ungated.
             return
 
         folder = module_config.get("path")
@@ -2099,21 +2003,14 @@ class FastSentenceTransformer(FastModel):
         if isinstance(config_file_name, str):
             config_names.append(config_file_name)
         else:
-            # config_file_name only exists from 5, so on 3.x and 4.x a WordEmbeddings has
-            # no such attribute while its loader still opens wordembedding_config.json.
-            # Asking only for config.json got a 404, left nothing to check, and passed,
-            # after which the loader read the legacy file and imported its tokenizer_class
-            # ungated. The local checker already consults this table; so does this now.
+            # 3.x/4.x WordEmbeddings opens wordembedding_config.json; check it or tokenizer_class goes unchecked
             legacy = FastSentenceTransformer._LEGACY_MODULE_CONFIG_FILES.get(
                 getattr(module_class, "__name__", "")
             )
             if legacy is not None:
                 config_names.append(legacy)
             config_names.append("config.json")
-        # Only Router and Asym fall back to config.json when their own file is absent.
-        # The others open exactly one file, and requesting a second one the loader never
-        # reads can fail on a cache that is complete for the load but carries no recorded
-        # 404 for the unused name, turning a loadable offline model into a refusal.
+        # Only Router and Asym fall back to config.json; asking for unused files can fail offline.
         if (
             getattr(module_class, "__name__", "") in ("Asym", "Router")
             and "config.json" not in config_names
@@ -2142,8 +2039,7 @@ class FastSentenceTransformer(FastModel):
                         revision = revision,
                     )
                 except LocalEntryNotFoundError as exception:
-                    # Checked first: it subclasses EntryNotFoundError, so catching the parent
-                    # above it would read "could not reach" as "not present".
+                    # Check LocalEntryNotFoundError first: it subclasses EntryNotFoundError; unreachable is not absent
                     raise ValueError(
                         f"Unsloth: Could not read {config_name} of the module {class_ref} in "
                         f"{model_name} to check the class it names "
@@ -2153,8 +2049,7 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 except EntryNotFoundError:
-                    # A genuine 404: this module ships no such config, so there is no class
-                    # ref in it to check.
+                    # A genuine 404 means this module ships no such config, so there is no class ref in it to check.
                     continue
                 except Exception as exception:
                     raise ValueError(
@@ -2166,18 +2061,13 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 folders.append(os.path.dirname(downloaded))
-                # Router.load falls back to config.json when the parsed content is falsey,
-                # not merely when its own file is absent (Router.py: `if not config:`).
-                # Stopping at the first file that downloaded therefore validated an empty
-                # router_config.json and never fetched the fallback, so the `types` the
-                # loader does resolve went unchecked. A real config is a non-empty dict and
-                # still stops here, so a working model asks for nothing extra.
+                # Router.load falls back to config.json when the parsed content is falsey (`if not config:`),
+                # so an empty router_config.json must not stop the walk.
                 try:
                     with open(downloaded, encoding = "utf8") as handle:
                         content = json.load(handle)
                 except (OSError, ValueError):
-                    # Unreadable is not "checked": let the fallback be fetched too, and
-                    # leave the refusal to the reader below, which sees both files.
+                    # Unreadable is not "checked": fetch the fallback too and let the reader below refuse.
                     content = None
                 if content:
                     break
@@ -2241,9 +2131,7 @@ class FastSentenceTransformer(FastModel):
                 class_ref = module_config["type"]
                 name = module_config.get("name", str(module_config.get("idx", len(modules))))
 
-                # Gate before any download: a refused type must fail the load outright, not fall
-                # through the "could not download" skip below. Resolved once, since a consented
-                # repo-local ref costs a Hub round trip.
+                # Gate before any download: a refused type must fail the load, not hit the download skip below.
                 module_class = None
                 if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                     is_transformer_module = True
@@ -2503,8 +2391,7 @@ class FastSentenceTransformer(FastModel):
         use_unpadding = False,
         **kwargs,
     ):
-        # use_unpadding: "auto" packs eligible training batches with >= 8192 padded slots,
-        # True packs every eligible batch (saves memory, can cost speed).
+        # "auto" packs eligible batches with >= 8192 padded slots; True packs every eligible batch.
         if use_unpadding not in (False, True, "auto") or type(use_unpadding) not in (bool, str):
             raise ValueError('use_unpadding must be "auto", True, or False')
         try:
@@ -3005,20 +2892,13 @@ class FastSentenceTransformer(FastModel):
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
                 )
-            # Imported here rather than at module scope: a module-scope bind out of
-            # unsloth.save closes an import cycle, which is why the two shims above are
-            # deferred too. See tests/test_cold_import_order.py.
+            # Imported here: a module-scope bind out of unsloth.save closes an import cycle
+            # (tests/test_cold_import_order.py).
             from ..save import _is_adapter_save_method
 
             if _is_adapter_save_method(save_method):
-                # Refused because nothing here writes base weights: self.save_pretrained writes the
-                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
-                # lines below then delete that adapter and hand the transformer module to
-                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
-                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
-                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
-                # merge, which happened to write something loadable; an error is the honest
-                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
+                # Nothing here writes base weights: the result would be modules.json plus an orphan adapter.
+                # Save the adapter with self[0].auto_model.save_pretrained(...).
                 raise NotImplementedError(
                     f"Unsloth: save_method = {save_method!r} is not supported for a "
                     f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
@@ -3543,14 +3423,12 @@ def _patch_st_trainer_load_from_checkpoint():
                 raise RuntimeError(f"Unsloth: Bad checkpoint module path for index {idx}.")
             if not hasattr(module_cls, "load"):
                 raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
-            # The class is trusted, coming from the live model, but load() reads the checkpoint's
-            # own configs and some versions import dotted paths out of them.
+            # load() reads the checkpoint's configs, and some versions import dotted paths out of them.
             FastSentenceTransformer._check_module_config_class_refs(
                 module_dir,
                 saved_type or module_cls.__name__,
                 root,
-                # The consent the model was loaded with. Hard-coding False would make a resume
-                # impossible for a model that legitimately needed it, with no way to say so here.
+                # The consent the model was loaded with, not False, which would block resuming such models
                 getattr(self.model, "_unsloth_trust_remote_code", False),
                 module_cls,
             )

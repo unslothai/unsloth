@@ -1337,9 +1337,8 @@ def unsloth_save_model(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
-    # Normalised before `save_pretrained_settings` is captured, so every writer below gets
-    # the real value. `_force_safe_serialization` remembers the caller asked for the
-    # override, which the low-CPU downgrade further down honours.
+    # Normalised before `save_pretrained_settings` is captured; `_force_safe_serialization` records the
+    # caller's None for the low-CPU downgrade below.
     _force_safe_serialization = safe_serialization is None
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
@@ -6181,8 +6180,7 @@ def _push_merged_to_hub_revision(save_kwargs):
             dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
         )
         card.save(card_path)
-        # The staged save prints the temp folder it wrote, which is not where the user asked the
-        # model to go and is deleted a moment later. Name the destination instead.
+        # Name the destination, not the staged temp folder.
         print(f"Unsloth: Uploading the merged model to '{repo_id}' ...")
         commit = api.create_commit(
             repo_id = repo_id,
@@ -6204,13 +6202,11 @@ def _push_merged_to_hub_revision(save_kwargs):
             ),
             commit_description = save_kwargs["commit_description"],
         )
-        # Where the files ACTUALLY landed: a branch or a pull request is not the repository
-        # page, which for a fresh PR upload holds no model files at all.
+        # Where the files actually landed: a branch or PR, not the repository page.
         destination = getattr(commit, "pr_url", None)
         if destination is None:
             destination = f"https://huggingface.co/{repo_id}"
-            # A pull request is checked first: with `create_pr` the files are in the PR, not on
-            # `revision`, which is only the branch it was opened against.
+            # With `create_pr` the files are in the PR, not on `revision`.
             if save_kwargs["create_pr"]:
                 destination += "/discussions"
             elif revision is not None:
@@ -6319,8 +6315,7 @@ def unsloth_generic_save(
         )
     _refuse_unsaveable_text_core(model, save_method)
 
-    # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
-    # this function's own keywords.
+    # Rebound, not a new local: `locals()` below is forwarded as keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
     # Inline, builtins only (no new locals: they are forwarded below), and before the Hub revision
@@ -6394,11 +6389,7 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
             variant = variant,
         )
-        # Asked for a pickle and this transformers cannot give one: say so, rather than upload a
-        # format the caller explicitly declined. The same report `_filter_push_to_hub_kwargs`
-        # makes for the adapter path, which never reaches this branch. Against the ORIGINAL
-        # method, since `patch_saving_functions` wraps it in a `(*args, **kwargs)` passthrough
-        # that would hide a transformers which does honour the request.
+        # Raise rather than upload a pickle the caller declined (MTP head attached); check the original method
         _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
         if safe_serialization is False and _attached_mtp_head(model) is not None:
             # The trained head is stitched into safetensors checkpoints only; refuse before writing.
@@ -6434,10 +6425,7 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        # BEFORE the write: transformers 5 pops each tensor out of a supplied state dict as it
-        # writes the shard holding it ("remove it from state_dict to avoid keeping the ref",
-        # modeling_utils.py), so reading the keys afterwards reports an export with no tensors
-        # at all and would strip an `mtp_num_hidden_layers` the weights really do carry.
+        # BEFORE the write: transformers 5 pops tensors out of a supplied state dict as it writes.
         _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
@@ -6454,10 +6442,7 @@ def unsloth_generic_save(
         try:
             from unsloth_zoo.saving_utils import reconcile_mtp_config
 
-            # The names we just wrote, when we know them: `_checkpoint_tensor_names` declines to
-            # unpickle an unindexed `pytorch_model.bin`, so a `safe_serialization = False` export
-            # would otherwise read back "unknown" and keep an `mtp_num_hidden_layers` the weights
-            # do not carry. Free here -- this state dict is already materialised.
+            # `_checkpoint_tensor_names` declines to unpickle an unindexed .bin, so pass the written names.
             reconcile_mtp_config(save_directory, tensor_names = _written_tensor_names)
         except ImportError:
             pass
@@ -6470,20 +6455,12 @@ def unsloth_generic_save(
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
-        # "lora" means "do not merge", so it must not go to the merge. It used to:
-        # `merge_and_overwrite_lora` has no `"lora"` branch, so the value fell through to a
-        # 16bit merge and a caller asking for an adapter got a full-size checkpoint with no
-        # adapter_config.json (2.47 GB for a 1B base, no config.json either). Routed back to
-        # `unsloth_save_model`, the same adapter save `save_lora_to_custom_dir` and the MLX
-        # `save_pretrained_merged` already perform for this value.
+        # "lora" must not go to the merge (it fell through to a 16bit merge); route to unsloth_save_model.
         unsloth_save_model(
             model,
             tokenizer,
             save_directory = save_directory,
-            # The canonical spelling, not the caller's. `unsloth_save_model` normalises with
-            # `.lower().replace(" ", "_")` and then rejects anything that is not exactly
-            # "lora", so forwarding `" lora "` verbatim would turn it into `"_lora_"` and
-            # raise, which is a worse answer than the merge it replaces.
+            # Canonical spelling: unsloth_save_model would turn " lora " into "_lora_" and raise.
             save_method = "lora",
             push_to_hub = push_to_hub,
             token = token,
@@ -8692,8 +8669,7 @@ def patch_saving_functions(model, vision = False):
     elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
 
-    # A separate attribute name from the tokenizer wrapper above, so a processor that is
-    # both a tokenizer holder and a model-like object cannot have one shadow the other.
+    # A separate attribute name so a tokenizer holder that is also model-like cannot shadow the other.
     if (
         not isinstance(model, (PreTrainedTokenizerBase, ProcessorMixin))
         and hasattr(model, "config")
@@ -8781,10 +8757,7 @@ def patch_saving_functions(model, vision = False):
     return model
 
 
-# Publish the deferred names back to unsloth.models. Those modules bind shims instead of
-# these names to avoid an import cycle (see unsloth/models/vision.py); this module and
-# `.models` are both complete by the time this runs, so hand the real objects over and the
-# attributes regain their identity, signature and docstring.
+# Hand the real objects back to unsloth.models so the shims regain identity, signature and docstring
 _DEFERRED_INTO_MODELS = {
     "unsloth.models.vision": ("patch_saving_functions",),
     "unsloth.models.llama": ("patch_saving_functions",),

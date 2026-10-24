@@ -494,8 +494,7 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gpt_oss",
 ]
 _FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4", "mllama")
-# deepseek_v4's custom attention is sdpa/flash-incompatible: force eager, and it is excluded above so an explicit request cannot re-enable the crash.
-# mllama declares flash support, but its vision and cross attention modules have no is_causal, which the flash path reads.
+# deepseek_v4 crashes under sdpa/flash, so it is forced to eager and excluded above; mllama cross attention lacks is_causal
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -551,10 +550,7 @@ def _flex_attention_gpu_is_supported():
         return True
 
 
-# head_dim > 128 with an explicit mask drops torch <= 2.13 SDPA to an sm80 CUTLASS kernel (8.82x
-# the unmasked cost at head_dim 256, T=8192, B200). Flex's BlockMask carries causal, padding and
-# packed-sequence masks exactly as sdpa_mask does. Not FA2 (padding needs varlen), FA3 (no sm100
-# cubin) or FA4 (Hub build broken against nvidia-cutlass-dsl 4.6.0).
+# head_dim above 128 with a mask drops torch 2.13 and older SDPA to a slow sm80 kernel (~8.8x); FA2, FA3, FA4 ruled out
 _SDPA_FLASH_MAX_HEAD_DIM = 128
 _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
 # gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
@@ -597,8 +593,7 @@ def _text_attention_head_dim(config):
     return max(head_dims) if len(head_dims) != 0 else None
 
 
-# torch 2.14 lets cuDNN take a masked head_dim 256 on sm100, matching flex with no compile. Measured
-# on Blackwell only, so other cards keep flex.
+# torch 2.14 cuDNN handles masked head_dim 256 on sm100 as fast as flex (Blackwell only).
 _CUDNN_LARGE_HEAD_DIM_TORCH_VERSION = "2.14"
 _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
 
@@ -630,10 +625,7 @@ def _sdpa_reaches_cudnn_at_head_dim_256():
         return False
 
 
-# Inductor's default flex template needs 151552 bytes of shared memory at head_dim 256 (172032 at
-# 192), more than sm86/sm89/sm120 cards (101376) or an A100 (166912) have. There the compile
-# fails, unsloth_zoo's suppress_errors falls back to unfused eager flex, and training runs slower
-# and in more memory than on SDPA. Offer flex only on the 227 KiB class it was measured on.
+# Inductor's flex template needs ~148 KiB smem at head_dim 256; smaller cards fall back to slow eager.
 _FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY = 232448
 
 
@@ -692,8 +684,7 @@ def _prefers_flex_for_head_dim(config):
     return not _sdpa_reaches_cudnn_at_head_dim_256()
 
 
-# Above head_dim 256 Inductor's default flex template overflows shared memory and the launch
-# faults with `misaligned address` (torch 2.13, 2.14). Measured: 64x64 still faults, 32x32 passes.
+# Above head_dim 256 the default flex template faults with misaligned address on torch 2.13 and 2.14; 32x32 blocks pass
 _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
 # BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
 _FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS = {
@@ -865,9 +856,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
-        # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
-        # padded batch stride (comprehensive_padding) that the backward template ignores, so every
-        # batch row after the first reads a shifted LSE and the gradients blow up.
+        # flex_decoding for static q_len under 128 pads the LSE stride that backward ignores, so rows after the first get wrong grads
         if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
             kwargs.get("kernel_options") or {}
         ):
@@ -912,8 +901,7 @@ def patch_flex_attention_kernel_options():
     if wrapped is registered:
         return True  # Already ours.
 
-    # __setitem__ covers the shared instance; register() covers the class mapping that models
-    # building their own AttentionInterface (doge) read.
+    # Set both: __setitem__ covers the shared instance, register covers models building their own AttentionInterface
     try:
         ALL_ATTENTION_FUNCTIONS["flex_attention"] = wrapped
     except Exception:
@@ -2330,8 +2318,7 @@ def _resolve_text_causal_lm_class(
         if not trust_remote_code:
             return None
         if "--" in str(class_ref):
-            # Code from another repository, named only in a nested config that remote-code scanners
-            # (which read the top-level auto_map) never see: keep the full-composite load instead of importing it.
+            # Other-repo code named only in a nested config evades remote-code scanners, so do not import it.
             return None
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
@@ -2382,8 +2369,7 @@ def _get_remote_composite_text_only(
     cache_dir = None,
     code_revision = None,
 ):
-    # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
-    # Returns (text_config, key_mapping, text_parameter_names) or None; None keeps the previous full-model load.
+    # Returns (text_config, key_mapping, text_parameter_names), or None for the full-model load.
     if not trust_remote_code or not _is_remote_code_config(model_config):
         return None
     if isinstance(device_map, dict) and any(key != "" for key in device_map):
@@ -2523,8 +2509,7 @@ def _trusted_remote_code_commit(
     cache_dir = None,
     local_files_only = False,
 ):
-    # The commit whose repo code a trusted load ran, which the export's trusted config re-read pins to (unsloth-zoo).
-    # from_pretrained runs a Hub repo's code at code_revision when given, not at the weights' commit.
+    # from_pretrained runs Hub repo code at code_revision when given, not the weights' commit.
     import os
 
     if code_revision is None or os.path.isdir(str(model_name)):
@@ -2662,8 +2647,7 @@ def resolve_attention_implementation(
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
-    # The automatic routing only replaces the sdpa fallback, but an explicit "1" forces flex
-    # over flash_attention_2 as well, when flex can be scoped to the decoder.
+    # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
         _flex_large_head_dim_override() is True
         and supports_flex_attention
@@ -2776,38 +2760,19 @@ def resolve_encoder_attention_implementation(
     return None
 
 
-# Outcome of the most recent `_run_temporary_patches` pass, keyed by phase, as
-# {"completed": [patch, ...], "raised": [(patch, exception), ...]}. A temporary
-# patch that raises is warned about rather than propagated, so without this a
-# whole patch silently dropping out leaves CI green; the regression gate in
-# tests/test_temporary_patch_coverage.py reads it and fails on a non-empty
-# "raised" bucket. Which patches legitimately decline depends on the installed
-# transformers/TRL/PEFT, so only "raised" is a defect, never the membership of
-# "completed".
+# Read by tests/test_temporary_patch_coverage.py; only a non-empty raised bucket is a defect, never completed
 TEMPORARY_PATCH_OUTCOMES = {}
 
 
 def _run_temporary_patches(phase):
     import inspect
 
-    # Bookkeeping is one list append per patch, storing the callables as they
-    # are so nothing is formatted on the success path, and the per-phase entry
-    # is replaced rather than extended so repeated model loads cannot grow it.
-    # Nothing here can raise, which matters because this loop runs inside
-    # `import unsloth`.
+    # Nothing here may raise (this loop runs inside import unsloth); replace the per-phase entry, never extend it
     completed = []
     raised = []
     TEMPORARY_PATCH_OUTCOMES[phase] = {"completed": completed, "raised": raised}
     for temporary_patch in TEMPORARY_PATCHES:
-        # Two separate questions, kept separate. inspect.signature raises
-        # ValueError or TypeError for a callable whose signature it cannot read,
-        # which only tells us we cannot see a `phase` parameter; catching those
-        # around the CALL as well re-ran a patch that had already half applied,
-        # and let every other exception out of an optional patch step and
-        # straight through `import unsloth` (#3130 ended the import
-        # on a SyntaxError from one of them). A temporary patch is an
-        # optimisation that reports its own failures through raise_error, so a
-        # patch that raises anyway is logged, not fatal.
+        # Only the signature probe is guarded; a raising patch is logged, never re-run or fatal.
         try:
             accepts_phase = "phase" in inspect.signature(temporary_patch).parameters
         except (ValueError, TypeError):
@@ -2818,19 +2783,8 @@ def _run_temporary_patches(phase):
             else:
                 temporary_patch()
         except Exception as exception:
-            # Keep the exception, drop what it drags along. An exception holds
-            # its __traceback__, and a traceback holds every frame in it and
-            # every local in those frames; __context__ and __cause__ chain to
-            # more of the same. The "init" entry is written once per process and
-            # never replaced, so recording a failure as-is would pin the failed
-            # patch's frames for the lifetime of the process. Nothing reads them
-            # (the gate and the warning below both use only the type and the
-            # message), so this loses no diagnosis and bounds the record to the
-            # exception objects themselves.
-            # Guarded because these three are ordinary settable attributes and a
-            # subclass can shadow them with a property that refuses the write
-            # (measured: a ValueError out of a __traceback__ setter). Losing the
-            # trim is fine; losing the import over bookkeeping is not.
+            # Drop traceback/context so the per-process record does not pin failed frames.
+            # Guarded: a subclass property may refuse these writes.
             try:
                 exception.__traceback__ = None
                 exception.__context__ = None
@@ -4651,8 +4605,8 @@ _PER_LAYER_DEVICE_MISSING = object()
 # A single object, because the checks below test it by identity to mean "no instance dict".
 _NO_INSTANCE_DICT = {}
 
-# Not spelled `_per_layer_device*`: that prefix is what unsloth_zoo publishes and the readers
-# grep for. The fast path spells this one out, so a rename must change both (asserted).
+# Not `_per_layer_device*`: unsloth_zoo readers grep that prefix. The fast path
+# spells it out, so a rename must change both (asserted).
 _PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
 
 # Memo slot 3: what the answer came from, hence what the fast path re-checks by identity.
@@ -4758,8 +4712,7 @@ def per_layer_device(module, default = 0):
             elif derived_from == _MEMO_FROM_DEVICE:
                 if source is module._per_layer_device:
                     return resolved
-            # _MEMO_FROM_DEFAULT: derived from `default` alone, so only publishing one of the
-            # two names can stale it.
+            # _MEMO_FROM_DEFAULT depends on default alone, so only publishing one of the two names can make it stale.
             elif (
                 "_per_layer_device_index" not in module.__dict__
                 and "_per_layer_device" not in module.__dict__
@@ -4768,8 +4721,7 @@ def per_layer_device(module, default = 0):
     except (AttributeError, TypeError, ValueError):
         pass
 
-    # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
-    # and _modules before raising. The getattr fallback keeps class attributes working.
+    # Instance dict, not getattr: nn.Module.__getattr__ would scan _parameters, _buffers and _modules first
     published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
     device = published.get("_per_layer_device")
     index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
@@ -4778,13 +4730,11 @@ def per_layer_device(module, default = 0):
         index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
 
     if device is None and (index.__class__ is int or index.__class__ is str):
-        # Exact class, not isinstance: bool must not key the memo (False hashes equal to 0),
-        # and an unhashable value must fall through rather than raise.
+        # Exact class: bool must not key the memo (False == 0), and unhashables must fall through.
         resolved = _resolved_published_index(index, default)
         if resolved is not None:
             if default == 0 and published is not _NO_INSTANCE_DICT:
-                # Memoisable because it depends on the published value alone, so the fast
-                # path's identity check is a complete invalidation.
+                # Safe to memoise: it depends only on the published value, so the fast path's identity check fully invalidates it.
                 published[_PER_LAYER_DEVICE_MEMO] = (index, resolved, _MEMO_FROM_INDEX)
             return resolved
 
@@ -4817,8 +4767,7 @@ def per_layer_device(module, default = 0):
     if buffer_index is None:
         buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
     if default == 0 and published is not _NO_INSTANCE_DICT:
-        # Only when the answer IS the published object: a parameter- or hook-derived device
-        # moves without it changing, and memoising that sends activations to a dead device.
+        # Memoise only the published object: a param/hook-derived device can move unseen.
         published_device = published.get("_per_layer_device")
         if published_device is not None and published_device is device:
             published[_PER_LAYER_DEVICE_MEMO] = (
@@ -5509,10 +5458,7 @@ def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
 
-    # Before the early returns below: the fla patch is unrelated to gradient accumulation, and it
-    # can only install once fla has been imported. Loading a non-fla model first (llama.py's
-    # FastLlamaModel.from_pretrained never imports fla) and a gated-deltanet model second would
-    # otherwise leave it permanently uninstalled, since the second call returns here.
+    # Before the early returns: a non-fla model loaded first would leave the fla patch permanently uninstalled
     patch_fla_autotuner_fast_path()
 
     if hasattr(Trainer, "get_batch_samples"):
@@ -6511,8 +6457,7 @@ def apply_accepts_loss_kwargs_fix(model):
     return f"default (signature inspection, {reason})"
 
 
-# unsloth/gpt-oss-* generation_config predates upstream adding <|call|> (200012) to eos (#5162):
-# tool calls then run on into plain-text harmony markup. Only generation_config is widened.
+# unsloth gpt-oss generation_config predates <|call|> (200012) in eos; widen only generation_config, not the model
 _HARMONY_TOOL_CALL_TOKEN = "<|call|>"
 _HARMONY_FINGERPRINT_TOKENS = ("<|call|>", "<|channel|>", "<|return|>")
 
@@ -6589,9 +6534,7 @@ def patch_harmony_tool_call_eos(model, tokenizer):
     return model
 
 
-# fast_inference builds the vLLM engine before the tokenizer, so widen the generation-config
-# dict vLLM re-applies per request (caller SamplingParams too; ignore_eos still opts out).
-# Internal and moved between versions: look up defensively, never raise.
+# Widen the generation config vLLM re-applies per request; vLLM internals move, so look up defensively, never raise
 _VLLM_GENERATION_CONFIG_FIELD_PATHS = (
     ("llm_engine", "input_processor"),
     ("input_processor",),
@@ -6807,8 +6750,7 @@ def _resolve_ce_callee(func, namespace):
 
 
 def _scan_ce_calls(source, namespace = None):
-    # A sum / "none" reduction (modern or legacy, keyword or positional) is the model's own objective, not a micro-batch mean.
-    # Returns (every call is a mean, at least one call was seen).
+    # Returns (every call is a mean, at least one seen); a sum or none reduction is the model's own objective
     try:
         tree = ast.parse(textwrap.dedent(source))
     except SyntaxError:
@@ -7033,8 +6975,7 @@ class EmptyLogits:
     def raise_getattr_error(self, attr):
         if attr == "to":
             return return_none
-        # unsloth#409: a catch-all __getattr__ answers hasattr() for every name, so FSDP2's
-        # output cast saw __dataclass_fields__ and called dataclasses.replace() on the sentinel.
+        # A catch-all __getattr__ made FSDP2 treat the sentinel as a dataclass.
         if len(attr) > 4 and attr.startswith("__") and attr.endswith("__"):
             raise AttributeError(f"{type(self).__name__!r} object has no attribute {attr!r}")
         return raise_logits_error
@@ -10489,10 +10430,7 @@ def get_moe_target_parameters(
         if _moe_parameter_exists(model, gate_up_name, parameter_names = parameter_names):
             moe_params.append(gate_up_name)
         else:
-            # NemotronH keeps the expert projections unfused, as separate 3D Parameters.
-            # Without this fallback every gate and up expert weight is silently dropped
-            # while down_proj still resolves, so the model trains with two thirds of each
-            # expert frozen and no error anywhere (unsloth#4476).
+            # NemotronH keeps unfused 3D expert Parameters; without this gate/up are silently frozen.
             wanted_leaves = []
             if "gate_proj" in target_set or "gate_up_proj" in target_set:
                 wanted_leaves.append("gate_proj")
@@ -10518,11 +10456,7 @@ def get_moe_target_parameters(
         )
         return moe_params
 
-    # Nothing resolved as a Parameter. That is only a problem if no other route reaches the
-    # experts either: get_moe_target_modules covers the per-expert Linear ModuleList layout
-    # (gpt-oss bnb-4bit) and an ordinary suffix match covers the per-expert submodule layout
-    # transformers 4.x uses for Qwen3-MoE and Mixtral. Warn only when all three miss, which
-    # is the silent no-experts-trained case.
+    # Warn only when no route reaches the experts: the silent no-experts-trained case.
     if target_set & _MOE_BROAD_MLP_TARGETS:
         if moe_module_targets is None:
             moe_module_targets = get_moe_target_modules(model, target_modules)
@@ -10619,8 +10553,7 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
     if not hasattr(model, "named_modules"):
         return []
 
-    # Scope the suffixes to the requested leaves, matching get_moe_target_parameters: gate/up/gate_up map to the fused gate_up ModuleList and down_proj to the down one, so a down-only request must not pull in the other projection.
-    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
+    # A down-only request must not pull in gate_up; gate_proj alone must not collect up_proj.
     want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
     want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
