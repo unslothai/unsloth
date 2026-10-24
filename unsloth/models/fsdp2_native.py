@@ -458,11 +458,8 @@ def check_shard_units(
     units,
     ignored_params = (),
 ):
-    """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
-    unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
-    disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
-    graph break per block (an error under fullgraph). Experts, routers and LoRA stay inside their block's
-    unit. Raises RuntimeError naming the offending unit."""
+    """No FSDP unit inside a compiled decoder block or another unit: FSDP2 hooks are dynamo disabled,
+    so that is a graph break per block. Raises RuntimeError naming the offending unit."""
     blocks = set()
     for module in model.modules():
         if isinstance(module, nn.ModuleList) and _is_block_list(module, ()):
@@ -557,12 +554,8 @@ def _refuse_gpu_quantized_on_cpu_mesh(model):
 
 
 def _shard_device(model, requested = None):
-    """The device FSDP2 shards onto: the model's own, except that a model still entirely on the CPU
-    (loaded with device_map = None; meta tensors stay meta) goes to this rank's GPU when CUDA is used,
-    like the Trainer would have placed it: fully_shard moves each unit's states to the mesh device as
-    it shards it, _place_replicated the replicated ones. A deliberate CPU / disk offload (any
-    device_map entry on cpu / disk) and CPU 4-bit weights are refused instead. requested = "cpu" (the
-    Trainer's use_cpu) keeps the CPU mesh."""
+    """The device FSDP2 shards onto: the model's own, or this rank's GPU for an all-CPU model. CPU /
+    disk offload and CPU 4-bit weights are refused; requested = "cpu" keeps the CPU mesh."""
     if requested is not None and torch.device(requested).type == "cpu":
         _refuse_gpu_quantized_on_cpu_mesh(model)
         return torch.device("cpu")
@@ -838,11 +831,9 @@ def _unify_dtypes(
     param_dtype,
     can_ignore = True,
 ):
-    """FSDP2 wants one original dtype over a unit's trainable parameters (all of them on torch < 2.8).
-    Unsloth's full finetuning keeps 16-bit linears next to float32 norms; one GPU updates each in its own
-    dtype. To keep that, a small minority dtype group (norms) is left out of the unit: replicated, its
-    gradient averaged over ranks like DDP. A large one, or a torch without `ignored_params`, gets float32
-    masters instead (gathered in `param_dtype`). Returns (ignored parameter set, number upcast)."""
+    """FSDP2 wants one original dtype per unit's trainable parameters. A small minority dtype group
+    (norms) is left out (replicated, DDP-averaged); a large one gets float32 masters.
+    Returns (ignored parameter set, number upcast)."""
     frozen_too = _fsdp2_checks_frozen_dtypes()
     groups = [list(u.parameters()) for u in units]
     inside = set()
@@ -1057,13 +1048,9 @@ def _recompute_skips_input_cast(original):
 
 
 def _patch_recompute_input_cast():
-    """torch < 2.13 skips FSDP2's forward-input cast when a checkpointed unit is recomputed in backward, so
-    the recompute sees the uncast (e.g. float32) inputs while the forward saw param_dtype ones: anything
-    cast to the input dtype (LoRA A / B, a dequantized 4-bit weight) is saved in another dtype and
-    non-reentrant checkpointing raises CheckpointError (Kaggle T4, torch 2.10, fp16 MoE / VLM 4-bit).
-    torch 2.13 casts there (`return self._cast_forward_inputs(args, kwargs)`); do the same on older
-    builds. Must run before fully_shard registers the hook. Native FSDP2 only;
-    UNSLOTH_FSDP2_RECOMPUTE_CAST=0 turns it off (diagnostics)."""
+    """torch < 2.13 skips FSDP2's input cast on checkpoint recompute, so recompute sees uncast inputs and
+    non-reentrant checkpointing raises CheckpointError. Cast there like torch 2.13 does. Must run before
+    fully_shard registers the hook; UNSLOTH_FSDP2_RECOMPUTE_CAST=0 turns it off."""
     if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_CAST", "1").strip().lower() in (
         "0",
         "false",
@@ -1296,16 +1283,8 @@ def _refuse_block_swap(model):
 
 
 def shard_model(model, config: Optional[FSDP2Config] = None):
-    """fully_shard(unit) for each unit of `find_shard_units`, then fully_shard(model): the root holds
-    embeddings, final norm, lm_head and any leftover parameters, so Unsloth's direct lm_head.weight
-    read in the fused CE runs while the root is unsharded. Pass the outermost module the training
-    loop calls (the PeftModel for LoRA): peft calls the inner model's `.forward` directly, which
-    would skip an inner root's hooks. Idempotent.
-
-    Layout (fsdp2_perf.plan_fsdp2_layout): when the model fits on one GPU and reshard_after_forward is
-    auto, frozen weights stay replicated (never gathered, like DDP), only trainable ones are sharded and
-    kept gathered from forward to backward with next-block prefetch, and a small trainable set (LoRA) is
-    one root unit. Otherwise each block reshards after forward."""
+    """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
+    leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
     _refuse_block_swap(model)
@@ -1702,13 +1681,44 @@ def native_fsdp2_unsharded(model):
                 _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
+def _ga_mode(model = None):
+    """What non-final gradient accumulation micro-batches (Trainer / accelerate no_sync) do,
+    `UNSLOTH_FSDP2_GA_SYNC`:
+    "skip" = no reduce-scatter; units resharded after each backward and gathered again next micro-batch;
+    "defer" = no reduce-scatter and units kept unsharded until the last micro-batch (torchtitan
+      fsdp_defer_gradient_reduction): no re-all-gather, gradients bitwise equal to "skip", the gathered
+      weights stay resident (sharded layout: + one compute-dtype copy of the trainable weights);
+    "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
+      accumulators held across micro-batches, the leanest and the slowest;
+    "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
+      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
+    if mode in ("skip", "defer", "each"):
+        return mode
+    layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
+    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
+    mode = _ga_mode(model)
+    if mode == "each":
+        yield
+        return
+    defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if defer:
+        model.set_reshard_after_backward(False)
+        if hasattr(model, "set_is_last_backward"):
+            model.set_is_last_backward(False)
     try:
         yield
     finally:
         model.set_requires_gradient_sync(True)
+        if defer:
+            model.set_reshard_after_backward(True)
+            if hasattr(model, "set_is_last_backward"):
+                model.set_is_last_backward(True)
 
 
 def _native_models(accelerator):
@@ -2040,6 +2050,10 @@ def native_load_optimizer(model, optimizer, path_or_state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
         state = torch.load(state, map_location = "cpu", weights_only = True)
+    from .fsdp2_bnb_optim import rename_optimizer_state_for
+
+    # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
+    rename_optimizer_state_for(_inner_optimizer(optimizer), state)
     set_optimizer_state_dict(
         _native_root(model),
         _inner_optimizer(optimizer),
@@ -2427,12 +2441,8 @@ def _peft_saved_key(key, adapter):
 
 
 def _peft_save_keys(root, adapter):
-    """model key -> checkpoint key for `adapter`, from PEFT's own save path
-    (peft.utils.get_peft_model_state_dict, peft/utils/save_and_load.py): every key rule the installed
-    PEFT applies on save (adapter name removal, DoRA's lora_magnitude_vector, modules_to_save, later
-    ones) is inverted here. PEFT is handed empty placeholder tensors (no collective, no copy) and the
-    returned keys are matched back by tensor identity; {} when PEFT cannot be asked, and the rule above
-    stands in."""
+    """model key -> checkpoint key for `adapter`, inverted from PEFT's own save path using placeholder
+    tensors matched by identity; {} when PEFT cannot be asked."""
     try:
         from peft.utils import get_peft_model_state_dict
     except Exception:
@@ -2687,6 +2697,9 @@ def _install_trainer_hooks():
         if is_native_fsdp2(getattr(self, "model", None)):
             # Before the LR scheduler records one base LR per group.
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
+            # Localized, or refused here (a bitsandbytes optimizer that cannot step local shards
+            # would otherwise fail inside the first step).
+            _refuse_bnb_optimizer_instance(optimizer)
         return optimizer
 
     original_create_scheduler = Trainer.create_scheduler
@@ -2704,6 +2717,8 @@ def _install_trainer_hooks():
         # above, and transformers 4.x builds the scheduler before Accelerator.prepare splits the
         # groups. Split here, before the scheduler records one base LR (and lambda) per group.
         target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
+        if is_native_fsdp2(getattr(self, "model", None)):
+            _refuse_bnb_optimizer_instance(target)  # a subclass create_optimizer's bitsandbytes one
         if (
             target is not None
             and getattr(self, "lr_scheduler", None) is None
@@ -2900,8 +2915,29 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
+    # The Trainer scales each rank's loss by world size, so float16 activation grads are world times
+    # one GPU's and overflow at its scale. Divide init_scale by the DP size unless the user set it.
+    world = _data_parallel_size(getattr(trainer, "model", None))
+    if world > 1 and "init_scale" not in kwargs:
+        kwargs["init_scale"] = 2.0**16 / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
+
+
+def _data_parallel_size(model):
+    mesh = getattr(model, "__dict__", {}).get("_unsloth_fsdp2_mesh") if model is not None else None
+    try:
+        if mesh is not None:
+            return int(mesh.size())
+    except Exception:
+        pass
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            return int(dist.get_world_size())
+    except Exception:
+        pass
+    return 1
 
 
 def _native_optimizer(optimizer):
@@ -2915,7 +2951,10 @@ def _native_optimizer(optimizer):
 
 
 # bitsandbytes optimizers (transformers' OptimizerNames) step plain tensors through custom ops with no
-# DTensor sharding strategy. Those with a torch equivalent are switched to it; the others are refused.
+# DTensor sharding strategy. Adam / AdamW step each DTensor's local shard (fsdp2_bnb_optim), keeping
+# their 8-bit state as on one GPU; the others with a torch equivalent are switched to it (as are Adam /
+# AdamW with UNSLOTH_FSDP2_BNB_LOCAL=0); the rest are refused.
+_BNB_LOCAL_SHARD_OPTIMS = ("adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit")
 _BNB_OPTIMS = {
     "adamw_8bit": "adamw_torch_fused",
     "adamw_bnb_8bit": "adamw_torch_fused",
@@ -2937,8 +2976,10 @@ _BNB_UNSUPPORTED = (
 )
 
 
-def _swap_bnb_optimizer(training_args):
-    """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors."""
+def _swap_bnb_optimizer(training_args, cpu_shards = False):
+    """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors. Adam /
+    AdamW step the local shards instead, unless the shards sit on the CPU (CPU offload, a CPU mesh)
+    and this bitsandbytes cannot step CPU tensors: then the switch to torch's AdamW stays."""
     optim = getattr(training_args, "optim", None)
     if optim is None:
         return False
@@ -2953,6 +2994,13 @@ def _swap_bnb_optimizer(training_args):
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
+    if name in _BNB_LOCAL_SHARD_OPTIMS and _bnb_local_shards_available(cpu_shards):
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps optim = '{name}': bitsandbytes steps each rank's local shard "
+            "of the DTensor parameters (8-bit state per shard; UNSLOTH_FSDP2_BNB_LOCAL=0 switches to "
+            "torch's AdamW)."
+        )
+        return False
     if target == "adamw_torch_fused" and not torch.cuda.is_available():
         target = "adamw_torch"
     _print_rank0(
@@ -2965,6 +3013,66 @@ def _swap_bnb_optimizer(training_args):
     except Exception:
         training_args.optim = target
     return True
+
+
+def _bnb_local_shards_available(cpu_shards = False):
+    from .fsdp2_bnb_optim import (
+        bnb_local_shards_enabled,
+        bnb_steps_cpu_tensors,
+        supports_local_shards,
+    )
+
+    if not bnb_local_shards_enabled():
+        return False
+    if cpu_shards and not bnb_steps_cpu_tensors():
+        return False
+    try:
+        from bitsandbytes.optim import AdamW8bit
+    except Exception:
+        return False
+    return supports_local_shards(AdamW8bit)
+
+
+def _optimizer_on_cpu(optimizer):
+    """Whether any parameter's local shard (or the parameter itself) is a CPU tensor."""
+    for group in getattr(optimizer, "param_groups", None) or []:
+        for p in group["params"]:
+            local = getattr(p, "_local_tensor", p)
+            if getattr(local, "device", None) is not None and local.device.type == "cpu":
+                return True
+    return False
+
+
+def _native_shards_on_cpu(model, training_args):
+    """Where native FSDP2 keeps (or will keep) the trainable shards: on the CPU with
+    UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU Trainer (use_cpu) or no CUDA device."""
+    if model is not None and is_native_fsdp2(model):
+        return any(
+            getattr(p, "_local_tensor", p).device.type == "cpu"
+            for p in model.parameters()
+            if p.requires_grad
+        )
+    if _trainer_uses_cpu(training_args) or not torch.cuda.is_available():
+        return True
+    try:
+        return bool(FSDP2Config.from_env().cpu_offload)
+    except Exception:
+        return False
+
+
+def _localize_bnb_optimizer(optimizer):
+    """A bitsandbytes Adam / AdamW (built by the Trainer from args.optim, or passed in) steps the local
+    shards of its DTensor parameters (fsdp2_bnb_optim). True when it now does."""
+    if optimizer is None:
+        return False
+    inner = _inner_optimizer(optimizer)
+    if not _is_bnb_optimizer_class(type(inner)):
+        return False
+    if not _bnb_local_shards_available(_optimizer_on_cpu(inner)):
+        return False
+    from .fsdp2_bnb_optim import localize_bnb_optimizer
+
+    return localize_bnb_optimizer(inner)
 
 
 # Trainer.__init__'s positional order (the same in transformers 4.57 and 5.x), for an __init__ whose
@@ -3077,16 +3185,32 @@ def _refuse_bnb_optimizer_instance(optimizer):
     """A prebuilt optimizer passed as Trainer(optimizers = (opt, ...)) or to accelerator.prepare:
     _swap_bnb_optimizer only edits args.optim, so a bitsandbytes instance would be kept and step
     DTensor shards it cannot handle. Torch optimizers pass."""
-    if optimizer is None:
+    if optimizer is None or _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)
+    if "galore" in type(inner).__name__.lower():
+        raise ValueError(_Q_GALORE_REFUSAL)
     if _is_bnb_optimizer_class(type(inner)):
         raise ValueError(
             f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
-            f"step (got a {type(inner).__name__}). Build a torch optimizer (torch.optim.AdamW over "
+            f"step (got a {type(inner).__name__}; only bitsandbytes Adam / AdamW step local shards). "
+            "Build a torch optimizer (torch.optim.AdamW over "
             "`unsloth.models.fsdp2_native.split_param_groups(...)`), or let the Trainer build it with "
-            "optim = 'adamw_8bit', which native FSDP2 switches to torch's AdamW."
+            "optim = 'adamw_8bit'."
         )
+
+
+def _bnb_probe_supports_local_shards(cls, kwargs):
+    """The localization predicate on the optimizer the Trainer would build: the class alone cannot tell
+    (the optimizer name and block_wise / optim_bits come from __init__ and its kwargs), so build it over
+    one CPU placeholder parameter (bitsandbytes allocates state lazily) and ask the instance."""
+    from .fsdp2_bnb_optim import supports_local_shards
+
+    try:
+        probe = cls([nn.Parameter(torch.zeros(1))], **dict(kwargs))
+    except Exception:
+        return False
+    return supports_local_shards(probe)
 
 
 def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
@@ -3096,12 +3220,16 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     if not isinstance(optimizer_cls_and_kwargs, (tuple, list)) or not optimizer_cls_and_kwargs:
         return
     cls = optimizer_cls_and_kwargs[0]
+    kwargs = optimizer_cls_and_kwargs[1] if len(optimizer_cls_and_kwargs) > 1 else None
+    if _is_bnb_optimizer_class(cls) and _bnb_local_shards_available():
+        if _bnb_probe_supports_local_shards(cls, kwargs or {}):
+            return  # Trainer.create_optimizer builds it; the native hook makes it step local shards
     if _is_bnb_optimizer_class(cls):
         raise ValueError(
             f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
             f"step (optimizer_cls_and_kwargs = ({getattr(cls, '__name__', cls)}, ...)). Pass a torch "
-            "optimizer class (torch.optim.AdamW), or drop optimizer_cls_and_kwargs and set optim = "
-            "'adamw_8bit' / 'paged_adamw_8bit', which native FSDP2 switches to torch's AdamW."
+            "optimizer class (torch.optim.AdamW) or a bitsandbytes Adam / AdamW, or drop "
+            "optimizer_cls_and_kwargs and set optim = 'adamw_8bit' / 'paged_adamw_8bit'."
         )
 
 
@@ -3190,16 +3318,19 @@ def _refuse_clef(model):
         )
 
 
+_Q_GALORE_REFUSAL = (
+    "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with q_galore_config: Q-GaLore's "
+    "8-bit optimizer projects whole 2-D weights, and native FSDP2 hands it DTensor shards. Set "
+    "q_galore_config = None, or launch without UNSLOTH_FSDP2."
+)
+
+
 def _refuse_q_galore(training_args):
     """UnslothTrainer builds QGaLoreAdamW8bit in its own create_optimizer when q_galore_config is set,
     bypassing args.optim (so _swap_bnb_optimizer never sees it). Its 8-bit states and 2-D projections
     expect plain tensors, not DTensor shards."""
     if getattr(training_args, "q_galore_config", None) is not None:
-        raise ValueError(
-            "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with q_galore_config: Q-GaLore's "
-            "8-bit optimizer projects whole 2-D weights, and native FSDP2 hands it DTensor shards. Set "
-            "q_galore_config = None, or launch without UNSLOTH_FSDP2."
-        )
+        raise ValueError(_Q_GALORE_REFUSAL)
 
 
 def _refuse_projection_optim(training_args):
@@ -3220,12 +3351,8 @@ def _refuse_projection_optim(training_args):
 
 
 def _refuse_accelerate_fp8(training_args):
-    """accelerate's FP8 training (mixed_precision = "fp8": Transformer Engine, torchao or MS-AMP)
-    converts the model's Linear layers in Accelerator.prepare, after native sharding captured the
-    DTensors, so the optimizer would target replacement parameters FSDP2 does not manage. The Trainer
-    gets it from ACCELERATE_MIXED_PRECISION (accelerate launch / config) unless fp16 / bf16 is set:
-    transformers 5 stores the result as args.mixed_precision, 4.x leaves it in the env. Unsloth's own
-    float8 weights are not affected (kept replicated, never converted by accelerate)."""
+    """accelerate FP8 training converts Linear layers in prepare, after sharding captured the DTensors,
+    so the optimizer would target parameters FSDP2 does not manage."""
     mode = getattr(training_args, "mixed_precision", None) if training_args is not None else None
     if mode is None:
         mode = os.environ.get("ACCELERATE_MIXED_PRECISION", "no")
@@ -3243,11 +3370,8 @@ def _refuse_accelerate_fp8(training_args):
 
 
 def _refuse_accelerate_backends(training_args):
-    """Every accelerate backend native FSDP2 cannot run under (fsdp2_launch.NATIVE_BACKEND_TABLE:
-    DeepSpeed, Megatron-LM, XLA, NPU / MLU / SDAA / MUSA / HPU / XPU / Neuron devices, SageMaker DP, a
-    ParallelismConfig env), from the env and the TrainingArguments (`deepspeed`, `deepspeed_plugin`,
-    `hf_deepspeed_config`, ...): the import-time check only sees the launch env, and accelerate would
-    otherwise build that backend over the DTensor model. Before any model change."""
+    """Refuse accelerate backends native FSDP2 cannot run under (fsdp2_launch.NATIVE_BACKEND_TABLE),
+    from the env and the TrainingArguments. Before any model change."""
     from ..fsdp2_launch import refuse_native_backend_conflicts
     refuse_native_backend_conflicts(training_args, _trainer_uses_cpu(training_args))
 
@@ -3318,7 +3442,7 @@ def native_fsdp2_trainer_setup(
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if is_native_fsdp2(model):
             _swap_bnb_optimizer(
-                training_args
+                training_args, _native_shards_on_cpu(model, training_args)
             )  # the Trainer still builds the optimizer from args.optim
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
@@ -3329,7 +3453,7 @@ def native_fsdp2_trainer_setup(
                 "`unsloth.models.fsdp2_native.shard_model(model)` before building the optimizer, or "
                 "let the Trainer build it (optimizers = (None, None))."
             )
-        _swap_bnb_optimizer(training_args)
+        _swap_bnb_optimizer(training_args, _native_shards_on_cpu(model, training_args))
         config = FSDP2Config.from_env()
         if _trainer_uses_cpu(training_args):
             config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh

@@ -1165,6 +1165,9 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
         for tname, arr, qtype in tensors:
             if qtype is None:
                 w.add_tensor(tname, arr)
+            elif arr is None:  # gguf-py cannot quantize k-quants: write zeroed blocks of that type
+                blocks = np.zeros((4, gguf.GGML_QUANT_SIZES[qtype][1]), dtype = np.uint8)
+                w.add_tensor(tname, blocks, raw_dtype = qtype)
             else:
                 w.add_tensor(tname, gguf.quants.quantize(arr, qtype), raw_dtype = qtype)
         w.write_header_to_file()
@@ -1188,3 +1191,24 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
     assert types_of(str(tmp_path / "missing.gguf")) is None
     assert types_of(str(tmp_path / "model.safetensors")) is None
     assert types_of(None) is None
+
+    k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
+    dense = write("vae_f16.gguf", [("w", x.astype(np.float16), None)])
+    all_types = _sd_cpp_args_module.model_files_quantized_weight_types
+
+    def route(files):
+        return _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = {}, weight_types = all_types(files)
+        )
+
+    with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
+    assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
+    assert route(with_k_te) == {}
+    assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
+    q8_only = SdCppModelFiles(
+        diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
+    )
+    assert all_types(q8_only) == frozenset({"Q8_0"})
+    assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
+    assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None
