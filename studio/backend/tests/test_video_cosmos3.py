@@ -823,6 +823,25 @@ def test_generate_passes_only_keywords_the_pipeline_takes(cosmos3_runtime, repo,
     assert result["fps"] == 16 and cosmos3_runtime[-1]["fps"] == 16
 
 
+@pytest.mark.parametrize("first_frame", [None, (1920, 1080)])
+def test_generate_returns_the_offloaded_vae_after_the_conditioning_encode(
+    cosmos3_runtime, monkeypatch, first_frame
+):
+    from core.inference import video_i2v
+
+    entered = []
+
+    @contextlib.contextmanager
+    def record(pipe):
+        entered.append(pipe)
+        yield
+
+    monkeypatch.setattr(video_i2v, "offload_vae_after_encode", record)
+    backend, _status = _loaded(EDGE)
+    backend.generate(prompt = "a robot arm", steps = 1, **_first_frame(first_frame))
+    assert entered == [backend._state.pipe]
+
+
 @pytest.mark.parametrize(
     "repo, first_frame, steps, frames, size",
     [
@@ -975,7 +994,10 @@ def test_generation_defaults(ids, expected):
     assert vf.default_video_generation_params(*ids) == expected
 
 
-@pytest.mark.parametrize("installed, available", [("0.39.0", False), ("0.40.0", True)])
+@pytest.mark.parametrize(
+    "installed, available",
+    [("0.39.0", False), ("0.40.0", False), ("0.41.0", True), ("0.41.0.dev0", True)],
+)
 def test_rows_hide_on_a_diffusers_without_edges_native_flow_schedule(
     monkeypatch, installed, available
 ):
