@@ -113,12 +113,19 @@ export interface PlanModel {
   loaded?: boolean;
 }
 
+export interface PlanHint {
+  id: string;
+  message: string;
+}
+
 export interface FlowPlan {
   models: PlanModel[];
   gpu_ops: number;
   cached_nodes: number;
   errors: ValidationIssue[];
   warnings: ValidationIssue[];
+  /** Advice about this computer's settings (absent from older Studios). */
+  hints?: PlanHint[];
 }
 
 export const planFlow = (

@@ -395,6 +395,7 @@ async def _ensure_model(
     # Another slot's model may have been evicted; read them again next time.
     ctx.resident.clear()
     ctx.resident[slot] = repo
+    note_loaded(ctx, slot, repo)
     _LOADED_VARIANT[slot] = wanted
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
@@ -402,6 +403,13 @@ async def _ensure_model(
         _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+def note_loaded(ctx: Any, slot: str, repo: str) -> None:
+    """Record a load this step made, for the flow's "Unload models when the run ends"."""
+    note = getattr(ctx, "note_loaded", None)
+    if callable(note):
+        note(slot, repo)
 
 
 async def poll_job(
@@ -745,6 +753,7 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
         deadline = time.monotonic() + LOAD_DEADLINE_S,
         knobs = {"transformer_quant": "off"},
     )
+    note_loaded(ctx, "image", repo)
 
 
 # (repo, adapter ids, diffusion load count) of the int8/fp8 build Flows last loaded with LoRAs baked in.
@@ -790,6 +799,7 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
         deadline = time.monotonic() + LOAD_DEADLINE_S,
         knobs = {"loras": sorted(loras, key = lambda item: item["id"])},
     )
+    note_loaded(ctx, "image", str(repo))
     _BAKED_LORAS["image"] = (
         str(repo).lower(),
         wanted,

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +20,7 @@ import {
   exportFlow,
   planFlow,
 } from "../api";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { documentFromState, useDocStore } from "../stores/doc-store";
 import type { FlowParam } from "../types";
 import { downloadBlob } from "./node-actions";
@@ -196,6 +198,11 @@ export function PlanDialog({
   onOpenChange,
 }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const flowId = useDocStore((s) => s.flowId);
+  const callsFlows = useDocStore((s) =>
+    Object.values(s.graph.nodes).some(
+      (n) => n?.type === "flow.call" && !n.disabled,
+    ),
+  );
   const [plan, setPlan] = useState<FlowPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -211,7 +218,7 @@ export function PlanDialog({
   }, [open, flowId]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>What this flow needs</DialogTitle>
           <DialogDescription>
@@ -238,10 +245,64 @@ export function PlanDialog({
                 {issue.message}
               </p>
             ))}
+            {(plan.hints ?? []).map((hint) => (
+              <div
+                key={hint.id}
+                className="flex items-start gap-3 rounded-md border px-3 py-2 text-sm"
+                data-testid={`flow-plan-hint-${hint.id}`}
+              >
+                <p className="min-w-0 flex-1 text-muted-foreground">
+                  {hint.message}
+                </p>
+                {hint.id === "multi_model" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => {
+                      onOpenChange(false);
+                      useSettingsDialogStore
+                        .getState()
+                        .openDialog("resources", {
+                          scrollTarget: "resources-model-memory",
+                        });
+                    }}
+                  >
+                    Open setting
+                  </Button>
+                )}
+              </div>
+            ))}
+            {(plan.models.length > 0 || callsFlows) && <UnloadAfterRunToggle />}
           </div>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The flow's "Unload models when the run ends": frees what a run loaded, so the next app gets the memory back. */
+function UnloadAfterRunToggle() {
+  const extra = useDocStore((s) => s.meta.meta);
+  const setMeta = useDocStore((s) => s.setMeta);
+  const on = extra?.unload_after_run === true;
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      <Switch
+        id="flow-unload-after-run"
+        checked={on}
+        onCheckedChange={(checked) =>
+          setMeta({ meta: { ...(extra ?? {}), unload_after_run: checked } })
+        }
+      />
+      <label htmlFor="flow-unload-after-run" className="flex-1">
+        Unload models when the run ends
+        <span className="block text-muted-foreground text-xs">
+          Frees the memory of models this flow loaded. Models loaded before the
+          run stay.
+        </span>
+      </label>
+    </div>
   );
 }
 

@@ -10,7 +10,7 @@ import secrets
 import time
 from typing import Any, Optional
 
-from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, poll_job, strip_think
+from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, note_loaded, poll_job, strip_think
 from core.flows.nodes.data import recipe_artifact
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
@@ -240,6 +240,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
             is_lora = trained.is_lora,
             deadline = deadline,
         )
+        note_loaded(ctx, "llm", trained.ref)
     except FlowNodeError:
         raise
     except Exception as exc:
