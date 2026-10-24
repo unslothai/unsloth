@@ -2520,8 +2520,9 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 # Cosmos3 components video never loads: the pipeline takes no vision_encoder, and Studio passes sound_tokenizer=None.
 COSMOS3_UNUSED_COMPONENTS = frozenset({"sound_tokenizer", "vision_encoder"})
-_CALLER_SUPPLIED_COMPONENTS = {
-    "HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"}),
+_CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# Never loaded, so never checked, whatever their folders hold.
+_UNLOADED_COMPONENTS = {
     "Cosmos3OmniPipeline": COSMOS3_UNUSED_COMPONENTS,
     "Cosmos3OmniDiffusersPipeline": COSMOS3_UNUSED_COMPONENTS,
 }
@@ -2665,6 +2666,7 @@ def local_pipeline_components_are_complete(
         except OSError:
             return False
     caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
+    unloaded = _UNLOADED_COMPONENTS.get(class_name, frozenset())
     declared = False
     try:
         for name, spec in payload.items():
@@ -2677,8 +2679,10 @@ def local_pipeline_components_are_complete(
                 continue
             if name in {"", ".."} or "\\" in name or Path(name).name != name:
                 return False
-            if name in excluded_components or (
-                name in caller_supplied and not (base / name).exists()
+            if (
+                name in excluded_components
+                or name in unloaded
+                or (name in caller_supplied and not (base / name).exists())
             ):
                 continue
             declared = True

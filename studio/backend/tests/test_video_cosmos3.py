@@ -468,6 +468,9 @@ def test_the_download_plan_stages_every_component_the_pipeline_reads(tmp_path, r
     for unused in ("sound_tokenizer", "vision_encoder"):
         shutil.rmtree(root / unused, ignore_errors = True)
     assert local_pipeline_components_are_complete(root, "model_index.json")
+    # A partial unused folder (config only, no weights) is still never checked.
+    _write_json(root / "sound_tokenizer" / "config.json", {})
+    assert local_pipeline_components_are_complete(root, "model_index.json")
 
 
 class _FakeScheduler:
