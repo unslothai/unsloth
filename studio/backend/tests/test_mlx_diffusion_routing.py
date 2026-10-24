@@ -578,13 +578,21 @@ def test_the_routed_load_epoch_survives_the_fallback(rig):
         rig.mlx._load_token = 5  # the two engines' own counters differ
         with account_access.media_load_lock:
             prior = media_load_ids.admitting("diffusion", rig.engine, "t1")
-            rig.engine.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_0.gguf",
-                                  local_files_only = True, hf_token = None, model_kind = "gguf")
+            rig.engine.begin_load(
+                "unsloth/Z-Image-Turbo-GGUF",
+                gguf_filename = "z-image-turbo-Q4_0.gguf",
+                local_files_only = True,
+                hf_token = None,
+                model_kind = "gguf",
+            )
             media_load_ids.admitted("diffusion", rig.engine, "t1", prior)
         epoch = rig.engine._load_token
         assert media_load_ids.current_id("diffusion", rig.engine) == "t1"
         _img2img(rig.engine)  # served by the diffusers fallback
-        assert rig.engine._primary() is rig.diffusers and rig.diffusers._load_token != rig.mlx._load_token
+        assert (
+            rig.engine._primary() is rig.diffusers
+            and rig.diffusers._load_token != rig.mlx._load_token
+        )
         assert rig.engine._load_token == epoch
         assert media_load_ids.current_id("diffusion", rig.engine) == "t1"
         rig.engine.unload()
