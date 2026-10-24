@@ -23,9 +23,16 @@ from typing import Any, Callable, Iterable, Optional
 
 import yaml
 
+try:
+    import regex as _regex  # Studio runtime requirement; re has no match timeout
+except ImportError:  # pragma: no cover
+    _regex = None
+
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
 MAX_PATTERN_CHARS = 2_000
+# A pattern's length doesn't bound its matching time: (a+)+$ on a long near-match backtracks for minutes.
+REGEX_TIMEOUT_SECONDS = 1.0
 RULE_TYPES = ("regex", "exact_match", "numeric", "json_schema", "length")
 NORMALIZERS = ("strip", "lower", "remove_commas", "collapse_spaces")
 
@@ -158,6 +165,8 @@ def validate_rule(rule: dict) -> dict:
             bands = rule.get("bands")
             if not isinstance(bands, list) or not bands:
                 raise RewardError("numeric needs a non-empty bands list.")
+            if not all(isinstance(b, dict) for b in bands):
+                raise RewardError("each numeric bands entry needs within and score.")
             out["bands"] = sorted(
                 (
                     {
@@ -165,7 +174,6 @@ def validate_rule(rule: dict) -> dict:
                         "score": _number(b.get("score"), "bands.score"),
                     }
                     for b in bands
-                    if isinstance(b, dict)
                 ),
                 key = lambda b: b["within"],
             )
@@ -403,6 +411,21 @@ def _json_matches(text: str, schema: dict) -> bool:
     )
 
 
+def _regex_hit(rule: dict, text: str) -> bool:
+    if _regex is None:
+        pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
+        timeout = {}
+    else:
+        pattern = _regex.compile(rule["pattern"], _regex.DOTALL | _regex.MULTILINE)
+        timeout = {"timeout": REGEX_TIMEOUT_SECONDS}
+    try:
+        if rule["mode"] == "fullmatch":
+            return pattern.fullmatch(text.strip(), **timeout) is not None
+        return pattern.search(text, **timeout) is not None
+    except TimeoutError:
+        return False
+
+
 def score_rule(
     rule: dict,
     text: str,
@@ -410,11 +433,7 @@ def score_rule(
 ) -> float:
     kind = rule["type"]
     if kind == "regex":
-        pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
-        hit = (
-            pattern.fullmatch(text.strip()) if rule["mode"] == "fullmatch" else pattern.search(text)
-        )
-        return rule["score"]["match" if hit else "miss"]
+        return rule["score"]["match" if _regex_hit(rule, text) else "miss"]
     if kind == "length":
         return rule["score"]["over" if len(text) > rule["max_chars"] else "under"]
     if kind == "json_schema":
@@ -495,6 +514,9 @@ def preview_scores(
         if s.get("kind") == "python":
             score = python_scores.get(s["name"])
         else:
-            score = score_rule(s["rule"], text, reference)
+            # Training reads the rule's compare_to column (make_reward_func), so the preview does too.
+            column = s["rule"].get("compare_to")
+            ref = row[column] if row and column in row else reference
+            score = score_rule(s["rule"], text, ref)
         out.append({"name": s["name"], "score": score})
     return out, isolation

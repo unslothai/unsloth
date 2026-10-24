@@ -178,3 +178,39 @@ def test_preview_scores_and_weights(client):
 def test_bundled_root_is_packaged():
     pyproject = Path(rewards.__file__).parents[4] / "pyproject.toml"
     assert "backend/core/training/bundled_rewards/**/*.md" in pyproject.read_text("utf-8")
+
+
+def test_a_backtracking_regex_rule_gives_up_instead_of_pinning_the_thread(monkeypatch):
+    # (a+)+$ against a long near-match backtracks for minutes; a Try it request would hold a worker.
+    import time
+
+    monkeypatch.setattr(rewards, "REGEX_TIMEOUT_SECONDS", 0.2)
+    rule = rewards.validate_rule(
+        {"type": "regex", "pattern": "(a+)+$", "mode": "search", "score": {"match": 1, "miss": 0}}
+    )
+    started = time.monotonic()
+    assert rewards.score_rule(rule, "a" * 40 + "!") == 0
+    assert time.monotonic() - started < 5
+    assert rewards.score_rule(rule, "aaa") == 1
+
+
+def test_preview_reads_each_rules_compare_to_column_like_training():
+    rule = {
+        "type": "exact_match",
+        "extract": None,
+        "compare_to": "label",
+        "score": {"match": 1, "miss": 0},
+    }
+    spec = {"name": "label-match", "kind": "rule", "rule": rewards.validate_rule(rule)}
+    row = {"answer": "72", "label": "yes"}
+    trained = rewards.make_reward_func(spec)(
+        completions = ["yes"], **{k: [v] for k, v in row.items()}
+    )
+    scores, _ = rewards.preview_scores([spec], "yes", reference = "72", row = row)
+    assert scores[0]["score"] == trained[0] == 1
+
+
+@pytest.mark.parametrize("bands", [[None], ["x"], [None, {"within": 1, "score": 1}]])
+def test_numeric_bands_must_all_be_mappings(bands):
+    with pytest.raises(rewards.RewardError, match = "bands"):
+        rewards.validate_rule({"type": "numeric", "extract": None, "bands": bands})
