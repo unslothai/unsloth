@@ -34,6 +34,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemInfoResponse,
   type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
@@ -50,7 +51,10 @@ import {
 } from "../api/hugging-face-cache";
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useIsAccountOwner } from "@/features/auth";
 import { CacheStorageRows } from "../components/cache-storage-rows";
+import { DeveloperModeSection } from "../components/developer-mode-section";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -267,6 +271,7 @@ type GpuPhysicalInventory = SystemGpuInfo & {
 
 export function ResourcesTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
@@ -1056,6 +1061,7 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <EngineVersionsSection />
       <InferenceEnginesSection />
 
       <ModelMemorySection ref={modelMemoryRef} />
@@ -1175,38 +1181,70 @@ export function ResourcesTab() {
         showModelHints={false}
       />
 
-      <SettingsSection title={t("settings.resources.environment.title")}>
-        <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </SettingsSection>
+      {isOwner ? <DeveloperModeSection /> : null}
+
+      <EnvironmentSection
+        systemInfo={systemInfo}
+        backendLabel={backendLabel}
+      />
     </div>
+  );
+}
+
+/** About renders this too, from its own system query. */
+export function EnvironmentSection({
+  systemInfo,
+  backendLabel,
+}: {
+  systemInfo: SystemInfoResponse;
+  backendLabel: string;
+}) {
+  const t = useT();
+  const unknownLabel = t("settings.resources.environment.unknown");
+  const hostReading = (value: string) =>
+    systemInfo.status !== "ready" ? unknownLabel : value;
+  return (
+    <SettingsSection title={t("settings.resources.environment.title")}>
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
+    </SettingsSection>
+  );
+}
+
+export function StandaloneEnvironmentSection() {
+  const systemInfo = useSystemInfo();
+  return (
+    <EnvironmentSection
+      systemInfo={systemInfo}
+      backendLabel={(systemInfo.device_backend ?? "cpu").toUpperCase()}
+    />
   );
 }

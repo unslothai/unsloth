@@ -24,7 +24,6 @@ import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Delete02Icon,
-  DiceFaces03Icon,
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
@@ -37,6 +36,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
@@ -182,7 +182,6 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -5209,12 +5208,11 @@ export function ImagesPage({
           type="button"
           variant="secondary"
           size="sm"
-          className="w-full"
+          className="w-fit self-start"
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-          Add image {numberOf(referenceImages.length)}
+          Add image
         </Button>
       )}
     </>
@@ -7262,30 +7260,31 @@ export function ImagesPage({
                   hint="Leave empty for a fresh random seed each run."
                   className="pt-2"
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <Input
                       placeholder="Random if empty"
                       value={seed}
                       onChange={(e) => setSeed(e.target.value)}
                       className="flex-1"
                     />
+                    <div className="flex shrink-0 items-center">
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Random seed"
                       title="Random seed each run"
                       disabled={seed === ""}
                       onClick={() => setSeed("")}
                     >
-                      <HugeiconsIcon icon={DiceFaces03Icon} className="size-4" />
+                      <Shuffle className="size-4" strokeWidth={1.5} />
                     </Button>
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0"
+                      className="size-9 rounded-full text-muted-foreground hover:text-foreground"
                       aria-label="Reuse last seed"
                       title={lastSeed === null ? "No image generated yet" : `Reuse last seed (${lastSeed})`}
                       disabled={lastSeed === null}
@@ -7293,8 +7292,9 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <Recycle className="size-4" strokeWidth={1.5} />
+                      <HistoryIcon className="size-4" strokeWidth={1.5} />
                     </Button>
+                    </div>
                   </div>
                 </Field>
 
@@ -7321,12 +7321,12 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
               <Button
-                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 h-10 px-7 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -7336,7 +7336,7 @@ export function ImagesPage({
             ) : (
               <>
                 <Button variant="dark"
-                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  className="relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -7348,7 +7348,7 @@ export function ImagesPage({
                       {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
                       <span className="relative z-10 inline-flex">
                         <Button
-                          className="h-11 px-5"
+                          className="h-10 px-4 text-ui-13"
                           variant="secondary"
                           disabled={busy !== null || varyBlocked !== null}
                           onClick={handleVary}
@@ -7371,7 +7371,7 @@ export function ImagesPage({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-11 px-5"
+                        className="relative z-10 h-10 px-4 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}

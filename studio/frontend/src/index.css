@@ -3119,6 +3119,11 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
+	/* Audio, Images and Video: 20px textareas and drop zones. */
+	[data-media-rail-root] {
+		--radius-xl: 20px;
+	}
+
 	/* Its outline buttons keep their border. */
 	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
 		border-color: var(--border);
@@ -4988,10 +4993,13 @@ html[data-chat-font] .aui-root {
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
-	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+}
+/* Only while loading: the finished toast keeps this class through the shared toast id. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {
+	align-items: center !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
