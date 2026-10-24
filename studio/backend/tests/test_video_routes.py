@@ -309,8 +309,10 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     devmod = _shared_setup_3(monkeypatch)
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(role, register = None, admit = None):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
@@ -340,7 +342,9 @@ def test_load_forwards_the_gpu_selection(client, monkeypatch):
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
     )
     monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", lambda ids: max(ids))
-    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role, register = None: register())
+    monkeypatch.setattr(
+        gpu_arbiter, "acquire_for", lambda role, register = None, admit = None: register()
+    )
     resp = client.post(
         "/api/inference/video/load",
         json = {

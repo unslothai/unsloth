@@ -267,6 +267,9 @@ async def video_download_plan(
         raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
+_VIDEO_LOAD_CANCELLED = "Video load was cancelled."
+
+
 @router.post("/video/load", response_model = VideoStatusResponse)
 @account_access.gpu_busy_route
 async def load_video_model(
@@ -282,8 +285,12 @@ async def load_video_model(
         redact_host_paths,
         restore_inventory_handles,
     )
+    from core.inference.chat_swap_kv import preparing_load
+
     try:
-        loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
+        # Carries the request's token, so an unload naming it stops this POST before it tears anything down.
+        with preparing_load("video", request.load_token):
+            loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers below, and the inner loader redacted only
         # native paths, which do not know inventory handles.
@@ -477,8 +484,23 @@ async def load_video_model_gated(
             media_load_ids.admitted("video", backend, request.load_token, prior)
             return started
 
+        from core.inference.chat_swap_kv import (
+            preparing_load_token,
+            raise_if_load_cancelled,
+            run_unless_load_cancelled,
+        )
+
+        preflight = preparing_load_token()
+
         def _begin_load():
-            return account_access.admit_media_load("video", _start_load, request.model_path)
+            # Checked under the preflight lock through admission, so a cancel lands before or after it.
+            return run_unless_load_cancelled(
+                _VIDEO_LOAD_CANCELLED,
+                account_access.admit_media_load,
+                "video",
+                _start_load,
+                request.model_path,
+            )
 
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
@@ -507,7 +529,10 @@ async def load_video_model_gated(
                 if multi_model_mode == "always":
                     raise refusal_for(image_slots, "image")
                 note_evictions(image_slots, evicted)
-                await asyncio.to_thread(images.unload)
+                # A load an unload cancelled never unloads the image model.
+                await asyncio.to_thread(
+                    run_unless_load_cancelled, _VIDEO_LOAD_CANCELLED, images.unload
+                )
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
         # worker tears the old model down and releases it.
         forced_cpu = (
@@ -529,20 +554,40 @@ async def load_video_model_gated(
             )
 
             def _acquire_and_begin():
+                raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+                admitted = []
+
+                def _admit():
+                    # Under the arbiter lock, before anything is evicted; the preflight lock is held
+                    # until the load registers, so a cancel never lands between the two.
+                    if preflight is None:
+                        return
+                    preflight.lock.acquire()
+                    admitted.append(True)
+                    raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+
                 token = eviction_sink.set(evicted)
                 try:
                     with _diffusion_training_admission():
                         return acquire_for_request(
                             VIDEO,
                             guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
+                            admit = _admit,
                             **fit_kwargs,
                         )
                 finally:
+                    if admitted:
+                        preflight.lock.release()
                     eviction_sink.reset(token)
 
             from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 
             swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
+            try:
+                raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+            except BaseException:
+                swap.close()
+                raise
             status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
@@ -964,6 +1009,16 @@ async def unload_video_model(
         unload_kwargs["expected_account"] = current_account_id()
     if expected_load_id:
         from core.inference import media_load_ids
+        from core.inference.chat_swap_kv import cancel_preparing_loads
+
+        # The POST carrying this token, if it is still in preflight: stopped (or registered, which
+        # the check below then names) before any eviction it would run.
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "video",
+            current_account_id(),
+            load_token = expected_load_id,
+        )
 
         def unload(only_if):
             # The same checks as below, once the token is known to name the load in the slot.

@@ -51401,6 +51401,31 @@ def _activate_checked(check, activate):
         before_engine_switch.reset(token)
 
 
+def _activate_unless_cancelled(preflight, check, activate):
+    """``_activate_checked``, refused before an engine switch unloads the active engine once an unload
+    cancelled this load's preflight. The preflight lock is taken at that check and held until the
+    switch is done (not through an sd-cli install before it), so a cancel lands before or after it."""
+    if preflight is None:
+        return _activate_checked(check, activate)
+    from core.inference.chat_swap_kv import raise_if_load_cancelled
+
+    held = []
+
+    def _check():
+        if not held:
+            preflight.lock.acquire()
+            held.append(True)
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+        if check is not None:
+            check()
+
+    try:
+        return _activate_checked(_check, activate)
+    finally:
+        if held:
+            preflight.lock.release()
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -51813,7 +51838,8 @@ async def load_diffusion_model(
     from core.inference.chat_swap_kv import preparing_load
 
     try:
-        with preparing_load("image"):
+        # Carries the request's token, so an unload naming it stops this POST before it tears anything down.
+        with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers, and the inner loader redacted native paths
@@ -52123,17 +52149,29 @@ async def load_diffusion_model_gated(
         note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
-        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
+        from core.inference.chat_swap_kv import (
+            preparing_load_token,
+            raise_if_load_cancelled,
+            run_unless_load_cancelled,
+        )
 
         raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+        preflight = preparing_load_token()
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
+            # Checked under the preflight lock, so a cancelled load never unloads the video model.
             await asyncio.to_thread(
-                _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
+                run_unless_load_cancelled,
+                _DIFFUSION_LOAD_CANCELLED,
+                _unload_native_video_sharing_the_sd_cpp_tree,
+                multi_model_mode,
+                evicted_slots,
             )
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
-            _activate_checked,
+            _activate_unless_cancelled,
+            preflight,
             functools.partial(refuse_replacing_media, DIFFUSION, multi_model_mode, media_names)
             if multi_model_mode == "always"
             else None,
@@ -52274,8 +52312,6 @@ async def load_diffusion_model_gated(
             # relabels the resident model.
             note_engine_pick(request.engine, engine, prior_state)
             return started
-
-        preflight = preparing_load_token()
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
@@ -53938,6 +53974,16 @@ async def unload_diffusion_model(
         unload = functools.partial(unload, expected_account = current_account_id())
     if expected_load_id:
         from core.inference import media_load_ids
+        from core.inference.chat_swap_kv import cancel_preparing_loads
+
+        # The POST carrying this token, if it is still in preflight: stopped (or registered, which
+        # the check below then names) before any engine switch or eviction it would run.
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "image",
+            current_account_id(),
+            load_token = expected_load_id,
+        )
 
         def guarded_unload(only_if):
             # The same checks as the plain unload, once the token is known to name the load in the slot.
