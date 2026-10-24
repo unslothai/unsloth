@@ -267,6 +267,7 @@ _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 _OPENCLAW_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
+
 # Shared by every agent command; only the config/env/command differ. Help is grouped into rich panels so `--help` reads as Model / Server / Session instead of one long unaligned list.
 _PANEL_MODEL = "Model"
 _PANEL_SERVER = "Server"
