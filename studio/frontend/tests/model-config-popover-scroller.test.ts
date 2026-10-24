@@ -28,7 +28,7 @@ test("the popover surface clips and caps, so it never scrolls itself", () => {
 test("the config page gets its own scroller inside that surface", () => {
   assert.ok(
     SELECTOR.includes(
-      '<div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*2+var(--overlay-scrollbar-gutter,0px))] pb-4 pl-4 [scrollbar-gutter:stable]">',
+      '<div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*4+var(--overlay-scrollbar-gutter,0px))] pb-4 pl-4 [scrollbar-gutter:stable]">',
     ),
     "the inner box scrolls, carries the padding the surface gave up, and reserves its scrollbar gutter: on an auto gutter the custom scrollbar re-laid out the whole page twice a frame while a slider was dragged",
   );

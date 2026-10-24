@@ -678,7 +678,7 @@ function ModelSelectorContent({
       >
         {visibleConfigTarget ? (
           // Half the left inset before the bar; an overlay bar takes its measured strip on top.
-          <div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*2+var(--overlay-scrollbar-gutter,0px))] pb-4 pl-4 [scrollbar-gutter:stable]">
+          <div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*4+var(--overlay-scrollbar-gutter,0px))] pb-4 pl-4 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,
