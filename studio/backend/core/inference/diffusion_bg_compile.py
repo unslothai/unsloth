@@ -77,10 +77,8 @@ def force_eager(on: bool = True):
 
 
 def recording(module: Any) -> bool:
-    """True when a call into ``module`` now records inputs for its pending background compile.
-
-    A caller that reshapes the call when compiled (the Z-Image CFG split) must reshape the recorded one too, or the
-    background compile builds a graph the compiled renders never run."""
+    """True when a call into ``module`` now records inputs for its pending background compile; callers that reshape
+    compiled calls (Z-Image CFG split) must reshape this one too, or the compile builds a graph nothing runs."""
     if not eager_forced() or _NO_RECORD.get():
         return False
     for hook in tuple((getattr(module, "_forward_pre_hooks", None) or {}).values()):
@@ -227,7 +225,6 @@ class BackgroundCompile:
         return None
 
     def wants_samples(self) -> bool:
-        """Whether an eager-forced call into the module now would be recorded for the background compile."""
         return (
             self.state == "recording"
             and len(self.samples) < self.max_samples

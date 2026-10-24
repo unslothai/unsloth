@@ -689,8 +689,7 @@ def test_compiled_only_ignores_a_poisoned_graph_handle():
 
 
 def test_compiled_only_honours_the_background_compile_eager_gate():
-    """Eager-forced with nothing recording (the compile already runs in the background): compiled calls and graphs are
-    bypassed, so the guided call runs batched."""
+    """Eager-forced with nothing recording (compile already running): the guided call runs batched."""
     from core.inference import diffusion_bg_compile as bg
 
     model = _model()
@@ -715,8 +714,7 @@ def test_compiled_only_honours_the_background_compile_eager_gate():
 
 
 def test_background_compile_recording_render_splits_and_records_the_compiled_shape():
-    """The eager render recording for a pending background compile splits like the compiled renders will: it records
-    the guidance-off batch, so the first compiled guided render after the background replay compiles nothing new."""
+    """The recording render splits, so the compiled render after the background replay compiles nothing new."""
     from core.inference import diffusion_bg_compile as bg
     from core.inference.diffusion_cuda_graph import _rebuild
 
@@ -739,7 +737,7 @@ def test_background_compile_recording_render_splits_and_records_the_compiled_sha
             recorded = [_run(model, *args) for _ in range(3)]
     shapes = sorted(tuple(c[0].shape) for _, c, *_ in rec.samples)
     stats = dict(zs.zimage_cfg_split_status(pipe))
-    # What kick() runs: Studio's regional compile, then the recorded inputs; then the user's next compiled render.
+    # What kick() runs: regional compile, then the recorded inputs.
     _compile_blocks(model)
     with torch.no_grad():
         for spec, clones, *_ in rec.samples:
@@ -753,13 +751,11 @@ def test_background_compile_recording_render_splits_and_records_the_compiled_sha
     assert zs.zimage_cfg_split_status(pipe)["split"] == 4
     assert stats == {"armed": True, "split": 3, "batched": 0}
     assert shapes == [(16, 1, 8, 8)] * 2
-    # Priced as it runs: the guard sizes the recording render at the guidance-off batch.
     assert priced_off is True
     for out in recorded:
         for s, a, b in zip(out, alone, batched):
             assert torch.equal(s, a)
             torch.testing.assert_close(s, b, atol = 1e-5, rtol = 1e-4)
-    # Outside a recording render nothing records, so other eager renders keep the batched call.
     assert bg.recording(model) is False
 
 

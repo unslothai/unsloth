@@ -254,8 +254,6 @@ def _routed_now(slots: dict) -> bool:
 
 
 def _records_for_compile(denoiser: Any) -> bool:
-    """A render recording inputs for a pending background compile: it splits like the compiled renders will, so the
-    background compile builds the guidance-off batch graph they run instead of a doubled one nothing replays."""
     try:
         from .diffusion_bg_compile import recording
         return recording(denoiser)
@@ -264,8 +262,7 @@ def _records_for_compile(denoiser: Any) -> bool:
 
 
 def _eager_now(pipe: Any, denoiser: Any, slots: dict) -> bool:
-    """compiled_only with nothing compiled or graphed, nothing recorded for a background compile and no active router:
-    the render stays batched (split on OOM)."""
+    """compiled_only, nothing compiled/graphed/recording and no active router: stays batched (split on OOM)."""
     return (
         bool(slots.get(_COMPILED_ONLY_ATTR))
         and not _graphs_engaged(pipe, denoiser)
