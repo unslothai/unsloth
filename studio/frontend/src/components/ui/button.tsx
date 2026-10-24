@@ -52,7 +52,9 @@ export const buttonVariants = cva(
       },
     },
     // A filled action button has one shape at every text size, icon or not, so sm, lg and hero
-    // read as the same control as default. Ghost and link stay compact for toolbars and inline actions.
+    // read as the same control as default: 12px from the edge to the label at the sides and 8px above
+    // and below its line, the 1px border included. Icons take no height of their own, so an icon never
+    // adds padding. Ghost and link stay compact for toolbars and inline actions.
     compoundVariants: [
       {
         variant: [
@@ -66,7 +68,7 @@ export const buttonVariants = cva(
         ],
         size: ["default", "sm", "lg", "hero"],
         class:
-          "h-9 gap-1.5 px-3 py-0 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
+          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] [&_svg]:-my-2",
       },
     ],
     defaultVariants: {

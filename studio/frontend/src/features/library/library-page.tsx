@@ -148,7 +148,7 @@ function nameMatches(name: string, needle: string): boolean {
 }
 
 const BAR_PILL =
-  "flex h-9 items-center gap-2 rounded-full px-3 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium [&_svg]:-my-2 outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 
