@@ -225,9 +225,48 @@ def apply_fsdp2_prefetch(
         behind = units[max(0, i - backward_depth) : i][::-1]
         if ahead:
             unit.set_modules_to_forward_prefetch(ahead)
+            _skip_forward_prefetch_in_backward(unit, ahead)
         if behind:
             unit.set_modules_to_backward_prefetch(behind)
     return len(units)
+
+
+def _in_backward():
+    task = getattr(torch._C, "_current_graph_task_id", None)
+    return task is not None and task() != -1
+
+
+def _skip_forward_prefetch_in_backward(unit, ahead):
+    """Gradient checkpointing re-runs a block's forward inside backward, which fires its pre-forward
+    hook and with it the explicit forward prefetch of block i+1: block i+1 has already run its backward
+    and been resharded, so it is gathered again for nothing (one wasted all-gather per block per
+    micro-batch). Clear the forward prefetch while autograd is running a backward and restore it for
+    the next real forward. Public FSDPModule API only; `UNSLOTH_FSDP2_RECOMPUTE_PREFETCH=1` keeps torch's
+    behaviour."""
+    if os.environ.get("UNSLOTH_FSDP2_RECOMPUTE_PREFETCH", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    if getattr(unit, "_unsloth_recompute_prefetch_hooked", False):
+        unit._unsloth_forward_prefetch = list(ahead)
+        return
+    unit._unsloth_forward_prefetch = list(ahead)
+    state = {"cleared": False}
+
+    def _pre_forward(module, args):
+        if _in_backward():
+            if not state["cleared"]:
+                module.set_modules_to_forward_prefetch([])
+                state["cleared"] = True
+        elif state["cleared"]:
+            module.set_modules_to_forward_prefetch(module._unsloth_forward_prefetch)
+            state["cleared"] = False
+
+    # prepend: runs before FSDP's own pre-forward hook, which issues the prefetch.
+    unit.register_forward_pre_hook(_pre_forward, prepend = True)
+    unit._unsloth_recompute_prefetch_hooked = True
 
 
 def _env_int(name, default):
