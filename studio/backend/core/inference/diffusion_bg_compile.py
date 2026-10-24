@@ -35,6 +35,9 @@ _NO_CAPTURE: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_no_record", default = False
 )
+_AUXILIARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_diffusion_auxiliary_pass", default = False
+)
 
 
 def enabled() -> bool:
@@ -67,6 +70,63 @@ def no_record():
         _NO_RECORD.reset(token)
 
 
+def auxiliary() -> bool:
+    return _AUXILIARY.get()
+
+
+@contextlib.contextmanager
+def auxiliary_pass():
+    """Detailer crop inpaints: eager, uncaptured, unrecorded, uncounted. Each box is its own size, so compiling
+    them recompiled per detection and used up the per-module graph cap the main render needs."""
+    tokens = (_AUXILIARY.set(True), _NO_RECORD.set(True), _FORCE_EAGER.set(True))
+    try:
+        yield
+    finally:
+        _FORCE_EAGER.reset(tokens[2])
+        _NO_RECORD.reset(tokens[1])
+        _AUXILIARY.reset(tokens[0])
+
+
+def gate_compiled_eager(modules: Any) -> Callable[[], None]:
+    """Route ``Module.compile``d modules to eager ``_call_impl`` under ``force_eager``; returns the restore.
+    Without it force_eager only reaches regional blocks and graph wrappers, which still call the compiled U-Net."""
+    installed: list = []
+    for module in modules or ():
+        inner = getattr(module, "_compiled_call_impl", None)
+        if inner is None:
+            continue
+        eager = getattr(module, "_call_impl", None)
+        if eager is None:
+            continue
+
+        def gate(
+            *args: Any,
+            _inner: Any = inner,
+            _eager: Any = eager,
+            **kwargs: Any,
+        ) -> Any:
+            if _FORCE_EAGER.get():
+                return _eager(*args, **kwargs)
+            return _inner(*args, **kwargs)
+
+        try:
+            module._compiled_call_impl = gate
+        except Exception:  # noqa: BLE001 - not a settable module
+            continue
+        installed.append((module, gate, inner))
+
+    def restore() -> None:
+        for module, gate, inner in installed:
+            try:
+                if getattr(module, "_compiled_call_impl", None) is gate:
+                    module._compiled_call_impl = inner
+            except Exception:  # noqa: BLE001
+                pass
+        installed.clear()
+
+    return restore
+
+
 @contextlib.contextmanager
 def force_eager(on: bool = True):
     token = _FORCE_EAGER.set(bool(on))
@@ -74,6 +134,22 @@ def force_eager(on: bool = True):
         yield
     finally:
         _FORCE_EAGER.reset(token)
+
+
+def recording(module: Any) -> bool:
+    """True when a call into ``module`` now records inputs for its pending background compile; callers that reshape
+    compiled calls (Z-Image CFG split) must reshape this one too, or the compile builds a graph nothing runs."""
+    if not eager_forced() or _NO_RECORD.get():
+        return False
+    for hook in tuple((getattr(module, "_forward_pre_hooks", None) or {}).values()):
+        owner = getattr(hook, "__self__", None)
+        if (
+            isinstance(owner, BackgroundCompile)
+            and owner.module is module
+            and owner.wants_samples()
+        ):
+            return True
+    return False
 
 
 def _cuda_graph_helpers() -> tuple[Callable, Callable, Callable]:
@@ -208,6 +284,13 @@ class BackgroundCompile:
             self.error = f"record: {type(exc).__name__}: {exc}"
         return None
 
+    def wants_samples(self) -> bool:
+        return (
+            self.state == "recording"
+            and len(self.samples) < self.max_samples
+            and self._handle is not None
+        )
+
     def _remove_hook(self) -> None:
         handle, self._handle = self._handle, None
         if handle is not None:
@@ -302,7 +385,8 @@ class BackgroundCompile:
                 with mode:
                     self.module(*args, **kwargs)
                 if torch.cuda.is_available():
-                    torch.cuda.synchronize()
+                    from .diffusion_cuda_graph import synchronize_outside_capture
+                    synchronize_outside_capture()
             self.compile_s = time.perf_counter() - t0
             self._finish("done")
             if self.logger is not None:

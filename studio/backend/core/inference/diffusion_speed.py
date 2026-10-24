@@ -563,7 +563,7 @@ def apply_speed_optims(
         "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    if getattr(target, "backend", None) == "rocm":
+    if getattr(target, "backend", None) in ("rocm", "mps"):
         # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
         try:
             from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks

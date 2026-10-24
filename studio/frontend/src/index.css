@@ -193,6 +193,11 @@
 		font-family: var(--font-heading) !important;
 		font-weight: 500 !important;
 	}
+	/* Every red button, hand-rolled ones included, takes the button shade of red. */
+	button,
+	[role="button"] {
+		--destructive: var(--destructive-button);
+	}
 }
 
 
@@ -281,6 +286,8 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Red buttons: this as text, at 10% as the fill. */
+	--destructive-button: #ce4035;
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
 	--border-base: oklch(0.9208 0 0);
@@ -512,6 +519,7 @@
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #fcfcfc;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	--destructive-button: #ed716a;
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
@@ -3119,6 +3127,11 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
+	/* Audio, Images and Video: 20px textareas and drop zones. */
+	[data-media-rail-root] {
+		--radius-xl: 20px;
+	}
+
 	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
 	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
 	.unsloth-model-selector-menu {
@@ -5003,10 +5016,13 @@ html[data-chat-font] .aui-root {
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
-	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+}
+/* Only while loading: the finished toast keeps this class through the shared toast id. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {
+	align-items: center !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
