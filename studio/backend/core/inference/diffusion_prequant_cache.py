@@ -585,16 +585,12 @@ _REMOTE_TTL_SECONDS = 300.0
 _REMOTE_TIMEOUT_SECONDS = 5.0
 _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
-# Endpoint -> monotonic time its connection failed (refused / timed out). Every shard of every lookup asks the same
-# host, so after one failure the rest are answered "unknown" (the local snapshot stands, as huggingface_hub does on
-# a failed HEAD) for the TTL, instead of each waiting out its own timeout.
+# Endpoint -> monotonic time its connection failed; later probes answer "unknown" for the TTL instead of timing out.
 _UNREACHABLE: dict[str, float] = {}
 
 
 def _connection_failed(exc: BaseException) -> bool:
-    """A transport failure that says nothing about the repo: connect refused / reset, connect or read timeout. Not an
-    HTTP answer (gated, 404, 5xx, rate limit) and not a proxy error, which huggingface_hub raises instead of falling
-    back to the cache."""
+    """Connect / timeout failure only; HTTP answers are per repo and proxy errors are not cache fallbacks in HF."""
     try:
         import httpx
         if isinstance(exc, httpx.ProxyError):
@@ -676,7 +672,7 @@ def _remote_etag(
     with _lock:
         down_at = _UNREACHABLE.get(endpoint)
     if down_at is not None and time.monotonic() - down_at < _REMOTE_TTL_SECONDS:
-        return None  # the Hub did not answer moments ago: unanswerable, without another timeout
+        return None
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.utils import EntryNotFoundError
