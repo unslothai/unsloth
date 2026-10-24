@@ -76,7 +76,14 @@ def _backend(seen: dict, *, supports_tool_passthrough = False):
     )
 
 
-def _counted_cap(payload, backend, request, *, conversation, pausable = True) -> int:
+def _counted_cap(
+    payload,
+    backend,
+    request,
+    *,
+    conversation,
+    pausable = True,
+) -> int:
     return _openai_llama_admission_enforced_max_tokens(
         payload,
         request = request,

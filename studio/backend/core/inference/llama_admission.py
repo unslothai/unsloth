@@ -1415,10 +1415,7 @@ class LlamaAdmissionQueue:
             # A parked holder owns no slot but is coming back to this queue, so evicting it here would resume it against
             # a fresh 1-slot pool.
             return (
-                self._in_use == 0
-                and not self._waiters
-                and not self._parked
-                and not self._preempted
+                self._in_use == 0 and not self._waiters and not self._parked and not self._preempted
             )
 
     def retain_preempted(self) -> None:
