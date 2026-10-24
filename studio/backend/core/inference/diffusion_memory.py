@@ -3969,13 +3969,9 @@ def prefer_whole_module_offload(
 ) -> MemoryPlan:
     """``refined`` (what ``refine_plan_from_loaded_weights`` returned), or whole-module offload in its place.
 
-    Below the streamed tiers' floor whole-module offload is the only tier, and it holds the whole denoiser on the card
-    while it runs; a few hundred MiB more free VRAM used to switch to a group plan streaming all of it every step.
-    FLUX.2-klein-4B bf16 on B200, 4 steps at 1024^2, 12.25 GiB free: 0.34 s per image whole-module vs 0.60 s streamed
-    (0.029 vs 0.17 s per step; 0.37 vs 0.73 s with 5.5 of 7.4 GB pinned). ComfyUI likewise loads the whole denoiser
-    for sampling once it fits beside its inference reserve (model_management.load_models_gpu). Applied only to a plain
-    bf16 denoiser the streamed plan does not pin whole: on a Kaggle T4 (fp16, no bf16) stock diffusers whole-module
-    offload ran 2.5x slower than streaming at 4 steps (one run), so fp16, packed, fp8-stored and torchao denoisers keep the ladder."""
+    Below the streamed tiers' floor whole-module offload holds the whole denoiser on the card while it runs; a few
+    hundred MiB more free VRAM used to switch to streaming all of it every step, but uploading it once per call beats
+    that (FLUX.2-klein-4B bf16, B200: 0.34 vs 0.60 s per image). Plain bf16 only: an fp16 T4 run pointed the other way."""
     try:
         if (
             getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
