@@ -35,6 +35,7 @@ from studio.backend.utils.coding_agents import (
     deepseek_harness_executables_on_path,
     is_deepseek_harness_executable,
 )
+from unsloth_cli import claude_desktop_app as _claude_desktop
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -503,6 +504,16 @@ _CODEX_APP_OPTION = typer.Option(
         "Switch the Codex desktop app to Unsloth instead of starting the CLI, open it, and "
         "switch it back when this command exits or Unsloth stops (the app only offers one "
         "provider's models at a time)."
+    ),
+)
+_CLAUDE_APP_OPTION = typer.Option(
+    False,
+    "--app",
+    rich_help_panel = _PANEL_SESSION,
+    help = (
+        "Switch Claude Desktop (macOS) to Unsloth instead of starting Claude Code: point its "
+        "third-party gateway profile at a local Unsloth gateway, open it, and switch it back "
+        "when this command exits or Unsloth stops."
     ),
 )
 
@@ -6793,6 +6804,183 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
             signal.signal(signal.SIGINT, previous_sigint)
 
 
+_CLAUDE_APP_AGENT = "claude-desktop"
+_CLAUDE_APP_LABEL = "Claude app"
+
+
+def _claude_app_preflight() -> Path:
+    # Same scope as `ollama launch claude-desktop`, which only launches on macOS.
+    if not _claude_desktop.can_launch():
+        _fail("--app switches Claude Desktop, which Unsloth can only drive on macOS so far.")
+    path = _claude_desktop.app_path()
+    if path is None:
+        _fail(
+            "Claude Desktop isn't installed (looked for /Applications/Claude.app and "
+            "~/Applications/Claude.app). Install it from https://claude.ai/download and re-run."
+        )
+    return path
+
+
+def _claude_app_write(path: Path, text: str) -> None:
+    if path.is_symlink():
+        _fail(f"{path} is a symlink, so Unsloth won't rewrite it.")
+    _write_app_file(path, text)
+
+
+def _switch_claude_app_back(state_path: Path, state: dict) -> list:
+    """Quit Claude Desktop if it is open, then put its profile files back."""
+    notes = []
+    # Claude writes its settings while it shuts down, so restore only after it has quit.
+    if _claude_desktop.is_running():
+        _claude_desktop.quit_app()
+        if not _claude_desktop.wait_for_exit():
+            notes.append(
+                "Claude Desktop did not quit; quit it yourself so it keeps the switch back."
+            )
+        else:
+            notes.append(
+                "Quit Claude Desktop to switch it back; open it again to use your usual Claude."
+            )
+    files = state.get("files") or {}
+    notes += _claude_desktop.restore_profile(files, _write_app_file)
+    for name, record in files.items():
+        path = Path(name)
+        backup = path.with_name(path.name + ".unsloth-backup")
+        original = record.get("original")
+        if original is not None and _claude_desktop.read_text(path) == original:
+            if record.get("mode") is not None:
+                with contextlib.suppress(OSError):
+                    os.chmod(path, record["mode"])
+            backup.unlink(missing_ok = True)
+        elif original is not None and backup.exists():
+            notes.append(f"Kept your original {path.name} at {backup}.")
+    revoked = state.get("key_id") is None or _revoke_app_key(state.get("base", ""), state["key_id"])
+    state_path.unlink(missing_ok = True)
+    if not revoked:
+        notes.append(
+            "Couldn't reach Unsloth to revoke the app's key; delete 'Claude app' in "
+            "Unsloth → Settings → API."
+        )
+    return notes
+
+
+def _recover_claude_app() -> Optional[dict]:
+    state_path = _app_state_path(_CLAUDE_APP_AGENT)
+    state = _read_json_object(state_path) or {}
+    if not state.get("files"):
+        return None
+    if _codex_app_owner_alive(state.get("owner")):
+        return state
+    notes = _switch_claude_app_back(state_path, state)
+    typer.echo(
+        "Switched Claude Desktop back from an earlier `unsloth start claude --app` that did not "
+        "exit cleanly."
+    )
+    for note in notes:
+        typer.echo(note)
+    return None
+
+
+def _confirm_claude_restart() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    return typer.confirm("Restart Claude Desktop to use Unsloth?", default = True)
+
+
+def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app: Path) -> None:
+    if not is_loopback_url(base) and not explicit_key:
+        _fail(
+            f"{base} isn't on this machine. --app hands the {_CLAUDE_APP_LABEL} a key for it, "
+            "so pass the key for that server with --api-key."
+        )
+    target = _AppTarget(_CLAUDE_APP_AGENT, _CLAUDE_APP_LABEL, Path())
+    state_path = _app_state_path(_CLAUDE_APP_AGENT)
+    targets = _claude_desktop.target_paths()
+    try:
+        files = _claude_desktop.snapshot(targets)
+    except ValueError as exc:
+        _shutdown_auto_served()
+        _fail(f"{exc} Fix it and re-run; nothing was changed.")
+    key_id, gateway, new_state = None, None, None
+    try:
+        key, key_id = _app_api_key(target, base, explicit_key, {})
+        token = _claude_desktop.new_token()
+        gateway = _claude_desktop.Gateway(
+            base, key, _claude_desktop.gateway_model(entry), token
+        ).start()
+        for name, record in files.items():
+            record["mode"] = _app_file_mode(Path(name))
+            if record["original"] is not None:
+                path = Path(name)
+                _write_app_file(path.with_name(path.name + ".unsloth-backup"), record["original"])
+        new_state = {
+            "base": base,
+            "key": key,
+            "key_id": key_id,
+            "gateway": gateway.base_url,
+            "owner": _codex_app_owner(),
+            "files": files,
+        }
+        # Saved before any write, so a crash part way through is still switched back.
+        _write_private_json(state_path, new_state)
+
+        def write(path: Path, text: str) -> None:
+            # Each record names what it is about to write first, so a crash mid-switch is undone.
+            _write_private_json(state_path, new_state)
+            _claude_app_write(path, text)
+
+        def switch() -> None:
+            _claude_desktop.apply_profile(targets, files, gateway.base_url, token, write)
+            _write_private_json(state_path, new_state)
+
+        if _claude_desktop.is_running():
+            if _confirm_claude_restart():
+                _claude_desktop.quit_app()
+                if not _claude_desktop.wait_for_exit():
+                    _fail("Claude Desktop did not quit; quit it manually and re-run the command.")
+                # Claude writes its settings while it shuts down; switch after it is gone.
+                switch()
+                _claude_desktop.open_app(app)
+            else:
+                switch()
+                typer.echo(
+                    "Quit and reopen Claude Desktop when you're ready for the switch to take effect."
+                )
+        else:
+            switch()
+            _claude_desktop.open_app(app)
+    except BaseException:
+        if new_state is not None:
+            with contextlib.suppress(Exception):
+                _claude_desktop.restore_profile(files, _write_app_file)
+            state_path.unlink(missing_ok = True)
+        if gateway is not None:
+            gateway.stop()
+        _revoke_new_app_key(base, key_id, {})
+        _shutdown_auto_served()
+        raise
+    try:
+        typer.echo(
+            f"Claude Desktop is on {entry['id']} from Unsloth at {base} until this command exits "
+            "(Ctrl+C). It shows up as the Unsloth profile. If this command is killed instead, "
+            "the next `unsloth start claude` switches the app back."
+        )
+        _hold_codex_app(base)
+    finally:
+        # A second Ctrl+C must not cut the switch back short.
+        previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            notes = _switch_claude_app_back(state_path, new_state)
+            gateway.stop()
+            _shutdown_auto_served()
+            with contextlib.suppress(OSError):
+                typer.echo("Switched Claude Desktop back to your usual Claude profile.")
+                for note in notes:
+                    typer.echo(note)
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
+
+
 def _check_app_flags(
     requested: bool,
     args: list,
@@ -7239,10 +7427,24 @@ def claude(
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
     auto_route: bool = _AUTO_ROUTE_OPTION,
+    app: bool = _CLAUDE_APP_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _check_app_flags(app, ctx.args, as_subagent)
+    if app and auto_route:
+        _fail("--auto-route is for Claude Code; Claude Desktop has no hook to run it.")
+    running = _recover_claude_app()
+    claude_app = None
+    if app:
+        if running is not None:
+            _fail(
+                "Claude Desktop is already on Unsloth for another `unsloth start claude --app` "
+                f"(PID {running['owner']['pid']}). Stop that one first."
+            )
+        # Before any model load: there is nothing to switch on another OS or without the app.
+        claude_app = _claude_app_preflight()
     # The route gate is a hook the Windows claude cannot run from WSL, so its own tools would stay on.
     if auto_route and _wsl_windows_executable(["claude"]):
         _fail("--auto-route needs claude installed inside WSL, not the Windows claude.")
@@ -7282,7 +7484,7 @@ def claude(
                 refuse = refuse_small_context,
             ),
         )
-    _require_agent_for_launch("claude", install_hint, launch)
+    _require_agent_for_launch("claude", install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -7295,7 +7497,8 @@ def claude(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _ALL_REQUEST_FIELDS,
+        # The app reads no per-launch flags, so the server applies them.
+        carried = frozenset() if app else _ALL_REQUEST_FIELDS,
     )
     base, key, entry = _connect(
         api_key,
@@ -7329,6 +7532,13 @@ def claude(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app and entry.get("connection"):
+        _shutdown_auto_served()
+        _fail(
+            "Claude Desktop can't use a Connection model yet. Drop --app to run it in Claude Code."
+        )
+    if app:
+        return _claude_app_session(base, api_key, entry, claude_app)
     model_id = entry["id"]
     if as_subagent:
         subagent_id = (
