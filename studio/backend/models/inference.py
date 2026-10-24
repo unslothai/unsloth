@@ -60,6 +60,19 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
+MlxOffload = Optional[Union[Literal["auto", "off"], float]]
+
+
+def _mlx_offload_amount(value: Any) -> Any:
+    """``None`` (the default, as ``"auto"``), ``"auto"``, ``"off"``, or the fraction to read from
+    disk, in (0, 1]."""
+    if value is None or value in ("auto", "off"):
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
+        raise ValueError("must be 'auto', 'off' or the fraction to keep on disk, in (0, 1]")
+    return float(value)
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -204,6 +217,28 @@ class LoadRequest(BaseModel):
             "accuracy drops. Applied only when the model supports it; the status reports the "
             "reason otherwise."
         ),
+    )
+    mlx_ple_offload: MlxOffload = Field(
+        None,
+        description = (
+            "MLX only: the fraction of the per-layer embedding (PLE) tables read from the "
+            "checkpoint on disk instead of held in memory, 'off', or 'auto' (also null): read "
+            "from disk only when the load would otherwise leave less than half the memory past "
+            "the weights for context. Applied only to a model with PLE tables; the status "
+            "reports the reason otherwise."
+        ),
+    )
+    mlx_expert_offload: MlxOffload = Field(
+        None,
+        description = (
+            "MLX only: the fraction of each MoE layer's routed experts read from the checkpoint "
+            "on disk on demand instead of held in memory, 'off', or 'auto' (also null): as "
+            "mlx_ple_offload, after the PLE tables. Slower decode; applied only to quantized "
+            "routed experts."
+        ),
+    )
+    _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
+        _mlx_offload_amount
     )
 
     gpu_ids: Optional[List[int]] = Field(
@@ -1125,6 +1160,11 @@ class EstimateMemoryRequest(BaseModel):
         "a model that never used it, and reading it here would quantize an estimate "
         "for a load whose cache stays full width.",
     )
+    mlx_ple_offload: MlxOffload = Field(None, description = "As /load's mlx_ple_offload.")
+    mlx_expert_offload: MlxOffload = Field(None, description = "As /load's mlx_expert_offload.")
+    _mlx_offload_amounts = field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")(
+        _mlx_offload_amount
+    )
 
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
@@ -1175,6 +1215,20 @@ class MlxDraftersResponse(BaseModel):
     """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
 
     drafters: list[MlxDrafter] = Field(default_factory = list)
+
+
+class MlxOffloadEstimate(BaseModel):
+    """What an MLX load reads from disk instead of holding in memory, "auto" decided."""
+
+    ple: Optional[float] = Field(
+        None, description = "Fraction of the PLE tables read from disk; null for none"
+    )
+    experts: Optional[float] = Field(
+        None, description = "Fraction of the routed experts read from disk; null for none"
+    )
+    offloadable: list[Literal["ple", "experts"]] = Field(
+        default_factory = list, description = "What the load can read from disk at all"
+    )
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1281,6 +1335,11 @@ class EstimateMemoryResponse(BaseModel):
         False,
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+    mlx_offload: Optional[MlxOffloadEstimate] = Field(
+        None,
+        description = "MLX: what the load reads from disk instead of memory, priced in "
+        "weights_bytes; null when not MLX.",
     )
 
 
@@ -1389,6 +1448,9 @@ class MemoryEstimate(BaseModel):
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
     )
+    mlx_offload: Optional[MlxOffloadEstimate] = Field(
+        None, description = "MLX: what the load reads from disk; null when not MLX"
+    )
     context_fitted: Optional[int] = Field(
         None,
         description = "The window MLX would fit to this machine's memory for a load that "
@@ -1465,6 +1527,22 @@ class GenerateRequest(BaseModel):
     repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
     image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
+
+
+class MlxOffloadPart(BaseModel):
+    applied: Optional[float] = Field(None, description = "Fraction read from disk; null for none")
+    requested: Optional[Union[str, float]] = Field(None, description = "As the load asked for it")
+    reason: Optional[str] = Field(None, description = "Why a requested offload is not applied")
+
+
+class MlxOffloadStatus(BaseModel):
+    """The PLE tables and routed experts an MLX load reads from disk instead of memory."""
+
+    ple: MlxOffloadPart
+    experts: MlxOffloadPart
+    disk_bytes: Optional[int] = Field(
+        None, description = "Weight bytes the loaded model reads from the checkpoint on demand"
+    )
 
 
 class _InferenceRuntimeFields(BaseModel):
@@ -1749,6 +1827,7 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
         "(for example nax_unavailable or no_eligible_projections)",
     )
+    mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
@@ -2154,6 +2233,10 @@ class LlamaFlagCatalogResponse(BaseModel):
 class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
@@ -4806,6 +4889,38 @@ class DiffusionLoadRequest(BaseModel):
         return self
 
 
+class HiresSpec(BaseModel):
+    """Hires fix: render, upscale, then refine with img2img at ``denoise`` (txt2img only).
+
+    ``steps`` is the exact refine count; None = the base pass's steps."""
+
+    scale: float = Field(1.5, ge = 1.0, le = 4.0, description = "Upscale factor (A1111 'Hires upscale')")
+    denoise: float = Field(
+        0.5,
+        ge = 0.0,
+        le = 1.0,
+        description = "Refine-pass denoising strength (A1111 'Denoising strength'); 0 = upscale only",
+    )
+    steps: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 100,
+        description = "Exact refine-pass steps (A1111 'Hires steps'); omitted = the base pass's steps",
+    )
+    upscaler: Optional[str] = Field(
+        None,
+        max_length = 160,
+        description = "Upscaler id from status `hires.upscalers` (latent | lanczos | a model id); omitted = "
+        "status `hires.default_upscaler`",
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Refine-pass guidance (Forge 'Hires CFG Scale'); omitted = guidance",
+    )
+
+
 class LoraSpec(BaseModel):
     """One LoRA adapter to apply for a generation, referenced by its discovery id.
 
@@ -4884,6 +4999,70 @@ class LocalizedEditSpec(BaseModel):
 
 # All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
+
+
+class DiffusionDetailerSpec(BaseModel):
+    """Detailer (face fix) post-pass, after ADetailer and ComfyUI-Impact-Pack's FaceDetailer: SAM 3 finds the targets,
+    each is inpainted in an enlarged crop and pasted back through a feathered mask. Defaults follow FaceDetailer
+    (core/inference/diffusion_detailer.py). Needs a model whose status `workflows` has 'inpaint' and a downloaded SAM 3."""
+
+    targets: str = Field(
+        "face",
+        min_length = 1,
+        max_length = 500,
+        description = "What to fix, as Mask from text takes it: comma-separated, `:N` caps a target "
+        "(default 8 each, at most 20), e.g. 'face' or 'face, hand:2'",
+    )
+    prompt: Optional[str] = Field(
+        None,
+        max_length = 20000,
+        description = "Prompt for the detail pass; omitted = the image's prompt. [PROMPT] inserts it, [SEP] gives "
+        "later detections their own text (ADetailer).",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, max_length = 20000, description = "Negative prompt for the pass; omitted = the image's"
+    )
+    confidence: float = Field(
+        0.5, ge = 0.0, le = 1.0, description = "SAM 3 score a detection must exceed"
+    )
+    denoise: float = Field(
+        0.5,
+        ge = 0.01,
+        le = 1.0,
+        description = "Inpaint strength of the pass (the UI request builder's floor)",
+    )
+    crop_factor: float = Field(
+        3.0, ge = 1.0, le = 10.0, description = "Crop around each detection, times its box"
+    )
+    guide_size: int = Field(
+        512, ge = 64, le = 2048, description = "The box's (or crop's) short side is enlarged to this"
+    )
+    guide_size_for: Literal["bbox", "crop_region"] = Field(
+        "bbox", description = "What guide_size measures: the detection box or the whole crop"
+    )
+    max_size: int = Field(
+        1024,
+        ge = 64,
+        le = 2048,
+        description = "Caps the enlargement: an enlarged crop's sides stay within this. A crop "
+        "already larger renders at its own size, never shrunk (FaceDetailer's force_inpaint)",
+    )
+    dilation: int = Field(
+        10, ge = -128, le = 128, description = "Grow (or, negative, shrink) each mask by this many px"
+    )
+    feather: int = Field(5, ge = 0, le = 100, description = "Paste-back blur (px) at the mask's edge")
+    drop_size: int = Field(
+        10,
+        ge = 1,
+        le = 1024,
+        description = "Detections with a box side at or below this (px) are skipped",
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 200, description = "Steps for the pass; omitted = the image's"
+    )
+    guidance: Optional[float] = Field(
+        None, ge = 0.0, le = 100.0, description = "Guidance for the pass; omitted = the image's"
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -5150,6 +5329,22 @@ class DiffusionGenerateRequest(BaseModel):
         le = 256,
         description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
     )
+    detailer: Optional[DiffusionDetailerSpec] = Field(
+        None,
+        description = "Detailer (face fix) post-pass on every image of the run. Omitted = off. Refused (400) "
+        "when the loaded model has no inpaint pipeline or SAM 3 is not downloaded.",
+    )
+    hires: Optional[HiresSpec] = Field(
+        None,
+        description = "Hires fix for text to image: upscale the render and refine it in the same request. "
+        "Requires status `hires` to be non-null; omitted = off.",
+    )
+    upscale_model: Optional[str] = Field(
+        None,
+        max_length = 160,
+        description = "Upscale workflow only: a model upscaler id from status `upscale_models` used in place of "
+        "the Lanczos resize. Omitted = Lanczos.",
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
@@ -5326,6 +5521,22 @@ class GalleryImage(BaseModel):
         None, description = "img2img/inpaint denoise strength, when the workflow used one"
     )
     upscale: Optional[float] = Field(None, description = "Upscale factor, for the upscale workflow")
+    upscale_model: Optional[str] = Field(
+        None, description = "Model upscaler id the upscale workflow used; null = Lanczos"
+    )
+    hires_scale: Optional[float] = Field(
+        None, description = "Hires fix upscale factor; null = no Hires fix"
+    )
+    hires_denoise: Optional[float] = Field(None, description = "Hires fix refine denoising strength")
+    hires_steps: Optional[int] = Field(
+        None, description = "Hires fix refine steps as requested; null = the base pass's steps"
+    )
+    hires_upscaler: Optional[str] = Field(None, description = "Hires fix upscaler id")
+    hires_guidance: Optional[float] = Field(
+        None, description = "Hires fix refine guidance; null = the base guidance"
+    )
+    hires_base_width: Optional[int] = Field(None, description = "Hires fix base-pass width")
+    hires_base_height: Optional[int] = Field(None, description = "Hires fix base-pass height")
     controlnet_guidance: Optional[str] = Field(
         None, description = "ControlNet guidance interval, formatted as 'start:end'"
     )
@@ -5382,6 +5593,11 @@ class GalleryImage(BaseModel):
     )
     inpaint_padding: Optional[int] = Field(
         None, description = "Padding (px) around the mask for an only-masked inpaint"
+    )
+    detailer: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Detailer pass this image ran: its settings, each detection (target, score, box, crop, "
+        "size, seed) and timing, or `error` when it did not run; null = no pass",
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
@@ -5660,11 +5876,21 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
+    )
+    graph_engagement: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
+        "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
+        "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
     )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
@@ -5782,8 +6008,14 @@ class DiffusionStatusResponse(BaseModel):
     )
     mlx_fallback_reason: Optional[str] = Field(
         None,
-        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
-        "MLX was not requested or is in use)",
+        description = "Why an Apple Silicon load did not get the MLX engine (null when MLX is off, the host is "
+        "not an Apple Silicon Mac, or MLX is in use)",
+    )
+    engine_routing: Optional[dict[str, Any]] = Field(
+        None,
+        description = "Per-request routing of the default Apple Silicon MLX engine: mode, default_engine, resident "
+        "engines, txt2img_engine (where plain text-to-image runs next), engines_fit_together, last_served_by and "
+        "last_reason. Null for every other engine.",
     )
     engine_forced: Optional[str] = Field(
         None,
@@ -5871,6 +6103,19 @@ class DiffusionStatusResponse(BaseModel):
         "{node: 'sd3', shift} (one static shift, ComfyUI ModelSamplingSD3 / AuraFlow; shift = the "
         "loaded value or null when resolution-dependent) or {node: 'flux', base_shift, max_shift} "
         "(ComfyUI ModelSamplingFlux defaults). Diffusers engine only.",
+    )
+    hires: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Hires fix control the loaded model takes, or null to hide it: {upscalers: [{id, label, "
+        "kind}], default_upscaler, defaults: {scale, denoise}, max_side}.",
+    )
+    hires_unavailable_reason: Optional[str] = Field(
+        None,
+        description = "Why Hires fix is hidden for the loaded model, when there is a reason worth showing",
+    )
+    upscale_models: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Model upscalers ({id, label, scale}) the Upscale workflow can use; empty = Lanczos only.",
     )
     textual_inversion: Optional[str] = Field(
         None,
@@ -6478,6 +6723,12 @@ class TranscribeSourceRequest(BaseModel):
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+    provider_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Saved connection ID. When set, the audio goes to that connection's "
+        "/audio/transcriptions as `model`; engine and device are ignored.",
+    )
 
 
 class AudioAnalyzeRequest(TranscribeSourceRef):
@@ -7312,11 +7563,21 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
+    )
+    graph_engagement: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
+        "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
+        "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
     )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(

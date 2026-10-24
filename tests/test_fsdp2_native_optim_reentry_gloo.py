@@ -117,9 +117,13 @@ def _case_optimizer_cls(native, tmp):
 
 
 def _case_reentry(native):
+    model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
+    return _case_reentry_on(native, model)
+
+
+def _case_reentry_on(native, model):
     from torch.distributed.tensor import DTensor
 
-    model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.pad_token_id = None
 
@@ -143,6 +147,30 @@ def _case_reentry(native):
     return res
 
 
+def _case_reentry_no_setter(native):
+    """torch 2.6 / 2.7: FSDPModule has no set_reshard_after_forward (added in 2.8)."""
+    FSDPModule = native._fsdp_module_class()
+    removed = {}
+    for cls in FSDPModule.__mro__:
+        if "set_reshard_after_forward" in cls.__dict__:
+            removed[cls] = cls.__dict__["set_reshard_after_forward"]
+            delattr(cls, "set_reshard_after_forward")
+    try:
+        model = native.shard_model(_tiny_llama(), native.FSDP2Config(param_dtype = torch.float32))
+        units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+        meshes = [u._get_fsdp_state()._fsdp_param_group for u in units]
+        before = [g.post_forward_mesh_info if g is not None else None for g in meshes]
+        res = {"has_setter": hasattr(units[0], "set_reshard_after_forward")}
+        res.update(_case_reentry_on(native, model))
+        after = [g.post_forward_mesh_info if g is not None else None for g in meshes]
+        res["mesh_restored"] = all(a is b for a, b in zip(before, after))
+        res["units"] = len(units)
+        return res
+    finally:
+        for cls, fn in removed.items():
+            setattr(cls, "set_reshard_after_forward", fn)
+
+
 def _worker_case(case, native, rank, tmp):
     if case == "stateful":
         return _case_stateful(native, tmp)
@@ -150,6 +178,8 @@ def _worker_case(case, native, rank, tmp):
         return _case_optimizer_cls(native, tmp)
     if case == "reentry":
         return _case_reentry(native)
+    if case == "reentry_no_setter":
+        return _case_reentry_no_setter(native)
     raise KeyError(case)
 
 
@@ -244,6 +274,18 @@ def test_bnb_optimizer_cls_and_kwargs_is_refused(tmp_path):
                     v,
                 )
                 assert not v["sharded"], (rank, key, v)
+
+
+def test_unsharded_context_without_reshard_setter(tmp_path):
+    """torch 2.6 / 2.7 FSDPModule has no set_reshard_after_forward: the gather / reshard still runs
+    and every unit's post-forward mesh comes back unchanged."""
+    pytest.importorskip("transformers")
+    for rank, r in _run("reentry_no_setter", tmp_path).items():
+        assert r["has_setter"] is False and r["units"] > 1, (rank, r)
+        assert r["before"] > 0 and r["outer"] == 0, (rank, r)
+        assert r["after_generate"] == 0 and r["after_inner_raise"] == 0, (rank, r)
+        assert r["after_outer"] == r["before"] and r["depth"] == 0, (rank, r)
+        assert r["mesh_restored"], (rank, r)
 
 
 def test_unsharded_context_is_reentrant(tmp_path):

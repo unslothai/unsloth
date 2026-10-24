@@ -1906,12 +1906,12 @@ gptoss_template = \
     {#- At this point only assistant/user/tool messages should remain #}
     {%- if message.role == 'assistant' -%}
         {#- Checks to ensure the messages are being passed in the format we expect #}
-        {%- if "content" in message %}
+        {%- if message.content is string %}
             {%- if "<|channel|>analysis<|message|>" in message.content or "<|channel|>final<|message|>" in message.content %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the content field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
         {%- endif %}
-        {%- if "thinking" in message %}
+        {%- if message.thinking is string %}
             {%- if "<|channel|>analysis<|message|>" in message.thinking or "<|channel|>final<|message|>" in message.thinking %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
@@ -1952,16 +1952,16 @@ gptoss_template = \
         {%- elif loop.last and not add_generation_prompt %}
             {#- Only render the CoT if the final turn is an assistant turn and add_generation_prompt is false #}
             {#- This is a situation that should only occur in training, never in inference. #}
-            {%- if "thinking" in message %}
+            {%- if message.thinking is string %}
                 {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- endif %}
             {#- <|return|> indicates the end of generation, but <|end|> does not #}
             {#- <|return|> should never be an input to the model, but we include it as the final token #}
             {#- when training, so the model learns to emit it. #}
             {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|return|>" }}
-        {%- elif "thinking" in message %}
-            {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
+        {%- elif message.thinking is string and message.content is not string %}
+            {#- A previous turn with only CoT and no final answer: keep the analysis message #}
+            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- set last_tool_call.name = none %}
         {%- else %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
