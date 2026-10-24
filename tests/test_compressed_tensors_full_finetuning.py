@@ -105,7 +105,9 @@ def test_full_finetuning_can_mark_every_parameter_trainable():
 
 def test_full_finetuning_refuses_weights_left_packed():
     model = _model(fails = True)
-    with pytest.raises(RuntimeError, match = r"compressed-tensors checkpoint \(pack-quantized\)") as e:
+    with pytest.raises(
+        RuntimeError, match = r"compressed-tensors checkpoint \(pack-quantized\)"
+    ) as e:
         _prepare_compressed_tensors_model(model, full_finetuning = True)
     assert "lin.weight_packed" in str(e.value) and "full_finetuning = False" in str(e.value)
 
