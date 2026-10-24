@@ -25,6 +25,7 @@ from utils.account_context import AccountContext, arun_as, current_account_id, r
 
 logger = get_logger(__name__)
 
+# Longest sleep: asyncio's clock stops while a computer sleeps, so a run due meanwhile starts at most this late.
 _POLL_SECONDS = 60.0
 # Floor after a pass that claimed nothing, so an unclaimable due task cannot spin the loop.
 _MIN_SLEEP_SECONDS = 1.0
@@ -417,6 +418,7 @@ class ScheduledTaskScheduler:
         self._stopping = False
         self._active: Optional[_ActiveRun] = None
         self._last_account: Optional[str] = None
+        self._due: Optional[int] = None
 
     def start(self) -> None:
         if self._task is not None:
@@ -477,7 +479,10 @@ class ScheduledTaskScheduler:
                         return
                     await arun_as(account, self._execute(account, task, run))
                     continue
-                delay = await asyncio.to_thread(self._seconds_until_due)
+                # Sleep until the next run is due (APScheduler, Celery beat); wake() cuts it short on any change.
+                delay = _POLL_SECONDS
+                if self._due is not None:
+                    delay = min(delay, max(_MIN_SLEEP_SECONDS, (self._due - db.now_ms()) / 1000))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -508,13 +513,16 @@ class ScheduledTaskScheduler:
         return accounts
 
     def _claim(self) -> Optional[tuple[AccountContext, dict, dict]]:
+        """One pass, one read per account: claim the next due run, else note in ``_due`` when one is."""
         now = db.now_ms()
+        self._due = None
         for account in self._accounts():
             if self._stopping:
                 return None
             try:
-                run_as(account, db.recover_stale_runs, now - _STALE_RUN_MS)
-                claimed = run_as(account, db.claim_next, now, self.worker_id, next_run_for)
+                claimed, due = run_as(
+                    account, db.poll, now, now - _STALE_RUN_MS, self.worker_id, next_run_for
+                )
             except Exception:
                 logger.exception("scheduled_tasks.claim_failed_for_account")
                 continue
@@ -525,6 +533,8 @@ class ScheduledTaskScheduler:
                     return None
                 self._last_account = account.account_id
                 return (account, *claimed)
+            if due is not None and (self._due is None or due < self._due):
+                self._due = due
         return None
 
     def _release(self, account: AccountContext, task: dict, run: dict) -> None:
@@ -532,20 +542,6 @@ class ScheduledTaskScheduler:
             run_as(account, db.release_claim, run["id"], self.worker_id, task["nextRunAt"])
         except Exception:
             logger.exception("scheduled_tasks.release_failed")
-
-    def _seconds_until_due(self) -> float:
-        due: Optional[int] = None
-        for account in job_accounts():
-            try:
-                at = run_as(account, db.next_due_at)
-            except Exception:
-                logger.exception("scheduled_tasks.next_due_failed_for_account")
-                continue
-            if at is not None and (due is None or at < due):
-                due = at
-        if due is None:
-            return _POLL_SECONDS
-        return min(_POLL_SECONDS, max(_MIN_SLEEP_SECONDS, (due - db.now_ms()) / 1000))
 
     async def _heartbeat(self, run_id: str) -> None:
         while True:

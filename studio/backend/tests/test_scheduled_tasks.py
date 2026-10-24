@@ -184,6 +184,15 @@ def test_a_claim_runs_an_occurrence_once_and_skips_the_ones_studio_missed():
     assert db.claim_next(now, "worker", next_run_for) is None
 
 
+def next_due():
+    """When the scheduler would next look, without claiming (a pass at the epoch finds nothing due)."""
+    return db.poll(0, None, "worker", next_run_for)[1]
+
+
+def sweep(stale_before):
+    db.poll(0, stale_before, "sweeper", next_run_for)
+
+
 def test_a_due_task_waits_while_it_already_has_a_run():
     make_task()
     db.request_run("task-1")
@@ -191,7 +200,7 @@ def test_a_due_task_waits_while_it_already_has_a_run():
     _task, manual = db.claim_next(now, "worker", next_run_for)
     assert manual["source"] == "manual"
     assert db.claim_next(now, "worker", next_run_for) is None
-    assert db.next_due_at() is None
+    assert next_due() is None
     db.finish_run(manual["id"], "worker", status = "succeeded")
     _task, scheduled = db.claim_next(now, "worker", next_run_for)
     assert scheduled["source"] == "schedule"
@@ -210,7 +219,7 @@ def test_paused_and_future_tasks_are_not_claimed():
     make_task(id = "paused", enabled = False, nextRunAt = None)
     make_task(id = "later", nextRunAt = ms("2026-10-14T18:00:00+00:00"))
     assert db.claim_next(ms("2026-10-14T12:00:00+00:00"), "worker", next_run_for) is None
-    assert db.next_due_at() == ms("2026-10-14T18:00:00+00:00")
+    assert next_due() == ms("2026-10-14T18:00:00+00:00")
 
 
 def test_runs_whose_heartbeat_stopped_are_failed_and_live_ones_kept():
@@ -222,7 +231,7 @@ def test_runs_whose_heartbeat_stopped_are_failed_and_live_ones_kept():
     db.claim_next(claim_at, "crashed", next_run_for)
     db.claim_next(claim_at + 60_000, "alive", next_run_for)
 
-    assert db.recover_stale_runs(claim_at + 1) == 2
+    sweep(claim_at + 1)
 
     runs = {task["id"]: task["lastRun"] for task in db.list_tasks()}
     for stopped in ("unsettled", "crashed"):
@@ -263,7 +272,7 @@ def test_the_sweep_keeps_a_task_s_history_bounded_too(monkeypatch):
     for _ in range(3):
         db.request_run("task-1")
         db.claim_next(db.now_ms(), "crashed", next_run_for)
-        assert db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1) == 1
+        sweep(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
     assert [run["errorCode"] for run in db.list_runs("task-1")] == ["interrupted", "interrupted"]
 
 
@@ -689,7 +698,7 @@ def test_the_sweep_removes_the_chat_of_a_run_that_stopped_before_settling():
     scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
     assert len(studio_db.list_chat_threads()) == 1
 
-    assert db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1) == 1
+    sweep(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
 
     assert studio_db.list_chat_threads() == []
     last_run = db.get_task(task["id"])["lastRun"]
@@ -707,7 +716,7 @@ def test_a_sweep_that_cannot_remove_a_chat_records_nothing(monkeypatch):
     monkeypatch.setattr(db, "delete_chat_threads_in", refuse_chat_deletion)
 
     with pytest.raises(sqlite3.OperationalError):
-        db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
+        sweep(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
 
     assert db.get_task(task["id"])["lastRun"]["status"] == "running"
     assert len(studio_db.list_chat_threads()) == 1
@@ -1346,19 +1355,36 @@ def test_a_claim_given_back_keeps_a_schedule_changed_since(change):
     assert db.get_task("task-1")["nextRunAt"] == changed["nextRunAt"]
 
 
+def test_an_idle_pass_is_one_read_and_sleeps_until_the_next_due_run(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
+    due_at = db.now_ms() + 30_000
+    make_task(nextRunAt = due_at)
+    scheduler = new_scheduler()
+    connect = db.get_connection
+    opened = []
+
+    def counted(*args, **kwargs):
+        opened.append(1)
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(db, "get_connection", counted)
+    assert scheduler._claim() is None
+    assert (len(opened), scheduler._due) == (1, due_at)
+
+
 def test_a_claim_made_as_shutdown_begins_is_given_back(monkeypatch):
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     due_at = db.now_ms() - DAY
     make_task(nextRunAt = due_at)
     scheduler = new_scheduler()
-    claim_next = db.claim_next
+    poll = db.poll
 
     def claim_as_stop_begins(*args):
-        claimed = claim_next(*args)
+        answer = poll(*args)
         scheduler._stopping = True
-        return claimed
+        return answer
 
-    monkeypatch.setattr(db, "claim_next", claim_as_stop_begins)
+    monkeypatch.setattr(db, "poll", claim_as_stop_begins)
 
     assert scheduler._claim() is None
     task = db.get_task("task-1")

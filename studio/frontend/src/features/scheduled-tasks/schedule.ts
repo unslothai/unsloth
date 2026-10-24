@@ -305,16 +305,6 @@ export function relativeTimeParts(
   return [Math.round(days / 365), "year"];
 }
 
-const DUE_SLACK_MS = 2_000;
-// Cap the timer: it cannot wait past ~24 days, and one through a sleeping computer fires late.
-const LONGEST_WAIT_MS = 60 * 60_000;
-
-/** When the Scheduled page should look again for a task due at `due` (server clock), capped to re-measure. */
-export function waitForDue(due: number, now: number): { delay: number; due: boolean } {
-  const delay = Math.max(1_000, due - now + DUE_SLACK_MS);
-  return delay > LONGEST_WAIT_MS ? { delay: LONGEST_WAIT_MS, due: false } : { delay, due: true };
-}
-
 export function browserTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

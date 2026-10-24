@@ -168,6 +168,8 @@ export function ScheduledTaskRunNotifier() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let account: string | null = null;
     let seen: SeenRuns | null = null;
+    let lastState = "";
+    let lastDelay = 0;
 
     const openChat = (threadId: string) =>
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
@@ -234,6 +236,7 @@ export function ScheduledTaskRunNotifier() {
       if (owner !== account) {
         account = owner;
         seen = loadSeen(owner);
+        lastState = "";
       }
       const epoch = getAuthSessionEpoch();
       polling = true;
@@ -252,9 +255,14 @@ export function ScheduledTaskRunNotifier() {
           return;
         }
         seen = result.seen;
-        if (result.fresh.length > 0) refreshFor(result.fresh);
+        const state = `${result.last.activeRuns}:${result.last.nextRunAt}`;
+        // The first answer only sets the baseline: a page that just mounted read its own list.
+        const changed = result.fresh.length > 0 || (lastState !== "" && state !== lastState);
+        lastState = state;
+        if (changed) refreshFor(result.fresh);
         if (mine.length > 0) announce(mine);
-        schedule(pollDelayFor(nextPollDelay(result.last), document.visibilityState === "hidden"));
+        lastDelay = nextPollDelay(result.last, changed ? 0 : lastDelay);
+        schedule(pollDelayFor(lastDelay, document.visibilityState === "hidden"));
       } catch {
         schedule(IDLE_POLL_MS);
       } finally {
@@ -267,6 +275,7 @@ export function ScheduledTaskRunNotifier() {
     };
 
     const recheck = () => {
+      lastDelay = 0;
       if (polling) recheckAfterPoll = true;
       else schedule(RECHECK_MS);
     };

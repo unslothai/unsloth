@@ -258,74 +258,100 @@ def request_run(task_id: str) -> Optional[dict]:
         return _run_from_row(row)
 
 
-def _has_claimable(conn: sqlite3.Connection, now: int) -> bool:
-    row = conn.execute(
-        "SELECT EXISTS (SELECT 1 FROM scheduled_task_runs WHERE status = 'queued')"
-        f" OR EXISTS (SELECT 1 FROM scheduled_tasks t WHERE {_DUE_TASK})",
-        (now,),
+_STALE_RUN = "status = 'running' AND COALESCE(heartbeat_at, started_at, created_at) < ?"
+
+
+def _state(
+    conn: sqlite3.Connection, now: int, stale_before: Optional[int]
+) -> tuple[bool, Optional[int]]:
+    """(stale runs to fail, when the next run is due: ``now`` for a queued one), in one read."""
+    stale, queued, due = conn.execute(
+        f"SELECT ? IS NOT NULL AND EXISTS (SELECT 1 FROM scheduled_task_runs WHERE {_STALE_RUN}),"
+        " EXISTS (SELECT 1 FROM scheduled_task_runs WHERE status = 'queued'),"
+        " (SELECT MIN(t.next_run_at) FROM scheduled_tasks t"
+        f" WHERE t.enabled = 1 AND t.next_run_at IS NOT NULL AND {_NO_ACTIVE_RUN})",
+        (stale_before, stale_before),
     ).fetchone()
-    return bool(row[0])
+    return bool(stale), now if queued else due
+
+
+def poll(
+    now: int,
+    stale_before: Optional[int],
+    worker_id: str,
+    next_run_after: Callable[[dict, int], Optional[int]],
+) -> tuple[Optional[tuple[dict, dict]], Optional[int]]:
+    """A scheduler pass on one connection: fail stale runs, claim what is due, and say when the next run is due.
+
+    Reads first, so an idle pass never takes the writer lock."""
+    with _connect() as conn:
+        stale, due = _state(conn, now, stale_before)
+        if stale:
+            conn.execute("BEGIN IMMEDIATE")
+            _fail_stale(conn, stale_before)
+            conn.commit()
+            _stale, due = _state(conn, now, None)
+        if due is None or due > now:
+            return None, due
+        conn.execute("BEGIN IMMEDIATE")
+        return _claim(conn, now, worker_id, next_run_after), due
 
 
 def claim_next(
     now: int, worker_id: str, next_run_after: Callable[[dict, int], Optional[int]]
 ) -> Optional[tuple[dict, dict]]:
     """Claim the next run (queued Run now first, then most overdue); missed occurrences collapse into one."""
-    with _connect() as conn:
-        # Read-only first, so an idle poll never takes the writer lock.
-        if not _has_claimable(conn, now):
-            return None
-        conn.execute("BEGIN IMMEDIATE")
-        queued = conn.execute(
-            "SELECT * FROM scheduled_task_runs WHERE status = 'queued'"
-            " ORDER BY created_at, rowid LIMIT 1"
-        ).fetchone()
-        if queued is not None:
-            conn.execute(
-                "UPDATE scheduled_task_runs"
-                " SET status = 'running', started_at = ?, heartbeat_at = ?, worker_id = ?"
-                " WHERE id = ?",
-                (now, now, worker_id, queued["id"]),
-            )
-            task_row = conn.execute(
-                "SELECT * FROM scheduled_tasks WHERE id = ?", (queued["task_id"],)
-            ).fetchone()
-            run_id = queued["id"]
-        else:
-            task_row = conn.execute(
-                f"SELECT * FROM scheduled_tasks t WHERE {_DUE_TASK}"
-                " ORDER BY t.next_run_at, t.created_at LIMIT 1",
-                (now,),
-            ).fetchone()
-            if task_row is None:
-                return None
-            task = _task_from_row(task_row)
-            try:
-                following = next_run_after(task, max(now, task["nextRunAt"]))
-            except Exception:
-                # A schedule that no longer resolves runs once, then waits for an edit instead of firing every poll.
-                following = None
-            run_id = str(uuid.uuid4())
-            conn.execute(
-                """
-                INSERT INTO scheduled_task_runs
-                    (id, task_id, source, status, scheduled_for, created_at, started_at,
-                     heartbeat_at, worker_id)
-                VALUES (?, ?, 'schedule', 'running', ?, ?, ?, ?, ?)
-                """,
-                (run_id, task["id"], task["nextRunAt"], now, now, now, worker_id),
-            )
-            conn.execute(
-                "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?",
-                (following, task["id"]),
-            )
+    return poll(now, None, worker_id, next_run_after)[0]
+
+
+def _claim(
+    conn: sqlite3.Connection,
+    now: int,
+    worker_id: str,
+    next_run_after: Callable[[dict, int], Optional[int]],
+) -> Optional[tuple[dict, dict]]:
+    queued = conn.execute(
+        "SELECT * FROM scheduled_task_runs WHERE status = 'queued'"
+        " ORDER BY created_at, rowid LIMIT 1"
+    ).fetchone()
+    if queued is not None:
+        conn.execute(
+            "UPDATE scheduled_task_runs"
+            " SET status = 'running', started_at = ?, heartbeat_at = ?, worker_id = ?"
+            " WHERE id = ?",
+            (now, now, worker_id, queued["id"]),
+        )
+        task_id, run_id = queued["task_id"], queued["id"]
+    else:
         task_row = conn.execute(
-            "SELECT * FROM scheduled_tasks WHERE id = ?", (task_row["id"],)
+            f"SELECT * FROM scheduled_tasks t WHERE {_DUE_TASK}"
+            " ORDER BY t.next_run_at, t.created_at LIMIT 1",
+            (now,),
         ).fetchone()
-        run_row = conn.execute(
-            "SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)
-        ).fetchone()
-        return _task_from_row(task_row), _run_from_row(run_row)
+        if task_row is None:
+            return None
+        task = _task_from_row(task_row)
+        try:
+            following = next_run_after(task, max(now, task["nextRunAt"]))
+        except Exception:
+            # A schedule that no longer resolves runs once, then waits for an edit instead of firing every poll.
+            following = None
+        task_id, run_id = task["id"], str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO scheduled_task_runs
+                (id, task_id, source, status, scheduled_for, created_at, started_at,
+                 heartbeat_at, worker_id)
+            VALUES (?, ?, 'schedule', 'running', ?, ?, ?, ?, ?)
+            """,
+            (run_id, task_id, task["nextRunAt"], now, now, now, worker_id),
+        )
+        conn.execute(
+            "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?", (following, task_id)
+        )
+    task_row = conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
+    run_row = conn.execute("SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)).fetchone()
+    return _task_from_row(task_row), _run_from_row(run_row)
 
 
 def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int]) -> bool:
@@ -352,20 +378,6 @@ def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int
                 (run["scheduled_for"], run["task_id"], claimed_next_run_at),
             )
         return True
-
-
-def next_due_at() -> Optional[int]:
-    """When the next run should start: now for a queued one, else the earliest due task."""
-    with _connect() as conn:
-        if conn.execute(
-            "SELECT 1 FROM scheduled_task_runs WHERE status = 'queued' LIMIT 1"
-        ).fetchone():
-            return now_ms()
-        row = conn.execute(
-            "SELECT MIN(t.next_run_at) FROM scheduled_tasks t"
-            f" WHERE t.enabled = 1 AND t.next_run_at IS NOT NULL AND {_NO_ACTIVE_RUN}"
-        ).fetchone()
-        return row[0]
 
 
 def heartbeat(run_id: str, worker_id: str) -> bool:
@@ -442,35 +454,23 @@ def finish_run(
         return True
 
 
-def recover_stale_runs(stale_before: int) -> int:
+def _fail_stale(conn: sqlite3.Connection, stale_before: int) -> None:
     """Fail runs whose heartbeat stopped before ``stale_before`` (Studio quit or crashed mid-run)."""
-    stale = "status = 'running' AND COALESCE(heartbeat_at, started_at, created_at) < ?"
-    with _connect() as conn:
-        if (
-            conn.execute(
-                f"SELECT 1 FROM scheduled_task_runs WHERE {stale} LIMIT 1", (stale_before,)
-            ).fetchone()
-            is None
-        ):
-            return 0
-        conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            f"SELECT id, task_id FROM scheduled_task_runs WHERE {stale}",
-            (stale_before,),
-        ).fetchall()
-        run_ids = [row["id"] for row in rows]
-        conn.executemany(
-            "UPDATE scheduled_task_runs"
-            " SET status = 'failed', finished_at = ?, error_code = 'interrupted', error = NULL"
-            " WHERE id = ?",
-            [(now_ms(), run_id) for run_id in run_ids],
-        )
-        # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
-        if run_ids:
-            delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
-        for task_id in {row["task_id"] for row in rows}:
-            _trim_history(conn, task_id)
-    return len(run_ids)
+    rows = conn.execute(
+        f"SELECT id, task_id FROM scheduled_task_runs WHERE {_STALE_RUN}", (stale_before,)
+    ).fetchall()
+    run_ids = [row["id"] for row in rows]
+    conn.executemany(
+        "UPDATE scheduled_task_runs"
+        " SET status = 'failed', finished_at = ?, error_code = 'interrupted', error = NULL"
+        " WHERE id = ?",
+        [(now_ms(), run_id) for run_id in run_ids],
+    )
+    # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
+    if run_ids:
+        delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+    for task_id in {row["task_id"] for row in rows}:
+        _trim_history(conn, task_id)
 
 
 def list_runs(task_id: str, limit: int = RUN_HISTORY_LIMIT) -> list[dict]:

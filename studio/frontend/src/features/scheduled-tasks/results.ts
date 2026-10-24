@@ -9,7 +9,7 @@ import type { FinishedScheduledTaskRun, ScheduledTaskActivity } from "./api";
 export const SCHEDULED_TASKS_CHANGED_EVENT = "unsloth-scheduled-tasks-changed";
 /** Bumped on every task change so other tabs get a storage event. */
 export const SCHEDULED_TASKS_WRITTEN_KEY = "unsloth_scheduled_tasks_written";
-/** Runs finished: a loaded Tasks page re-reads its list to show them. */
+/** A run started or finished: a loaded Tasks page re-reads its list, so it needs no poll of its own. */
 export const SCHEDULED_TASK_RUNS_FINISHED_EVENT = "unsloth-scheduled-task-runs-finished";
 
 /** Per-account results-poll record key; in `ACCOUNT_KEYED_PREFIXES`, so it survives account switches. */
@@ -17,6 +17,8 @@ export const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
 export const UNSEEN_KEY_PREFIX = "unsloth_scheduled_tasks_unseen:";
 
 export const ACTIVE_POLL_MS = 2_000;
+// A run that keeps going is looked at less often: 2, 4, 8, then every 10 s.
+export const ACTIVE_POLL_MAX_MS = 10_000;
 export const IDLE_POLL_MS = 5 * 60_000;
 // Every hidden tab polling every 2 s through a long CPU run adds up; their notifications can wait.
 export const HIDDEN_POLL_MS = 30_000;
@@ -30,14 +32,13 @@ const CURSOR_SLACK_MS = 60_000;
 const SEEN_IDS_LIMIT = 200;
 const PAGES_PER_POLL = 10;
 
-/** Delay before the next results poll: short while runs are active or unread, else just after the next due time. */
-export function nextPollDelay(activity: {
-  now: number;
-  activeRuns: number;
-  nextRunAt: number | null;
-  more?: boolean;
-}): number {
-  if (activity.more || activity.activeRuns > 0) return ACTIVE_POLL_MS;
+/** Delay before the next results poll: backing off while the same runs stay active, else just after the next due time. */
+export function nextPollDelay(
+  activity: { now: number; activeRuns: number; nextRunAt: number | null; more?: boolean },
+  previous = 0,
+): number {
+  if (activity.more) return ACTIVE_POLL_MS;
+  if (activity.activeRuns > 0) return Math.min(ACTIVE_POLL_MAX_MS, Math.max(ACTIVE_POLL_MS, previous * 2));
   if (activity.nextRunAt === null) return IDLE_POLL_MS;
   const untilDue = activity.nextRunAt - activity.now + DUE_SLACK_MS;
   return Math.min(IDLE_POLL_MS, Math.max(ACTIVE_POLL_MS, untilDue));

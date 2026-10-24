@@ -55,14 +55,11 @@ import {
   relativeTimeParts,
   summarizeRepeats,
   summarizeSchedule,
-  waitForDue,
 } from "./schedule";
 import { SCHEDULED_TASKS_WRITTEN_KEY, useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
 import { useUnseenScheduledRuns } from "./unseen";
 
-const OVERDUE_REFRESH_MS = 5_000;
-const OVERDUE_REFRESH_MAX_MS = 60_000;
 const REFOCUS_DEDUPE_MS = 1_000;
 
 const ROW_BUTTON =
@@ -404,35 +401,6 @@ export function TasksPage() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refresh]);
-
-  const soonest = useMemo(
-    () =>
-      tasks.reduce<number | null>(
-        (earliest, task) =>
-          task.nextRunAt !== null && (earliest === null || task.nextRunAt < earliest)
-            ? task.nextRunAt
-            : earliest,
-        null,
-      ),
-    [tasks],
-  );
-  useEffect(() => {
-    if (soonest === null) return;
-    let timer: number | undefined;
-    let again = OVERDUE_REFRESH_MS;
-    const look = () => {
-      if (document.visibilityState !== "hidden") void refresh();
-      timer = window.setTimeout(look, again);
-      again = Math.min(again * 2, OVERDUE_REFRESH_MAX_MS);
-    };
-    const wait = () => {
-      const serverNow = Date.now() + useScheduledTasksStore.getState().serverOffset;
-      const next = waitForDue(soonest, serverNow);
-      timer = window.setTimeout(next.due ? look : wait, next.delay);
-    };
-    wait();
-    return () => window.clearTimeout(timer);
-  }, [soonest, refresh]);
 
   async function confirmDelete() {
     const target = deleting;

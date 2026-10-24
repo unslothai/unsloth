@@ -10,6 +10,7 @@ import type * as ScheduledTasksApi from "../src/features/scheduled-tasks/api.ts"
 import type * as ScheduledTasksStore from "../src/features/scheduled-tasks/store.ts";
 import type * as UnseenStore from "../src/features/scheduled-tasks/unseen.ts";
 import {
+  ACTIVE_POLL_MAX_MS,
   ACTIVE_POLL_MS,
   CATCH_UP_MS,
   HIDDEN_POLL_MS,
@@ -42,7 +43,6 @@ import {
   summarizeSchedule,
   timeChoices,
   titleFromPrompt,
-  waitForDue,
   zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
 
@@ -191,8 +191,12 @@ test("a next run reads Today or Tomorrow, else its date", () => {
   assert.equal(formatRunDay(new Date(2026, 9, 29, 9, 0).getTime(), now, "en-US"), "Thu, Oct 29");
 });
 
-test("the results poll looks quickly while a run is going and again just after one is due", () => {
-  assert.equal(nextPollDelay({ now: 0, activeRuns: 1, nextRunAt: null }), ACTIVE_POLL_MS);
+test("the results poll looks quickly as a run starts, backs off while it goes on, and again just after one is due", () => {
+  const going = { now: 0, activeRuns: 1, nextRunAt: null };
+  assert.equal(nextPollDelay(going), ACTIVE_POLL_MS);
+  assert.equal(nextPollDelay(going, ACTIVE_POLL_MS), 2 * ACTIVE_POLL_MS);
+  assert.equal(nextPollDelay(going, ACTIVE_POLL_MAX_MS), ACTIVE_POLL_MAX_MS);
+  assert.equal(nextPollDelay({ ...going, more: true }, ACTIVE_POLL_MAX_MS), ACTIVE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null }), IDLE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 60_000 }), 63_000);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 1_000 }), 4_000);
@@ -662,13 +666,6 @@ test("a time's zone is named as briefly as the locale allows", () => {
   assert.equal(zoneLabel("Europe/Istanbul", "en-US", at), "GMT+3");
   assert.equal(zoneLabel("UTC", "en-US", at), "UTC");
   assert.equal(zoneLabel("Nowhere/Special", "en-US", at), "Nowhere/Special");
-});
-
-test("the Scheduled page looks again just after the next run is due, and measures again when that is far off", () => {
-  const now = 1_000_000;
-  assert.deepEqual(waitForDue(now + 60_000, now), { delay: 62_000, due: true });
-  assert.deepEqual(waitForDue(now - 60_000, now), { delay: 1_000, due: true });
-  assert.deepEqual(waitForDue(now + 30 * 24 * 60 * 60_000, now), { delay: 60 * 60_000, due: false });
 });
 
 test("a task left unnamed is named after its instructions' first line", () => {
