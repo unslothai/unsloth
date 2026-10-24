@@ -32653,20 +32653,32 @@ class LlamaCppBackend:
                     _sidecar_reserve_at_spawn = bool(
                         server_caps.get("supports_fit_target")
                     ) and not (_rpc_devices and not _named_devices)
+                    _planned_draft_pin = _extra_args_draft_device_pin(_spec_placement_argv)
                     if (
                         _sidecar_reserve_at_spawn
                         and _fit_device_count > 1
-                        and _extra_args_draft_device_pin(_spec_placement_argv) is None
+                        and _planned_draft_pin
+                        and _distinct_device_count(_planned_draft_pin) > 1
+                    ):
+                        # The spawn reserves only a one-card pin (_draft_pin_device_index).
+                        _sidecar_reserve_at_spawn = False
+                    if (
+                        _sidecar_reserve_at_spawn
+                        and _fit_device_count > 1
+                        and _planned_draft_pin is None
                     ):
                         _sidecar_reserve_at_spawn = (
                             not is_vulkan_backend
                             and not _named_devices
                             and not (
                                 self._GPU_IDS_ARE_PCI_INDICES is True
-                                and str(_spec_placement_env.get("CUDA_DEVICE_ORDER", ""))
-                                .strip()
-                                .upper()
-                                != "PCI_BUS_ID"
+                                and (
+                                    str(_spec_placement_env.get("CUDA_DEVICE_ORDER", ""))
+                                    .strip()
+                                    .upper()
+                                    != "PCI_BUS_ID"
+                                    or self._visibility_mask_is_unmappable()
+                                )
                                 and self._smi_uuid_mask_order() is None
                             )
                         )
@@ -34755,11 +34767,15 @@ class LlamaCppBackend:
                             # Free memory is keyed by nvidia-smi's PCI order; a child under
                             # another CUDA_DEVICE_ORDER (FASTEST_FIRST is CUDA's default)
                             # enumerates its own way, so positional shares could land on the
-                            # wrong cards. No reserve then, as before.
+                            # wrong cards. A MIG / uuid mask no resolver maps orders the
+                            # child its own way too. No reserve then, as before.
                             _spawn_order_unproven = (
                                 self._GPU_IDS_ARE_PCI_INDICES is True
-                                and str(env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
-                                != "PCI_BUS_ID"
+                                and (
+                                    str(env.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+                                    != "PCI_BUS_ID"
+                                    or self._visibility_mask_is_unmappable()
+                                )
                                 and self._smi_uuid_mask_order() is None
                             )
                             if (
@@ -41237,18 +41253,21 @@ class LlamaCppBackend:
         """Whether the child really fails compute: a poisoned Metal backend rejects every
         graph, so a one-token request comes back 500 "Compute error.". The log marker
         alone is not proof, since request text can reach the server's error output. An
-        --embedding server is restricted to embeddings, so it is probed there."""
+        --embedding or --rerank server is restricted to embeddings, so it is probed on the
+        native /embedding route, which computes under every pooling type (/v1/embeddings
+        400s on NONE pooling before compute)."""
         try:
             embedding = bool(self.is_embedding_gguf)
         except Exception:
             embedding = False
         embedding = embedding or any(
-            _flag_name(str(a)) in ("--embedding", "--embeddings") for a in (self._extra_args or ())
+            _flag_name(str(a)) in ("--embedding", "--embeddings", "--rerank", "--reranking")
+            for a in (self._extra_args or ())
         )
         try:
             resp = httpx.post(
-                f"{self.base_url}/v1/embeddings" if embedding else f"{self.base_url}/completion",
-                json = {"input": " "}
+                f"{self.base_url}/embedding" if embedding else f"{self.base_url}/completion",
+                json = {"content": " "}
                 if embedding
                 else {"prompt": " ", "n_predict": 1, "stream": False},
                 headers = self._auth_headers,

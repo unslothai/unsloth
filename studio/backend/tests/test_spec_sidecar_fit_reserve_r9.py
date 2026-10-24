@@ -158,8 +158,8 @@ def test_an_owned_head_is_reserved_on_its_output_card(tmp_path, monkeypatch):
     "embedding, extras, endpoint",
     [
         (False, (), "/completion"),
-        (True, (), "/v1/embeddings"),
-        (False, ("--embeddings",), "/v1/embeddings"),
+        (True, (), "/embedding"),
+        (False, ("--embeddings",), "/embedding"),
     ],
 )
 def test_an_embedding_server_is_probed_through_embeddings(monkeypatch, embedding, extras, endpoint):
