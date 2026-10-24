@@ -213,7 +213,8 @@ def _case_ga(rank, world, tmp, arch, n_mb):
     model = build(repo)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb)
-    loss = float(pp.step(ids, labels))
+    # [1, seq] position_ids (the default positions) are broadcast to every micro-batch.
+    loss = float(pp.step(ids, labels, position_ids = torch.arange(ids.shape[1])[None]))
     grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
     # Unscaled-mean mistake check: what scale_grads=True (divide by n_mb) would have produced.
     return {"ga_loss": total, "ga_grads": ga_grads, "loss": loss, "grads": grads}

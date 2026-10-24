@@ -802,7 +802,18 @@ class PipelineParallel:
         num_items_in_batch = max(num_items_in_batch, 1)
         device = self.device
         schedule = self._schedule_for(bsz // m, seq)
-        step_kwargs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
+        step_kwargs = {}
+        for key, value in kwargs.items():
+            if isinstance(value, torch.Tensor):
+                if value.dim() == 0 or value.shape[0] not in (1, bsz):
+                    raise ValueError(
+                        f"Unsloth: PipelineParallel.step {key} must have the batch dimension first "
+                        f"({bsz} or 1), got {tuple(value.shape)}."
+                    )
+                if value.shape[0] == 1 and bsz > 1:
+                    value = value.expand(bsz, *value.shape[1:])  # split per micro-batch on dim 0
+                value = value.to(device)
+            step_kwargs[key] = value
         step_kwargs["labels"] = labels.to(device)
         step_kwargs["num_items_in_batch"] = num_items_in_batch
         if scaler is not None and scaler.is_enabled():
