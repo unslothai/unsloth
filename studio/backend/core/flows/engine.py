@@ -1186,7 +1186,9 @@ class FlowEngine:
             return False
         params = plan.nodes[nid].get("params") or {}
         connected = set(plan.inputs.get(nid, {}))
-        if spec.get("model_kind") == "image" and (params.get("loras") or "control" in connected):
+        if spec.get("model_kind") == "image" and (
+            params.get("loras") or "control_image" in connected
+        ):
             return False
         if spec.get("model_kind") == "chat" and "image" in connected:
             return False

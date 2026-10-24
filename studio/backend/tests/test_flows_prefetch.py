@@ -656,3 +656,39 @@ async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(stud
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     # Every iteration ran on m1: nothing loaded m2 while the loop was still running.
     assert seen == [["m1"]] * 3
+
+
+@run_async
+async def test_a_controlnet_image_step_is_not_loaded_early(studio):
+    async def image(ctx):
+        await ctx.ensure_model("image", ctx.params.get("model"))
+        return {"images": []}
+
+    async def pic(ctx):
+        return {"image": {"kind": "image", "url": "/edges.png"}}
+
+    eng = _engine(
+        {
+            "input.text": _text,
+            "input.image": pic,
+            "text.template": _slow_template([]),
+            "image.generate": image,
+        }
+    )
+    d = doc(
+        [
+            node("a", "input.text", value = "controlnet"),
+            node("edges", "input.image"),
+            node("t", "text.template", template = "{}"),
+            node("img", "image.generate", model = {"repo": "img-m"}),
+        ],
+        [
+            edge("a", "text", "t", "values"),
+            edge("t", "text", "img", "prompt"),
+            edge("edges", "image", "img", "control_image"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
+    # ControlNet reloads the model unquantized when the step starts: an early load would be thrown away.
+    assert rs.prefetched == 0

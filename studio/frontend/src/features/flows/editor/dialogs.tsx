@@ -198,6 +198,11 @@ export function PlanDialog({
   onOpenChange,
 }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const flowId = useDocStore((s) => s.flowId);
+  const callsFlows = useDocStore((s) =>
+    Object.values(s.graph.nodes).some(
+      (n) => n?.type === "flow.call" && !n.disabled,
+    ),
+  );
   const [plan, setPlan] = useState<FlowPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -246,7 +251,9 @@ export function PlanDialog({
                 className="flex items-start gap-3 rounded-md border px-3 py-2 text-sm"
                 data-testid={`flow-plan-hint-${hint.id}`}
               >
-                <p className="min-w-0 flex-1 text-muted-foreground">{hint.message}</p>
+                <p className="min-w-0 flex-1 text-muted-foreground">
+                  {hint.message}
+                </p>
                 {hint.id === "multi_model" && (
                   <Button
                     size="sm"
@@ -266,7 +273,8 @@ export function PlanDialog({
                 )}
               </div>
             ))}
-            {plan.models.length > 0 && <UnloadAfterRunToggle />}
+            {/* A flow that only calls other flows loads their models too, and frees them with this setting. */}
+            {(plan.models.length > 0 || callsFlows) && <UnloadAfterRunToggle />}
           </div>
         )}
       </DialogContent>
