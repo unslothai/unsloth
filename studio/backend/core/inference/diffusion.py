@@ -426,6 +426,8 @@ from .diffusion_comfy_quant import (
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import (
+    PrequantIntoError,
+    PrequantSource,
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     local_prequant_path_ready,
@@ -9835,7 +9837,28 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                for attr, _module in denoisers:
+                                # A returning load reads its earlier build from the local prequant cache instead of
+                                # re-quantising the dense denoiser.
+                                cached_scheme = (
+                                    self._pipeline_quant_from_cache(
+                                        pipe,
+                                        fam,
+                                        denoisers,
+                                        target = target,
+                                        transformer_quant = transformer_quant,
+                                        fast_accum = transformer_quant_fast_accum,
+                                        loras = loras,
+                                        base = base,
+                                        fetch_base = fetch_base,
+                                        source_base = _base_local_dir or fetch_base,
+                                        hf_token = hf_token,
+                                    )
+                                    if native_scheme is None
+                                    else None
+                                )
+                                if cached_scheme is not None:
+                                    engaged.append(cached_scheme)
+                                for attr, _module in denoisers if cached_scheme is None else ():
                                     scheme = quantize_transformer(
                                         pipe
                                         if attr == "transformer"
@@ -9851,7 +9874,13 @@ class DiffusionBackend:
                                     if scheme is None:
                                         break
                                     engaged.append(scheme)
-                                if engaged and len(engaged) == len(denoisers):
+                                if (
+                                    engaged
+                                    and len(engaged) == len(denoisers)
+                                    and cached_scheme is not None
+                                ):
+                                    transformer_quant_engaged = cached_scheme
+                                elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
                                     self._save_pipeline_quant_to_cache(
                                         pipe,
@@ -11211,6 +11240,93 @@ class DiffusionBackend:
             )
             check_cancelled()
         return pipe, scheme
+
+    @staticmethod
+    def _pipeline_quant_from_cache(
+        pipe: Any,
+        fam: Any,
+        denoisers: Any,
+        *,
+        target: Any,
+        transformer_quant: Optional[str],
+        fast_accum: Optional[bool],
+        loras: Any,
+        base: Optional[str],
+        fetch_base: Optional[str],
+        source_base: Optional[str],
+        hf_token: Optional[str],
+    ) -> Optional[str]:
+        """Load the dense pipeline ``transformer``'s earlier int8/fp8 build in place from this machine's prequant cache
+        (what ``_save_pipeline_quant_to_cache`` wrote: bit-identical to a fresh quantize, keyed on the source shards,
+        the quant recipe and the torch / torchao minors). Returns the scheme, or None with the module still dense.
+        Raises only when a load failed after it began replacing weights.
+
+        A hosted checkpoint is deliberately NOT read here: the published FLUX.2-klein-4B INT8 renders different pixels
+        from this build's quantize, so serving it would change a pipeline load's output."""
+        try:
+            names = [attr for attr, _module in (denoisers or ())]
+            transformer = getattr(pipe, "transformer", None)
+            if (
+                fam is None
+                or transformer is None
+                or names != ["transformer"]
+                or _has_active_lora(loras)
+            ):
+                return None
+            family = getattr(fam, "name", None)
+            if native_quant_scheme(target, transformer_quant, family = family) is not None:
+                return None
+            scheme = select_transformer_quant_scheme(
+                target, transformer_quant, family = family, base_repo = base
+            )
+            from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup, note_hit
+
+            if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
+                return None
+            cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
+            if not cached:
+                return None
+            first = next(iter(transformer.parameters()), None)
+            here = str(first.device) if first is not None else "cpu"
+            t0 = time.perf_counter()
+            loaded = load_prequantized_transformer(
+                type(transformer),
+                fetch_base or base,
+                PrequantSource(kind = "path", location = cached, filename = None),
+                device = str(getattr(target, "device", None) or here),
+                dtype = getattr(first, "dtype", None),
+                hf_token = hf_token,
+                scheme = scheme,
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                fast_accum = fast_accum,
+                cache_dir = hub_cache_dir(),
+                local_files_only = True,
+                logger = logger,
+                # Where the dense weights already are: the plan places the module after this, as after a quantize.
+                placement_device = here,
+                family = family,
+                into = transformer,
+            )
+            if loaded is None:
+                if transformer_is_quantised(transformer):
+                    raise PrequantIntoError("the cached build was partly applied and then failed")
+                # Unusable here (digest, recipe or forced fast-accum mismatch): quantize fresh, as before.
+                return None
+            note_hit(cached, logger)
+            logger.info(
+                "diffusion.transformer_quant: %s read from the local prequant cache in %.1f s (no re-quantize)",
+                scheme,
+                time.perf_counter() - t0,
+            )
+            return scheme
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, PrequantIntoError):
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' could not finish loading its cached build ({exc}); "
+                    "reload to quantize it fresh"
+                ) from exc
+            logger.warning("diffusion.prequant_cache: read skipped (%s)", exc)
+            return None
 
     @staticmethod
     def _save_pipeline_quant_to_cache(

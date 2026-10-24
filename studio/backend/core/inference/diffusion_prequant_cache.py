@@ -454,8 +454,11 @@ def lookup(
     base_repo: Optional[str],
     component: str = "transformer",
     logger: Any = None,
+    source_base: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
+    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises.
+    ``source_base`` is where the dense shards were read (a mirror or a local snapshot dir), as ``save_runtime_quant``
+    takes it; the key still records ``base_repo``."""
     if not enabled() or scheme not in CACHEABLE_SCHEMES:
         return None
     try:
@@ -463,7 +466,12 @@ def lookup(
         key = shards = None
         # Every shard set: a repo without refs/main may hold several commit-pinned snapshots.
         seen: set = set()
-        for candidate in (source_shards(source, component), *_shard_sets(source, component)):
+        roots = [source_base, source] if source_base and source_base != source else [source]
+        for candidate in (
+            shard_set
+            for root in roots
+            for shard_set in (source_shards(root, component), *_shard_sets(root, component))
+        ):
             if not candidate or tuple(candidate) in seen:
                 continue
             seen.add(tuple(candidate))
