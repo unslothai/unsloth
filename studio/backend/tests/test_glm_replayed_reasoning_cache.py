@@ -97,3 +97,30 @@ def test_without_preservation_the_prompt_breaks_after_the_first_query():
     before = _render(anthropic_messages_to_openai(answered[:3], system))
     after = _render(anthropic_messages_to_openai(second, system))
     assert not after.startswith(before)  # the regression this file guards against
+
+
+def test_claude_codes_per_request_billing_header_is_not_part_of_the_prompt():
+    def system(cch):
+        return [
+            {
+                "type": "text",
+                "text": f"x-anthropic-billing-header: cc_version=2.3.1.abc; cch={cch};",
+            },
+            {"type": "text", "text": "You are Claude Code."},
+        ]
+
+    msgs = [{"role": "user", "content": "hi"}]
+    first = anthropic_messages_to_openai(msgs, system("1a2b3"))
+    second = anthropic_messages_to_openai(msgs, system("9f8e7"))
+    assert first == second
+    assert first[0] == {"role": "system", "content": "You are Claude Code."}
+    assert anthropic_messages_to_openai(msgs, "x-anthropic-billing-header: cch=1;\nBe brief.")[
+        0
+    ] == {
+        "role": "system",
+        "content": "Be brief.",
+    }
+    assert (
+        anthropic_messages_to_openai(msgs, "x-anthropic-billing-header: cch=1;")[0]["role"]
+        == "user"
+    )
