@@ -1054,6 +1054,30 @@ def test_a_run_skips_a_speech_primary_for_the_text_model_kept_alongside(monkeypa
     assert scheduler_module._sole_kept_model() is None
 
 
+def test_a_run_skips_whisper_which_refuses_a_request_without_audio(monkeypatch):
+    from core.inference import model_slots
+
+    def orchestrator(name, info):
+        return SimpleNamespace(active_model_name = name, models = {name: info})
+
+    whisper = {"is_audio": True, "audio_type": "whisper"}
+    text = SimpleNamespace(
+        llama = SimpleNamespace(is_loaded = False), orchestrator = orchestrator("text/model", {})
+    )
+    kept_whisper = SimpleNamespace(
+        llama = SimpleNamespace(is_loaded = False), orchestrator = orchestrator("asr/kept", whisper)
+    )
+    monkeypatch.setattr(model_slots, "visible", lambda: [text, kept_whisper])
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "asr/primary")
+    monkeypatch.setattr(
+        inference_routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(
+        inference_routes, "_peek_inference_backend", lambda: orchestrator("asr/primary", whisper)
+    )
+    assert scheduler_module._sole_kept_model() == "text/model"
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)

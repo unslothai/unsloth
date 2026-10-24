@@ -152,12 +152,12 @@ def _chat_model_loaded() -> bool:
 
 
 def _speech_only(llama: Any, orchestrator: Any) -> bool:
-    """A loaded model that answers with audio, which a text-only run cannot use (as the producer decides it)."""
+    """A loaded audio model a text-only run cannot use: TTS answers with speech, Whisper refuses a request without audio."""
     if getattr(llama, "is_loaded", False):
         return bool(getattr(llama, "_is_audio", False))
     active = getattr(orchestrator, "active_model_name", None)
     info = (getattr(orchestrator, "models", None) or {}).get(active) or {}
-    return bool(info.get("is_audio")) and info.get("audio_type") != "whisper"
+    return bool(info.get("is_audio"))
 
 
 def _slot_model(slot: Any) -> Optional[str]:
