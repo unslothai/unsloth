@@ -138,3 +138,21 @@ def test_the_recorded_gguf_is_the_exact_variant_not_a_substring(tmp_path):
     cache = _cache(tmp_path, QWEN, SHA_A, ["m-BF16.gguf", "m-F16.gguf", "mmproj-F16.gguf"])
     assert replication.cached_gguf(cache, QWEN, SHA_A, "F16") == "m-F16.gguf"
     assert replication.cached_gguf(cache, QWEN, SHA_A, "BF16") == "m-BF16.gguf"
+
+
+def test_a_path_qualified_gguf_variant_is_pinned_but_a_local_path_is_not(tmp_path):
+    cache = _cache(tmp_path, QWEN, SHA_A, ["weights/model-Q6_K.gguf", "other/model-Q6_K.gguf"])
+    d = doc(
+        [
+            node("a", "llm.generate", model = {"repo": QWEN, "variant": "weights/model-Q6_K"}),
+            node("b", "llm.generate", model = {"repo": QWEN, "variant": "/home/me/model-Q6_K"}),
+        ]
+    )
+    pins = replication.pins(d, cache, "x")["models"]
+    assert {
+        "repo": QWEN,
+        "variant": "weights/model-Q6_K",
+        "revision": SHA_A,
+        "file": "weights/model-Q6_K.gguf",
+    } in pins
+    assert not any("/home/me" in json.dumps(m) for m in pins)

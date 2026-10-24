@@ -66,7 +66,14 @@ def models_used(doc: dict) -> list[dict]:
         if not _HUB_ID.match(repo) or ".." in repo:
             continue
         variant = choice.get("variant") if isinstance(choice.get("variant"), str) else None
-        if variant and (len(variant) > 200 or "/" in variant or "\\" in variant):
+        # Repo-relative keys ("weights/model-Q6_K") are valid variants; anything path-like beyond that is not.
+        if variant and (
+            len(variant) > 200
+            or variant.startswith("/")
+            or ".." in variant
+            or "\\" in variant
+            or ":" in variant
+        ):
             variant = None
         key = (repo.lower(), (variant or "").lower())
         if repo and key not in seen:
