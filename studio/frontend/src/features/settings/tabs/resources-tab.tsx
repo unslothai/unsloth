@@ -34,6 +34,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemInfoResponse,
   type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
@@ -50,7 +51,10 @@ import {
 } from "../api/hugging-face-cache";
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useIsAccountOwner } from "@/features/auth";
 import { CacheStorageRows } from "../components/cache-storage-rows";
+import { DeveloperModeSection } from "../components/developer-mode-section";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -267,6 +271,7 @@ type GpuPhysicalInventory = SystemGpuInfo & {
 
 export function ResourcesTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
@@ -356,7 +361,6 @@ export function ResourcesTab() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
-
 
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
@@ -524,13 +528,14 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0
+    metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(metrics.vramTotal);
+      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
@@ -686,11 +691,15 @@ export function ResourcesTab() {
                 : hasGpu
                   ? memoryDisplay.sharedOnly
                     ? t("settings.resources.gpu.sharedWithSystemRam")
-                    : metrics.vramUsageKnown
-                      ? t("settings.resources.liveMonitor.free", {
-                          value: formatGiB(metrics.vramFree),
+                    : unifiedPool && memoryDisplay.unifiedAvailableGb !== null
+                      ? t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : unknownLabel
+                      : metrics.vramUsageKnown
+                        ? t("settings.resources.liveMonitor.free", {
+                            value: formatGiB(metrics.vramFree),
+                          })
+                        : unknownLabel
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusableDetail")
                     : backendLabel
@@ -700,7 +709,9 @@ export function ResourcesTab() {
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
                 ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
-                : undefined
+                : unifiedPool && !memoryDisplay.sharedOnly
+                  ? t("settings.resources.gpu.sharedWithSystemRam")
+                  : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -741,7 +752,6 @@ export function ResourcesTab() {
           description={t(
             "settings.resources.liveMonitor.detailedViewDescription",
           )}
-          className="border-t border-border/60"
         >
           <Switch
             aria-label={t("settings.resources.liveMonitor.detailedView")}
@@ -1051,6 +1061,7 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <EngineVersionsSection />
       <InferenceEnginesSection />
 
       <ModelMemorySection ref={modelMemoryRef} />
@@ -1137,7 +1148,7 @@ export function ResourcesTab() {
                     ? t("settings.resources.storage.openAction")
                     : t("settings.resources.storage.copyAction")
                 }
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
               >
                 {isTauri ? (
                   <FolderOpenIcon className="size-3.5" />
@@ -1170,38 +1181,70 @@ export function ResourcesTab() {
         showModelHints={false}
       />
 
-      <SettingsSection title={t("settings.resources.environment.title")}>
-        <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </SettingsSection>
+      {isOwner ? <DeveloperModeSection /> : null}
+
+      <EnvironmentSection
+        systemInfo={systemInfo}
+        backendLabel={backendLabel}
+      />
     </div>
+  );
+}
+
+/** About renders this too, from its own system query. */
+export function EnvironmentSection({
+  systemInfo,
+  backendLabel,
+}: {
+  systemInfo: SystemInfoResponse;
+  backendLabel: string;
+}) {
+  const t = useT();
+  const unknownLabel = t("settings.resources.environment.unknown");
+  const hostReading = (value: string) =>
+    systemInfo.status !== "ready" ? unknownLabel : value;
+  return (
+    <SettingsSection title={t("settings.resources.environment.title")}>
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
+    </SettingsSection>
+  );
+}
+
+export function StandaloneEnvironmentSection() {
+  const systemInfo = useSystemInfo();
+  return (
+    <EnvironmentSection
+      systemInfo={systemInfo}
+      backendLabel={(systemInfo.device_backend ?? "cpu").toUpperCase()}
+    />
   );
 }

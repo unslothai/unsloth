@@ -36,6 +36,13 @@ def begin_browser_action(action_id: str, session_id: Optional[str], account_id: 
     return slot
 
 
+def discard_browser_action(action_id: str, slot: dict) -> None:
+    """Drop a slot that will never be waited on (the stream closed before the tab was asked)."""
+    with _lock:
+        if _pending.get(action_id) is slot:
+            _pending.pop(action_id, None)
+
+
 def wait_browser_action(
     slot: dict,
     action_id: str,

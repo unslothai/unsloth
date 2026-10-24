@@ -188,6 +188,7 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
     "../components/desktop-update-control": componentStub,

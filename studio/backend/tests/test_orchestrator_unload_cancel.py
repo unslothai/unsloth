@@ -1154,6 +1154,8 @@ def test_scoped_cancel_holds_load_ownership_until_backend_cancel_finishes(monkey
         return _Backend()
 
     monkeypatch.setattr(inference_route, "get_inference_backend", _get_backend)
+    # Routing peeks for a dead worker; only the cancel may reach the blocking getter.
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
     monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
 

@@ -540,7 +540,7 @@ export const ModelInspector = memo(function ModelInspector({
   if (!model) {
     return (
       <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
-        <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
+        <div className="inline-flex size-12 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
@@ -630,7 +630,7 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-[18px] text-ui-19"
+            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-lg text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -787,7 +787,7 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}

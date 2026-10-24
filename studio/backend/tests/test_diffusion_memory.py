@@ -1221,8 +1221,8 @@ def test_plan_fits_total_capacity():
         )
 
     assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
-    # 0.85 * (183,359 - 18,335) = 140,270
-    assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
+    # 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+    assert plan_fits_total_capacity(plan(160_000, 183_359)) is False
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
     assert plan_fits_total_capacity(types.SimpleNamespace()) is False

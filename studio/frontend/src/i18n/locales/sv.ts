@@ -55,6 +55,8 @@ export const sv = {
     },
     agentSettings: {
       title: "Webbläsaranvändning",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen om webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
@@ -68,7 +70,7 @@ export const sv = {
       cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
-      permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
+      permissionsDescription: "Ange standardvärden och undantag per webbplats. Lösenords- och betalningsfält fylls aldrig i.",
       site: "Webbplats eller mönster",
       sitePlaceholder: "example.com eller *.example.com",
       default: "Standard",
@@ -102,6 +104,24 @@ export const sv = {
         history: "Låta Unsloth läsa din webbhistorik?",
         script: "Låta Unsloth köra det här skriptet på {host}?",
         pointer: "Låta Unsloth klicka på omärkta delar av {host}, till exempel en rityta?",
+      },
+      step: {
+        open: "Öppnar {detail}",
+        back: "Går tillbaka",
+        forward: "Går framåt",
+        reload: "Laddar om sidan",
+        read: "Läser sidan",
+        find: "Letar efter ”{detail}”",
+        click: "Klickar på ”{detail}”",
+        type: "Skriver i ”{detail}”",
+        select: "Väljer ”{detail}”",
+        press: "Trycker på {detail}",
+        scroll: "Rullar",
+        screenshot: "Tar en skärmbild",
+        evaluate: "Kör ett skript på sidan",
+        history: "Läser din webbhistorik",
+        move: "Flyttar musen",
+        drag: "Drar",
       },
     },
     title: "Webbläsare",
@@ -728,6 +748,8 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    unifiedTightFit: "Snäv passform",
+    unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -832,6 +854,8 @@ export const sv = {
       returnToChat: "Tillbaka till chatten",
       returnToChats: "Tillbaka till {count} chattar",
       chatGenerating: "Genererar",
+      chatAwaitingApproval: "Väntar på godkännande",
+      chatUnread: "Oläst",
       compare: "Jämför",
       search: "Sök",
       projects: "Projekt",
@@ -1185,6 +1209,7 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       searchPlaceholder: "Sök genvägar …",
       keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
@@ -1192,25 +1217,25 @@ export const sv = {
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
       metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
       altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
       desktopOnly: "Endast i skrivbordsappen",
-      builtInKey: "Inbyggt: {key}",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1400,6 +1425,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",
@@ -1427,10 +1456,6 @@ export const sv = {
         decreaseReasoningEffort: {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
-        },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
         },
         renameChat: {
           label: "Byt namn på chatt",
@@ -1561,7 +1586,8 @@ export const sv = {
       lineCount: "{count} rader",
       filteredLineCount: "{shown} av {total} rader",
       wrapLines: "Radbryt",
-      jumpToLatest: "Hoppa till senaste",
+      jumpToLatest: "Senaste",
+      resizeLog: "Dra för att ändra loggens storlek",
       noMatches: "Inga rader matchar filtret.",
       mode: "Läge",
       modeLive: "Direkt",
@@ -2169,6 +2195,18 @@ export const sv = {
         openError: "Det gick inte att öppna katalogen",
         copyError: "Det gick inte att kopiera sökvägen",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        action: "Uppgradera till fullständig installation",
+        confirmTitle: "Uppgradera till den fullständiga installationen?",
+        confirmDescription:
+          "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmAction: "Uppgradera",
+        keywords:
+          "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
+      },
       repairInstall: {
         label: "Reparera installationen",
         description:
@@ -2177,6 +2215,8 @@ export const sv = {
         confirmTitle: "Reparera den här installationen?",
         confirmDescription:
           "Stoppar servern och kör installationsprogrammet igen, vilket installerar om PyTorch för den här datorns GPU i den senaste versionen som stöds. Chattar och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionChatOnly:
+          "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
       },
       resetPreferences: {
@@ -2910,6 +2950,15 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showReplyTimes: "Svarstider",
+      showReplyTimesDescription: "Visa under varje svar när det blev klart.",
+      showReplyTimesKeywords:
+        "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
+      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetailsDescription:
+        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+      showGenerationDetailsKeywords:
+        "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -3142,6 +3191,9 @@ export const sv = {
         searchAudio: "Sök arkiverat ljud",
         unarchive: "Avarkivera",
         unarchiveAll: "Avarkivera alla",
+        unarchiveAllInProject: "Avarkivera alla i projektet",
+        deleteAllInProject: "Ta bort alla i projektet",
+        groupActions: "Åtgärder för {group}",
         unarchiveResults: "Avarkivera resultat",
         deleteResults: "Ta bort resultat",
         noChats: "Inga chattar matchar din sökning.",
@@ -3312,12 +3364,13 @@ export const sv = {
       usageNoModel:
         "Läs in eller hämta en modell för att se exempel som går att köra. Den här servern har ännu ingen modell att ange.",
       usageTools: "Verktyg",
-      exampleCurlTools: "curl + verktyg",
-      examplePythonTools: "Python + verktyg",
-      exampleJavaScriptTools: "JavaScript + verktyg",
-      exampleCurlAdvanced: "curl + avancerat",
-      examplePythonAdvanced: "Python + avancerat",
-      exampleJavaScriptAdvanced: "JavaScript + avancerat",
+      exampleLanguage: "Språk",
+      exampleRequest: "Förfrågan",
+      examplePlatform: "Plattform",
+      requestPlain: "Grundläggande",
+      requestTools: "Med verktyg",
+      requestAdvanced: "Avancerad sampling",
+      exampleKind: "Exempel",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Säker HTTPS",
@@ -3327,17 +3380,16 @@ export const sv = {
       copySnippet: "Kopiera kodstycke",
       copy: "Kopiera",
       copied: "Kopierat",
-      setupDocs: "Installationsdokumentation:",
       codingAgents: "Kodagenter",
       codingAgentsHint:
         "Starta en kodagent mot den här servern. Den använder den inlästa modellen; en lokal server skapar automatiskt en API-nyckel, medan en fjärrserver inkluderar den i kommandot.",
+      openAgentsTab: "Öppna i Agenter",
       codingAgentsSwap:
         "Byt ut claude mot codex, openclaw, opencode eller hermes.",
-      codingAgentDetected: "Installerad på den här datorn",
-      codingAgentsDetectedHint: "Identifierade på den här datorn: {agents}.",
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",
@@ -4396,6 +4448,7 @@ export const sv = {
     disable: "Inaktivera {name}",
     updateError: "Det gick inte att uppdatera färdigheten",
     newSkill: "Ny färdighet",
+    import: "Importera",
     delete: "Ta bort {name}",
     createDescription:
       "Sparas som SKILL.md i en ny mapp under ~/.agents/skills och aktiveras så snart den finns.",
@@ -4420,9 +4473,14 @@ export const sv = {
     created: "{name} skapades",
     saved: "{name} sparades",
     deleted: "{name} togs bort",
+    importedOne: "{count} färdighet lades till",
+    importedMany: "{count} färdigheter lades till",
+    importPartial: "{added} av {total} färdigheter lades till",
     saveError: "Det gick inte att spara färdigheten",
     openError: "Det gick inte att öppna färdigheten",
     deleteError: "Det gick inte att ta bort färdigheten",
+    importError: "Det gick inte att importera färdigheten",
+    exportError: "Det gick inte att exportera färdigheten",
     deleteTitle: "Ta bort färdighet",
     deleteDescription:
       'Ta bort "{name}" och allt i dess mapp under ~/.agents/skills? Detta kan inte ångras.',
@@ -4962,5 +5020,42 @@ export const sv = {
     cantRun: "Kunde inte köras",
     failed: "Fel {status}",
     invalidJson: "Begärans body är inte giltig JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Inlästa modeller",
+      countOne: "{count} modell inläst",
+      countMany: "{count} modeller inlästa",
+      pillLabel: "{count}. Visa detaljer eller dra för att flytta",
+      dragToMove: "Dra för att flytta",
+      dragHandleLabel: "Flytta inlästa modeller. Piltangenterna flyttar den lite i taget.",
+      collapse: "Fäll ihop",
+      collapseLabel: "Fäll ihop inlästa modeller",
+      close: "Stäng",
+      closeLabel: "Stäng inlästa modeller",
+      backOnNextLoad: "Visas igen vid nästa modellinläsning",
+      ejectToFree: "Mata ut för att frigöra minne",
+      ejectLabel: "Mata ut {model}",
+      openTarget: "Öppna {target}",
+      rowLabel: "{model}. Öppna {target}",
+      loading: "Läser in",
+      ejecting: "Matar ut",
+      stillInMemory: "Finns kvar i minnet",
+      alsoServing: "Betjänar även",
+      noneLoaded: "Inga modeller inlästa",
+      noneLoadedDetail: "Modeller du läser in visas här.",
+      otherAccount: "Används av ett annat konto",
+      otherAccountDetail: "Minnet hålls av en modell som du inte kan se",
+      toastStillResident: "”{model}” lästes in under utmatningen och använder därför fortfarande minne. Mata ut den igen för att frigöra det.",
+      toastUnverified: "{model} ombads att laddas ur, men körmiljön bekräftade inte. Kontrollera kortet om en stund.",
+      toastAlreadyFree: "{model} var inte längre inläst.",
+      toastReplaced: "{model} är inte längre inläst. ”{resident}” tog dess plats och lämnades orörd.",
+      toastEjected: "{model} utmatad",
+      toastFailed: "Det gick inte att mata ut {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
+      reconnecting: "Återansluter …",
+    },
   },
 } as const;

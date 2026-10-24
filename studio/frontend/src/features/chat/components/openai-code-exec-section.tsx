@@ -449,7 +449,7 @@ export function OpenAICodeExecSection({
         {sortedContainers.length === 0 ? (
           // Quiet placeholder with the same muted border as row cards so an empty section does not look
           // like an active control. The first container is lazy-created on first send.
-          <div className="flex h-9 w-full items-center rounded-md border border-dashed border-border/60 bg-muted/20 px-2 text-xs text-muted-foreground">
+          <div className="flex h-9 w-full items-center rounded-full border border-dashed border-border/60 bg-muted/20 px-2 text-xs text-muted-foreground">
             None yet - one will be created on first send.
           </div>
         ) : (
@@ -467,7 +467,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-ring-strong bg-primary/5"
+                      ? "border-ring-strong bg-wash-5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"
@@ -501,15 +501,15 @@ export function OpenAICodeExecSection({
                         {c.name ?? "(unnamed)"}
                       </span>
                       {isPending ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-full bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
                           Creating
                         </span>
                       ) : isActive ? (
-                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-primary">
+                        <span className="shrink-0 rounded-full bg-primary/15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
                       ) : statusLabel ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-full bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
                           {statusLabel}
                         </span>
                       ) : null}
@@ -549,7 +549,7 @@ export function OpenAICodeExecSection({
           inherited from the top "Idle timeout" control (no per-container
           override), keeping the form light. */}
       {createOpen ? (
-        <div className="flex items-center gap-1 rounded-md border border-border/60 bg-muted/20 px-1.5 py-1">
+        <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 px-1.5 py-1">
           <Input
             autoFocus
             placeholder="Name"

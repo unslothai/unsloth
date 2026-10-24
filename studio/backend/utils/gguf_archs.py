@@ -42,6 +42,33 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     return any(marker in normalized for marker in _VOCODER_MARKERS)
 
 
+DIFFUSION_IMAGE_GGUF_ARCHS = frozenset(
+    {
+        "flux",
+        "flux2",
+        "qwen_image",
+        "qwenimage",
+        "qwen_image21",
+        "qwenimage21",
+        "z_image",
+        "zimage",
+        "krea2",
+    }
+)
+# Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
+FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
+# Recognised, but no Studio page can run them.
+UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
+    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
+)
+# Shared by several families, so the header alone does not say whether Images can run the file
+# (Z-Image's DiT is a Lumina2 derivative and declares "lumina2").
+AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
+# Not architectures: placeholders gguf-connector writes for its diffusion GGUFs.
+PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
+VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
+
+
 # ``general.architecture`` of every GGUF audio.cpp writes. Only audiocpp_server reads these (speech,
 # music, transcription); llama.cpp has no such architecture.
 AUDIO_CPP_GGUF_ARCHITECTURE = "audiocpp"

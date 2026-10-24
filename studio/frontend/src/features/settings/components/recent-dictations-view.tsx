@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,9 +41,6 @@ import {
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -208,7 +206,7 @@ export function RecentDictationsView({
           }
           className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -230,7 +228,7 @@ export function RecentDictationsView({
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <article className="rounded-lg border border-border/60 bg-muted/20 p-4">
+          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>
@@ -260,7 +258,7 @@ export function RecentDictationsView({
               {t("settings.voice.recents.copy")}
             </Button>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() =>
                 {
@@ -268,7 +266,7 @@ export function RecentDictationsView({
                   setPendingDelete({ kind: "one", dictation: selected });
                 }
               }
-              className="text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
@@ -322,10 +320,10 @@ export function RecentDictationsView({
               </SelectContent>
             </Select>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() => setPendingDelete({ kind: "all" })}
-              className="shrink-0 text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="shrink-0 text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
@@ -509,8 +507,8 @@ export function RecentDictationsView({
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
               <AlertDialogAction
-                variant="outline"
-                className="text-destructive hover:border-destructive/60 hover:text-destructive"
+                variant="destructive"
+                className="text-destructive hover:text-destructive"
                 onClick={(event) => {
                   // Close only through state so the dismissal can't race a
                   // click on whatever ends up under the pointer.

@@ -2037,7 +2037,8 @@ export async function* streamChatCompletions(
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
             parsed.type === "tool_args" ||
-            parsed.type === "tool_model_note")
+            parsed.type === "tool_model_note" ||
+            parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
@@ -2060,6 +2061,11 @@ export async function* streamChatCompletions(
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        if ("type" in parsed && parsed.type === "generation_progress") {
+          yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
