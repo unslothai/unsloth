@@ -652,7 +652,10 @@ def _case_bnb_keys(native, dist, rank, tmp):
     ckpt = os.path.join(tmp, "ckpt")
     os.makedirs(ckpt, exist_ok = True)
     state = get_optimizer_state_dict(model, opt, options = StateDictOptions(full_state_dict = False))
-    names = {"exp_avg": "state1", "exp_avg_sq": "state2"}  # a copy: the live entries stay as they are
+    names = {
+        "exp_avg": "state1",
+        "exp_avg_sq": "state2",
+    }  # a copy: the live entries stay as they are
     state["state"] = {
         fqn: {names.get(k, k): v for k, v in entry.items()} for fqn, entry in state["state"].items()
     }
