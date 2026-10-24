@@ -15,7 +15,6 @@ def test_mamba_skips_dt_proj():
 def test_falcon_mamba_and_others_unchanged():
     from unsloth.models.vision import _architecture_skip_modules
 
-    # FalconMamba already calls dt_proj() when the config is quantized.
     assert "dt_proj" not in _architecture_skip_modules(["falcon_mamba"])
     assert "dt_proj" not in _architecture_skip_modules(["mamba2"])
     assert _architecture_skip_modules(["llama"]) == []
@@ -32,7 +31,6 @@ def test_user_bnb_config_gets_mamba_dt_proj():
 
 
 def test_skip_key_keeps_tiny_mamba_dt_proj_out_of_bnb():
-    # The transformers bnb replacement must honour the key on the real Mamba module tree.
     import pytest
 
     pytest.importorskip("bitsandbytes")
