@@ -7,9 +7,13 @@ LoRA matrices depended on whatever had used the RNG before, and under torchrun e
 adapters (native FSDP2 then sharded a mix of them)."""
 
 import pytest
+from real_accelerator import has_real_accelerator
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sentence_transformers")
+
+# The loader reads device properties even with device_map = "cpu".
+pytestmark = pytest.mark.skipif(not has_real_accelerator(), reason = "the loader needs an accelerator")
 
 ENCODER = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
 
