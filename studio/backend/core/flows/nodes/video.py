@@ -69,7 +69,8 @@ async def generate(ctx: NodeContext) -> dict:
         raise FlowNodeError("Unsloth Studio did not start the video")
 
     async def cancel() -> None:
-        await ctx.call("POST", "/api/inference/video/generate/cancel")
+        # Named, so a Stop after this render finished never cancels a newer one started elsewhere.
+        await ctx.call("POST", "/api/inference/video/generate/cancel", json = {"video_id": video_id})
 
     ctx.on_cancel(cancel)
     while True:

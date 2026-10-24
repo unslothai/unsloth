@@ -669,10 +669,22 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
     )
     if body.stream:
         return _invoke_stream(request, engine, call, body)
+    task = asyncio.create_task(engine.invoke(**call))
     try:
-        outputs = await engine.invoke(**call)
+        # A player that moved on (an NPC conversation pauses the background sim) aborts its fetch: stop the
+        # invocation too, so it does not hold the GPU lock in front of the call the player is waiting for.
+        while not (await asyncio.wait({task}, timeout = 1.0))[0]:
+            if await request.is_disconnected():
+                task.cancel()
+                raise HTTPException(
+                    status_code = 499, detail = "The player left before the answer was ready"
+                )
+        outputs = task.result()
     except (CompileError, FlowNodeError) as exc:
         raise _invoke_error(exc)
+    finally:
+        if not task.done():
+            task.cancel()
     return {"outputs": outputs, "session_id": body.session_id, "rev": body.rev}
 
 

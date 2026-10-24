@@ -192,3 +192,44 @@ def test_in_process_streams_arrive_as_the_route_writes_them():
     finally:
         flow_caller._headers = monkey_headers
         flow_caller.checked_path = saved
+
+
+def test_a_left_player_cancels_a_non_streamed_invoke(monkeypatch):
+    """The background sim's calls are not streamed; when the player aborts one, the invocation stops too."""
+    import pytest
+    from fastapi import HTTPException
+
+    from routes import flows as flows_routes
+
+    started = asyncio.Event()
+    cancelled = []
+
+    class Engine:
+        async def invoke(self, **_):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+    class Request:
+        app = None
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return started.is_set()
+
+    monkeypatch.setattr(flows_routes, "get_engine", lambda: Engine())
+    monkeypatch.setattr(flows_routes, "_flow_or_404", lambda fid: {"doc": {}})
+    monkeypatch.setattr(flows_routes, "_hf_token", lambda request: None)
+    body = flows_routes.InvokeBody(entry = "r", inputs = {})
+
+    async def go():
+        with pytest.raises(HTTPException) as err:
+            await asyncio.wait_for(flows_routes.invoke(Request(), "village", body), 10)
+        await asyncio.sleep(0)
+        return err.value.status_code
+
+    assert asyncio.run(go()) == 499
+    assert cancelled == [True]

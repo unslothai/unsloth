@@ -611,3 +611,45 @@ def test_loras_on_a_bf16_build_apply_at_generate_time(monkeypatch):
         )
     )
     assert loads == []
+
+
+def test_video_stop_cancels_only_its_own_render():
+    from core.flows.nodes import video as video_nodes
+
+    calls = []
+    hooks = []
+
+    async def ensure_model(*args, **kwargs):
+        return None
+
+    async def call(
+        method,
+        path,
+        json = None,
+    ):
+        calls.append((method, path, json))
+        if path == "/v1/videos":
+            return {"id": "vid1"}
+        if method == "GET":
+            # The first poll: Stop is pressed while it renders.
+            await hooks[0]()
+            return {"status": "completed"}
+        return {}
+
+    ctx = SimpleNamespace(
+        inputs = {},
+        params = {"prompt": "a fox"},
+        flow_params = {},
+        seed = 1,
+        ensure_model = ensure_model,
+        call = call,
+        on_cancel = hooks.append,
+        progress = lambda *a, **k: None,
+    )
+    video_nodes.POLL_S, poll = 0, video_nodes.POLL_S
+    try:
+        asyncio.run(video_nodes.generate(ctx))
+    finally:
+        video_nodes.POLL_S = poll
+    cancel = [c for c in calls if c[1] == "/api/inference/video/generate/cancel"]
+    assert cancel == [("POST", "/api/inference/video/generate/cancel", {"video_id": "vid1"})]
