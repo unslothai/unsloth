@@ -415,7 +415,9 @@ export const BUDGET = {
   // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
   // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
   // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
-  transferBytes: 2_088_701,
+  // Per-checkpoint thinking Off/On pins after eject (#15093): localStorage helpers on the eager chat load path,
+  // +135 B transfer (2,088,701 -> 2,088,836 B transfer in CI "Frontend build + bundle sanity", 99 chunks).
+  transferBytes: 2_089_025,
   rawBytes: 6_933_109,
 };
 
