@@ -98,7 +98,8 @@ def test_video_request_path_fits_the_residency_before_the_vram_check():
     free_reads = [
         n.lineno
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trusted_mem_get_info"
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) in ("trusted_mem_get_info", "_request_available_bytes")
     ]
     assert any(line > fit.lineno for line in free_reads)
 
@@ -285,6 +286,20 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
     monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV)
     vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 2)
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
+
+
+def test_vram_budget_caps_the_resident_prefix(monkeypatch):
+    """The user's VRAM Budget keeps its share of the card free when the residency is re-fit per request."""
+    torch, net, pipe, x, ref = _streamed_net()
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    _fit(pipe, monkeypatch, 1024)
+    assert _placed(net) == ["cuda"] * 6
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
+    _fit(pipe, monkeypatch, 1024)
+    assert _placed(net) == ["cpu"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
 
 
 def _graph_handle(declined = None, **state):
