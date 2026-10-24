@@ -348,7 +348,11 @@ async function fetchEstimate(
     .then((r) => {
       const estimate: Estimate = {
         kvBytes: r.kv_bytes,
-        weightsBytes: r.weights_bytes,
+        // weights_bytes is the whole file; its lookup tables never reach the GPU.
+        weightsBytes:
+          r.weights_bytes == null
+            ? null
+            : Math.max(0, r.weights_bytes - (r.lookup_table_bytes ?? 0)),
         specBytes: r.spec_bytes,
         nCtx: r.n_ctx ?? 0,
         projectorBytes: r.projector_bytes ?? null,

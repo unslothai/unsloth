@@ -644,6 +644,18 @@ _ONE = _RPC_LIST + ["--split-mode", "none"]
         (_ONE + ["--main-gpu", "1"], {}, True),
         (_ONE + ["--main-gpu", "-1"], {}, False),
         (_RPC_LIST, {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "0"}, False),
+        # --main-gpu -1 clears the default list too, its RPC devices included.
+        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "-1"], {}, False),
+        (
+            [],
+            {
+                "LLAMA_ARG_RPC": "10.0.0.2:50052",
+                "LLAMA_ARG_SPLIT_MODE": "none",
+                "LLAMA_ARG_MAIN_GPU": "-1",
+            },
+            False,
+        ),
+        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "0"], {}, True),
     ],
 )
 def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):

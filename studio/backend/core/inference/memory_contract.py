@@ -260,6 +260,8 @@ def project_kv_cache_estimate(
     return {
         # The quant-file meaning. See the module docstring.
         "weights_bytes": estimate.quant_file_bytes or None,
+        # Off the GPU and inside weights_bytes, so the bar can take it off the VRAM segment.
+        "lookup_table_bytes": estimate.lookup_table_bytes,
         "kv_bytes": kv_bytes or None,
         "native_context": estimate.native_context,
         "spec_bytes": spec_bytes,

@@ -66,3 +66,12 @@ test("the on-device card takes an update's table reading, a zero included", asyn
     /lookup_table_bytes: remoteVariant\.update_available\s*\?\s*\(remoteVariant\.lookup_table_bytes \?\? 0\)\s*:\s*variant\.lookup_table_bytes \|\| remoteVariant\.lookup_table_bytes/,
   );
 });
+
+test("the memory bar's estimate takes the lookup table off the whole-file weights", async () => {
+  // GET /kv-cache-estimate's weights_bytes is the quant file alone, streamed or resident table included.
+  const hook = await readSrcAsync("hooks/use-model-memory.ts");
+  assert.match(
+    hook,
+    /weightsBytes:\s*r\.weights_bytes == null\s*\?\s*null\s*:\s*Math\.max\(0, r\.weights_bytes - \(r\.lookup_table_bytes \?\? 0\)\)/,
+  );
+});

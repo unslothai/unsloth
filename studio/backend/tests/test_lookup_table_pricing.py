@@ -1320,3 +1320,14 @@ class TestEstimate:
         assert out["lookup_table_bytes"] == FLASH_NEXT_TABLE
         assert out["lookup_table_on_disk"] is True
         assert EstimateMemoryResponse(**out).lookup_table_bytes == FLASH_NEXT_TABLE
+
+    def test_the_memory_bar_response_carries_the_table(self, breakdown, monkeypatch):
+        """Its weights_bytes is the whole file, so the bar needs the table to take it off the VRAM segment."""
+        from core.inference.memory_contract import build_memory_estimate, project_kv_cache_estimate
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        out = project_kv_cache_estimate(
+            build_memory_estimate(breakdown(), quant_file_bytes = int(self.WEIGHTS))
+        )
+        assert out["weights_bytes"] == int(self.WEIGHTS)
+        assert out["lookup_table_bytes"] == FLASH_NEXT_TABLE

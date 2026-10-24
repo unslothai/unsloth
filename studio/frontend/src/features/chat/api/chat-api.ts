@@ -1733,6 +1733,8 @@ export async function listGgufVariants(
 export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
+  /** Host / disk lookup tables, part of weights_bytes but never on the GPU. */
+  lookup_table_bytes?: number;
   native_context: number | null;
   /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
   spec_bytes: number | null;

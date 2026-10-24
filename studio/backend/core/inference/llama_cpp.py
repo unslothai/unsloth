@@ -11957,12 +11957,16 @@ class LlamaCppBackend:
         override = self._effective_device_ids(extra_args, env)
         _src_env = os.environ if env is None else env
         one_device = not tensor and _split_mode_confines_to_one_device(extra_args, env)
-        if override is not None and one_device:
-            # Split mode none keeps only the main device; an unused RPC entry is not a model device.
+        if one_device:
             main = self._effective_main_gpu(extra_args, env)
             main = 0 if main is None else main
+            if main < 0:
+                # llama.cpp clears the explicit and the default list alike, RPC included.
+                return False
+        if override is not None and one_device:
+            # Split mode none keeps only the main device; an unused RPC entry is not a model device.
             override = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
-            override = override[main : main + 1] if main >= 0 else []
+            override = override[main : main + 1]
         if (
             any(str(d).strip().lower().startswith("rpc") for d in override)
             if override is not None

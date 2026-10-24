@@ -95,6 +95,7 @@ _KV_CACHE_ESTIMATE_KEYS = frozenset(
     {
         "kv_bytes",
         "weights_bytes",
+        "lookup_table_bytes",
         "native_context",
         "spec_bytes",
         "n_ctx",
