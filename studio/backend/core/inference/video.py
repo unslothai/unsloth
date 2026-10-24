@@ -6982,7 +6982,7 @@ class VideoBackend:
         from .video_cosmos3 import NONE_COMPONENTS as COSMOS3_NONE_COMPONENTS, is_cosmos3_listing
 
         cosmos3 = is_cosmos3_listing(s.rfilename for s in siblings)
-        # Only components passed as None: diffusers' hub-id load still requires every other weight in the listing.
+        # Only None-passed components: diffusers' hub-id load demands every other listed weight.
         cosmos3_unused = tuple(f"{c}/" for c in COSMOS3_NONE_COMPONENTS) if cosmos3 else ()
         is_h3_modular = (
             not ltx25_pack
@@ -12353,8 +12353,7 @@ class VideoBackend:
                 if fam.name in COSMOS3_FAMILIES:
                     from .video_i2v import offload_vae_after_encode
 
-                    # Every Cosmos3 call encodes a clip (t2v: zeros) before denoising, and its first_frame_pipeline is
-                    # the loaded class, so nothing else returns the offloaded VAE after that encode.
+                    # Every Cosmos3 call (t2v too) encodes a clip first; nothing else offloads the VAE after it.
                     i2v_swap.enter_context(offload_vae_after_encode(pipe))
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
