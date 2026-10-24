@@ -556,3 +556,58 @@ def test_controlnet_at_zero_strength_or_with_an_init_image_never_reloads(monkeyp
             )
         )
     assert loads == []
+
+
+KREA = {"repo": "krea/Krea-2-Turbo"}
+WATERCOLOR = [{"id": "krea/Krea-2-LoRA-softwatercolor", "weight": 1.0}]
+
+
+def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    status = {
+        "loaded": True,
+        "repo_id": KREA["repo"],
+        "resolved": {"transformer_quant": {"value": "int8"}},
+        "baked_loras": [],
+    }
+    ctx = _StatusCtx(status)
+    # A plain render keeps the build as it is.
+    asyncio.run(_common.generate_image(ctx, model = KREA, prompt = "a lighthouse"))
+    assert loads == []
+    # Studio refuses new adapters on an int8 build at generate time, so the node reloads with them baked in, once.
+    asyncio.run(
+        _common.generate_image(
+            ctx, model = KREA, prompt = "a lighthouse", options = {"loras": WATERCOLOR}
+        )
+    )
+    asyncio.run(
+        _common.generate_image(
+            ctx, model = KREA, prompt = "a lighthouse", options = {"loras": WATERCOLOR}
+        )
+    )
+    assert len(loads) == 1
+    assert loads[0]["model"] == KREA["repo"] and loads[0]["knobs"] == {"loras": WATERCOLOR}
+    # Another set needs another bake.
+    other = [{"id": "krea/Krea-2-LoRA-ink", "weight": 0.8}]
+    asyncio.run(
+        _common.generate_image(ctx, model = KREA, prompt = "a lighthouse", options = {"loras": other})
+    )
+    assert len(loads) == 2 and loads[1]["knobs"] == {"loras": other}
+
+
+def test_loras_on_a_bf16_build_apply_at_generate_time(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    status = {
+        "loaded": True,
+        "repo_id": KREA["repo"],
+        "resolved": {"transformer_quant": {"value": "off"}},
+    }
+    ctx = _StatusCtx(status)
+    asyncio.run(
+        _common.generate_image(
+            ctx, model = KREA, prompt = "a lighthouse", options = {"loras": WATERCOLOR}
+        )
+    )
+    assert loads == []

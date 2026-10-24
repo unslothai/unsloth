@@ -747,6 +747,56 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
     )
 
 
+# (repo, adapter ids, diffusion load count) of the int8/fp8 build Flows last loaded with LoRAs baked in.
+_BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
+QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
+
+
+async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict]) -> None:
+    """An int8/fp8 image build takes LoRAs only at load time (Studio refuses new adapters at generate time).
+    When this node asks for adapters on such a build, reload the model with them baked in, once per set."""
+    from core.inference import gpu_arbiter
+    from studio_mcp import loading
+
+    wanted = frozenset(item["id"] for item in loras if item.get("weight", 1.0) > 0)
+    if not wanted:
+        return
+    try:
+        status = await ctx.call("GET", IMAGE_STATUS)
+    except FlowNodeError:
+        return
+    status = status if isinstance(status, dict) else {}
+    resolved = (status.get("resolved") or {}).get("transformer_quant")
+    engaged = resolved.get("value") if isinstance(resolved, dict) else None
+    engaged = str(engaged or status.get("transformer_quant") or "").lower()
+    if not status.get("loaded") or engaged not in QUANT_BUILDS:
+        return
+    repo = (model.get("repo") if isinstance(model, dict) else None) or status.get("repo_id")
+    if not repo:
+        return
+    record = (str(repo).lower(), wanted, gpu_arbiter.load_count(gpu_arbiter.DIFFUSION))
+    if _BAKED_LORAS.get("image") == record:
+        return
+    ctx.log(
+        f"Reloading {repo} with its LoRAs baked in: a quantized ({engaged}) build takes them at load time"
+    )
+    await loading.load_media(
+        _caller(ctx),
+        None,
+        kind = "image",
+        model = repo,
+        variant = model.get("variant") if isinstance(model, dict) else None,
+        hf_token = None,
+        deadline = time.monotonic() + LOAD_DEADLINE_S,
+        knobs = {"loras": sorted(loras, key = lambda item: item["id"])},
+    )
+    _BAKED_LORAS["image"] = (
+        str(repo).lower(),
+        wanted,
+        gpu_arbiter.load_count(gpu_arbiter.DIFFUSION),
+    )
+
+
 async def generate_image(
     ctx: Any,
     *,
@@ -784,6 +834,9 @@ async def generate_image(
     if control is not None:
         await _controlnet_ready(ctx, model)
     await ensure_model(ctx, "image", model)
+    lora_body = route_options({"loras": (options or {}).get("loras")}).get("loras")
+    if lora_body and control is None:
+        await _baked_loras_ready(ctx, model, lora_body)
     body: dict[str, Any] = {"prompt": prompt, "width": int(width), "height": int(height)}
     if negative_prompt:
         body["negative_prompt"] = negative_prompt
