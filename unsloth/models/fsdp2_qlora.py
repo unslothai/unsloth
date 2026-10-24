@@ -604,7 +604,10 @@ def nonfloat_param_guard(model = None):
             if p.requires_grad and not (p.is_floating_point() or p.is_complex()):
                 p.requires_grad_(False)
     Parameter = torch.nn.Parameter
+    # Kept as found (a staticmethod object) so the exit restores the class exactly.
     original_new = Parameter.__dict__.get("__new__")
+    # Called through the class: a raw staticmethod object is not callable before Python 3.10.
+    call_new = Parameter.__new__
 
     def __new__(
         cls,
@@ -613,7 +616,7 @@ def nonfloat_param_guard(model = None):
     ):
         if data is not None and not (data.is_floating_point() or data.is_complex()):
             requires_grad = False
-        return original_new(cls, data, requires_grad)
+        return call_new(cls, data, requires_grad)
 
     Parameter.__new__ = __new__
     try:
