@@ -9,7 +9,7 @@ import {
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FileAddIcon, FileEmpty02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -389,7 +389,7 @@ export function ProjectSourceDropzone({
             className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
-              icon={PlusSignIcon}
+              icon={FileAddIcon}
               strokeWidth={1.75}
               className="size-6 text-muted-foreground"
             />

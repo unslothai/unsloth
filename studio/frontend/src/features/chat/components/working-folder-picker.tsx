@@ -81,6 +81,7 @@ export function WorkingFolderPicker({
             type="button"
             variant="ghost"
             size="sm"
+            className="shrink-0"
             disabled={disabled || picking}
             onClick={() => void change(false)}
           >
@@ -89,12 +90,13 @@ export function WorkingFolderPicker({
         )}
         <Button
           type="button"
-          variant="outline"
+          variant="dark"
           size="sm"
+          className="shrink-0"
           disabled={!available || disabled || picking}
           onClick={() => void change(true)}
         >
-          {picking ? "Choosing…" : value ? "Change…" : "Choose folder…"}
+          {picking ? "Choosing…" : value ? "Change folder" : "Choose folder"}
         </Button>
       </div>
       {(needsReselect || !available) && (

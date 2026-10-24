@@ -5753,6 +5753,8 @@ export function AppSidebar() {
     P: RowMenuParts,
   ) {
     const isProjectPinned = pinnedProjectIdSet.has(project.id);
+    // Listed, not sorted: the sorted list leaves out the project's pinned and sectioned chats.
+    const projectChats = listedChatsByProjectId.get(project.id) ?? [];
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
@@ -5769,11 +5771,19 @@ export function AppSidebar() {
             <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
+          <P.Separator />
           {renderSectionSubmenu(P, {
             target: { projectIds: [project.id] },
             current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
+          <P.Item
+            disabled={projectChats.length === 0}
+            onSelect={() => void archiveChatItems(projectChats)}
+          >
+            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <span>Archive chats</span>
+          </P.Item>
           <P.Separator />
           <P.Item
             variant="destructive"

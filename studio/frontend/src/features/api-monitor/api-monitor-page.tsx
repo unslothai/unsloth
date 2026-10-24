@@ -1306,12 +1306,12 @@ export function ApiMonitorPage(): ReactElement {
   );
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 sm:px-10">
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+            <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               API
             </h1>
             <span
@@ -1344,12 +1344,12 @@ export function ApiMonitorPage(): ReactElement {
             size="icon"
             onClick={openApiSettings}
             aria-label="API settings"
-            className="size-10 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
+            className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
               strokeWidth={1.75}
-              className="size-5"
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
           </Button>
         </ToolbarTooltip>
@@ -1698,7 +1698,7 @@ export function ApiMonitorPage(): ReactElement {
                   void clear();
                 }}
                 aria-label="Clear log"
-                className="rounded-full"
+                className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
               >
                 <HugeiconsIcon
                   icon={Delete02Icon}

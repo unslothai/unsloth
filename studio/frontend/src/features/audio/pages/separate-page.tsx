@@ -207,7 +207,7 @@ export function SeparateFooter({
   const ready =
     props.ttsLoaded && props.blocker === null && props.busy === null;
   return (
-    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
+    <div className="flex w-full max-w-sm flex-col items-end gap-1.5">
       <TtsFooter
         {...props}
         generationPresentation={presentation}
@@ -218,7 +218,7 @@ export function SeparateFooter({
         handleGenerate={separate.handleGenerate}
       />
       {ready && !presentation && !props.error ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-right text-ui-11p5 leading-snug text-muted-foreground">
           {separate.willReload
             ? "Reloads the model with the new overlap first (a few seconds). "
             : ""}

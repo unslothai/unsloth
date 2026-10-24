@@ -647,74 +647,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {isTauri ? (
-        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
-          <SettingsRow
-            label={t("settings.general.startup.launchAtLogin")}
-            description={t("settings.general.startup.launchAtLoginDescription")}
-            below={
-              launchAtLoginSetting.error ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                  {launchAtLoginSetting.error}
-                </span>
-              ) : null
-            }
-          >
-            <Switch
-              checked={launchAtLoginSetting.value ?? false}
-              disabled={
-                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-              }
-              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-            />
-          </SettingsRow>
-
-          {closeToTraySetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.closeToTray")}
-              description={t("settings.general.startup.closeToTrayDescription")}
-              below={
-                closeToTraySetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {closeToTraySetting.error}
-                  </span>
-                ) : null
-              }
-            >
-              <Switch
-                checked={closeToTraySetting.value ?? false}
-                disabled={
-                  closeToTraySetting.value === null || closeToTraySetting.saving
-                }
-                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-              />
-            </SettingsRow>
-          ) : null}
-
-          {trayIconSetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.menuBarIcon")}
-              description={t("settings.general.startup.menuBarIconDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={trayIconSetting.value ?? false}
-                  disabled={
-                    trayIconSetting.value === null || trayIconSetting.saving
-                  }
-                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
-                />
-                {trayIconSetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {trayIconSetting.error}
-                  </span>
-                ) : null}
-              </div>
-            </SettingsRow>
-          ) : null}
-        </SettingsSection>
-      ) : null}
-
       {/* Owner-only like the installation-wide block below: its routes are. */}
       {isOwner ? <DocumentsRagSection /> : null}
 
@@ -885,6 +817,74 @@ export function GeneralTab() {
 
       <DeveloperModeSection />
         </>
+      ) : null}
+
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+            below={
+              launchAtLoginSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {launchAtLoginSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
+          </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+              below={
+                closeToTraySetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
+            </SettingsRow>
+          ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
       ) : null}
 
       <SettingsSection

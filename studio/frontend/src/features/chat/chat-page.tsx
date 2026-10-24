@@ -4835,15 +4835,11 @@ export function ChatPage({
                   open={projectPickerOpen}
                   onOpenChange={setProjectPickerOpen}
                 />
+                {/* No "/" before it: the switcher's chevron already divides the two. */}
                 {currentProject && activeThreadId ? (
-                  <>
-                    <span className="shrink-0" aria-hidden={true}>
-                      /
-                    </span>
-                    <span className="min-w-0 truncate">
-                      {currentChatTitle ?? "New chat"}
-                    </span>
-                  </>
+                  <span className="min-w-0 truncate">
+                    {currentChatTitle ?? "New chat"}
+                  </span>
                 ) : null}
               </nav>
             )}
