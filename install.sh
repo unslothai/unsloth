@@ -6047,6 +6047,16 @@ get_torch_index_url() {
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
+        # gfx90c runs the generic wheel's gfx900 kernels under HSA_OVERRIDE_GFX_VERSION=9.0.0, so a
+        # ROCm build already in the environment being replaced is one its owner runs that way:
+        # re-running the installer (the update path) keeps ROCm instead of demoting it to CPU.
+        if [ "$_amd_unsup_all" = gfx90c ]; then
+            case "${_PREV_TORCH_VER:-}" in
+                *+rocm*)
+                    echo "[INFO] Keeping ROCm PyTorch on gfx90c: this environment already runs ${_PREV_TORCH_VER}. Start Unsloth Studio with HSA_OVERRIDE_GFX_VERSION=9.0.0 to use the GPU." >&2
+                    _amd_unsup_all="" ;;
+            esac
+        fi
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2

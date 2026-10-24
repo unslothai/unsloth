@@ -153,6 +153,39 @@ def test_python_gfx90c_spoofed_to_gfx900_keeps_rocm():
     assert "download.pytorch.org/whl/rocm7.2" in calls, calls
 
 
+# ── re-running install.sh keeps an existing ROCm build on gfx90c ─────────────
+
+
+@_POSIX
+def test_install_sh_rerun_keeps_an_existing_rocm_build_on_gfx90c(monkeypatch, tmp_path):
+    # The update path: install.sh recreates the venv; the old one ran a ROCm torch (with the
+    # gfx900 override at runtime), so it must not be demoted to CPU.
+    _rocminfo_harness(monkeypatch, tmp_path, _ROCMINFO_GFX90C)
+    monkeypatch.setenv("_PREV_TORCH_VER", "2.11.0+rocm7.2")
+    url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
+    assert url.endswith("/rocm7.2"), (url, err)
+    assert "Keeping ROCm PyTorch on gfx90c" in err, err
+    assert "installing CPU PyTorch" not in err, err
+
+
+@_POSIX
+@pytest.mark.parametrize("prev", ["2.11.0+cpu", "2.11.0", ""])
+def test_install_sh_a_non_rocm_previous_torch_still_takes_cpu_on_gfx90c(monkeypatch, tmp_path, prev):
+    _rocminfo_harness(monkeypatch, tmp_path, _ROCMINFO_GFX90C)
+    monkeypatch.setenv("_PREV_TORCH_VER", prev)
+    url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
+    assert url.endswith("/cpu"), (url, err)
+
+
+@_POSIX
+def test_install_sh_an_existing_rocm_build_does_not_keep_rocm_for_other_uncovered_arches(monkeypatch, tmp_path):
+    rocminfo = _ROCMINFO_GFX90C.replace("gfx90c", "gfx1010")
+    _rocminfo_harness(monkeypatch, tmp_path, rocminfo)
+    monkeypatch.setenv("_PREV_TORCH_VER", "2.11.0+rocm7.2")
+    url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
+    assert url.endswith("/cpu"), (url, err)
+
+
 # ── the gfx900-override hint is gfx90c's alone ──────────────────────────────
 
 _OVERRIDE_HINT = "export HSA_OVERRIDE_GFX_VERSION=9.0.0"
