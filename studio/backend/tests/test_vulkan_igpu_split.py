@@ -201,6 +201,14 @@ def test_the_launch_hands_placement_back_wherever_it_cannot_price_it():
         assert needle in src, needle
 
 
+def test_the_launch_hands_the_host_projector_to_the_split_guard():
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert (
+        '_spill_inputs["host_mmproj_bytes"]=_mmproj_pinned_bytes+('
+        "_fit_env_mmproj_bytesif_fit_env_mmproj_on_hostelse0)"
+    ) in compact
+
+
 def test_the_launch_records_what_it_emitted():
     src = inspect.getsource(LlamaCppBackend.load_model)
     arm = src[

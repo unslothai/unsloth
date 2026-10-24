@@ -1574,6 +1574,50 @@ def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requeste
     assert _draft_n_max_matches(backend, requested) is expected_match
 
 
+@pytest.mark.parametrize(
+    ("loaded_at", "requested", "expected_match"),
+    [(6, 1, False), (6, 6, True), (None, 1, False), (6, None, False), (None, None, True)],
+)
+def test_planner_drafter_drop_follows_the_requested_draft_depth(
+    loaded_at, requested, expected_match
+):
+    # The planner priced the drafter at the requested depth and dropped it to ngram-mod, which
+    # records no runtime depth. A shallower depth can fit the drafter, so it must reload, while
+    # the same depth has to keep reusing the server.
+    backend = _ngram_mod_backend(
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_planner",
+        _last_load_intent = GgufLoadIntent(
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            spec_draft_n_max = loaded_at,
+        ),
+    )
+    assert _draft_n_max_matches(backend, requested) is expected_match
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"), [("drafter_planner", 6), ("drafter_no_vram", None)]
+)
+def test_planner_drafter_drop_reports_the_requested_draft_depth(monkeypatch, reason, expected):
+    # Status feeds spec_draft_n_max back into the UI; a null after a planner drop would reset
+    # the user's depth and reload at the default on the next Apply.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = 6,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        drafter_no_vram = True,
+        drafter_dropped_reason = reason,
+    )
+    assert _flags_dict(flags).get("--spec-type") == "ngram-mod"
+    assert backend._spec_fallback_reason == reason
+    assert backend.spec_draft_n_max == expected
+
+
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     backend = _ngram_mod_backend(_requested_spec_mode = "ngram")
     assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
