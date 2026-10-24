@@ -3989,7 +3989,7 @@ function VideoGenerator({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
