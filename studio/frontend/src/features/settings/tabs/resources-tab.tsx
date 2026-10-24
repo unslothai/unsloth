@@ -33,6 +33,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemInfoResponse,
   type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
@@ -49,10 +50,13 @@ import {
 } from "../api/hugging-face-cache";
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   CacheStorageRows,
   useCacheStorage,
 } from "../components/cache-storage-rows";
+import { DeveloperModeSection } from "../components/developer-mode-section";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -276,6 +280,7 @@ type GpuPhysicalInventory = SystemGpuInfo & {
 
 export function ResourcesTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
@@ -534,16 +539,35 @@ export function ResourcesTab() {
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
   // Disk readings are decimal GB, as are cache sizes once divided by 1e9.
-  const hubDiskGb =
-    (cache.entries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
-    1e9;
-  // A models folder on another drive is not part of the system disk's usage.
-  const modelsDiskGb = metrics.modelsDisk ? 0 : hubDiskGb;
-  const cachesDiskGb = Math.max(
-    0,
-    (cache.inventory?.totalBytes ?? 0) / 1e9 - hubDiskGb,
+  // A models folder on another drive takes the Hugging Face caches under it (hub, Xet, ...) off the system disk.
+  const modelsRoot = hfCache?.cacheHome.replace(/[\\/]+$/, "");
+  const onSystemDisk = (paths: string[]) =>
+    !(
+      metrics.modelsDisk &&
+      modelsRoot &&
+      paths.some(
+        (path) =>
+          path === modelsRoot ||
+          path.startsWith(`${modelsRoot}/`) ||
+          path.startsWith(`${modelsRoot}\\`),
+      )
+    );
+  const systemEntries = cache.entries.filter(
+    (entry) =>
+      !(metrics.modelsDisk && entry.key === "hf_hub") &&
+      onSystemDisk(entry.paths),
   );
-  const otherDiskGb = Math.max(0, metrics.diskUsed - modelsDiskGb - cachesDiskGb);
+  const modelsDiskGb =
+    (systemEntries.find((entry) => entry.key === "hf_hub")?.sizeBytes ?? 0) /
+    1e9;
+  const cachesDiskGb =
+    systemEntries
+      .filter((entry) => entry.key !== "hf_hub")
+      .reduce((sum, entry) => sum + entry.sizeBytes, 0) / 1e9;
+  const otherDiskGb = Math.max(
+    0,
+    metrics.diskUsed - modelsDiskGb - cachesDiskGb,
+  );
   const cacheValue = (diskGb: number) =>
     cache.inventory ? formatGb(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
@@ -1113,6 +1137,7 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <EngineVersionsSection />
       <InferenceEnginesSection />
 
       <ModelMemorySection ref={modelMemoryRef} />
@@ -1210,38 +1235,67 @@ export function ResourcesTab() {
         showModelHints={false}
       />
 
-      <SettingsSection title={t("settings.resources.environment.title")}>
-        <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </SettingsSection>
+      {isOwner ? <DeveloperModeSection /> : null}
+
+      <EnvironmentSection systemInfo={systemInfo} backendLabel={backendLabel} />
     </div>
+  );
+}
+
+/** About renders this too, from its own system query. */
+export function EnvironmentSection({
+  systemInfo,
+  backendLabel,
+}: {
+  systemInfo: SystemInfoResponse;
+  backendLabel: string;
+}) {
+  const t = useT();
+  const unknownLabel = t("settings.resources.environment.unknown");
+  const hostReading = (value: string) =>
+    systemInfo.status !== "ready" ? unknownLabel : value;
+  return (
+    <SettingsSection title={t("settings.resources.environment.title")}>
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
+    </SettingsSection>
+  );
+}
+
+export function StandaloneEnvironmentSection() {
+  const systemInfo = useSystemInfo();
+  return (
+    <EnvironmentSection
+      systemInfo={systemInfo}
+      backendLabel={(systemInfo.device_backend ?? "cpu").toUpperCase()}
+    />
   );
 }

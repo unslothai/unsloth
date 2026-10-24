@@ -90,6 +90,17 @@ try:
 except Exception:
     torch_version = Version("0.0.0")
 
+
+def _persistent_tma_matmul_ok():
+    # zoo's gate: torch 2.12+ guards every GEMM size once Inductor considers TMA templates
+    # (pytorch/pytorch#172925), so a compiled matmul recompiles per token count.
+    try:
+        from unsloth_zoo.temporary_patches.common import _persistent_tma_matmul_ok as zoo_gate
+    except Exception:
+        return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
+    return bool(zoo_gate())
+
+
 try:
     from transformers import __version__ as _transformers_version_raw
     transformers_version = Version(_transformers_version_raw)
@@ -3744,8 +3755,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
                 ".cuda_visible_capabilities())"
             )
+            # The sm90+ check only applies where zoo would request TMA at all; otherwise emit False.
+            tma_matmul = all_sm90 if _persistent_tma_matmul_ok() else "False"
             cuda_options = f"""
-            "triton.enable_persistent_tma_matmul": {all_sm90},"""
+            "triton.enable_persistent_tma_matmul": {tma_matmul},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
                 cuda_options += f"""
