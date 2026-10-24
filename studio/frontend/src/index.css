@@ -3132,14 +3132,6 @@ html[data-chat-font] .aui-root {
 		--radius-xl: 20px;
 	}
 
-	/* Its outline buttons keep their border. */
-	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
-		border-color: var(--border);
-		background-color: var(--background);
-	}
-	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
-		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
-	}
 	html.dark .unsloth-model-selector-menu .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}

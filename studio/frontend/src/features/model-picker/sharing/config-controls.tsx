@@ -101,7 +101,8 @@ export function SharedRunConfigControls({
       type="button"
       size="icon-sm"
       variant="ghost"
-      className={props.className}
+      // The ghost dark hover is too faint on the picker panel; this is its filled buttons' hover.
+      className={`dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] ${props.className}`}
       aria-label="Share"
       title="Share"
       disabled
