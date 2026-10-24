@@ -113,7 +113,8 @@ test("the parameter chip leads its column, so the modality gap is the cluster's 
   // Local rows share the downloaded rows' button and shell: same inset, full-width hover.
   assert.match(PICKERS, /downloadedRowButtonClassName =\s*"bg-transparent pr-1/);
   assert.equal(PICKERS.split('className="pr-1"').length - 1, 0);
-  assert.equal(PICKERS.split("{renderLocalRowMenu(m)}").length - 1, 3);
+  assert.equal(PICKERS.split("{renderLocalRowMenu(m)}").length - 1, 2);
+  assert.equal(PICKERS.split("{renderLocalRowMenu(m, true)}").length - 1, 1);
 });
 
 
