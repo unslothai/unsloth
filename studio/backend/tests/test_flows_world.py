@@ -262,6 +262,42 @@ def test_world_player_node_view_needs_no_rerun():
     assert w["render"] == "3d" and w["view3d"] == {"time_of_day": "night"}
 
 
+def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
+    raw = {**RAW, "render": "2d"}
+    d = {
+        "id": "f",
+        "name": "w",
+        "nodes": [
+            # A stray 2D player first, then the player the world actually feeds.
+            {
+                "id": "stray",
+                "type": "world.play",
+                "params": {"view": "2d", "time_of_day": "dawn"},
+                "pos": [0, 2],
+            },
+            {"id": "s", "type": "world.spec", "params": {"world": raw}, "pos": [0, 0]},
+            {
+                "id": "play",
+                "type": "world.play",
+                "params": {"view": "3d", "time_of_day": "night"},
+                "pos": [1, 0],
+            },
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "source": "s",
+                "source_port": "world",
+                "target": "play",
+                "target_port": "world",
+                "kind": "data",
+            },
+        ],
+    }
+    w, _ = resolve_world_report(d, {})
+    assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
+
+
 def test_generator_and_art_handlers():
     ctx = FakeCtx(
         "world.generator",

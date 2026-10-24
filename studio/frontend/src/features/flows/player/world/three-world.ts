@@ -172,6 +172,19 @@ export function createWorld3d(
     disposables.push(x);
     return x;
   };
+  // Speech bubbles and status tags are replaced all through a long simulation: free each one as it goes.
+  const drop = (x: { dispose(): void } | null | undefined) => {
+    if (!x) return;
+    x.dispose();
+    const i = disposables.indexOf(x);
+    if (i >= 0) disposables.splice(i, 1);
+  };
+  const dropSprite = (sprite: three.Sprite) => {
+    sprite.removeFromParent();
+    const mat = sprite.material as three.SpriteMaterial;
+    drop(mat.map);
+    drop(mat);
+  };
 
   const renderer = new three.WebGLRenderer({
     antialias: true,
@@ -538,7 +551,7 @@ export function createWorld3d(
   ) => {
     const c = textCanvas(text, { bubble });
     const mat = s.material as three.SpriteMaterial;
-    mat.map?.dispose();
+    drop(mat.map);
     mat.map = texOf(c);
     mat.needsUpdate = true;
     s.scale.set((height * c.width) / c.height, height, 1);
@@ -1003,7 +1016,7 @@ export function createWorld3d(
         n.speech.sprite.position.copy(n.group.position);
         n.speech.sprite.position.y += ACTOR_H + 0.45;
         if (now > n.speech.until) {
-          scene.remove(n.speech.sprite);
+          dropSprite(n.speech.sprite);
           n.speech = null;
         }
       }
@@ -1141,7 +1154,7 @@ export function createWorld3d(
     say(id: string, text: string, ms = 4000) {
       const n = npcById(id);
       if (!n) return;
-      if (n.speech) scene.remove(n.speech.sprite);
+      if (n.speech) dropSprite(n.speech.sprite);
       const s = tagSprite(
         text,
         Math.min(0.9, 0.22 * Math.ceil(text.length / 34)) + 0.12,

@@ -252,12 +252,17 @@ def apply_play_view(
     world: dict,
     doc: dict,
     node_outputs: Optional[dict] = None,
+    source: Optional[str] = None,
 ) -> dict:
     """The World Player node's view settings win over the world's own: they are read from the saved flow, so
-    switching to 3D or changing the time of day needs no rerun."""
-    for n in doc.get("nodes") or []:
-        if n["type"] != "world.play" or n.get("disabled"):
-            continue
+    switching to 3D or changing the time of day needs no rerun. With several players, the one fed by ``source``
+    (the node the world came from) wins."""
+    players = [
+        n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
+    ]
+    fed = {e["target"] for e in doc.get("edges") or [] if source and e.get("source") == source}
+    players.sort(key = lambda n: n["id"] not in fed)
+    for n in players:
         p = n.get("params") or {}
         if p.get("view") in ("2d", "3d"):
             world["render"] = p["view"]
@@ -673,8 +678,9 @@ def resolve_world_report(
     warnings: list[str] = []
     picked = most_downstream(doc, node_outputs, WORLD_SOURCE_TYPES, "world")
     raw: Optional[dict] = None
+    source: Optional[str] = None
     if picked is not None and isinstance(picked[1], dict):
-        raw = picked[1]
+        raw, source = picked[1], picked[0]["id"]
     else:
         for n in doc.get("nodes") or []:
             if n["type"] != "world.spec" or n.get("disabled"):
@@ -684,7 +690,7 @@ def resolve_world_report(
                 ins[0] if ins and isinstance(ins[0], dict) else (n.get("params") or {}).get("world")
             )
             if isinstance(base, dict):
-                raw = dict(base)
+                raw, source = dict(base), n["id"]
                 for ts in input_values(doc, node_outputs, n["id"], "tileset"):
                     if isinstance(ts, dict):
                         raw["tileset"] = {**(raw.get("tileset") or {}), **ts}
@@ -720,7 +726,7 @@ def resolve_world_report(
         if name and name not in eps and not n.get("disabled"):
             eps[name] = n["id"]
     world["entry_points"] = eps
-    world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs)).model_dump(
+    world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs, source)).model_dump(
         exclude_none = True
     )
     if "npc_reply" not in eps:
