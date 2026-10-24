@@ -323,6 +323,116 @@ def _load_torch_varlen_attn():
 
 _TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
 
+# varlen_attn is a torch.library custom op: per call it pays Python custom-op dispatch twice (forward
+# and backward), a cuDNN eligibility check and a zeros launch for its rng state. Padding-free training
+# runs it once per layer per micro-batch, which on a launch-bound step costs more than the padding it
+# saves. Eager calls that torch would send to flash anyway take the same aten flash kernels through
+# a plain autograd.Function. UNSLOTH_LEAN_VARLEN=0 restores varlen_attn everywhere.
+_LEAN_VARLEN = _TORCH_VARLEN_ATTN is not None and os.environ.get(
+    "UNSLOTH_LEAN_VARLEN", "1"
+).lower() not in ("0", "false", "no", "off")
+if _LEAN_VARLEN:
+    try:
+        from torch.nn.attention.varlen import _can_use_cudnn as _varlen_can_use_cudnn
+    except Exception:
+        # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
+        try:
+            from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
+            def _varlen_can_use_cudnn(
+                query,
+                key,
+                value,
+                max_q,
+                window_size,
+                enable_gqa = False,
+            ):
+                return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
+
+        except Exception:
+            _LEAN_VARLEN = False
+
+
+class _LeanFlashVarlen(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx, query, key, value, cu_seqlens, max_seqlen, is_causal, scale, window_left, window_right
+    ):
+        out, lse, philox_seed, philox_offset, _ = torch.ops.aten._flash_attention_forward(
+            query,
+            key,
+            value,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            0.0,
+            is_causal,
+            return_debug_mask = False,
+            scale = scale,
+            window_size_left = window_left,
+            window_size_right = window_right,
+        )
+        ctx.save_for_backward(query, key, value, cu_seqlens, out, lse, philox_seed, philox_offset)
+        ctx.max_seqlen, ctx.is_causal, ctx.scale = max_seqlen, is_causal, scale
+        ctx.window = (window_left, window_right)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        query, key, value, cu_seqlens, out, lse, philox_seed, philox_offset = ctx.saved_tensors
+        dq, dk, dv = torch.ops.aten._flash_attention_backward(
+            grad_out.contiguous(),
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens,
+            cu_seqlens,
+            ctx.max_seqlen,
+            ctx.max_seqlen,
+            0.0,
+            ctx.is_causal,
+            philox_seed,
+            philox_offset,
+            scale = ctx.scale,
+            window_size_left = ctx.window[0],
+            window_size_right = ctx.window[1],
+        )
+        return dq, dk, dv, None, None, None, None, None, None
+
+
+def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_size, enable_gqa):
+    if (
+        _LEAN_VARLEN
+        and not torch.compiler.is_compiling()
+        and not _varlen_can_use_cudnn(Q_f, K_f, V_f, max_seqlen, list(window_size), enable_gqa)
+    ):
+        return _LeanFlashVarlen.apply(
+            Q_f,
+            K_f,
+            V_f,
+            cu_seqlens,
+            max_seqlen,
+            window_size == (-1, 0),
+            scale,
+            window_size[0],
+            window_size[1],
+        )
+    return _TORCH_VARLEN_ATTN(
+        Q_f,
+        K_f,
+        V_f,
+        cu_seqlens,
+        cu_seqlens,
+        max_seqlen,
+        max_seqlen,
+        scale = scale,
+        window_size = window_size,
+        enable_gqa = enable_gqa,
+    )
+
+
 from .flash_impl import flash_impl_allows  # noqa: E402
 
 
@@ -638,14 +748,13 @@ def _torch_varlen_packed(
         window_size = (sliding_window - 1, 0)  # packed_block_mask keeps k >= q - (window - 1)
     else:
         window_size = (-1, 0)
-    Q_f, K_f, V_f = (x[0].transpose(0, 1).contiguous() for x in (Q, K, V))
-    out = _TORCH_VARLEN_ATTN(
+    # squeeze, not [0]: select's backward allocates and zero-fills a full gradient per tensor.
+    Q_f, K_f, V_f = (x.squeeze(0).transpose(0, 1).contiguous() for x in (Q, K, V))
+    out = _varlen_attn_call(
         Q_f,
         K_f,
         V_f,
         cu_seqlens,
-        cu_seqlens,
-        max_seqlen,
         max_seqlen,
         scale = scale,
         window_size = window_size,
