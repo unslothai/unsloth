@@ -14861,16 +14861,21 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
         import torch
         from diffusers.hooks import apply_group_offloading
 
+        from .diffusion_memory import _apply_group_offloading_packed
         from .host_pinning import host_pinning_allowed
 
         onload = torch.device(device)
-        apply_group_offloading(
+        _apply_group_offloading_packed(
+            apply_group_offloading,
             cn_model,
-            onload_device = onload,
-            offload_device = torch.device("cpu"),
-            offload_type = "block_level",
-            num_blocks_per_group = 1,
-            use_stream = onload.type == "cuda" and host_pinning_allowed(onload),
+            {
+                "onload_device": onload,
+                "offload_device": torch.device("cpu"),
+                "offload_type": "block_level",
+                "num_blocks_per_group": 1,
+                "use_stream": onload.type == "cuda" and host_pinning_allowed(onload),
+            },
+            logger,
         )
         return True
     except Exception as exc:  # noqa: BLE001 - offload is best-effort; resident is the fallback
