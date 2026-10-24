@@ -3926,14 +3926,14 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
-        // the same left edge as the rows below.
+        // -ml-2.75 cancels the icon's 6px inset in its 28px circle plus the glyph's own ~5px, so the
+        // chevron's stroke starts on the same left edge as the rows below.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
               <HugeiconsIcon
@@ -4147,13 +4147,13 @@ export function ModelConfigPage({
         className={cn(
           "mt-5",
           // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
-          // Sticky offsets start inside the scroller's 16px bottom padding: -bottom-4 puts the footer on
+          // Sticky offsets start inside the scroller's 28px bottom padding: -bottom-7 puts the footer on
           // the panel's edge, and the negative margins cover that padding with the panel's own fill.
           variant === "page" &&
-            "sticky -bottom-4 z-10 -mb-4 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-7 z-10 -mb-7 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-7 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
         )}
       >
-      <div className="flex flex-col gap-3.5 border-t border-border pt-3.5">
+      <div className="flex flex-col gap-3.5 border-t border-border pt-6.5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
