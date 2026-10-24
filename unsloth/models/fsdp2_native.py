@@ -2167,7 +2167,11 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     return state
 
 
-def _match_saved_optimizer_keys(state, directory, root = None):
+def _match_saved_optimizer_keys(
+    state,
+    directory,
+    root = None,
+):
     """dcp.load fills exactly the keys of its target, and the target comes from this optimizer's own
     (fresh) state, which get_optimizer_state_dict initialises for every trainable parameter. Match it
     to the checkpoint in both directions:

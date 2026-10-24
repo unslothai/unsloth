@@ -615,7 +615,11 @@ def _case_momentum(native, dist, rank, tmp):
     if rank == 0:
         model.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
     dist.barrier()
-    ref = {"loss": _step(model, opt, 3, rank).item(), "after": _full_model(model), "optim": _full_optim(model, opt)}
+    ref = {
+        "loss": _step(model, opt, 3, rank).item(),
+        "after": _full_model(model),
+        "optim": _full_optim(model, opt),
+    }
     m, o = _new(2, 0.0)
     native.native_load_model_checkpoint(m, ckpt)
     res = {}
