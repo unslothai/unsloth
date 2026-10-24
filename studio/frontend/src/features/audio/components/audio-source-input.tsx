@@ -434,7 +434,7 @@ export function AudioSourceInput({
               disabled={disabled}
               onClick={() => fileRef.current?.click()}
               className={cn(
-                "flex min-h-[calc(72px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex min-h-[calc(72px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 dragging &&
                   "border-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)] bg-accent text-foreground",
               )}

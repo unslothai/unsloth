@@ -116,7 +116,6 @@ export function BlockerNote({
       className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-11p5 leading-snug text-muted-foreground"
     >
       <span className="sr-only">{blocker.reason}</span>
-      <InfoHint>{blocker.reason}</InfoHint>
       <Button
         type="button"
         variant="link"
@@ -145,6 +144,9 @@ export function BlockerNote({
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}
+      <InfoHint side="right" hoverOnly={true}>
+        {blocker.reason}
+      </InfoHint>
     </p>
   );
 }

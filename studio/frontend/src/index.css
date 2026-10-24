@@ -3119,6 +3119,11 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
+	/* Audio, Images and Video: their textareas and drop zones take 20px, a touch under the 21px tier. */
+	[data-media-rail-root] {
+		--radius-xl: 20px;
+	}
+
 	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
 	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
 	.unsloth-model-selector-menu {
