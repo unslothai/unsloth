@@ -90,7 +90,7 @@ def honour_gradient_checkpointing_off(args, model):
     _note(
         "off",
         "Unsloth: the model was set up with use_gradient_checkpointing = False, so gradient checkpointing stays "
-        f"off (TRL's {type(args).__name__} defaults it to True). Pass gradient_checkpointing = True in the "
-        "config to turn it on.",
+        f"off (TRL's {type(args).__name__} defaults it to True). If you run out of memory, use "
+        'use_gradient_checkpointing = "unsloth" (or pass gradient_checkpointing = True in the config).',
     )
     return True
