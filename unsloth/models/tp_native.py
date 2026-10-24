@@ -142,8 +142,6 @@ class TPPlan:
         return {f"{r.path}.{p.name}": p.style for r in self.regions for p in r.projs}
 
 
-
-
 def _unwrap(model):
     inner = model
     if hasattr(inner, "get_base_model"):
@@ -513,8 +511,6 @@ def _check_attention_source(module, path):
         )
 
 
-
-
 def shard_slice(tensor, dim, parts, rank, tp):
     """This rank's slice of `tensor` along `dim`: the rank-th 1/tp of every part, concatenated (a copy)."""
     pieces, offset = [], 0
@@ -820,8 +816,6 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
         base.quant_state = local_state
 
 
-
-
 def _all_reduce(tensor, group):
     import torch.distributed._functional_collectives as funcol
 
@@ -908,8 +902,6 @@ def _region_post_hook(module, args, output):
     )
 
 
-
-
 def _tp_projection_forward(self, x, *args, **kwargs):
     weight, base = _weight(self)
     W = _local(weight)
@@ -941,8 +933,6 @@ def _tp_projection_forward(self, x, *args, **kwargs):
         x_lora = self.lora_dropout[adapter](x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
     return out
-
-
 
 
 def _decoder_of(inner):
@@ -1209,8 +1199,6 @@ def _shard_projection(region, proj, mesh, rank, tp):
         _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
     )
     module.forward = types.MethodType(_tp_projection_forward, module)
-
-
 
 
 def tp_clip_grad_norm_(

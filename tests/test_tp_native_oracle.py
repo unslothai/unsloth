@@ -302,8 +302,6 @@ def test_mutation_unsummed_replicated_factor_fails():
         )
 
 
-
-
 def _styles(plan):
     return {k.split(".", 3)[-1] if k.count(".") >= 3 else k: v for k, v in plan.styles().items()}
 
@@ -424,8 +422,6 @@ def test_shard_slice_unpermute_round_trip():
     assert torch.equal(tpn._unpermute(torch.cat(shards), 0, parts, 2), t)
 
 
-
-
 @pytest.mark.parametrize(
     "repo,overrides,tp,match",
     [
@@ -502,7 +498,6 @@ def test_stablelm_4x_is_refused():
     repo, overrides = ARCHS["stablelm"]
     with pytest.raises(ValueError, match = "reshapes with hidden_size"):
         tpn.derive_tp_plan(build(repo, overrides), 2)
-
 
 
 # Phi3's fused qkv under a plan that calls it packed: the layout is still [q, kv, kv] (GQA: unequal parts).
