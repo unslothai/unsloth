@@ -161,7 +161,6 @@ def test_explicit_key_sends_request_headers_without_saved_lookup(monkeypatch):
 
 def test_chat_request_rejects_reserved_extra_headers():
     from models.inference import ChatCompletionRequest
-
     with pytest.raises(ValidationError, match = "reserved"):
         ChatCompletionRequest(
             messages = [{"role": "user", "content": "hello"}],
