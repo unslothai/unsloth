@@ -1078,13 +1078,17 @@ def _host_buffer(name: str) -> bool:
     return "CPU" in upper or upper.endswith("_HOST") or upper == "AMX"
 
 
-def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
+def parse_weight_placement(
+    lines: "list[str]", model_bytes: Optional[int] = None
+) -> "Optional[dict]":
     """Where llama.cpp put the main model's weights, from its startup log.
 
     ``gpu_mib`` / ``host_mib`` sum the main model's buffer block (largest M; the drafter's comes after).
     "offloaded 31/31" hides an expert spill, so ``overflow_layers`` comes from --fit's final per-device
     lines; the last device's count includes the output layer, which spills nothing (a 3090 gemma-4-26B
-    load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit."""
+    load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit.
+    A ``*_Mapped`` buffer logs its mmap span, first to last host tensor, which covers GPU tensors in
+    between when experts spill; ``model_bytes`` (the main GGUF set) caps host at the file minus the GPU side."""
     blocks: list[list] = []
     current: Optional[list] = None
     # A build without GPU offload logs no "offloaded N/M layers" line, only the buffers: each run of them is a block.
@@ -1125,7 +1129,7 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
             continue
         counts = _OFFLOADED_LAYERS_RE.search(line)
         if counts is not None:
-            current, unmarked = [int(counts.group(2)), 0.0, 0.0], False
+            current, unmarked = [int(counts.group(2)), 0.0, 0.0, False], False
             blocks.append(current)
             continue
         buffer = _MODEL_BUFFER_RE.search(line)
@@ -1134,11 +1138,12 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
                 current, unmarked = None, False
             continue
         if current is None:
-            current, unmarked = [0, 0.0, 0.0], True
+            current, unmarked = [0, 0.0, 0.0, False], True
             blocks.append(current)
         mib = float(buffer.group(2))
         if _host_buffer(buffer.group(1)):
             current[2] += mib
+            current[3] = current[3] or (mib > 0 and buffer.group(1).upper().endswith("_MAPPED"))
         else:
             current[1] += mib
     # A no-alloc dry run logs the same block with every buffer at 0.00 MiB.
@@ -1146,6 +1151,9 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     if not loaded:
         return None
     main = max(loaded, key = lambda block: block[0])
+    host_mib = main[2]
+    if main[3] and main[1] > 0 and model_bytes:
+        host_mib = min(host_mib, max(0.0, model_bytes / (1024 * 1024) - main[1]))
 
     overflow: Optional[int] = None
     if verdict:
@@ -1168,7 +1176,7 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
             overflow += counted
     return {
         "gpu_mib": round(main[1], 1),
-        "host_mib": round(main[2], 1),
+        "host_mib": round(host_mib, 1),
         "overflow_layers": overflow,
         "all_experts_in_ram": expert_cache_mib is not None,
         "expert_cache_mib": expert_cache_mib,
@@ -35925,7 +35933,10 @@ class LlamaCppBackend:
                 ):
                     _offload_counts = None
                 self._gpu_offload_layers = _offload_counts
-                self._weight_placement = parse_weight_placement(self._stdout_lines)
+                self._weight_placement = parse_weight_placement(
+                    self._stdout_lines,
+                    _gguf_set_bytes(Path(self._gguf_path)) if self._gguf_path else None,
+                )
                 self._gpu_backend_unavailable = bool(_detected_gpus or _metal_capable_host()) and (
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )

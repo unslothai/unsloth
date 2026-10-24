@@ -380,3 +380,21 @@ def test_load_progress_follows_a_real_process_on_this_os(tmp_path):
     finally:
         child.kill()
         child.wait(10)
+
+
+def test_an_mmap_span_over_gpu_tensors_is_capped_at_the_file_minus_the_gpu_side():
+    """With experts spilled under mmap, CPU_Mapped logs the span from the first to the last host tensor,
+    which covers the GPU tensors in between: 25 GiB "in RAM" for a 25.3 GiB file with 21 GiB on the GPU."""
+    lines = [
+        "load_tensors: offloaded 49/49 layers to GPU",
+        "load_tensors:        CUDA0 model buffer size = 21504.00 MiB",
+        "load_tensors:   CPU_Mapped model buffer size = 25600.00 MiB",
+    ]
+    model_bytes = 26419 * 1024 * 1024
+    out = parse_weight_placement(lines, model_bytes)
+    assert out["gpu_mib"] == 21504.0
+    assert out["host_mib"] == 26419 - 21504.0
+    # Without the file size, and for a buffer that is not a mapping, the logged size stands.
+    assert parse_weight_placement(lines)["host_mib"] == 25600.0
+    host = [line.replace("CPU_Mapped", "CUDA_Host") for line in lines]
+    assert parse_weight_placement(host, model_bytes)["host_mib"] == 25600.0
