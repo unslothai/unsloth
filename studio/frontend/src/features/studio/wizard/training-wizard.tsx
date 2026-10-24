@@ -437,7 +437,7 @@ export function TrainingWizard({
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
         icon={Database02Icon}
-        chipTint="var(--chart-4)"
+        chipTint="var(--chart-1)"
         dataTour="studio-dataset"
         titleAction={<DatasetSourceToggleAction />}
       >
@@ -466,7 +466,7 @@ export function TrainingWizard({
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
         icon={Settings05Icon}
-        chipTint="var(--chart-5)"
+        chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={
           <ParamModeToggle mode={paramMode} onChange={onParamModeChange} />

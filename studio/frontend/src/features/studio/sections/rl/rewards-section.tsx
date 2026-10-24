@@ -619,7 +619,7 @@ export function RewardsSection(): ReactElement {
       titleBadge={<NewBadge />}
       description={t("rl.rewards.description")}
       icon={Award01Icon}
-      chipTint="var(--chart-2)"
+      chipTint="var(--chart-1)"
       compactTitleAction
       titleAction={
         <div className="flex items-center gap-2">

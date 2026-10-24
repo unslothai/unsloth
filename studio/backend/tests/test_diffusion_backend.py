@@ -1206,6 +1206,35 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert len(engaged) == 1
 
 
+def test_detailer_passes_neither_count_nor_engage_deferred_speed(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_bg_compile as bg
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    with bg.auxiliary_pass():
+        for _ in range(3):
+            backend.generate(prompt = "face")
+    assert engaged == [], "a Detailer crop engaged the compile mid-pass"
+    assert backend._state.generation_count == 2
+    backend.generate(prompt = "three")
+    assert engaged == [2]
+
+
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
     from core.inference import diffusion as dmod
 
@@ -4688,6 +4717,52 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
     backend._load_token = 7
     backend._run_load(_load_token = 7, **run_kwargs)
     return backend
+
+
+def _forced_offline_load(monkeypatch, *, caller_offline):
+    from core.inference import diffusion as dmod
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    _stub_te_run_load(
+        monkeypatch, base = "Qwen/Qwen-Image-2.1", base_bytes = 0, cache = {}, file_bytes = {}
+    )
+    monkeypatch.setattr(dmod, "_pick_cached_while_hub_unreachable", lambda *a, **k: True)
+    prefetched, loaded = [], []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_prefetch_files",
+        lambda self, *a, **k: prefetched.append(k["local_files_only"]),
+    )
+
+    def load(self, **kw):
+        loaded.append(kw["local_files_only"])
+        if kw["local_files_only"]:
+            raise LocalEntryNotFoundError("transformer shard not in the cache")
+
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", load)
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "Qwen/Qwen-Image-2.1", base_repo = None)
+    backend._load_token = 7
+    backend._run_load(
+        _load_token = 7,
+        repo_id = "Qwen/Qwen-Image-2.1",
+        model_kind = "pipeline",
+        local_files_only = caller_offline,
+    )
+    return backend, prefetched, loaded
+
+
+def test_a_partly_cached_load_forced_offline_retries_online(monkeypatch):
+    # Manifest cached, a shard missing (interrupted download), Hub down moments ago: the online load still runs.
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = False)
+    assert prefetched == [True, False] and loaded == [True, False]
+    assert backend.load_progress()["phase"] != "error"
+
+
+def test_a_caller_offline_load_is_not_retried_online(monkeypatch):
+    backend, prefetched, loaded = _forced_offline_load(monkeypatch, caller_offline = True)
+    assert prefetched == [True] and loaded == [True]
+    assert backend.load_progress()["phase"] == "error"
 
 
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
@@ -10269,6 +10344,9 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         },
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
+    # The speech-pick revision HEAD is not part of this rule; unstubbed it fails to connect, and that failure would
+    # (correctly) stand for the whole endpoint and skip the stubbed listings below.
+    monkeypatch.setattr("core.inference.diffusion_compat._hub_revision", lambda *a, **k: None)
     _no_dense_prefetch(monkeypatch)
     _all_cached(monkeypatch)
     for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
@@ -11110,7 +11188,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11124,7 +11202,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):

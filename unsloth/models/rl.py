@@ -90,6 +90,17 @@ try:
 except Exception:
     torch_version = Version("0.0.0")
 
+
+def _persistent_tma_matmul_ok():
+    # zoo's gate: torch 2.12+ guards every GEMM size once Inductor considers TMA templates
+    # (pytorch/pytorch#172925), so a compiled matmul recompiles per token count.
+    try:
+        from unsloth_zoo.temporary_patches.common import _persistent_tma_matmul_ok as zoo_gate
+    except Exception:
+        return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
+    return bool(zoo_gate())
+
+
 try:
     from transformers import __version__ as _transformers_version_raw
     transformers_version = Version(_transformers_version_raw)
@@ -1381,14 +1392,16 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs (every expert count 0, e.g.
-# granite-4.0-h-350m) return no router logits and crash on `aux_loss.to`. Real MoE keeps its aux loss.
+# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs return no router logits and
+# crash (`aux_loss.to`, or Jamba's load_balancing_loss_func indexing an empty tuple). Dense = every expert count
+# 0 (granite-4.0-h-350m) or 1 (AI21-Jamba-Reasoning-3B builds a plain MLP for 1 expert; a 1-expert router's aux
+# loss is a constant with no gradient anyway). Real MoE keeps its aux loss.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
     "    if hasattr(_text_config, 'get_text_config'): _text_config = _text_config.get_text_config()\n"
     "    _n_experts = [getattr(_text_config, _k) for _k in ('num_local_experts', 'num_experts', 'n_routed_experts', 'moe_num_experts') if isinstance(getattr(_text_config, _k, None), int)]\n"
-    "    if _n_experts and all(_n == 0 for _n in _n_experts):\n"
+    "    if _n_experts and all(_n <= 1 for _n in _n_experts):\n"
     "        self.aux_loss_enabled = False\n"
     "        _text_config.output_router_logits = False\n"
     "pass\n"
@@ -3429,6 +3442,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n        self.context_parallel_backend = context_parallel_backend"
             "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
         )
+    elif (
+        trainer_file in ("dpo_trainer", "grpo_trainer") and "context_parallel_size" not in call_args
+    ):
+        max_seq_length_pre += """
+    context_parallel_size : Optional[int] = field(
+        default = 1,
+        metadata = {'help': 'Ranks per context parallel group (training forwards only). 1 disables it.'},
+    )
+    context_parallel_backend : Optional[str] = field(
+        default = 'ulysses',
+        metadata = {'help': 'Context parallel attention backend; preference and RL trainers support ulysses.'},
+    )"""
+        max_seq_length_call += "context_parallel_size = 1,context_parallel_backend = 'ulysses',"
+        max_seq_length_post += (
+            "\n        self.context_parallel_size = context_parallel_size"
+            "\n        self.context_parallel_backend = context_parallel_backend"
+        )
 
     if "output_dir" in call_args:
         saving_check = (
@@ -3725,8 +3755,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
                 ".cuda_visible_capabilities())"
             )
+            # The sm90+ check only applies where zoo would request TMA at all; otherwise emit False.
+            tma_matmul = all_sm90 if _persistent_tma_matmul_ok() else "False"
             cuda_options = f"""
-            "triton.enable_persistent_tma_matmul": {all_sm90},"""
+            "triton.enable_persistent_tma_matmul": {tma_matmul},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
                 cuda_options += f"""
@@ -4012,6 +4044,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_ddp_gradient_sync(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
+    if trainer_file in ("dpo_trainer", "grpo_trainer"):
+        try:
+            from ..context_parallel import patch_rl_trainer
+            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+        except Exception as e:
+            logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))

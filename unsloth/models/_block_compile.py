@@ -4,6 +4,7 @@
 """One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
 norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
+import contextlib
 import functools
 import os
 import sys
@@ -140,6 +141,22 @@ def _mark_seq_dynamic(seq_len, obj):
     elif isinstance(obj, dict):
         for o in obj.values():
             _mark_seq_dynamic(seq_len, o)
+
+
+def _mark_batch_dynamic(batch, obj):
+    # Batch dim too: an uneven last training batch (size >= 2) otherwise recompiles every graph.
+    if isinstance(obj, torch.Tensor):
+        if obj.dim() >= 2 and obj.shape[0] == batch:
+            torch._dynamo.maybe_mark_dynamic(obj, 0)
+    elif isinstance(obj, (tuple, list)):
+        for o in obj:
+            _mark_batch_dynamic(batch, o)
+    elif isinstance(obj, dict):
+        for o in obj.values():
+            _mark_batch_dynamic(batch, o)
+
+
+_DYNAMIC_BATCH = os.environ.get("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", "1") != "0"
 
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
@@ -572,7 +589,8 @@ def _training_flex_options(options):
     (GQA, head_dim 256), demoting every block. A caller's explicit choice is kept."""
     if options is None:
         return {"FORCE_USE_FLEX_ATTENTION": True}
-    if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
+    # torch 2.10+ rejects BACKEND together with the legacy FORCE_USE_FLEX_ATTENTION.
+    if isinstance(options, dict) and not ({"FORCE_USE_FLEX_ATTENTION", "BACKEND"} & options.keys()):
         return {**options, "FORCE_USE_FLEX_ATTENTION": True}
     return options
 
@@ -693,6 +711,10 @@ def _wrap(cls, compile_options):
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
         inline_flag = [False]
+    try:
+        from unsloth_zoo.temporary_patches.misc import output_capture_scratch as capture_scratch
+    except Exception:
+        capture_scratch = contextlib.nullcontext
     # First call per grad mode compiles with errors raised: on failure retry with flex outside,
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
@@ -703,7 +725,9 @@ def _wrap(cls, compile_options):
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
-            return compiled(self, hidden_states, *args, **kwargs)
+            # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
+            with capture_scratch():
+                return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
@@ -751,6 +775,8 @@ def _wrap(cls, compile_options):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
+            if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
+                _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
             _precheck_band(self, hidden_states.shape[1], args, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
