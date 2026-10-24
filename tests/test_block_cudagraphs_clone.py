@@ -8,11 +8,25 @@ tensor the checkpoint keeps (the saved block input, the gradient handed to the p
 block) would be overwritten by the next replay.
 """
 
-import importlib
+import importlib.util
+import os
+import sys
 
 import torch
 
-from unsloth.models import _block_compile as bc
+_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models")
+
+
+def _load():
+    # By file path: importing the unsloth package needs an accelerator.
+    spec = importlib.util.spec_from_file_location("_ublock_compile_cg", os.path.join(_DIR, "_block_compile.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+bc = _load()
 
 
 def test_clone_grad_is_identity_with_copied_gradient():
@@ -44,12 +58,12 @@ def test_clone_outputs_copies_every_tensor():
 def test_cudagraphs_opt_in_flag(monkeypatch):
     try:
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "1")
-        assert importlib.reload(bc)._COMPILE_OPTIONS["triton.cudagraphs"] is True
+        assert _load()._COMPILE_OPTIONS["triton.cudagraphs"] is True
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
-        assert importlib.reload(bc)._COMPILE_OPTIONS["triton.cudagraphs"] is False
+        assert _load()._COMPILE_OPTIONS["triton.cudagraphs"] is False
     finally:
         monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS", raising = False)
-        importlib.reload(bc)
+        _load()
 
 
 def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
@@ -98,9 +112,9 @@ def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
 def test_cap_reads_the_environment(monkeypatch):
     try:
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "3")
-        assert importlib.reload(bc)._CUDAGRAPH_MAX_SHAPES == 3
+        assert _load()._CUDAGRAPH_MAX_SHAPES == 3
         monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "junk")
-        assert importlib.reload(bc)._CUDAGRAPH_MAX_SHAPES == 8
+        assert _load()._CUDAGRAPH_MAX_SHAPES == 8
     finally:
         monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", raising = False)
-        importlib.reload(bc)
+        _load()
