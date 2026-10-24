@@ -101,8 +101,10 @@ trl>=0.18.2,!=0.19.0,<=1.15.0
 sentence-transformers==5.2.0; python_version >= "3.10"
 sentence-transformers==5.1.2; python_version < "3.10"
 cut_cross_entropy==25.1.1
-pillow==13.0.0; python_version >= "3.11"
-pillow==12.3.0; python_version >= "3.10" and python_version < "3.11"
+# Apple Silicon stays below 13 with the MLX image engine: mflux imports PIL._typing, which
+# Pillow 13.0.0 breaks on CPython 3.11 - 3.14 (see _MLX_DIFFUSION_DEPS in install_python_stack.py).
+pillow==13.0.0; python_version >= "3.11" and (sys_platform != "darwin" or platform_machine != "arm64")
+pillow==12.3.0; python_version >= "3.10" and (python_version < "3.11" or (sys_platform == "darwin" and platform_machine == "arm64"))
 pillow==11.3.0; python_version < "3.10"
 
 # RAG store + document parsing, mirroring studio.txt. Pinned here because
