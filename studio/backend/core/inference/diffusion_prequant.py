@@ -2274,6 +2274,40 @@ def _reports_rejected_cache_entry(fn: Any) -> Any:
     return wrapper
 
 
+def _engage_nvfp4_backend(
+    transformer: Any,
+    metadata: Any,
+    device: Any,
+    *,
+    family: Optional[str] = None,
+    base: Optional[str] = None,
+    logger: Any = None,
+) -> int:
+    """Move a loaded NVFP4 transformer onto the backend ``device`` selects; returns the layers moved to flashinfer.
+
+    The flashinfer coverage warning fires here, once layers really run flashinfer's kernels: scheme selection also
+    runs for planning and validation, which load nothing and must not use up the once-only warning."""
+    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_ops import select_nvfp4_backend
+
+    converted = convert_nvfp4_backend(
+        transformer, metadata, select_nvfp4_backend(device), logger = logger
+    )
+    if converted:
+        try:
+            from .diffusion_nvfp4_gate import warn_flashinfer_mismatch_once
+            md = metadata if isinstance(metadata, dict) else {}
+            # The checkpoint's own base first: ``base`` can be the ungated mirror the weights were fetched from.
+            for base_repo in dict.fromkeys(b for b in (md.get("base_model_id"), base) if b):
+                if warn_flashinfer_mismatch_once(
+                    family or md.get("family"), base_repo, logger, backend_active = True
+                ):
+                    break
+        except Exception:  # noqa: BLE001 -- a warning, never a load error
+            pass
+    return converted
+
+
 @_reports_rejected_cache_entry
 def load_prequantized_transformer(
     transformer_cls: Any,
@@ -2477,14 +2511,16 @@ def load_prequantized_transformer(
 
             if scheme == "nvfp4":
                 from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
-                from .diffusion_nvfp4_linear import convert_nvfp4_backend
 
                 # Layers left on torchao quantise activations through NVFP4Tensor.to_nvfp4 at run time.
                 install_nvfp4_act_quant_patch(logger)
-                from .diffusion_nvfp4_ops import select_nvfp4_backend
-
-                convert_nvfp4_backend(
-                    transformer, metadata, select_nvfp4_backend(device), logger = logger
+                _engage_nvfp4_backend(
+                    transformer,
+                    metadata,
+                    device,
+                    family = family,
+                    base = base,
+                    logger = logger,
                 )
             # assign=True shares the tensors: a live reference doubles the peak on unified memory.
             del state_dict
@@ -3413,8 +3449,11 @@ def stream_prequantized_module(
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
-        use_stream = onload.type == "cuda" and _weights_pinnable(module)
-        if onload.type == "cuda" and not use_stream:
+        from .host_pinning import host_pinning_allowed
+
+        pinning = host_pinning_allowed(onload)
+        use_stream = onload.type == "cuda" and pinning and _weights_pinnable(module)
+        if onload.type == "cuda" and pinning and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
             converted = convert_legacy_int8_weights(module)

@@ -31,6 +31,7 @@ export function RunValidateFloatingControls({
         className="pointer-events-auto flex items-center gap-2"
       >
         <Button
+          variant="dark"
           type="button"
           className="corner-squircle h-11 px-5"
           onClick={() => onOpenRunDialog(runDialogKind)}

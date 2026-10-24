@@ -95,6 +95,7 @@ import {
   isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
+  isTextAttachmentName,
   readTextAttachmentOnce,
   UndecodableTextError,
 } from "./text-attachment-accept";
@@ -301,6 +302,21 @@ const pendingRunStartReadyByMessageId = new Map<
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
+function matchesAccept(file: { name: string; type: string }, accept: string): boolean {
+  if (accept === "*") return true;
+  const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  const mime = file.type.toLowerCase();
+  return accept.split(",").some((entry) => {
+    const token = entry.trim().toLowerCase();
+    if (token.startsWith(".")) return token === extension;
+    if (token.endsWith("/*")) return mime.startsWith(token.slice(0, -1));
+    return token === mime;
+  });
+}
+
+const UNSUPPORTED_ATTACHMENT_HINT =
+  "Attach images, audio, video, PDFs, Office and OpenDocument files, e-books, email, or text and code files.";
+
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
   private readonly getThreadIds: () => Array<string | null | undefined>;
@@ -313,11 +329,23 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     this.getThreadIds = getThreadIds;
   }
 
-  get accept(): string {
-    return this.delegate.accept;
-  }
+  // "*": the runtime's own check refuses silently, so add() toasts instead.
+  readonly accept = "*";
 
   add(state: { file: File }) {
+    let file = state.file;
+    if (!matchesAccept(file, this.delegate.accept) && isTextAttachmentName(file.name)) {
+      file = new File([file], file.name, {
+        type: "text/plain",
+        lastModified: file.lastModified,
+      });
+    }
+    if (!matchesAccept(file, this.delegate.accept)) {
+      const reason = `${file.name} can't be attached`;
+      toast.error(reason, { description: UNSUPPORTED_ATTACHMENT_HINT });
+      throw new Error(reason);
+    }
+    if (file !== state.file) state = { ...state, file };
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
     // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
     // first, as the native readers do. Every other file goes straight through.
@@ -1491,6 +1519,7 @@ function scheduleGenerationRecovery(
             approvalId,
             sessionId,
             `${sessionId || "_default"}:${threadId}`,
+            threadId,
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),
