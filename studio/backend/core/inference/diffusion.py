@@ -5635,8 +5635,7 @@ class DiffusionBackend:
             try:
                 _prefetch_and_load(local_files_only or forced_offline)
             except OSError as exc:
-                # Only the manifest is checked up front: a cache missing shards / component files (an interrupted
-                # download) gets the online load the caller asked for, not a hard offline miss.
+                # Only the manifest is checked up front: an interrupted download still needs the online load.
                 if (
                     not forced_offline
                     or self._load_token != token
