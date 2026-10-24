@@ -24,6 +24,14 @@ projections, so the load-time peak per rank is the replicated parts plus 1 / tp 
     # = with sharded_loading(mesh["tp"]): FastLanguageModel.from_pretrained(..., load_in_4bit = False)
     model = FastLanguageModel.get_peft_model(model, ...)  # full-size LoRA, same init as 1 GPU
     apply_tensor_parallel(model, mesh["tp"])  # required before the first forward
+
+Data parallel x tensor parallel (native FSDP2 over the dp dimension, torch 2.7+): every tp rank of a dp replica
+reads the same batch, dp replicas read different ones:
+
+    mesh = init_device_mesh("cuda", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    apply_tensor_parallel(model, mesh["tp"])
+    shard_model(model, FSDP2Config(mesh = mesh["dp"]))  # frozen tp shards replicated over dp, LoRA sharded
+    ... tp_clip_grad_norm_(params, 1.0) (or native_clip_grad_norm_); save_tp_adapter(model, "out")
 """
 
 from __future__ import annotations
@@ -44,6 +52,7 @@ __all__ = [
     "TPConfig",
     "TPPlan",
     "apply_tensor_parallel",
+    "check_tp_dp_composition",
     "derive_tp_plan",
     "is_tensor_parallel",
     "load_tensor_parallel",
@@ -763,6 +772,7 @@ def _set_dtensor(
     param = _as_param(dt, full)
     if placement == "shard" and len(parts) > 1:
         param._unsloth_tp_parts = (shard_dim, tuple(parts))
+        _tag_layout(module, name, shard_dim, parts, tp)
     module._parameters[name] = param
     if param.requires_grad and placement != "shard":
         param.register_hook(_replicate_grad)
@@ -1238,6 +1248,53 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
+def check_tp_dp_composition(model, dp_mesh):
+    """shard_model(model, FSDP2Config(mesh = dp_mesh)) on a model sharded by apply_tensor_parallel: valid when
+    dp_mesh and the tp mesh are the two dimensions of one (dp, tp) mesh covering the world. Marks the model."""
+    import torch.distributed as dist
+
+    chain = _tp_chain(model)
+    tp_mesh = next((m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None)
+    if tp_mesh is None:
+        raise ValueError(
+            "Unsloth: native FSDP2 over a tensor parallel model needs the outermost model (the one "
+            "apply_tensor_parallel was given, or a wrapper of it)."
+        )
+    if dp_mesh.ndim != 1:
+        raise ValueError("Unsloth: native FSDP2 over a tensor parallel model takes a 1-D dp mesh (mesh['dp']).")
+    dp_ranks, tp_ranks = set(dp_mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
+    me = dist.get_rank()
+    if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() != dist.get_world_size():
+        raise ValueError(
+            f"Unsloth: native FSDP2's mesh (ranks {sorted(dp_ranks)}) must be the data parallel dimension of the "
+            f"(dp, tp) mesh whose tp dimension (ranks {sorted(tp_ranks)}) apply_tensor_parallel used, covering "
+            f"all {dist.get_world_size()} ranks: pass FSDP2Config(mesh = mesh['dp'])."
+        )
+    try:
+        from torch.distributed.device_mesh import _mesh_resources
+
+        same_root = _mesh_resources.get_root_mesh(dp_mesh) is _mesh_resources.get_root_mesh(tp_mesh)
+    except Exception:
+        same_root = True
+    if not same_root:
+        raise ValueError(
+            "Unsloth: the dp and tp meshes must come from one init_device_mesh(..., (dp, tp), mesh_dim_names = "
+            "('dp', 'tp')) (FSDP2 shards the tp DTensors over its dp dimension)."
+        )
+    plan = next((m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None)
+    for region in plan.regions if plan is not None else ():
+        for name, norm in region.norms:
+            if any(p.requires_grad for p in norm.parameters()):
+                # Their tp sum is a hook on the Parameter, and FSDP2 replaces the Parameter objects.
+                raise ValueError(
+                    f"Unsloth: trainable per-head norms ({region.path}.{name}) are not supported with tensor "
+                    "parallel x FSDP2 data parallel; keep them frozen."
+                )
+    for level in chain:
+        level.__dict__["_unsloth_tp_dp_mesh"] = dp_mesh
+    return tp_mesh
+
+
 def tp_clip_grad_norm_(
     parameters,
     max_norm,
@@ -1252,6 +1309,8 @@ def tp_clip_grad_norm_(
     params = [p for p in parameters if p.grad is not None]
     if not params:
         return torch.tensor(0.0)
+    if any(_is_dtensor(p.grad) and p.grad.device_mesh.ndim > 1 for p in params):
+        return _clip_over_world(params, max_norm, eps)
     sharded = replicated = None
     group = mesh.get_group() if mesh is not None else None
     for p in params:
@@ -1287,14 +1346,52 @@ def tp_clip_grad_norm_(
     return total
 
 
-def _full(tensor, param = None):
+def _clip_over_world(params, max_norm, eps):
+    """tp_clip_grad_norm_ for gradients on a 2-D (dp, tp) mesh (shard_model over the dp mesh): every
+    element's square is counted once, divided by the number of ranks holding a replica of it."""
+    import math
+
+    import torch.distributed as dist
+
+    total = None
+    world = dist.get_world_size()
+    for p in params:
+        g = _replicate_grad(p.grad)
+        if g is not p.grad:
+            p.grad = g
+        if _is_dtensor(g):
+            mesh = g.device_mesh
+            if mesh.size() != world:
+                raise ValueError(
+                    f"Unsloth: tp_clip_grad_norm_ got a gradient on {mesh.size()} of {world} ranks; a 2-D "
+                    "mesh must span the world."
+                )
+            # Replicate dims hold copies; Shard and FSDP2's _StridedShard (not is_shard() on newer torch) split.
+            copies = math.prod(mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate())
+            sq = g.to_local().float().square().sum() / copies
+        else:
+            sq = g.float().square().sum() / world  # the same on every rank
+        total = sq if total is None else total + sq
+    dist.all_reduce(total)
+    total = total.sqrt()
+    coef = float(max_norm) / (float(total) + eps)
+    if coef < 1:
+        for p in params:
+            p.grad.mul_(coef)
+    return total
+
+
+def _full(tensor, param = None, layout = None):
+    """The whole tensor (collective over its mesh), fused / packed parts back in their original order."""
     if not _is_dtensor(tensor):
         return tensor
     full = tensor.full_tensor()
-    layout = getattr(param, "_unsloth_tp_parts", None) if param is not None else None
+    if layout is None and param is not None:
+        layout = getattr(param, "_unsloth_tp_parts", None)
+        layout = None if layout is None else (*layout, tensor.device_mesh.size())
     if layout is not None:
-        dim, parts = layout
-        full = _unpermute(full, dim, parts, tensor.device_mesh.size())
+        dim, parts, tp = layout
+        full = _unpermute(full, dim, parts, tp)
     return full
 
 
@@ -1309,6 +1406,7 @@ def tp_full_state_dict(model, adapters_only = False):
         if weight is not None:
             embeddings.add(id(weight))
     out = {}
+    layouts = _param_layouts(model)
     with torch.no_grad():
         for key, value in state.items():
             if (
@@ -1318,7 +1416,7 @@ def tp_full_state_dict(model, adapters_only = False):
                 and id(value) not in embeddings
             ):
                 continue
-            out[key] = _full(value, value).detach()
+            out[key] = _full(value, value, layouts.get(id(value))).detach()
     return out
 
 
@@ -1346,11 +1444,12 @@ def _peft_state_dict(model, **kwargs):
             "save_tp_adapter cannot gather them."
         )
     state = {}
+    layouts = _param_layouts(model)
     with torch.no_grad():
         for key, value in raw.items():
             if _is_dtensor(value):
                 if id(value) in wanted:
-                    state[key] = _full(value, value).detach()
+                    state[key] = _full(value, value, layouts.get(id(value))).detach()
             else:
                 state[key] = value.detach()
     return state
@@ -1360,10 +1459,13 @@ def save_tp_adapter(model, save_directory, **kwargs):
     """Write the standard 1-GPU PEFT adapter. Collective (tp mesh = whole world in v1); rank 0 writes."""
     import torch.distributed as dist
 
-    mesh = None
+    mesh = dp_mesh = None
     for level in _tp_chain(model):
         mesh = mesh or level.__dict__.get("_unsloth_tp_mesh")
-    if dist.is_initialized() and mesh is not None and mesh.size() != dist.get_world_size():
+        dp_mesh = dp_mesh or level.__dict__.get("_unsloth_tp_dp_mesh")
+    # Under shard_model over the dp mesh every trainable DTensor spans the whole (dp, tp) world.
+    ranks = mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) if mesh is not None else None
+    if dist.is_initialized() and mesh is not None and ranks != dist.get_world_size():
         raise ValueError(
             f"Unsloth: save_tp_adapter writes on global rank 0 behind a world barrier, but the tensor parallel "
             f"mesh has {mesh.size()} of {dist.get_world_size()} ranks (data parallel > 1 is outside v1). "
@@ -1437,8 +1539,25 @@ def _wrap_preloaded(module, name, local, mesh, dim):
     parts = getattr(local, "_unsloth_tp_parts", None)
     if parts is not None:
         param._unsloth_tp_parts = parts
+        _tag_layout(module, name, parts[0], parts[1], mesh.size())
     module._parameters[name] = param
     return param
+
+
+def _tag_layout(module, name, dim, parts, tp):
+    # On the module too: FSDP2 replaces the Parameter objects (and their attributes) when it shards them.
+    module.__dict__.setdefault("_unsloth_tp_layouts", {})[name] = (dim, tuple(parts), tp)
+
+
+def _param_layouts(model):
+    """{id(parameter): (dim, parts, tp)} for the permuted (fused / packed) tp parameters of `model`."""
+    out = {}
+    for module in model.modules():
+        for name, layout in (module.__dict__.get("_unsloth_tp_layouts") or {}).items():
+            param = module._parameters.get(name)
+            if param is not None:
+                out[id(param)] = layout
+    return out
 
 
 def _refuse_unapplied_forward(module, args):

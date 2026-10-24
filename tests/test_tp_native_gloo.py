@@ -475,6 +475,107 @@ def _case_sharded_load(rank, world, tmp, arch, ckpt, lora_kwargs = None):
     }
 
 
+def _case_tp_fsdp2(rank, world, tmp, arch, fit_layout = True, lora_kwargs = None):
+    """dp 2 x tp 2: apply_tensor_parallel over mesh['tp'], native FSDP2 shard_model over mesh['dp'], each dp
+    replica on its own half of the batch, vs one process on the whole batch."""
+    import torch.distributed as dist
+    from safetensors.torch import load_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    repo, overrides = ARCHS[arch]
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    dp = mesh["dp"].get_local_rank()
+    ref = build(repo, overrides, **(lora_kwargs or {}))
+    model = build(repo, overrides, **(lora_kwargs or {}))
+    ids = _batch(ref, bsz = 4)
+    mine = ids[2 * dp : 2 * dp + 2]
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    if not native._supports_ignored_params(native._fsdp_api()[2]):
+        # torch < 2.7: no fully_shard(ignored_params) to keep the frozen tp shards out of FSDP2.
+        config = native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+        return {"unsupported": _raised(lambda: native.shard_model(model, config))}
+    refusals = {
+        "no_mesh": _raised(lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32))),
+        "tp_mesh": _raised(
+            lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["tp"]))
+        ),
+        "shard_frozen": _raised(
+            lambda: native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], shard_frozen = True)
+            )
+        ),
+    }
+    native.shard_model(
+        model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], fit_layout = fit_layout)
+    )
+    layouts = tpn._param_layouts(model)
+    params = [p for p in model.parameters() if p.requires_grad]
+    ref_params = [p for p in ref.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr = 1e-2, foreach = False)
+    ref_opt = torch.optim.AdamW(ref_params, lr = 1e-2, foreach = False)
+    losses, ref_losses, norms, native_norms, ref_norms = [], [], [], [], []
+    for step in range(3):
+        out = model(input_ids = mine, labels = mine, use_cache = False)
+        out.loss.backward()
+        r = ref(input_ids = ids, labels = ids, use_cache = False)
+        r.loss.backward()
+        if step == 0:
+            grads = {
+                n: tpn._full(p.grad, layout = layouts.get(id(p))).detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
+            ref_grads = {n: p.grad.detach().clone() for n, p in ref.named_parameters() if p.grad is not None}
+            mismatched = [
+                n for n, p in model.named_parameters()
+                if p.grad is not None and tuple(p.grad.placements) != tuple(p.placements)
+            ]
+        native_norms.append(float(native.native_clip_grad_norm_(params, 1e9)))
+        norms.append(float(tpn.tp_clip_grad_norm_(params, 1.0)))
+        ref_norms.append(float(_clip_fp64(ref_params, 1.0)))
+        opt.step(), opt.zero_grad(set_to_none = True)
+        ref_opt.step(), ref_opt.zero_grad(set_to_none = True)
+        loss = out.loss.detach().clone()
+        dist.all_reduce(loss)  # mean over the 4 ranks = mean over the 2 dp halves (tp ranks agree)
+        losses.append(float(loss) / world)
+        ref_losses.append(float(r.loss))
+    ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
+    ref.save_pretrained(ref_dir)
+    tpn.save_tp_adapter(model, tp_dir)
+    dist.barrier()
+    return {
+        "grads": grads,
+        "ref_grads": ref_grads,
+        "mismatched": mismatched,
+        "losses": losses,
+        "ref_losses": ref_losses,
+        "norms": norms,
+        "native_norms": native_norms,
+        "ref_norms": ref_norms,
+        "refusals": refusals,
+        "placements": {n: tuple(p.placements) for n, p in model.named_parameters() if p.requires_grad},
+        "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors")) if rank == 0 else None,
+    }
+
+
+def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    mesh = init_device_mesh("cpu", (2, 2), mesh_dim_names = ("dp", "tp"))
+    model = build(QWEN3, train_norms = True)
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    return {
+        "error": _raised(
+            lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+        )
+    }
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -483,6 +584,8 @@ CASES = {
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
     "sharded_load": _case_sharded_load,
+    "tp_fsdp2": _case_tp_fsdp2,
+    "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
 }
 
 
@@ -741,3 +844,43 @@ def test_sharded_loading_refuses_quantized_loads():
     for key in ("load_in_4bit", "quantization_config"):
         with pytest.raises(ValueError, match = "16-bit safetensors checkpoints only"):
             tpn.load_tensor_parallel(LLAMA, None, loader = AutoModelForCausalLM.from_pretrained, **{key: True})
+
+
+@pytest.mark.parametrize(
+    "arch,fit_layout,lora_kwargs",
+    [
+        ("llama", True, None),
+        ("llama", None, None),  # automatic layout (frozen tp shards still replicated over dp)
+        ("phi3", True, None),  # packed / fused parts: saved in the 1-GPU order through FSDP2
+        ("llama_bias", True, {"bias": "all"}),  # trainable column (Shard) and row (Replicate) biases
+    ],
+)
+def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
+    skip_unsupported(arch)
+    results = _spawn("tp_fsdp2", 4, arch = arch, fit_layout = fit_layout, lora_kwargs = lora_kwargs)
+    if "unsupported" in results[0]:
+        assert all("torch 2.7+" in (r["unsupported"] or "") for r in results), results
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused (no fully_shard(ignored_params))")
+    for rank, res in enumerate(results):
+        assert set(res["grads"]) == set(res["ref_grads"]) and res["grads"]
+        for name, ref in res["ref_grads"].items():
+            torch.testing.assert_close(res["grads"][name], ref, rtol = 1e-4, atol = 1e-6, msg = name)
+        assert not res["mismatched"], res["mismatched"][:4]
+        assert res["losses"] == pytest.approx(res["ref_losses"], rel = 1e-5), (res["losses"], res["ref_losses"])
+        assert res["norms"] == pytest.approx(res["ref_norms"], rel = 1e-5), (res["norms"], res["ref_norms"])
+        assert res["native_norms"][0] == pytest.approx(res["ref_norms"][0], rel = 1e-5)
+        # FSDP2 shards the LoRA DTensors over dp on top of their tp placement.
+        assert all(len(pl) == 2 for pl in res["placements"].values()), res["placements"]
+        assert "the data parallel dimension" not in (res["refusals"]["no_mesh"] or "")
+        assert "does not compose with Unsloth tensor parallelism" in (res["refusals"]["no_mesh"] or "")
+        assert "must be the data parallel dimension" in (res["refusals"]["tp_mesh"] or ""), res["refusals"]
+        assert "shard_frozen = True" in (res["refusals"]["shard_frozen"] or ""), res["refusals"]
+    saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
+    assert set(saved_tp) == set(saved_ref)
+    for key in saved_ref:
+        torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-4, atol = 1e-5, msg = key)
+
+
+def test_tp_x_fsdp2_refuses_trainable_head_norms():
+    for res in _spawn("tp_fsdp2_trainable_norms", 4):
+        assert res["error"] and "trainable per-head norms" in res["error"], res
