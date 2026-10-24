@@ -214,3 +214,51 @@ def test_studio_keeps_training_off_on_cpu_only_hosts(entry):
                 first_unsloth_import = node.lineno
     assert opt_out is not None, f"{entry} no longer sets UNSLOTH_DISABLE_CPU_FALLBACK=1"
     assert first_unsloth_import is None or opt_out < first_unsloth_import
+
+
+_NO_TRL_PROBE = r"""
+import importlib.abc, json, sys
+
+class _NoTRL(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path = None, target = None):
+        if name == "trl" or name.startswith("trl."):
+            raise ImportError("No module named 'trl'")
+
+sys.meta_path.insert(0, _NoTRL())
+import unsloth
+from unsloth import UnslothTrainingArguments
+try:
+    UnslothTrainingArguments(output_dir = "x")
+    error = None
+except ImportError as e:
+    error = str(e)
+print("PROBE " + json.dumps({"device_type": unsloth.DEVICE_TYPE, "error": error}))
+"""
+
+
+@pytest.mark.skipif(not _zoo_has_cpu_backend(), reason = "unsloth_zoo without the CPU backend")
+def test_cpu_backend_imports_without_trl():
+    """trl is not a default dependency on Apple Silicon: `import unsloth` on the CPU backend still works,
+    and only building a trainer asks for it."""
+    pytest.importorskip("torch")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_ALLOW_CPU", "UNSLOTH_DISABLE_CPU_FALLBACK")
+    }
+    env.update(
+        {
+            "UNSLOTH_FORCE_CPU": "1",
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(_ROOT), env.get("PYTHONPATH")])),
+        }
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", _NO_TRL_PROBE], capture_output = True, text = True, env = env, timeout = 1200
+    )
+    probe = next(
+        (json.loads(line[6:]) for line in out.stdout.splitlines() if line.startswith("PROBE ")),
+        None,
+    )
+    assert probe is not None, out.stderr[-3000:]
+    assert probe["device_type"] == "cpu"
+    assert probe["error"] and "pip install trl" in probe["error"]

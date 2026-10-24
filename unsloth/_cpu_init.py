@@ -80,7 +80,15 @@ def train_on_responses_only(*args, **kwargs):
     return _train_on_responses_only(*args, **kwargs)
 
 
-from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
+try:
+    from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
+except ImportError:
+    # trl is not a default dependency on Apple Silicon: importing unsloth must still work there.
+    class _SFTConfig:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("Unsloth: CPU training needs TRL. Install it with `pip install trl`.")
+
+    _SFTTrainer = _SFTConfig
 
 
 class UnslothTrainingArguments(_SFTConfig):
