@@ -2265,7 +2265,6 @@ def _resolve_model(
     status_snapshot = None
     # Whether the inferred settings can restart the resident. Computed once: the preload gate, the warning, the consent refusal and force_reload must all agree, and asking twice against a snapshot taken at different times is how they drift apart.
     inferred_differs = False
-    # Whether a named resident is the very checkpoint this load resolves to.
     same_checkpoint = True
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
@@ -2484,7 +2483,7 @@ def _resolve_model(
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
             carried = _resident_runtime_payload(status_snapshot, payload)
             if attach_public_id is None:
-                # Omitted extras are inherited server-side, stripped only of flags shadowing fields the request sets: a copy would let its --ctx-size beat --context-length, and a carried field would strip the extra it was losing to. So a resident with extras gets no carry at all.
+                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
                 if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
                     carried = {}
                 carried.pop("llama_extra_args", None)
