@@ -74,7 +74,11 @@ def _quantize_block_fp8(weight):
     return quant, scale.contiguous()
 
 
-def _dequantize_reference(quant, scale, dtype = torch.bfloat16):
+def _dequantize_reference(
+    quant,
+    scale,
+    dtype = torch.bfloat16,
+):
     rows, cols = quant.shape
     expanded = (
         scale.float().repeat_interleave(_BLOCK, 0)[:rows].repeat_interleave(_BLOCK, 1)[:, :cols]
@@ -130,7 +134,11 @@ def _write_pair(bf16_dir, root, deq_dtype):
     return fp8_dir, deq_dir
 
 
-def _build(root, moe, deq_dtype = torch.bfloat16):
+def _build(
+    root,
+    moe,
+    deq_dtype = torch.bfloat16,
+):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(_TOKENIZER_REPO)
