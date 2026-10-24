@@ -609,7 +609,10 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
 
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert source.count("def _emit_auto_ctx_checkpoints(") == 1
-        assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 3
+        # The launch, the slots a cacheless relaunch gives back, the arch-crash
+        # respawn, and the single-sequence retry.
+        assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 4
+        # Every respawn that re-emits first takes back the pair it is replacing.
         assert source.count("self._without_flag_pairs(cmd, _auto_ckpt_emitted)") == 2
         tuning = source.index("_retry_cache_tuning_flags(")
         strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)")
