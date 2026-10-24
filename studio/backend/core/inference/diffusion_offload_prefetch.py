@@ -14,16 +14,26 @@ Memory stays bounded without a host wait: each offload records a compute-stream 
 freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
 Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
 Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
+
+Cross-forward carry: once a forward's lookahead runs past the last recorded group, the first groups of the NEXT
+forward (same order every denoise step) are copied into the free window bytes, so that forward starts on resident
+weights instead of waiting for its first block. Only while a render arms it (``cross_forward_render`` /
+``cross_forward_step``: never into the last step's decode), never under a slot ring or a step graph, never across a
+forward of another prefetcher in the same thread. ``UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD=0`` turns it off.
 """
 
 from __future__ import annotations
 
 import os
+import threading
+import weakref
 from collections import deque
-from typing import Any, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
+CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
 DEFAULT_PREFETCH_DEPTH = 2
 MAX_PREFETCH_DEPTH = 8
 PREFETCHER_ATTR = "_unsloth_group_prefetcher"
@@ -51,6 +61,20 @@ def async_prefetch_enabled() -> bool:
         "false",
         "no",
     )
+
+
+def cross_forward_enabled() -> bool:
+    return (os.environ.get(CROSS_FORWARD_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+# Per thread: the prefetcher whose forward began last. Another one beginning in between (a second-stage denoiser)
+# means carried copies would not be read next: they are dropped and that prefetcher stops carrying for the render.
+_LAST_BEGUN = threading.local()
 
 
 def prefetch_depth() -> int:
@@ -339,6 +363,12 @@ class GroupPrefetcher:
         # the capture at begin() and back at end(), so the copies become graph nodes refilling the same buffers.
         self.capturing = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
+        # Cross-forward carry (module docstring): gids copied for the next forward, still in ``ready``.
+        self.carried: set = set()
+        self.armed = False  # set by the render (cross_forward_render / cross_forward_step)
+        # another prefetcher's forward ran between two of this one's in this render
+        self.interleaved = False
+        self.graph_hold = False  # a whole-step graph is installed over this module's forward
         # Slot ring (``enable_slots``): group id -> slot index; a streamed group's copy lands in place in that slot,
         # always at the same offsets, so the blocks a CUDA graph recorded read the same addresses every step.
         self.slot_of: dict = {}
@@ -478,6 +508,10 @@ class GroupPrefetcher:
                 self.stats["missed"] += 1
         elif self.ready[gid] is not None:
             self.stats["prefetched"] += 1
+        carried = getattr(self, "carried", None)
+        if carried and gid in carried:
+            carried.discard(gid)
+            self.stats["carried_hits"] = self.stats.get("carried_hits", 0) + 1
         event = self.ready[gid]
         if event is not None:
             self._compute().wait_event(event)
@@ -486,6 +520,9 @@ class GroupPrefetcher:
 
     def offload(self, group: Any) -> None:
         gid = id(group)
+        carried = getattr(self, "carried", None)
+        if carried:
+            carried.discard(gid)
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -526,6 +563,9 @@ class GroupPrefetcher:
             if group is not None and self.owns(group):
                 continue
             event = self.ready.pop(gid)
+            carried = getattr(self, "carried", None)
+            if carried:
+                carried.discard(gid)
             if event is not None:
                 compute = compute or self._compute()
                 compute.wait_event(event)
@@ -547,7 +587,7 @@ class GroupPrefetcher:
         ahead = 0
         for gid in self.order[self.pos :]:
             if ahead >= self.depth:
-                break
+                return
             group = self.by_id.get(gid)
             if group is None or not self.owns(group):
                 continue  # made resident since the order was recorded
@@ -555,13 +595,69 @@ class GroupPrefetcher:
                 ahead += 1
                 continue
             if self.inflight_bytes + self.nbytes.get(gid, 0) > self.window and self.ready:
-                break
+                return
             if getattr(self, "slot_of", None):
                 if not self._issue(group, must = False):
-                    break  # its slot still holds a group the compute has not finished with
+                    return  # its slot still holds a group the compute has not finished with
             else:
                 self._issue(group)
             ahead += 1
+        if ahead < self.depth and self.may_carry():
+            self._carry(ahead)
+
+    def carry_usable(self) -> bool:
+        """Whether copies carried into the next forward would be read by it (no graph replays over this forward)."""
+        return bool(
+            not getattr(self, "interleaved", False)
+            and not getattr(self, "graph_hold", False)
+            and not getattr(self, "slot_of", None)
+            and cross_forward_enabled()
+        )
+
+    def may_carry(self) -> bool:
+        """Whether copies for the next forward may be queued now (module docstring)."""
+        return bool(
+            getattr(self, "armed", False)
+            and not getattr(self, "capturing", False)
+            and self.carry_usable()
+        )
+
+    def _carry(self, ahead: int) -> None:
+        """Past the end of the order: copy the next forward's first groups, under the same depth and window."""
+        carried = self.__dict__.setdefault("carried", set())
+        due = set(self.order[self.pos :])
+        for gid in self.order:
+            if ahead >= self.depth or gid in due:
+                return  # a short order wraps onto groups this forward still runs: no carry past them
+            group = self.by_id.get(gid)
+            if group is None or not self.owns(group):
+                continue
+            if gid in self.ready:
+                if gid not in carried:
+                    return  # still on the device from this forward (a group reused in the order)
+                ahead += 1
+                continue
+            if self.inflight_bytes + self.nbytes.get(gid, 0) > self.window and self.ready:
+                return
+            self._issue(group)
+            carried.add(gid)
+            self.stats["carried"] = self.stats.get("carried", 0) + 1
+            ahead += 1
+
+    def drop_carried(self) -> int:
+        """Release the copies queued for a next forward that will not read them. Outside a capture. Returns how many."""
+        carried = getattr(self, "carried", None)
+        if not carried:
+            return 0
+        n = 0
+        for gid in list(carried):
+            group = self.by_id.get(gid)
+            if gid in self.ready and group is not None:
+                self._release(group, self.ready.pop(gid))
+                n += 1
+        carried.clear()
+        self.stats["carried_dropped"] = self.stats.get("carried_dropped", 0) + n
+        return n
 
     def _holds_slot(self, group: Any) -> bool:
         where = self.slot_of.get(id(group))
@@ -574,6 +670,8 @@ class GroupPrefetcher:
         first use). The top-level group keeps fresh copies: no graph reads it."""
         if self.slot_of:
             return self.slot_bytes_planned >> 20
+        if not self.active:
+            self.drop_carried()  # carried copies sit at fresh addresses, not in a slot a graph would read
         members: list = []
         size = 0
         for group in self.groups:
@@ -687,18 +785,42 @@ class GroupPrefetcher:
     def begin(self) -> None:
         self.stats["forwards"] += 1
         self._forget_disowned()
+        capturing = False
+        if self.stream is not None:
+            import torch
+            capturing = bool(torch.cuda.is_current_stream_capturing())
+        if getattr(self, "carried", None):
+            if capturing:
+                # a capture must record every copy; the outer (uncaptured) begin drops these first
+                raise RuntimeError(
+                    "copies carried from the previous forward are still on the device"
+                )
+            if not self.carry_usable() and not getattr(self, "active", False):
+                self.drop_carried()
+        self._note_begun()
         self.seen = []
         self.pos = 0
         self.active = True
         self.on_order = bool(self.order)
         self.pending = True
         self.capturing = False
-        if self.stream is not None:
-            import torch
-            if torch.cuda.is_current_stream_capturing():
-                # fork the copy stream into the capture before anything is queued on it
-                self.capturing = True
-                self.stream.wait_stream(self._compute())
+        if capturing:
+            # fork the copy stream into the capture before anything is queued on it
+            self.capturing = True
+            self.stream.wait_stream(self._compute())
+
+    def _note_begun(self) -> None:
+        prev_ref = getattr(_LAST_BEGUN, "pf", None)
+        prev = prev_ref() if prev_ref is not None else None
+        if prev is not None and prev is not self and getattr(prev, "armed", False):
+            # another prefetcher's forward between two of prev's: its carried copies would not be read next
+            prev.interleaved = True
+            if not getattr(prev, "active", False):
+                prev.drop_carried()
+        try:
+            _LAST_BEGUN.pf = weakref.ref(self)
+        except TypeError:
+            _LAST_BEGUN.pf = None
 
     def kick(self) -> None:
         """First block onload of a forward (streamed or resident): queue the first ``depth`` streamed groups."""
@@ -715,16 +837,30 @@ class GroupPrefetcher:
     def end(self) -> None:
         if not self.active:
             return
+        # carried copies stay for the next forward only after one that ran exactly the recorded order (or no block:
+        # a skipped step)
+        finished = bool(self.on_order and self.pos == len(self.order)) or not self.seen
         self.active = False
         self.on_order = False
         self.pending = False
         self._forget_disowned()
+        carried = getattr(self, "carried", None) or set()
+        keep = set(carried) if carried and finished and self.may_carry() else set()
+        if carried and not keep:
+            self.stats["carried_dropped"] = self.stats.get("carried_dropped", 0) + sum(
+                1 for gid in carried if gid in self.ready
+            )
+            carried.clear()
         for gid in list(self.ready):
+            if gid in keep:
+                continue
             group = self.by_id.get(gid)
             if group is not None:
                 self._release(group, self.ready.pop(gid))
-        self.ready.clear()
-        self.inflight_bytes = 0
+        for gid in list(self.ready):
+            if gid not in keep:
+                self.ready.pop(gid)
+        self.inflight_bytes = sum(self.nbytes.get(gid, 0) for gid in self.ready)
         if getattr(self, "capturing", False):
             self.capturing = False
             self._compute().wait_stream(
@@ -742,6 +878,8 @@ class GroupPrefetcher:
 
         self.active = self.on_order = self.pending = self.capturing = False
         self.ready.clear()
+        if getattr(self, "carried", None):
+            self.carried.clear()
         self.inflight_bytes = 0
         self._staging().clear()  # nothing is staged under capture; the synchronize below lands the rest
         self.staged_bytes = 0
@@ -1021,3 +1159,76 @@ def capture_refusal(module: Any) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001 - unknown layout: never capture it
         return f"offload layout unreadable ({type(exc).__name__})"
     return None
+
+
+def _pipe_prefetchers(pipe: Any) -> list:
+    out: list = []
+    seen: set = set()
+    comps = getattr(pipe, "components", None)
+    values = list(comps.values()) if isinstance(comps, dict) else [pipe]
+    for value in values:
+        pf = module_prefetcher(value) if value is not None else None
+        if pf is not None and id(pf) not in seen:
+            seen.add(id(pf))
+            out.append(pf)
+    return out
+
+
+def _disarm(pf: Any) -> None:
+    pf.armed = False
+    if not getattr(pf, "active", False):
+        pf.drop_carried()
+
+
+@contextmanager
+def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
+    """Arm cross-forward carry on ``pipe``'s prefetchers for one pipeline call; on exit nothing carried stays.
+
+    Not armed beside a ControlNet: it runs between two denoiser forwards with the carried copies still on the device.
+    """
+    comps = getattr(pipe, "components", None)
+    beside = isinstance(comps, dict) and any(
+        "controlnet" in str(name).lower() and value is not None for name, value in comps.items()
+    )
+    pfs = _pipe_prefetchers(pipe) if enabled and not beside and cross_forward_enabled() else []
+    if pfs:
+        _LAST_BEGUN.pf = None  # interleaving counts within this render only
+    for pf in pfs:
+        pf.interleaved = False
+        pf.armed = True
+    try:
+        yield pfs
+    finally:
+        for pf in pfs:
+            try:
+                _disarm(pf)
+            except Exception:  # noqa: BLE001 - leave the render's own error to surface
+                pass
+
+
+def cross_forward_step(
+    pipe: Any,
+    step_index: int,
+    total: Optional[int] = None,
+) -> None:
+    """From ``callback_on_step_end`` (after step ``step_index``): the last step carries nothing into the decode, nor
+    does an interrupted render or one whose step count is unknown."""
+    pfs = [
+        pf
+        for pf in _pipe_prefetchers(pipe)
+        if getattr(pf, "armed", False) or getattr(pf, "carried", None)
+    ]
+    if not pfs:
+        return
+    if total is None:
+        total = getattr(pipe, "_num_timesteps", None)
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+    stop = total is None or bool(getattr(pipe, "_interrupt", False))
+    for pf in pfs:
+        if stop or int(step_index) + 1 >= total:
+            _disarm(pf)
+        elif int(step_index) + 2 >= total:
+            pf.armed = False  # the last step reads what this one carried, and carries nothing on
