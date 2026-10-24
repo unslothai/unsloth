@@ -29,7 +29,12 @@ test("local reveal and delete go through the path-checked hub routes", () => {
 test("picker local rows reveal by path and offer delete only for deletable sources", () => {
   assert.match(PICKERS, /onReveal=\{\(\) => revealLocalModel\(m\.path, m\.id\)\}/);
   assert.match(PICKERS, /DELETABLE_LOCAL_SOURCES\.has\(m\.source\)\s*\?/);
-  assert.match(PICKERS, /onConfirm: \(\) => deleteLocalModel\(m\.path, m\.id\)/);
+  // Delete still takes path + id; the handler is async so a pinned custom-folder
+  // row can drop its pin after the file is gone.
+  assert.match(
+    PICKERS,
+    /onConfirm: async \(\) => \{\s*await deleteLocalModel\(m\.path, m\.id\);/,
+  );
 });
 
 test("hub rows and the on-device card act on non-cache rows by path", () => {
