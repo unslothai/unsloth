@@ -34,6 +34,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemInfoResponse,
   type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
@@ -1060,8 +1061,9 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
-      <InferenceEnginesSection />
-      <EngineVersionsSection />
+      <EngineVersionsSection>
+        <InferenceEnginesSection embedded={true} />
+      </EngineVersionsSection>
 
       <ModelMemorySection ref={modelMemoryRef} />
 
@@ -1180,40 +1182,70 @@ export function ResourcesTab() {
         showModelHints={false}
       />
 
-      <SettingsSection title={t("settings.resources.environment.title")}>
-        <InfoRow
-          label={t("settings.resources.environment.backend")}
-          value={hostReading(backendLabel)}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.python")}
-          value={systemInfo.python_version}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.torch")}
-          value={hostReading(
-            systemInfo.ml_packages.torch ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.transformers")}
-          value={hostReading(
-            systemInfo.ml_packages.transformers ??
-              t("settings.resources.environment.notInstalled"),
-          )}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.uptime")}
-          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
-        />
-        <InfoRow
-          label={t("settings.resources.environment.processMemory")}
-          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
-        />
-      </SettingsSection>
-
       {isOwner ? <DeveloperModeSection /> : null}
+
+      <EnvironmentSection
+        systemInfo={systemInfo}
+        backendLabel={backendLabel}
+      />
     </div>
+  );
+}
+
+/** Backend, Python and package versions. System passes its live reading; About reads its own. */
+export function EnvironmentSection({
+  systemInfo,
+  backendLabel,
+}: {
+  systemInfo: SystemInfoResponse;
+  backendLabel: string;
+}) {
+  const t = useT();
+  const unknownLabel = t("settings.resources.environment.unknown");
+  const hostReading = (value: string) =>
+    systemInfo.status !== "ready" ? unknownLabel : value;
+  return (
+    <SettingsSection title={t("settings.resources.environment.title")}>
+      <InfoRow
+        label={t("settings.resources.environment.backend")}
+        value={hostReading(backendLabel)}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.python")}
+        value={systemInfo.python_version}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.torch")}
+        value={hostReading(
+          systemInfo.ml_packages.torch ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.transformers")}
+        value={hostReading(
+          systemInfo.ml_packages.transformers ??
+            t("settings.resources.environment.notInstalled"),
+        )}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.uptime")}
+        value={hostReading(formatUptime(systemInfo.uptime_seconds))}
+      />
+      <InfoRow
+        label={t("settings.resources.environment.processMemory")}
+        value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
+      />
+    </SettingsSection>
+  );
+}
+
+export function StandaloneEnvironmentSection() {
+  const systemInfo = useSystemInfo();
+  return (
+    <EnvironmentSection
+      systemInfo={systemInfo}
+      backendLabel={(systemInfo.device_backend ?? "cpu").toUpperCase()}
+    />
   );
 }

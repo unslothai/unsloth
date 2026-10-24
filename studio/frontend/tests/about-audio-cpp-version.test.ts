@@ -17,7 +17,7 @@ test("the hardware details carry the audio.cpp version to the About tab", () => 
   );
   assert.match(
     read("features/settings/tabs/about-tab.tsx"),
-    /<EngineVersionsSection \/>/,
+    /<EngineVersionsSection>/,
   );
 });
 
