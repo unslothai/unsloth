@@ -467,13 +467,12 @@ H3_BLOCK_PIN_ENV = "UNSLOTH_H3_STREAM_BLOCK_PIN"
 
 
 def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int, int]:
-    """Give a lazily streamed denoiser's block groups a pinned host copy, group by group, while the pin budget holds.
+    """Pin a lazily streamed denoiser's block groups in place, group by group, while the pin budget holds.
 
-    The up-front plan prices a pin as extra host RAM, so a host short of 19.3 GB free (12 / 16 GB cards next to the
-    pinned conditioner) streams H3 with ``low_cpu_mem_usage``: every onload re-pins its block from pageable memory
-    behind a host sync, and the stream prefetch stays off. The arena copy re-points each weight at its slab, so the
-    pageable copy is freed as the pin goes. The budget is re-read before every group: a pageable copy that stays alive
-    stops the pin at the budget. Returns (groups pinned, block groups). ``UNSLOTH_H3_STREAM_BLOCK_PIN=0`` off."""
+    The up-front plan prices a pin as extra host RAM, so 12 / 16 GB hosts stream H3 lazily: every onload re-pins
+    behind a host sync and the stream prefetch stays off. The arena re-points each weight at its slab, freeing the
+    pageable copy; the budget is re-read per group, so a surviving pageable copy stops the pin.
+    Returns (groups pinned, block groups). ``UNSLOTH_H3_STREAM_BLOCK_PIN=0`` off."""
     if str(os.environ.get(H3_BLOCK_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return 0, 0
     _top, blocks = h3_offload_groups(transformer)
