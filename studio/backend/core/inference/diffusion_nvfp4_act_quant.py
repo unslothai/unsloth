@@ -128,9 +128,8 @@ _TAG_OFF = "0"
 def _set_compile_cache_tag(tag: str | None) -> None:
     """Key torch's FX/AOTAutograd caches on the quantiser: the Dynamo graph calls ``to_nvfp4`` by name, so untagged,
     a graph cached with the patch on is replayed with it off (the kill switch then still runs the kernel) and the
-    reverse. ``None`` removes our tag; other tags (e.g. the fp8 dispatcher's) are kept. An NVFP4 load always sets
-    an explicit ``1`` / ``0``: caches written before the tag existed carry none and may hold either quantiser, so an
-    untagged "off" would still replay a legacy graph that runs the kernel."""
+    reverse. ``None`` removes our tag; other tags are kept. NVFP4 loads always set ``1`` / ``0``: pre-tag caches are
+    untagged and may hold the patched graph, so an untagged "off" could replay the kernel."""
     try:
         import torch.compiler.config as _cc
     except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
@@ -339,7 +338,6 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
     global _ORIGINAL
     if not fast_act_quant_enabled():
         with _LOCK:
-            # Switched off after an earlier load installed it: put torchao's quantiser back so "0" is true.
             _restore_original_locked()
             _STATE["reason"] = f"{FAST_ACT_QUANT_ENV}=0"
             _set_compile_cache_tag(_TAG_OFF)
@@ -391,7 +389,6 @@ def uninstall_nvfp4_act_quant_patch() -> None:
 
 
 def reset_compile_cache_tag() -> None:
-    """Per load, before any quantiser is chosen: drop our tag so a non-NVFP4 load keeps the untagged key (its graphs
-    never call ``to_nvfp4``) instead of inheriting the last NVFP4 load's tag. An NVFP4 load sets it again."""
+    """Per load: a non-NVFP4 load keeps the untagged key instead of inheriting the last NVFP4 load's tag."""
     with _LOCK:
         _set_compile_cache_tag(None)

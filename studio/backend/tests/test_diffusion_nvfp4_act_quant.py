@@ -129,7 +129,6 @@ def test_failed_verification_tags_the_cache_off(monkeypatch):
     monkeypatch.setattr(aq, "_ORIGINAL", None)
     monkeypatch.delenv(aq.FAST_ACT_QUANT_ENV, raising = False)
     assert aq.install_nvfp4_act_quant_patch() is False
-    # Not "": a pre-tag cache is untagged and may hold a graph that runs the kernel.
     assert cc.cache_key_tag == "unsloth_nvfp4_act_quant=0"
 
 
@@ -175,11 +174,11 @@ def test_kill_switch_after_install_restores_torchao(monkeypatch):
 def test_per_load_reset_drops_the_tag_for_a_non_nvfp4_load(monkeypatch):
     cc, NVFP4Tensor = _isolated_tag_state(monkeypatch, "other=1")
     assert aq.install_nvfp4_act_quant_patch() is True
-    aq.reset_compile_cache_tag()  # next load is bf16 / fp8 / int8: keep its untagged key
+    aq.reset_compile_cache_tag()
     assert cc.cache_key_tag == "other=1"
     assert (
         aq.install_nvfp4_act_quant_patch() is True
-    )  # a later NVFP4 load re-tags, patch still live
+    )
     assert cc.cache_key_tag == "other=1;unsloth_nvfp4_act_quant=1"
 
 

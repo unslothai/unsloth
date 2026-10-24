@@ -8057,8 +8057,7 @@ class DiffusionBackend:
                 from .diffusion_nvfp4_install import record_install_reason
 
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
-                # The previous pipeline is gone: drop its NVFP4 quantiser cache tag so this load is keyed on its own
-                # quantiser (an NVFP4 load sets the tag again when it picks one).
+                # Drop the previous load's NVFP4 cache tag; an NVFP4 load sets it again.
                 try:
                     from .diffusion_nvfp4_act_quant import reset_compile_cache_tag
                     reset_compile_cache_tag()
