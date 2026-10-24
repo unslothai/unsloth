@@ -46,7 +46,7 @@ def _props(integrated: bool, arch: str = "") -> types.SimpleNamespace:
 def _forget_answers() -> None:
     try:
         from core.inference import host_pinning
-    except ImportError:  # the predicate does not exist yet: nothing cached
+    except ImportError:
         return
     host_pinning.reset_cache()
 
@@ -300,7 +300,7 @@ def test_video_frame_readback_is_pageable_on_an_integrated_gpu(monkeypatch, gpu,
     def empty(*args, **kwargs):
         asked.append(bool(kwargs.pop("pin_memory", False)))
         if len(asked) > 1 or not asked[0]:
-            raise _Stop  # the pageable buffer: the readback itself is not under test
+            raise _Stop
         return real_empty(*args, **kwargs)
 
     monkeypatch.setattr(torch, "empty", empty)
