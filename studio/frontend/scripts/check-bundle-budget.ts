@@ -421,9 +421,10 @@ export const BUDGET = {
   // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
   // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
   // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
-  // Re-added on top of main's #14181 budget at the a31803a76 merge.
-  transferBytes: 2_097_338,
-  rawBytes: 6_961_272,
+  // Merged with main at a31803a76 the head measures 6,798.0 KB raw / 2,043.3 KB transfer (Node 26, 99 chunks); set
+  // to that plus about 700 B raw / 300 B transfer for CI builds.
+  transferBytes: 2_092_700,
+  rawBytes: 6_961_900,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
