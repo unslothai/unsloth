@@ -75,7 +75,6 @@ export default function SaveForModelButton(deps: Deps) {
         type="button"
         variant="outline"
         size="sm"
-        className="w-full"
         onClick={() => {
           saveSamplingForCurrentModel(deps).catch((error: unknown) => {
             deps.notify.error(
