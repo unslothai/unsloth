@@ -3,6 +3,8 @@
 
 """Pydantic schemas for the external LLM providers API."""
 
+from __future__ import annotations
+
 import re
 from typing import Literal, Optional
 
