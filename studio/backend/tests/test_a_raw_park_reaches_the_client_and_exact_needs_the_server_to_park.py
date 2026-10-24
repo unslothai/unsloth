@@ -1412,7 +1412,9 @@ class TestParkingIsOffUntilTheLaunchAsksForIt:
         cmd, env, budget, parks, overridden = self._plan(self._ARGV, {}, pool = self._POOL)
         assert budget is None
         assert cmd == self._ARGV, "no --preempt-ram on the launch line"
-        assert env == {}, "and no LLAMA_ARG_PREEMPT_RAM in the child environment either"
+        # The zero is this build's own default from unslothai/llama.cpp#197 on; one from before
+        # it parks on an implicit 8192 MiB unless told otherwise.
+        assert env == {"LLAMA_ARG_PREEMPT_RAM": "0"}, "parking off in the child environment"
         assert parks is False
         assert overridden == []
 

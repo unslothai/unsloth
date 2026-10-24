@@ -3107,7 +3107,9 @@ def _stand_down_child_parking(
     budget named anywhere, it writes nothing at all: the server parks nothing unless it is told to
     (unslothai/llama.cpp#197), so a default install's child is left exactly as upstream ships it.
     ``probe_inconclusive`` (a ``--help`` that timed out or read as nothing) still writes the zero:
-    the binary may be a swap build from before #197, which parks on an implicit budget.
+    the binary may be a swap build from before #197, which parks on an implicit budget. So does a
+    probe that confirmed ``--preempt-ram``: that build may be from before #197 too, and the zero
+    is its default from #197 on.
     Returns the budgets it overrode, empty when the line named none, and None when the child keeps
     its parking."""
     if not _child_parking_stands_down(server_supports):
@@ -3133,7 +3135,12 @@ def _stand_down_child_parking(
             if attached.strip() != "0":
                 overridden.append(token)
             args[i] = token.split("=", 1)[0] + "=0"
-    if named_anywhere or probe_inconclusive or _preemption.preemption_enabled():
+    if (
+        named_anywhere
+        or probe_inconclusive
+        or server_supports is True
+        or _preemption.preemption_enabled()
+    ):
         env["LLAMA_ARG_PREEMPT_RAM"] = "0"
     return overridden
 
