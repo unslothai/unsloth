@@ -4,7 +4,6 @@
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { InfoHint } from "@/components/ui/info-hint";
-import { RAISED_SURFACE } from "@/features/library/surface";
 import {
   nativeAttachmentIntentToFile,
   registerNativeAttachmentPath,
@@ -78,7 +77,7 @@ export interface AudioSourceInputHandle {
   markExpired: () => void;
 }
 
-/** The Library header's tabs: no track, the active one a raised pill. Arrow keys move between them. */
+/** The Library header's tabs, flat: no track, the active one a grey pill. Arrow keys move between them. */
 function SourceTabs({
   tabs,
   value,
@@ -117,7 +116,7 @@ function SourceTabs({
           className={cn(
             "flex h-7 shrink-0 items-center rounded-full px-2.5 text-ui-12p5 text-foreground/80 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
             value === tab.value &&
-              cn(RAISED_SURFACE, "font-medium text-foreground"),
+              "bg-[color-mix(in_srgb,var(--foreground)_7%,var(--background))] font-medium text-foreground dark:bg-[color-mix(in_srgb,var(--card),white_8%)]",
           )}
         >
           {tab.label}
@@ -435,7 +434,7 @@ export function AudioSourceInput({
               disabled={disabled}
               onClick={() => fileRef.current?.click()}
               className={cn(
-                "flex min-h-[calc(72px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex min-h-[calc(72px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 dragging &&
                   "border-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)] bg-accent text-foreground",
               )}

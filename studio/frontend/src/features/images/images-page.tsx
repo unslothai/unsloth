@@ -7320,12 +7320,12 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 flex-wrap justify-end gap-2 px-4 pt-0.5 pb-3">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
               <Button
-                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 h-10 px-7 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -7335,7 +7335,7 @@ export function ImagesPage({
             ) : (
               <>
                 <Button variant="dark"
-                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  className="relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -7347,7 +7347,7 @@ export function ImagesPage({
                       {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
                       <span className="relative z-10 inline-flex">
                         <Button
-                          className="h-11 px-5"
+                          className="h-10 px-4 text-ui-13"
                           variant="secondary"
                           disabled={busy !== null || varyBlocked !== null}
                           onClick={handleVary}
@@ -7370,7 +7370,7 @@ export function ImagesPage({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-11 px-5"
+                        className="relative z-10 h-10 px-4 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}

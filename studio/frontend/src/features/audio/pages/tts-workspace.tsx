@@ -105,7 +105,7 @@ export function BlockerNote({
   const [first, ...rest] = blocker.actions ?? [];
   if (!first) {
     return (
-      <p id={id} className="text-right text-ui-11p5 leading-snug text-muted-foreground">
+      <p id={id} className="text-center text-ui-11p5 leading-snug text-muted-foreground">
         {blocker.reason}
       </p>
     );
@@ -113,7 +113,7 @@ export function BlockerNote({
   return (
     <p
       id={id}
-      className="flex flex-wrap items-center justify-end gap-x-1.5 text-ui-11p5 leading-snug text-muted-foreground"
+      className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-11p5 leading-snug text-muted-foreground"
     >
       <span className="sr-only">{blocker.reason}</span>
       <InfoHint>{blocker.reason}</InfoHint>
@@ -136,7 +136,7 @@ export function BlockerNote({
               or a suggestion
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="center">
             {rest.map((action) => (
               <DropdownMenuItem key={action.label} onSelect={action.onClick}>
                 {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
@@ -409,7 +409,7 @@ export function TtsFooter({
           <output
             aria-live="polite"
             aria-atomic="true"
-            className="text-right text-ui-12 text-muted-foreground"
+            className="text-center text-ui-12 text-muted-foreground"
           >
             {generationPresentation.status}
             {elapsedSeconds !== null ? (
@@ -426,15 +426,15 @@ export function TtsFooter({
         </>
       ) : null}
       {loadNote && !generationPresentation ? (
-        <p className="text-right text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
           {loadNote}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
             generationPresentation && "hover:bg-muted dark:hover:bg-muted",
           )}
@@ -479,7 +479,7 @@ export function TtsFooter({
       ) : error && !generationPresentation ? (
         <p
           role="alert"
-          className="text-right text-ui-11p5 leading-snug text-destructive"
+          className="text-center text-ui-11p5 leading-snug text-destructive"
         >
           {error.reason}
           <GenerateActions actions={error.actions} />

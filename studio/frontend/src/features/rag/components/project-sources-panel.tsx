@@ -221,7 +221,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
-            {addFolderButton}
           </div>
           <p className="text-ui-11 text-muted-foreground">
             {isTauri ? "Or drop files here" : "Or drop files or a folder here"}
