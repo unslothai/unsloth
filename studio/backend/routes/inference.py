@@ -7834,17 +7834,15 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a GGUF generator step: ``: prefill-progress`` / ``: keep-alive`` after ``first_timeout`` and
-    every stall interval after, and for a live signal new ``generation_progress`` frames every
-    ``_LIVE_PROGRESS_POLL_S`` and once the step is done. Never cancels ``next_task``: the caller's finally drains it."""
+    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
     while True:
         poll = min(timeout - waited, _LIVE_PROGRESS_POLL_S) if signal.live else timeout
         done_tasks, _ = await asyncio.wait({next_task}, timeout = poll)
         if done_tasks:
-            # Steps faster than the poll, including ones whose text is all stripped markup, are the only
-            # chance to send what they recorded: a pending prefill sample, then decode figures.
+            # Steps faster than the poll get their pending prefill sample, then decode figures, sent here.
             for _ in range(2):
                 frame = signal.live_frame()
                 if frame is not None:

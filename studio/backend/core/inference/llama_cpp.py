@@ -1081,16 +1081,10 @@ def _host_buffer(name: str) -> bool:
 def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     """Where llama.cpp put the main model's weights, from its startup log.
 
-    ``gpu_mib`` / ``host_mib`` sum the buffer lines after the main model's "offloaded N/M layers"
-    line (largest M; a drafter logs its own block after). llama.cpp still logs "offloaded 31/31" when
-    seven layers keep expert weights in RAM, so ``overflow_layers`` comes from --fit's final per-device
-    lines: after a dense-only fill every GPU layer holds dense weights only, and an extra partial layer
-    on any device but the last overflows to the next GPU, not RAM. --fit puts a device's partial layers
-    at the end of its range, and the last device's range ends at the output layer, whose overflow
-    pattern matches no tensor, so its count includes one layer that keeps everything on the GPU (a
-    3090 gemma-4-26B load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host).
-    None when --fit did not run. ``expert_cache_mib`` marks the --moe-cache-mib auto
-    path, where every routed expert is in RAM and --fit prints no per-device line."""
+    ``gpu_mib`` / ``host_mib`` sum the main model's buffer block (largest M; the drafter's comes after).
+    "offloaded 31/31" hides an expert spill, so ``overflow_layers`` comes from --fit's final per-device
+    lines; the last device's count includes the output layer, which spills nothing (a 3090 gemma-4-26B
+    load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit."""
     blocks: list[list] = []
     current: Optional[list] = None
     # A build without GPU offload logs no "offloaded N/M layers" line, only the buffers: each run of them is a block.
@@ -9488,12 +9482,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
-        """File-backed resident bytes of ``pid`` (``RssFile``) from /proc/<pid>/status (Linux): what a
-        memory-mapped load pages in. Allocations (``RssAnon``, ``RssShmem``) are left out: under
-        ``--load-mode none`` CUDA pins the host buffer for the weights kept in RAM (``CUDA_Host``)
-        before a byte of them is read, and ``rchar`` already counts what is read into it.
-        ``VmRSS`` on a kernel without that split (before 4.5). 0 when the status has neither
-        (zombie / kernel thread); None where /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        """``RssFile`` of ``pid`` (Linux), ``VmRSS`` before kernel 4.5; 0 when neither, None without /proc.
+        Not ``RssAnon``: CUDA pins the host weight buffer (``CUDA_Host``) before a byte of it is read."""
         vm_rss = None
         try:
             with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
@@ -9579,10 +9569,8 @@ class LlamaCppBackend:
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
-        ``bytes_loaded`` is the larger of the bytes read (``_read_load_bytes``) and Linux file-backed
-        RSS, which is what a memory-mapped load pages in. Neither counts buffers llama.cpp allocates
-        before reading a byte, which is why Windows skips its working set. The total is the shards plus a projector or draft
-        model named on the command line.
+        ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
+        which counts buffers allocated before any read. The total includes projector, drafter and adapters.
 
         Shape::
 
