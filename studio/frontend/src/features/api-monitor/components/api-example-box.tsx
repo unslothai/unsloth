@@ -8,7 +8,6 @@ import {
   useExampleOs,
 } from "@/features/settings/components/api-example-parts";
 import { useSettingsPanelPrefsStore } from "@/features/settings/stores/settings-panel-prefs-store";
-import { useState } from "react";
 import {
   API_EXAMPLE_LANGUAGES,
   type ApiExampleLanguage,
@@ -29,16 +28,15 @@ export function useApiExampleChoices(
   baseUrl: string,
   fallback: ApiExampleLanguage,
 ): ApiExampleChoices {
-  const [os, setOs] = useExampleOs(baseUrl);
+  // Read from the store on every render, not copied at mount: the API page keeps the quick start and the
+  // (closed) example dialog mounted together, and a pick in one must show in the other.
+  const [detectedOs, setOs] = useExampleOs(baseUrl);
+  const storedOs = useSettingsPanelPrefsStore((s) => s.apiExampleOs);
+  const os = storedOs ?? detectedOs;
+  const storedLang = useSettingsPanelPrefsStore((s) => s.apiExampleLang);
   const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
-  const [language, setPicked] = useState<ApiExampleLanguage>(() =>
-    apiExampleLanguage(
-      useSettingsPanelPrefsStore.getState().apiExampleLang,
-      fallback,
-    ),
-  );
+  const language = apiExampleLanguage(storedLang, fallback);
   const setLanguage = (next: ApiExampleLanguage) => {
-    setPicked(next);
     // Swap only the language, so the settings tab keeps its request kind (e.g. "pythonTools").
     const stored = useSettingsPanelPrefsStore.getState().apiExampleLang;
     setStoredLang(

@@ -83,3 +83,15 @@ test("the stored settings pick names the language", () => {
   assert.equal(apiExampleLanguage(null, "python"), "python");
   assert.equal(apiExampleLanguage("ruby", "curl"), "curl");
 });
+
+test("every example box follows the stored language and platform, not a copy taken at mount", async () => {
+  const { readFileSync } = await import("node:fs");
+  const box = readFileSync(
+    new URL("../src/features/api-monitor/components/api-example-box.tsx", import.meta.url),
+    "utf8",
+  );
+  // The quick start and the closed dialog are mounted together; local state would let them drift apart.
+  assert.doesNotMatch(box, /useState/);
+  assert.match(box, /useSettingsPanelPrefsStore\(\(s\) => s\.apiExampleLang\)/);
+  assert.match(box, /useSettingsPanelPrefsStore\(\(s\) => s\.apiExampleOs\)/);
+});
