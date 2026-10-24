@@ -967,6 +967,10 @@ def install_encoder_prefetch(
 
         if _env(GROUP_OFFLOAD_PIN_ENV) in ("0", "off", "false", "no"):
             return 0  # the ring is pinned memory: the user's "pin nothing" override wins
+        from .host_pinning import host_pinning_allowed
+
+        if not host_pinning_allowed(device):
+            return 0  # integrated GPU: pinned memory only takes RAM from the GPU
 
         groups = [
             g

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.datastructures import UploadFile
 
@@ -59,6 +60,8 @@ from models.inference import (
     GalleryProjectRequest,
     GalleryProjectResponse,
     GalleryVideo,
+    MediaUnloadOutcome,
+    MediaUnloadRequest,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
     VideoGenerateRequest,
@@ -70,7 +73,9 @@ from models.inference import (
     VideoJobListResponse,
     VideoLoadProgressResponse,
     VideoLoadRequest,
+    VideoLoadUnloadedResponse,
     VideoStatusResponse,
+    VideoUnloadResponse,
 )
 from utils.account_context import current_account_id, is_owner_context
 from utils.api_errors import openai_error_body
@@ -262,6 +267,9 @@ async def video_download_plan(
         raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
+_VIDEO_LOAD_CANCELLED = "Video load was cancelled."
+
+
 @router.post("/video/load", response_model = VideoStatusResponse)
 @account_access.gpu_busy_route
 async def load_video_model(
@@ -277,8 +285,11 @@ async def load_video_model(
         redact_host_paths,
         restore_inventory_handles,
     )
+    from core.inference.chat_swap_kv import preparing_load
+
     try:
-        loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
+        with preparing_load("video", request.load_token):
+            loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers below, and the inner loader redacted only
         # native paths, which do not know inventory handles.
@@ -360,8 +371,12 @@ async def load_video_model_gated(
     )
     from utils.native_path_leases import redact_native_paths
 
+    from core.inference import media_load_ids
+
     backend = get_video_backend()
     try:
+        # A load an unload already cancelled by its token starts nothing (checked again at admission).
+        media_load_ids.refuse_cancelled("video", request.load_token)
         # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises
         # here, so a 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
@@ -438,8 +453,9 @@ async def load_video_model_gated(
             for _ref in _media_repos_to_record:
                 _note_load_fetched_with_a_request_token(_ref, request.hf_token)
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates
-            # network-free.
-            return backend.begin_load(
+            # network-free. Recorded with its token, so an unload can name this load.
+            prior = media_load_ids.admitting("video", backend, request.load_token)
+            started = backend.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
@@ -464,9 +480,26 @@ async def load_video_model_gated(
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
             )
+            media_load_ids.admitted("video", backend, request.load_token, prior)
+            return started
+
+        from core.inference.chat_swap_kv import (
+            preparing_load_token,
+            raise_if_load_cancelled,
+            run_unless_load_cancelled,
+        )
+
+        preflight = preparing_load_token()
 
         def _begin_load():
-            return account_access.admit_media_load("video", _start_load, request.model_path)
+            # Checked under the preflight lock through admission, so a cancel lands before or after it.
+            return run_unless_load_cancelled(
+                _VIDEO_LOAD_CANCELLED,
+                account_access.admit_media_load,
+                "video",
+                _start_load,
+                request.model_path,
+            )
 
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
@@ -495,7 +528,10 @@ async def load_video_model_gated(
                 if multi_model_mode == "always":
                     raise refusal_for(image_slots, "image")
                 note_evictions(image_slots, evicted)
-                await asyncio.to_thread(images.unload)
+                # A load an unload cancelled never unloads the image model.
+                await asyncio.to_thread(
+                    run_unless_load_cancelled, _VIDEO_LOAD_CANCELLED, images.unload
+                )
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
         # worker tears the old model down and releases it.
         forced_cpu = (
@@ -517,20 +553,40 @@ async def load_video_model_gated(
             )
 
             def _acquire_and_begin():
+                raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+                admitted = []
+
+                def _admit():
+                    # Under the arbiter lock, before anything is evicted; the preflight lock is held
+                    # until the load registers, so a cancel never lands between the two.
+                    if preflight is None:
+                        return
+                    preflight.lock.acquire()
+                    admitted.append(True)
+                    raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+
                 token = eviction_sink.set(evicted)
                 try:
                     with _diffusion_training_admission():
                         return acquire_for_request(
                             VIDEO,
                             guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
+                            admit = _admit,
                             **fit_kwargs,
                         )
                 finally:
+                    if admitted:
+                        preflight.lock.release()
                     eviction_sink.reset(token)
 
             from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 
             swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
+            try:
+                raise_if_load_cancelled(_VIDEO_LOAD_CANCELLED)
+            except BaseException:
+                swap.close()
+                raise
             status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
@@ -903,8 +959,13 @@ async def video_status(
     from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
+    from core.inference import media_load_ids
+
     backend = get_video_backend()
-    status_dict = await asyncio.to_thread(backend.status)
+    # With the load id of the same state, so an unload can name exactly what this answer shows.
+    status_dict, load_id, resident_load_id = await asyncio.to_thread(
+        media_load_ids.snapshot_ids, "video", backend, backend.status
+    )
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Step-skip counters trace a clip as it runs, which generate-progress hides from other accounts:
@@ -920,28 +981,59 @@ async def video_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
+    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
-@router.post("/video/unload", response_model = VideoStatusResponse)
+@router.post("/video/unload", response_model = VideoUnloadResponse)
 @account_access.gpu_busy_route
 async def unload_video_model(
+    request: Optional[MediaUnloadRequest] = None,
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    account_access.require_resident_control("video")
     from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
+    expected_load_id = request.expected_load_id if request is not None else None
+    if not expected_load_id:
+        account_access.require_resident_control("video")
     backend = get_video_backend()
-    if account_access.managed_account():
+    if not expected_load_id and account_access.managed_account():
         account_access.require_resident_control("video", backend.status().get("repo_id"))
     unload_kwargs = {}
     if account_access.account_scope() is not None:
         unload_kwargs["expected_account"] = current_account_id()
-    status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
+    if expected_load_id:
+        from core.inference import media_load_ids
+        from core.inference.chat_swap_kv import cancel_preparing_loads
+
+        # The POST carrying this token, if it is still in preflight: stopped (or registered, which
+        # the check below then names) before any eviction it would run.
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "video",
+            current_account_id(),
+            load_token = expected_load_id,
+        )
+
+        def unload(only_if):
+            account_access.require_resident_control("video")
+            if account_access.managed_account():
+                account_access.require_resident_control("video", backend.status().get("repo_id"))
+            return backend.unload(**unload_kwargs, only_if = only_if)
+
+        # Only the load that token started, checked and unloaded under the admission lock; any other
+        # load (a newer one, the UI's, another account's) is left alone and not described.
+        outcome, status_dict = await asyncio.to_thread(
+            media_load_ids.unload_if_current, "video", backend, expected_load_id, unload
+        )
+        if outcome != "unloaded":
+            return MediaUnloadOutcome(unloaded = False, outcome = outcome)
+    else:
+        status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
     # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
     # (release_if). Mirrors images.
     await asyncio.to_thread(
@@ -952,10 +1044,15 @@ async def unload_video_model(
     # An unload answers with the state it left behind, which still names the model it dropped.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
-    return redact_host_paths(
+    answer = redact_host_paths(
         restore_inventory_handles(VideoStatusResponse(**status_dict)),
         via_api_key = via_api_key,
     )
+    if expected_load_id:
+        return VideoLoadUnloadedResponse(
+            **jsonable_encoder(answer), unloaded = True, outcome = "unloaded"
+        )
+    return answer
 
 
 @router.get("/video/gallery", response_model = VideoGalleryListResponse)
