@@ -447,10 +447,10 @@ export function RewardsSection(): ReactElement {
         prompt,
         systemPrompt,
       );
+      if (request !== previewRequest.current) return;
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
       );
-      if (request !== previewRequest.current) return;
       setPreviewTotal(res.total);
       setIsolation(res.isolation);
       setPreviewError(null);
