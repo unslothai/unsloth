@@ -1204,7 +1204,7 @@ class FlowEngine:
         running_ids = set(running.values())
         # A pending step on "use the loaded model" runs on whatever is loaded, and a load into any slot may evict
         # it: load nothing early until it has run.
-        if any(plan.specs[n]["lane"] == "gpu" and not self._model_of(plan, n)[1] for n in pending):
+        if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
         for nid in plan.order:
             if nid not in pending or plan.specs[nid]["lane"] != "gpu":
@@ -1342,6 +1342,20 @@ class FlowEngine:
                         "message": f"Unloaded {name}: the run that loaded it ended",
                     },
                 )
+
+    @classmethod
+    def _uses_loaded(cls, plan: Plan, nid: str) -> bool:
+        """True when the step runs on whatever model is loaded: no model picked, or an Agent given an image with no
+        vision model picked."""
+        if not cls._model_of(plan, nid)[1]:
+            return True
+        params = plan.nodes[nid].get("params") or {}
+        vision = params.get("vision_model")
+        return (
+            plan.nodes[nid].get("type") == "llm.agent"
+            and "image" in plan.inputs.get(nid, {})
+            and not (isinstance(vision, dict) and vision.get("repo"))
+        )
 
     @staticmethod
     def _model_of(plan: Plan, nid: str) -> tuple[str, str]:

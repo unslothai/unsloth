@@ -571,3 +571,52 @@ async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_mod
     rs = await _run(eng, d)
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     assert seen["loaded"] == ["m1"]
+
+
+@run_async
+async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_loads(studio):
+    async def image(ctx):
+        return {"image": {"kind": "image", "url": "/x.png"}}
+
+    seen = {}
+
+    async def agent(ctx):
+        seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+        return {"text": "seen"}
+
+    async def template(ctx):
+        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
+        return {"text": "t"}
+
+    eng = _engine(
+        {
+            "input.text": _text,
+            "llm.generate": _gen,
+            "text.template": template,
+            "llm.agent": agent,
+            "input.image": image,
+        }
+    )
+    d = doc(
+        [
+            node("a", "input.text", value = "agent-vision"),
+            node("pic", "input.image"),
+            node("g1", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m1"}),
+            node("t1", "text.template", template = "{}"),
+            node("t2", "text.template", template = "{}"),
+            node("ag", "llm.agent", model = {"repo": "chat-m"}),
+            node("g2", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m2"}),
+        ],
+        [
+            edge("a", "text", "g1", "prompt"),
+            edge("g1", "text", "t1", "values"),
+            edge("g1", "text", "t2", "values"),
+            edge("t1", "text", "ag", "prompt"),
+            edge("pic", "image", "ag", "image"),
+            edge("t2", "text", "g2", "prompt"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
+    # The Agent sees its picture with the vision model already loaded (m1): nothing may replace it first.
+    assert seen["ag"] == ["m1"]
