@@ -484,8 +484,6 @@ def _fake_group_offload(monkeypatch, with_stream_kwargs = True):
 
 
 def test_streamed_controlnet_uses_the_event_fenced_prefetcher_on_cuda(monkeypatch):
-    # Without record_stream diffusers synchronizes the compute stream on every group offload, and its prefetch chain
-    # waits on the copy stream from the host: the ControlNet streams like the denoiser instead.
     from core.inference import diffusion as d
 
     calls = _fake_group_offload(monkeypatch)
@@ -518,7 +516,6 @@ def test_streamed_controlnet_falls_back_to_no_copy_back_when_the_top_group_canno
 def test_controlnet_offload_unchanged_without_a_cuda_stream_path(
     monkeypatch, device, with_stream_kwargs
 ):
-    # Off CUDA, or on a diffusers without record_stream / non_blocking: the plain group offload, no prefetcher.
     from core.inference import diffusion as d
 
     calls = _fake_group_offload(monkeypatch, with_stream_kwargs)

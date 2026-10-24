@@ -14724,9 +14724,8 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
     to this single module, so it is isolated and reversible. Returns True on success; on any
     failure the caller falls back to a resident placement (a calibrated tier refuses instead).
 
-    On CUDA the groups stream the way the denoiser's do: async copies with ``record_stream`` (without it diffusers
-    synchronizes the compute stream on every group offload), the top-level group from a pinned copy, and the
-    event-fenced ``GroupPrefetcher`` driving the onloads instead of diffusers' host-synced prefetch chain."""
+    On CUDA: ``record_stream`` (without it diffusers synchronizes the compute stream on every group offload),
+    and the event-fenced ``GroupPrefetcher`` replaces diffusers' host-synced prefetch chain."""
     try:
         import inspect
 
