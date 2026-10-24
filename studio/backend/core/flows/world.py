@@ -503,27 +503,28 @@ def npc_prompt(
     )
     item_list = ", ".join("{} (id {})".format(i["name"], i["id"]) for i in items.values())
     quest_list = "\n".join(q_lines)
-    prompt = (
+    head = (
         f"Your quests:\n{quest_list or '- none'}\n"
         f"World items: {item_list or 'none'}\n"
         f"Player ({(world.get('player') or {}).get('name', 'Player')}) carries: {', '.join(inv) or 'nothing'}\n"
         f"Variables: {state.get('vars') or {}}\n"
         f"Conversation so far:\n{convo or '(just met)'}\n"
-        f"Player: {str(state.get('player_message') or '')[:600]}\n"
-        f"{npc['name']}:"
     )
+    turn = f"Player: {str(state.get('player_message') or '')[:600]}\n{npc['name']}:"
     if memories is None:
-        return system, prompt
+        return system, head + turn
     system += (
         f"\n{npc_life(world, npc)}"
         "`remember` lists 1-2 short notes, written as you, worth keeping from this exchange, each with an "
         "importance from 1 (mundane) to 10 (life changing)."
     )
-    prompt = (
-        f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n{memory_lines(memories)}\n"
-        + prompt
+    # The clock and the recalled memories change every turn: they go after the conversation, so llama-server
+    # reuses the cached prefix (persona, quests, items, earlier turns) instead of re-reading all of it.
+    return system, (
+        head
+        + f"It is {clock_text(state.get('clock'))}.\nWhat you remember:\n{memory_lines(memories)}\n"
+        + turn
     )
-    return system, prompt
 
 
 def plan_prompt(world: dict, npc: dict, memories: list[dict], day: int) -> tuple[str, str]:
