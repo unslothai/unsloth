@@ -2603,7 +2603,7 @@ def load_prequantized_transformer(
             )
         return transformer
     except PrequantIntoError:
-        # Partly assigned: a dense-quantise fallback on this module would mix two builds, so the caller must fail.
+        # Partly assigned: falling back would mix two builds.
         raise
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
         _warn(logger, f"{scheme}:{source.kind}", exc)

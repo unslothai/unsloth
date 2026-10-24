@@ -1433,7 +1433,6 @@ def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
     assert "source = _base_local_dir or fetch_base," in call
 
 
-# ------------------------------------------------------------------------------------------------ pipeline read-back
 def _pipeline_read(D, pipe, fam, base, scheme, **kw):
     target = types.SimpleNamespace(dtype = torch.bfloat16, device = "cpu")
     return D.DiffusionBackend._pipeline_quant_from_cache(

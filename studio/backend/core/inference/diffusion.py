@@ -11256,13 +11256,9 @@ class DiffusionBackend:
         source_base: Optional[str],
         hf_token: Optional[str],
     ) -> Optional[str]:
-        """Load the dense pipeline ``transformer``'s earlier int8/fp8 build in place from this machine's prequant cache
-        (what ``_save_pipeline_quant_to_cache`` wrote: bit-identical to a fresh quantize, keyed on the source shards,
-        the quant recipe and the torch / torchao minors). Returns the scheme, or None with the module still dense.
-        Raises only when a load failed after it began replacing weights.
-
-        A hosted checkpoint is deliberately NOT read here: the published FLUX.2-klein-4B INT8 renders different pixels
-        from this build's quantize, so serving it would change a pipeline load's output."""
+        """Load the transformer's int8/fp8 build in place from the local prequant cache. Returns the scheme, or None
+        with the module still dense; raises only if loading failed after weights were replaced. Hosted checkpoints
+        are not read: the published FLUX.2-klein-4B INT8 renders different pixels than a local quantize."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             transformer = getattr(pipe, "transformer", None)
@@ -11302,7 +11298,6 @@ class DiffusionBackend:
                 cache_dir = hub_cache_dir(),
                 local_files_only = True,
                 logger = logger,
-                # Where the dense weights already are: the plan places the module after this, as after a quantize.
                 placement_device = here,
                 family = family,
                 into = transformer,
@@ -11310,7 +11305,7 @@ class DiffusionBackend:
             if loaded is None:
                 if transformer_is_quantised(transformer):
                     raise PrequantIntoError("the cached build was partly applied and then failed")
-                # Unusable here (digest, recipe or forced fast-accum mismatch): quantize fresh, as before.
+                # Digest, recipe or fast-accum mismatch: quantize fresh.
                 return None
             note_hit(cached, logger)
             logger.info(
