@@ -5604,6 +5604,7 @@ class DiffusionBackend:
             # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte
             # already on disk.
             # Where diffusers' own "Couldn't connect" fallback lands, minus its untimed revision / model_info calls.
+            forced_offline = False
             if not local_files_only and _pick_cached_while_hub_unreachable(
                 fam, kind, kwargs["repo_id"], kwargs.get("gguf_filename"), base, fetch_base
             ):
@@ -5612,22 +5613,42 @@ class DiffusionBackend:
                     "from the cache",
                     kwargs["repo_id"],
                 )
-                local_files_only = True
-                kwargs["local_files_only"] = True
-            kwargs["_base_local_dir"] = (
-                self._prefetch_files(
-                    kwargs["repo_id"],
-                    kwargs.get("gguf_filename"),
-                    base,
-                    base_files,
-                    kwargs.get("hf_token"),
-                    cancel_event = cancel_event,
-                    fetch_base = fetch_base,
-                    local_files_only = local_files_only,
+                forced_offline = True
+
+            def _prefetch_and_load(offline: bool) -> None:
+                kwargs["local_files_only"] = offline
+                kwargs["_base_local_dir"] = (
+                    self._prefetch_files(
+                        kwargs["repo_id"],
+                        kwargs.get("gguf_filename"),
+                        base,
+                        base_files,
+                        kwargs.get("hf_token"),
+                        cancel_event = cancel_event,
+                        fetch_base = fetch_base,
+                        local_files_only = offline,
+                    )
+                    or base_snapshot
                 )
-                or base_snapshot
-            )
-            self.load_pipeline(**kwargs)
+                self.load_pipeline(**kwargs)
+
+            try:
+                _prefetch_and_load(local_files_only or forced_offline)
+            except OSError as exc:
+                # Only the manifest is checked up front: a cache missing shards / component files (an interrupted
+                # download) gets the online load the caller asked for, not a hard offline miss.
+                if (
+                    not forced_offline
+                    or self._load_token != token
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    raise
+                logger.info(
+                    "diffusion.hub_unreachable: %s is not fully cached (%s); retrying online",
+                    kwargs["repo_id"],
+                    exc,
+                )
+                _prefetch_and_load(False)
             with self._load_cancel_lock:
                 # Only clear the marker if this load is still current (a superseder has its own token).
                 if self._load_token == token:
