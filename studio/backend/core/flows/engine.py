@@ -1202,6 +1202,7 @@ class FlowEngine:
             return
         plan = rs.plan
         running_ids = set(running.values())
+        owners = {o for o in plan.owner.values() if o is not None}
         # A pending step on "use the loaded model" runs on whatever is loaded, and a load into any slot may evict
         # it: load nothing early until it has run.
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
@@ -1228,11 +1229,13 @@ class FlowEngine:
                 for src in plan.waits.get(nid, ())
                 if src in plan.executable and not env.has(src)
             }
-            # Only one hop away: everything it still waits on is a CPU step already running, never a branch.
+            # Only one hop away: everything it still waits on is a CPU step already running, never a branch or a
+            # For Each / group whose body may run GPU steps on the loaded model.
             if not unmet or not all(
                 src in running_ids
                 and plan.specs[src]["lane"] != "gpu"
                 and plan.specs[src]["type"] not in BRANCH_TYPES
+                and src not in owners
                 for src in unmet
             ):
                 continue

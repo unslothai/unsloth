@@ -620,3 +620,39 @@ async def test_an_agent_seeing_an_image_on_the_loaded_vision_model_blocks_early_
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     # The Agent sees its picture with the vision model already loaded (m1): nothing may replace it first.
     assert seen["ag"] == ["m1"]
+
+
+@run_async
+async def test_no_early_load_while_a_for_each_body_runs_on_the_loaded_model(studio):
+    studio["slots"]["llm"] = ["m1"]
+    seen = []
+
+    async def items(ctx):
+        return {"items": ["a", "b", "c"]}
+
+    async def gen(ctx):
+        if not (ctx.params.get("model") or {}).get("repo"):
+            await asyncio.sleep(0.3)
+            seen.append(list(studio["slots"].get("llm") or []))
+            return {"text": "loaded"}
+        return await _gen(ctx)
+
+    eng = _engine({"input.list": items, "llm.generate": gen})
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each"),
+            node("body", "llm.generate", prompt = "{{prompt}}", model = {}, group = "fe"),
+            node("g2", "llm.generate", prompt = "sum up", model = {"repo": "m2"}),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "body", "prompt"),
+            edge("body", "text", "fe", "collect"),
+            edge("fe", "results", "g2", "context"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
+    # Every iteration ran on m1: nothing loaded m2 while the loop was still running.
+    assert seen == [["m1"]] * 3
