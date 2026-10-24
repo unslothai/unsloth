@@ -248,8 +248,7 @@ def cfg_batch_decline(
 
 
 def _usable_free_mib(device: Any) -> Optional[int]:
-    """Driver free plus this process's reusable reserved-but-unallocated cache on ``device`` (CUDA graph pools
-    excluded), less what the user's VRAM Budget keeps free (0 at the default)."""
+    """Driver free plus reusable cache (graph pools excluded) on ``device``, less the VRAM Budget reserve."""
     torch = _torch()
     try:
         from .diffusion_memory import _user_budget_reserve_mib, cuda_reusable_cache_bytes

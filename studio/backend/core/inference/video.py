@@ -2896,7 +2896,6 @@ def _h3_residency_budget_bytes(
         free = _h3_signed_free_device_bytes(device)
         if free is None:
             return 0
-        # only cache an ordinary allocation can reuse: CUDA graph pool free blocks are not
         cached = cuda_reusable_cache_bytes(device)
         available = int(free) + cached + int(residency.resident_bytes())
         te_gb = (

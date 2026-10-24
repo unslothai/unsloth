@@ -499,7 +499,7 @@ def fit_for_request(
         if dev.type != "cuda":
             return None
         free, total = torch.cuda.mem_get_info(dev)
-        unused = cuda_reusable_cache_bytes(dev)  # CUDA graph pool free blocks excluded
+        unused = cuda_reusable_cache_bytes(dev)
         current = resident_mib(module)
         # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
         module._unsloth_video_pending = None
