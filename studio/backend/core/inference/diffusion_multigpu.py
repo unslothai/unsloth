@@ -3004,15 +3004,13 @@ class CfgParallelRouter:
         return mirror
 
     def _secondary_free_total_mib(self) -> tuple[Optional[int], Optional[int]]:
-        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks."""
+        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks, less any CUDA
+        graph pool on that card (another pipeline's), which only its graphs may reuse."""
         free, total = _free_total_mib(self.secondary.index)
         if free is not None:
             with contextlib.suppress(Exception):
-                torch = _torch()
-                free += (
-                    torch.cuda.memory_reserved(self.secondary)
-                    - torch.cuda.memory_allocated(self.secondary)
-                ) // (1 << 20)
+                from .diffusion_memory import cuda_reusable_cache_bytes
+                free += cuda_reusable_cache_bytes(self.secondary) // (1 << 20)
         return free, total
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:

@@ -738,3 +738,41 @@ def test_backend_entry_points_run_under_their_budget_scope():
             assert (owner, True) in _scopes(getattr(cls, name)), (cls.__name__, name)
         for name in gens:
             assert (owner, False) in _scopes(getattr(cls, name)), (cls.__name__, name)
+
+
+def test_denoiser_hold_fit_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_multistage as MS
+
+    param = types.SimpleNamespace(device = torch.device("cuda", 0))
+    dit = types.SimpleNamespace(parameters = lambda: iter([param]))
+    monkeypatch.setattr(MS, "_denoisers", lambda pipe: [dit])
+    monkeypatch.setattr(MS, "HOLD_MARGIN_BYTES", 1200 * 2**20)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (1000 * 2**20, 24 * GiB << 20))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    # 1000 free + 100 reusable cached = 1100 MiB, under the 1200 MiB need; crediting the 500 graph-held made it 1600.
+    assert MS.companions_fit_beside_denoiser(object(), ()) is False
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    assert MS.companions_fit_beside_denoiser(object(), ()) is True  # no graph pool: unchanged
+
+
+def test_cfg_replica_free_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_multigpu as mg
+
+    seen = []
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (1000, 24 * GiB))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(
+        dm, "_graph_held_cache_bytes", lambda device = None: seen.append(device) or 500 * 2**20
+    )
+    router = types.SimpleNamespace(secondary = torch.device("cuda", 1))
+    assert mg.CfgParallelRouter._secondary_free_total_mib(router) == (1100, 24 * GiB)
+    assert seen == [1]  # the replica card's pools, not the primary's
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    assert mg.CfgParallelRouter._secondary_free_total_mib(router) == (1600, 24 * GiB)
