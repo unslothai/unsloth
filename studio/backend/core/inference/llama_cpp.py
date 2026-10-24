@@ -12197,6 +12197,10 @@ class LlamaCppBackend:
             spec = _get_parent_visible_gpu_spec()
         except Exception:
             return None
+        if spec.get("index_kind") == "cuda_device":
+            # R570+ MIG ids are CUDA devices: they do not name physical cards. The MIG paths pin
+            # through the snapshot instead.
+            return None
         return spec["numeric_ids"] if spec.get("raw") == cvd.strip() else None
 
     @staticmethod
@@ -12343,6 +12347,19 @@ class LlamaCppBackend:
         sort. The visible set itself never changes. No mask, an empty mask, or a
         UUID/MIG mask (which resolves to None) is left alone -- the multi-GPU
         controls are hidden for the latter."""
+        mig_rows = LlamaCppBackend._mig_snapshot_rows()
+        if mig_rows is not None:
+            # R570+ MIG: the UI's split is in CUDA device order. Pin those exact UUIDs, never
+            # numeric ids, which the child would resolve against the whole host.
+            from utils.hardware import mig
+
+            # Snapshot (CUDA enumeration) order, which is the order the picker listed and the
+            # positional split follows; a reordered numeric mask (2,0) is not ascending.
+            order = [int(r["index"]) for r in mig_rows]
+            if not order:
+                return None
+            env["CUDA_VISIBLE_DEVICES"] = mig.visibility_for(mig_rows, order)
+            return tuple(order)
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
         if not inherited:
@@ -13651,6 +13668,18 @@ class LlamaCppBackend:
             return None
         return any(not kind.startswith("IDENTITY") for kind in kinds)
 
+    @staticmethod
+    def _mig_snapshot_rows():
+        """The R570+ MIG rows _get_gpu_memory sized, when taken under this process's own mask
+        and order, else None. Their ``index`` is a CUDA device id, not an nvidia-smi row."""
+        snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
+        if snapshot is not None and snapshot[:2] == (
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+            os.environ.get("CUDA_DEVICE_ORDER"),
+        ):
+            return snapshot[2]
+        return None
+
     @classmethod
     def _p2p_veto_reason(
         cls,
@@ -13698,6 +13727,18 @@ class LlamaCppBackend:
             return "disabled by UNSLOTH_DISABLE_DC_P2P=1"
         if os.environ.get("UNSLOTH_FORCE_DC_P2P") == "1":
             return None
+        mig_rows = cls._mig_snapshot_rows()
+        if mig_rows is not None:
+            # gpu_indices are CUDA devices here. A MIG instance has no NVLink matrix row; whole
+            # cards on a mixed host keep the matrix through their nvidia-smi (physical) index.
+            by_id = {int(r["index"]): r for r in mig_rows}
+            selected = (
+                sorted(by_id) if gpu_indices is None else sorted(set(int(i) for i in gpu_indices))
+            )
+            if any(i not in by_id or by_id[i].get("mig") for i in selected):
+                return "MIG device UUIDs cannot be verified by the physical-card NVLink matrix"
+            gpu_indices = [int(by_id[i]["physical_index"]) for i in selected]
+            ids_are_pci_indices = True
 
         def _pcie(reason: str) -> str:
             """Append the IOMMU diagnosis to a veto that implies a PCIe peer path.
@@ -14101,6 +14142,16 @@ class LlamaCppBackend:
     def _cuda_compute_caps() -> dict:
         """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
+        mig_rows = LlamaCppBackend._mig_snapshot_rows()
+        if mig_rows is not None:
+            caps = {}
+            for row in mig_rows:
+                try:
+                    major, minor = row.get("compute_cap", "").split(".")
+                    caps[int(row["index"])] = int(major) * 10 + int(minor)
+                except (TypeError, ValueError):
+                    pass
+            return caps
         try:
             from utils.hardware import gpu_query
 
@@ -15432,6 +15483,10 @@ class LlamaCppBackend:
         or unresolvable UUID mask the ids cannot be mapped back to, where a numeric pin would
         be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        mig_rows = LlamaCppBackend._mig_snapshot_rows()
+        if mig_rows is not None:
+            from utils.hardware import mig
+            return mig.visibility_for(mig_rows, gpu_indices)
         if (
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
             and cvd is not None
@@ -15624,6 +15679,28 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        from utils.hardware import mig
+
+        mig_rows = mig.visible_devices(fresh = True, listing = True)
+        LlamaCppBackend._MIG_DEVICE_SNAPSHOT = None
+        if mig_rows is not None:
+            # These are CUDA device IDs, never physical card IDs. Keep unknown
+            # memory as zero instead of silently deleting an enumerated device.
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+            LlamaCppBackend._MIG_DEVICE_SNAPSHOT = (
+                os.environ.get("CUDA_VISIBLE_DEVICES"),
+                os.environ.get("CUDA_DEVICE_ORDER"),
+                mig_rows,
+            )
+            gpus = sorted(
+                (
+                    int(r["index"]),
+                    int(r.get("memory_free_mib") or 0),
+                    int(r.get("memory_total_mib") or 0),
+                )
+                for r in mig_rows
+            )
+            return LlamaCppBackend._cuda_sm_gate_keep(binary, gpus) if for_llama_server else gpus
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []
         mig_card_rows: list[tuple[int, int, int]] = []
@@ -20773,6 +20850,16 @@ class LlamaCppBackend:
         return _shim_supports_ngl(shim_cmd)
 
     @staticmethod
+    def _mig_pinned_gpu_token(gpu: str) -> str:
+        """The visual engine replaces its child's CUDA mask with ``gpu``. On an R570+ MIG host
+        numeric ids are CUDA devices, which the child would resolve against the whole host: pin
+        the exact instance UUIDs the parent sized. Anything else (CPU "", UUIDs, other hosts) as is."""
+        if gpu and all(token.strip().isdigit() for token in gpu.split(",")):
+            from utils.hardware import mig
+            return mig.mask_for([int(token) for token in gpu.split(",")]) or gpu
+        return gpu
+
+    @staticmethod
     def _diffusion_gpu_arg(
         gpu_ids: Optional[List[int]],
         *,
@@ -21013,6 +21100,7 @@ class LlamaCppBackend:
                 holds_no_gpu = True
                 gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = True)
 
+        gpu = self._mig_pinned_gpu_token(gpu)
         cmd = list(shim_cmd) + [
             "--gguf",
             model_path,

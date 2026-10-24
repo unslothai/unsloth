@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid as uuid_lib
 from dataclasses import dataclass, field
 
 
@@ -178,7 +179,17 @@ def _probe_nvml() -> dict | None:
                         "mig": "1",
                     }
                 )
+        # R570 enumerates one CI per GI. Read the driver's UUID order in this
+        # disposable child (cuInit creates no context); NVML indices remain physical.
+        cuda_devices = None
+        if sys.platform == "linux" and any(r.get("mig") for r in devices):
+            match = re.match(r"(\d+)\.", version)
+            if match and int(match[1]) >= 570:
+                enumerated = _probe_cuda_driver(strict = True)
+                if enumerated is not None and all(r.get("uuid") for r in enumerated["devices"]):
+                    cuda_devices = enumerated["devices"]
         return {
+            "cuda_devices": cuda_devices,
             "source": "nvml",
             "cuda_driver_version": list(cuda) if cuda else None,
             "driver_version": version,
@@ -191,7 +202,8 @@ def _probe_nvml() -> dict | None:
             pass
 
 
-def _probe_cuda_driver() -> dict | None:
+def _probe_cuda_driver(strict: bool = False) -> dict | None:
+    """``strict``: None when any device cannot be read, so a MIG ordinal map is never partial."""
     cuda = _load("cuda")
     if cuda is None or cuda.cuInit(0) != 0:
         return None
@@ -201,11 +213,15 @@ def _probe_cuda_driver() -> dict | None:
         version = _split_cuda_version(packed.value)
     count = ctypes.c_int(0)
     if cuda.cuDeviceGetCount(ctypes.byref(count)) != 0:
+        if strict:
+            return None
         count.value = 0
     devices = []
     for index in range(count.value):
         device = ctypes.c_int(0)
         if cuda.cuDeviceGet(ctypes.byref(device), index) != 0:
+            if strict:
+                return None
             continue
         name = ctypes.create_string_buffer(96)
         cuda.cuDeviceGetName(name, 96, device)
@@ -213,10 +229,17 @@ def _probe_cuda_driver() -> dict | None:
         # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
         ok = cuda.cuDeviceGetAttribute(ctypes.byref(major), 75, device) == 0
         ok = ok and cuda.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) == 0
+        device_uuid = ""
+        # The MIG UUID of the compute instance on a MIG device (CUDA driver API, 11.4+).
+        get_uuid = getattr(cuda, "cuDeviceGetUuid_v2", None) if strict else None
+        if get_uuid is not None:
+            raw_uuid = (ctypes.c_ubyte * 16)()
+            if get_uuid(ctypes.byref(raw_uuid), device) == 0:
+                device_uuid = str(uuid_lib.UUID(bytes = bytes(raw_uuid)))
         devices.append(
             {
                 "index": str(index),
-                "uuid": "",
+                "uuid": device_uuid,
                 "name": name.value.decode("utf-8", "replace"),
                 "compute_cap": f"{major.value}.{minor.value}" if ok else "",
                 # Memory needs a context, which this probe never creates.

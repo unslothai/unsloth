@@ -56,6 +56,37 @@ def _offline(env) -> bool:
     )
 
 
+def _mig_rows(gpu_ids: list[int]):
+    """The R570+ MIG rows for these CUDA device ids (each with its slice UUID, memory and the
+    nvidia-smi index of its card), or None when this host does not number GPUs that way or the
+    ids cannot be translated reliably, in which case the launch keeps the physical-id behaviour."""
+    try:
+        from utils.hardware import mig
+
+        from .engine_install import gpu_platform
+
+        if gpu_platform() == "rocm":
+            return None
+        rows = mig.rows_for(gpu_ids)
+        if rows is None or mig.mask_for(gpu_ids) is None:
+            return None
+        return rows
+    except Exception:
+        return None
+
+
+def _child_cuda_mask(gpu_ids: list[int]) -> str:
+    """The engine replaces Studio's mask. On an R570+ MIG host the ids are CUDA devices, which a
+    numeric mask would resolve against the whole host: pin the exact instance UUIDs instead. Ids
+    the published map cannot translate keep the numeric mask, as before."""
+    try:
+        from utils.hardware import mig
+        pinned = mig.mask_for(gpu_ids)
+    except Exception:
+        pinned = None
+    return pinned or ",".join(str(i) for i in gpu_ids)
+
+
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
@@ -88,8 +119,11 @@ def validate_load(engine: str, request) -> list[int]:
                 f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
-    for gpu_id in gpu_ids:
-        reason = support_reason(engine, gpu_id)
+    mig_rows = _mig_rows(gpu_ids)
+    for position, gpu_id in enumerate(gpu_ids):
+        # R570+ MIG: the ids are CUDA devices; the driver / capability check reads the card behind each.
+        checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
+        reason = support_reason(engine, checked)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
@@ -682,7 +716,7 @@ class ManagedEngine:
                             child_env.get("PATH", os.defpath),
                         ]
                     )
-                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["CUDA_VISIBLE_DEVICES"] = _child_cuda_mask(gpu_ids or [0])
                     rocm = info.get("platform") == "rocm"
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))

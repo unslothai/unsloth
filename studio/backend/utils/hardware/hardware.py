@@ -5107,6 +5107,42 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
     """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
     when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
+    if device == DeviceType.CUDA and not IS_ROCM:
+        from . import mig
+
+        # R570+ MIG: one device per GPU instance CUDA enumerates, each with its own slice memory.
+        rows = mig.visible_devices(fresh = True)
+        if rows is not None:
+            devices = []
+            for ordinal, row in enumerate(rows):
+                free = int(row.get("memory_free_mib") or 0)
+                total = int(row.get("memory_total_mib") or 0)
+                used = max(0, total - free) if total else None
+                devices.append(
+                    {
+                        "index": int(row["index"]),
+                        "index_kind": "cuda_device",
+                        "visible_ordinal": ordinal,
+                        "name": row.get("name"),
+                        "uuid": row["uuid"],
+                        "gpu_utilization_pct": None,
+                        "temperature_c": None,
+                        "vram_used_gb": round(used / 1024, 2) if used is not None else None,
+                        "vram_total_gb": round(total / 1024, 2) if total else None,
+                        "vram_utilization_pct": round(used / total * 100, 1) if total else None,
+                        "power_draw_w": None,
+                        "power_limit_w": None,
+                        "power_utilization_pct": None,
+                    }
+                )
+            return {
+                "available": bool(rows),
+                "backend": _backend_label(device),
+                "parent_visible_gpu_ids": [d["index"] for d in devices],
+                "devices": devices,
+                "index_kind": "cuda_device",
+                "mig_corrected": True,
+            }
     if no_context and IS_ROCM and device == DeviceType.CUDA:
         return {
             "available": False,
@@ -5319,6 +5355,17 @@ _visible_gpu_count: Optional[int] = None
 
 
 def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
+    # MIG device ordinals come from CUDA, not the physical-card inventory.
+    if get_device() == DeviceType.CUDA and not IS_ROCM:
+        from . import mig
+        rows = mig.visible_devices()
+        if rows is not None:
+            return {
+                "raw": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "numeric_ids": [int(r["index"]) for r in rows],
+                "supports_explicit_gpu_ids": True,
+                "index_kind": "cuda_device",
+            }
     # On Intel XPU, visibility is controlled by ZE_AFFINITY_MASK (Level Zero), not CUDA_VISIBLE_DEVICES.
     if get_device() == DeviceType.XPU:
         xpu_mask_raw = _ze_affinity_mask()
@@ -6533,13 +6580,16 @@ def auto_select_gpu_ids(
 
     smi_by_ordinal = (
         _smi_rows_for_cuda_ordinals(get_parent_visible_gpu_ids())
-        if _mask_names_cuda_ordinals(parent_visible_spec)
+        if parent_visible_spec.get("index_kind") != "cuda_device"
+        and _mask_names_cuda_ordinals(parent_visible_spec)
         else None
     )
     if smi_by_ordinal is not None:
         # nvidia-smi telemetry for the cards the ids select, joined by PCI bus id out of process.
         utilization = smi_by_ordinal
-    elif _mask_names_cuda_ordinals(parent_visible_spec):
+    elif parent_visible_spec.get("index_kind") != "cuda_device" and _mask_names_cuda_ordinals(
+        parent_visible_spec
+    ):
         # The display keeps the CLI rows; ranking needs the cards the worker will get. Torch already
         # reports a MIG slice's own memory, and these rows carry mask ids, not the physical rows the
         # MIG correction keys on, so it must not run on them.
@@ -6557,7 +6607,9 @@ def auto_select_gpu_ids(
     else:
         utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
-    if not utilization.get("mig_corrected"):
+    # Instance rows (R570+ MIG, CUDA device ids) already carry their own slice memory; the
+    # physical-card correction would key them by nvidia-smi row and overwrite it.
+    if not utilization.get("mig_corrected") and utilization.get("index_kind") != "cuda_device":
         devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 
@@ -7127,6 +7179,49 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     return stale
 
 
+def current_gpu_index_kind(is_vulkan: bool = False) -> str:
+    """The namespace GPU ids are written in on this host right now: ``vulkan`` (compact ggml
+    ordinals), ``cuda_device`` (R570+ MIG: one CUDA device per GPU instance) or ``physical``."""
+    if is_vulkan:
+        return "vulkan"
+    try:
+        if _get_parent_visible_gpu_spec().get("index_kind") == "cuda_device":
+            return "cuda_device"
+    except Exception:
+        pass
+    return "physical"
+
+
+def _mig_backend_visible_gpu_info(raw_mask) -> Optional[Dict[str, Any]]:
+    """The backend-visible inventory on an R570+ MIG host: one row per CUDA device (GPU instance or
+    whole card) with its own slice memory, or None when this is not one."""
+    from . import mig
+
+    rows = mig.visible_devices()
+    if rows is None:
+        return None
+    devices = []
+    for ordinal, row in enumerate(rows):
+        total_mib = int(row.get("memory_total_mib") or 0)
+        devices.append(
+            {
+                "index": int(row["index"]),
+                "index_kind": "cuda_device",
+                "visible_ordinal": ordinal,
+                "name": row.get("name"),
+                "uuid": row["uuid"],
+                "memory_total_gb": round(total_mib / 1024, 2) if total_mib else None,
+            }
+        )
+    return {
+        "available": bool(devices),
+        "backend_cuda_visible_devices": raw_mask,
+        "parent_visible_gpu_ids": [d["index"] for d in devices],
+        "devices": devices,
+        "index_kind": "cuda_device",
+    }
+
+
 def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
@@ -7141,6 +7236,12 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 from . import nvidia
 
                 parent_visible_spec = _get_parent_visible_gpu_spec()
+                if parent_visible_spec.get("index_kind") == "cuda_device":
+                    # R570+ MIG: the ids are CUDA devices, not nvidia-smi rows; list each instance.
+                    mig_result = _mig_backend_visible_gpu_info(parent_visible_spec["raw"])
+                    if mig_result is not None:
+                        mig_result["backend"] = _backend_label(device)
+                        return mig_result
                 result = nvidia.get_backend_visible_gpu_info(
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],
@@ -7415,6 +7516,19 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         return
 
     global _visible_gpu_count
+
+    if (
+        backend == DeviceType.CUDA.value or (backend is None and DEVICE == DeviceType.CUDA)
+    ) and not IS_ROCM:
+        from . import mig
+
+        # R570+ MIG: the ids are CUDA devices; pin the exact GPU instances they name.
+        ids = gpu_ids if isinstance(gpu_ids, (list, tuple)) else str(gpu_ids).split(",")
+        mask = mig.mask_for(ids)
+        if mask is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = mask
+            _visible_gpu_count = None
+            return
 
     if isinstance(gpu_ids, (list, tuple)):
         value = ",".join(str(g) for g in gpu_ids)
