@@ -415,8 +415,17 @@ export const BUDGET = {
   // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
   // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
   // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
-  transferBytes: 2_088_701,
-  rawBytes: 6_933_109,
+  // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
+  // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
+  // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
+  // budget, which keeps main's margin (re-added on top of main at 85d63e074). The GRPO prompt preview reading
+  // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
+  // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
+  // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
+  // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
+  transferBytes: 2_097_919,
+  rawBytes: 6_962_619,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
