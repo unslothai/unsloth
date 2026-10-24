@@ -51423,6 +51423,79 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
+def _fallback_refusal_http(exc: BaseException) -> HTTPException:
+    """The HTTP refusal the image-load route gives for ``exc``."""
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
+    from core.inference.gpu_residency import ChatLoadInFlightRefusal
+
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, account_access.GpuBusyForAnotherAccountError):
+        return account_access.gpu_busy_error()
+    if isinstance(exc, (MultiModelAlwaysRefusal, ChatLoadInFlightRefusal)):
+        return exc.as_http_exception()
+    # TrainingActiveError and GpuOwnerBusyError: the route's RuntimeError arm.
+    return HTTPException(status_code = 409, detail = str(exc))
+
+
+def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
+    """The gates an image load passes, for the routed MLX engine's on-demand diffusers fallback.
+
+    That load runs inside a generation, past the route: it re-runs the training guard and admission, the
+    account liveness check and the fit check (refusing where a load would evict, since a generation must
+    not unload another model), and records the repos it fetches with the load's token. The resident's
+    account record and the DIFFUSION claim stay the MLX load's, which already passed admission."""
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.gpu_residency import (
+        ChatLoadInFlightRefusal,
+        media_fit_kwargs,
+        refuse_unless_fits,
+    )
+    from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
+
+    def gate(start):
+        with ExitStack() as stack:
+            try:
+                account_access.require_live_account()
+                _guard_diffusion_load_against_training()
+                fit = media_fit_kwargs(DIFFUSION, request, gpu_ordinal, multi_model_mode)
+                stack.enter_context(_diffusion_training_admission())
+                refuse_unless_fits(
+                    DIFFUSION,
+                    policy = fit.get("policy", "off"),
+                    gpu_ids = fit.get("gpu_ids"),
+                    need_mib = fit.get("need_mib"),
+                )
+            except (HTTPException, ChatLoadInFlightRefusal, RuntimeError) as exc:
+                raise FallbackLoadRefusedError(_fallback_refusal_http(exc)) from exc
+            # Same rule as the load: a repo already in the hub cache is not one this load fetches.
+            for ref in (
+                request.model_path,
+                request.base_repo,
+                *(
+                    r
+                    for r in account_access.media_component_file_references(request)
+                    if r and not Path(r).is_absolute()
+                ),
+            ):
+                if ref and _repo_is_in_the_hub_cache(ref) is not True:
+                    _note_load_fetched_with_a_request_token(ref, request.hf_token)
+            return start()
+
+    return gate
+
+
+def _fallback_gate_kwarg(begin_load, gate) -> dict:
+    """``fallback_gate`` for an engine whose begin_load takes it (the routed MLX engine only), else nothing."""
+    try:
+        import inspect
+        if "fallback_gate" in inspect.signature(begin_load).parameters:
+            return {"fallback_gate": gate}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optional[int]:
     """The torch ordinal for a request's ``gpu_ids``, or None when there is nothing to honour.
 
@@ -52255,6 +52328,11 @@ async def load_diffusion_model_gated(
                 **_component_file_kwargs(request),
                 # Only when set: the native engines take no such argument.
                 **({"allow_oversized_load": True} if request.allow_oversized_load else {}),
+                # The routed MLX engine runs these before loading its diffusers fallback.
+                **_fallback_gate_kwarg(
+                    engine.begin_load,
+                    _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
+                ),
             )
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
             # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
@@ -52842,6 +52920,7 @@ async def _generate_diffusion_image_run(
         ImageActivationShortfallError,
         unified_memory_refusal_code,
     )
+    from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
 
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
@@ -52967,6 +53046,9 @@ async def _generate_diffusion_image_run(
             )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
+        except FallbackLoadRefusedError as exc:
+            # The MLX router's fallback load was refused by a load gate: that load's own refusal.
+            raise exc.http from exc
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
                 raise HTTPException(status_code = 409, detail = str(exc))

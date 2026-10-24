@@ -718,6 +718,38 @@ def media_fit_kwargs(
     return kwargs
 
 
+def refuse_unless_fits(
+    owner: str,
+    *,
+    policy: str = "off",
+    gpu_ids: Optional[Iterable[int]] = None,
+    need_mib: Optional[dict] = None,
+) -> None:
+    """acquire_for's residency check for an ``owner`` already holding its claim, refusing where it would evict.
+
+    For a load that runs inside a generation (the MLX router's diffusers fallback), which must not unload
+    another model. Raises what acquire_for raises with ``allow_evict=False``; mutates nothing."""
+    from utils.account_context import current_account_id
+    with arb._lock:
+        arb._sync_from_view()
+        others = [name for name in arb._residents if name != owner]
+        if not others:
+            return
+        if policy != "off" and owner in arb._KEPT_UNDER_ALWAYS:
+            coreside_locked(
+                owner,
+                policy = policy,
+                need_mib = need_mib,
+                gpu_ids = gpu_ids,
+                allow_evict = False,
+                evict_first = False,
+                acting = current_account_id(),
+                evicted = None,
+            )
+            return
+        raise arb.GpuOwnerBusyError(others[-1])
+
+
 def free_for(
     owner: str,
     gpu_ids: Optional[Iterable[int]],
