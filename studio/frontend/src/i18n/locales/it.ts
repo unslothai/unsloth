@@ -2244,7 +2244,7 @@ export const it = {
       },
     },
     resources: {
-      title: "Sistema",
+      title: "Sistema e motore",
       description:
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",

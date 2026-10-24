@@ -2321,7 +2321,7 @@ export const ru = {
       },
     },
     resources: {
-      title: "Система",
+      title: "Система и движок",
       description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",

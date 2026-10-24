@@ -2340,7 +2340,7 @@ export const de = {
       },
     },
     resources: {
-      title: "System",
+      title: "System und Engine",
       description:
         "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",

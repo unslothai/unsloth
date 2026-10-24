@@ -2311,7 +2311,7 @@ export const ar = {
       },
     },
     resources: {
-      title: "النظام",
+      title: "النظام والمحرك",
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",

@@ -2335,7 +2335,7 @@ export const es = {
       },
     },
     resources: {
-      title: "Sistema",
+      title: "Sistema y motor",
       description:
         "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",

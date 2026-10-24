@@ -2405,7 +2405,7 @@ export const he = {
       },
     },
     resources: {
-      title: "מערכת",
+      title: "מערכת ומנוע",
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",

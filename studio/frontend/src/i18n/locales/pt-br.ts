@@ -2325,7 +2325,7 @@ export const ptBR = {
       },
     },
     resources: {
-      title: "Sistema",
+      title: "Sistema e motor",
       description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",

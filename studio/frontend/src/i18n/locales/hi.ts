@@ -2317,7 +2317,7 @@ export const hi = {
       },
     },
     resources: {
-      title: "सिस्टम",
+      title: "सिस्टम और इंजन",
       description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",

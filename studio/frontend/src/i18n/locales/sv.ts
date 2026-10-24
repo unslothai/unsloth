@@ -2477,7 +2477,7 @@ export const sv = {
       },
     },
     resources: {
-      title: "System",
+      title: "System och motor",
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",

@@ -2283,7 +2283,7 @@ export const zhCN = {
       },
     },
     resources: {
-      title: "系统",
+      title: "系统与引擎",
       description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",

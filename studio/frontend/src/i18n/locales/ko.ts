@@ -2305,7 +2305,7 @@ export const ko = {
       },
     },
     resources: {
-      title: "시스템",
+      title: "시스템 및 엔진",
       description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",

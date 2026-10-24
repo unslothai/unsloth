@@ -2291,7 +2291,7 @@ export const ja = {
       },
     },
     resources: {
-      title: "システム",
+      title: "システムとエンジン",
       description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",

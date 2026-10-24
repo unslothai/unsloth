@@ -2374,7 +2374,7 @@ export const en = {
       },
     },
     resources: {
-      title: "System",
+      title: "System and Engine",
       description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",

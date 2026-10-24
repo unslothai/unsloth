@@ -2339,7 +2339,7 @@ export const fr = {
       },
     },
     resources: {
-      title: "Système",
+      title: "Système et moteur",
       description:
         "Surveillez le matériel et le stockage de ce serveur Unsloth.",
       liveUpdates: "Mises à jour en direct",
