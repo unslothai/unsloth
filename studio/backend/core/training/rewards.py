@@ -302,6 +302,10 @@ def validate_rule(rule: dict) -> dict:
     for key in ("extract", "reference_extract"):
         if rule.get(key) is not None and key not in out:
             raise RewardError(f"{kind} rules take no {key}.")
+    # A misspelled field (normalise) would fall back to its default instead.
+    unknown = [str(k) for k in rule if k not in out and k not in ("extract", "reference_extract")]
+    if unknown:
+        raise RewardError(f"{kind} rules take no {unknown[0]}.")
     return out
 
 
