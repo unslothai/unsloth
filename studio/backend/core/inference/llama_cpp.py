@@ -31123,6 +31123,12 @@ class LlamaCppBackend:
                             _floor: int = _sidecar_compute_mib,
                             _flat: int = _sidecar_flat_mib,
                             _native: Optional[int] = self._context_length,
+                            _discrete: bool = (
+                                not _apple_budget_mib
+                                and self._discrete_gpu_for_expert_spill(
+                                    gpu_indices, _detected_gpus, _shared_gpu_ids
+                                )
+                            ),
                         ) -> int:
                             # A --flash-attn off respawn pads the draft cache to f16, and
                             # extras can change slots / KV layout, so read them off the argv.
@@ -31168,6 +31174,24 @@ class LlamaCppBackend:
                                     run_args, default = planned_flash_attn, env = child_env
                                 ),
                             )
+                            # The draft context copies the target's params, so -nkvo keeps its
+                            # KV in host buffers too: a discrete card does not hold it.
+                            if _v and _discrete and not _kv_offload_from_args(run_args, child_env):
+                                _host_kv = self._mtp_draft_kv_bytes(
+                                    _ctx,
+                                    drafter_path = _dp,
+                                    draft_cache_type_k = _ck,
+                                    draft_cache_type_v = _cv,
+                                    n_parallel = _np,
+                                    swa_full = _swa_full,
+                                    kv_unified = _kv_unified,
+                                    n_ubatch = _ub,
+                                    flash_attn = _flash_attn_enabled_from_args(
+                                        run_args, default = planned_flash_attn, env = child_env
+                                    ),
+                                )
+                                if _host_kv:
+                                    _v = max(0, _v - _host_kv)
                             # The vocabulary-wide graph part, which sits on the output card.
                             try:
                                 _sidecar_reserve_graph_mib[0] = math.ceil(

@@ -116,3 +116,36 @@ def test_a_multi_device_draft_pin_is_not_reported_as_reserved(tmp_path, monkeypa
     )
     assert (len(_r7._margins(cmd)) == 2) is reserved
     assert seen["fit_sized"] is reserved
+
+
+def _single_card_margin(
+    tmp_path,
+    monkeypatch,
+    extras,
+    env = None,
+):
+    import test_spec_sidecar_fit_reserve_r4 as _r4
+
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 768 * 1024 * 1024
+    return _r4._margin(_r7._dspark(backend, gguf, tmp_path, extra_args = list(extras)))
+
+
+@pytest.mark.parametrize(
+    "extras, env",
+    [
+        (["-nkvo"], {}),
+        (["--no-kv-offload"], {}),
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}),
+    ],
+)
+def test_host_resident_draft_kv_is_not_reserved_on_the_card(tmp_path, monkeypatch, extras, env):
+    """The draft context copies the target's params (common_base_params_to_speculative), so
+    -nkvo puts the draft KV in host buffers too: the card's margin must not carry it."""
+    (tmp_path / "on").mkdir()
+    (tmp_path / "off").mkdir()
+    on = _single_card_margin(tmp_path / "on", monkeypatch, [])
+    off = _single_card_margin(tmp_path / "off", monkeypatch, extras, env)
+    assert on - off >= 760
