@@ -20,6 +20,8 @@ import { failedSteps, modelSignature, planCheck } from "../ux-rules";
 let follower: AbortController | null = null;
 // flowId -> the model picks of the last run that had nothing to download: the same picks skip the plan request.
 const checkedModels = new Map<string, string>();
+// Bumped when the editor closes: a download check still out then belongs to an editor that is gone.
+let editorSession = 0;
 
 export function attachRun(runId: string, afterSeq = 0): void {
   follower?.abort();
@@ -80,6 +82,7 @@ export function detachRun(): void {
   follower = null;
   // Leaving the editor is where models get deleted (Hub): the next visit asks the plan again.
   checkedModels.clear();
+  editorSession += 1;
 }
 
 export interface RunOptions {
@@ -105,6 +108,7 @@ async function heldForDownloads(
   const docState = useDocStore.getState();
   const signature = modelSignature(docState.graph.nodes);
   if (checkedModels.get(flowId) === signature) return false;
+  const session = editorSession;
   const plan = await Promise.race([
     planFlow(flowId, options.params ?? {}, documentFromState(docState)),
     new Promise<null>((resolve) =>
@@ -117,8 +121,8 @@ async function heldForDownloads(
     { flowId, models: signature },
     { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
   );
-  // The flow or its model picks changed meanwhile: this plan no longer describes what Run would download.
-  if (verdict === "stale") return true;
+  // The editor closed, or the flow or its model picks changed meanwhile: this plan no longer describes the run.
+  if (verdict === "stale" || session !== editorSession) return true;
   if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
