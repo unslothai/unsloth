@@ -800,6 +800,13 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
+  /* Code box pills sit on the box, not the page: flat grey. */
+  html:not(.dark) .example-pills .hub-tab-toggle-pill,
+  html:not(.dark) .example-pills .hub-tab-toggle-pill:hover {
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), var(--background));
+    box-shadow: none;
+  }
+
   /* The selected segment takes --accent, the app's one selection colour, so it
      reads like every other lit row. As its own wash it was scaled by the wash
      gain, which falls much further than the token does: at the bottom of the

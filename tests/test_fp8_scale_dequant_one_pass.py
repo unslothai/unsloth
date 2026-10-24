@@ -214,4 +214,9 @@ def test_inductor_fullgraph_dequant_matches_eager(F, dtype, layout):
     ref = _reference(q, s.view(1, 1) if layout == "tensor" else s, dtype)
     torch._dynamo.reset()
     out = torch.compile(lambda a, b: F.weight_dequant(a, b, dtype), fullgraph = True)(q, s)
-    _assert_same_bits(out, ref)
+    if F._fp8_e4m3fn_unsupported_in_trace(q):
+        _assert_same_bits(out, ref)
+    else:
+        # sm89+: Inductor fuses the torch expression itself and may round bf16 one ulp from eager.
+        ulp = 2.0**-7 if dtype == torch.bfloat16 else 2.0**-10
+        torch.testing.assert_close(out, ref, rtol = ulp, atol = 0, equal_nan = True)

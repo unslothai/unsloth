@@ -2171,7 +2171,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2250,7 +2250,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}

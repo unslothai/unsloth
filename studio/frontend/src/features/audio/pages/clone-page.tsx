@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
-import { FloppyDiskIcon, SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useState } from "react";
 import type { AudioGalleryClip } from "../api";
@@ -267,11 +267,10 @@ export function CloneFooter({
             <Button
               type="button"
               variant="outline"
-              className="h-11 px-5"
+              className="h-10 px-4 text-ui-13"
               disabled={!canSave}
               onClick={() => setSaving(true)}
             >
-              <HugeiconsIcon icon={FloppyDiskIcon} className="size-4" />
               Save voice…
             </Button>
           )
