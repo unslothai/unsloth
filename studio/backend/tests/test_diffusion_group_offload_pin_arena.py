@@ -70,6 +70,13 @@ def test_estimate_prices_unpackable_tensors_per_tensor():
     assert arena_mod.arena_reserved_bytes([torch.zeros(0)]) == 0
 
 
+def test_device_resident_tensors_are_priced_per_tensor():
+    # _to_cpu hands a tensor that is not on the CPU (a resident denoiser) to the stock per-tensor pin
+    t = torch.empty(300, 500, device = "meta")
+    assert arena_mod.packable_bytes([t]) == 0
+    assert arena_mod.arena_reserved_bytes([t]) == arena_mod._pow2_ceil(t.numel() * 4)
+
+
 def test_module_pin_mib_follows_the_kill_switch(monkeypatch):
     net = torch.nn.Sequential(*(torch.nn.Linear(3072, 3000, bias = False) for _ in range(8)))
     per_tensor = dm._module_host_mib(net)

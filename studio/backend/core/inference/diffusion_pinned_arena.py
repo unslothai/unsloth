@@ -64,7 +64,13 @@ def _first_fit(
 
 
 def _packable(tensor: Any) -> bool:
-    return tensor.is_contiguous() and tensor.numel() > 0 and not tensor.dtype.is_complex
+    # Only CPU tensors: group offload's ``_to_cpu`` hands a device-resident one to the stock per-tensor pin.
+    return (
+        tensor.device.type == "cpu"
+        and tensor.is_contiguous()
+        and tensor.numel() > 0
+        and not tensor.dtype.is_complex
+    )
 
 
 class PinnedArena:
