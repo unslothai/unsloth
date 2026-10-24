@@ -35,7 +35,12 @@ def _ceiling(controller: PreemptionController) -> int:
     return snapshot.budget - snapshot.buffer
 
 
-def _chat(controller, gen_id, *, decoded = 0):
+def _chat(
+    controller,
+    gen_id,
+    *,
+    decoded = 0,
+):
     participant = controller.register(gen_id, tokens = CHARGE, prompt_tokens = PROMPT)
     if decoded:
         controller.observe(gen_id, decoded, plan = False)
@@ -105,9 +110,9 @@ class TestAResumedChatIsNotPickedAgainAtOnce:
     def test_the_older_chat_is_paused_instead_while_the_resume_is_in_its_grace(self):
         controller = self._resumed_beside_a_grower()
         victims = [v.gen_id for v in controller.plan_preemptions(needed = 0)]
-        assert victims == ["a"], (
-            f"newest-first re-picked the chat it had just let back in after 8 tokens: {victims}"
-        )
+        assert victims == [
+            "a"
+        ], f"newest-first re-picked the chat it had just let back in after 8 tokens: {victims}"
 
     def test_after_its_grace_it_is_newest_first_again(self):
         controller = self._resumed_beside_a_grower()
