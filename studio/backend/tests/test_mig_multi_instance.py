@@ -274,6 +274,10 @@ def test_an_inherited_map_from_another_mask_is_ignored():
             assert mig.mask_for([0]) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason = "main never runs the NVML probe on macOS, so the pre-R570 slice reading this checks does not exist there",
+)
 def test_old_drivers_keep_the_one_slice_rule():
     with host(driver = "565.57.01"):
         assert hw.get_parent_visible_gpu_ids() == [0]
