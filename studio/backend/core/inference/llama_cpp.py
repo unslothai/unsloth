@@ -32332,7 +32332,13 @@ class LlamaCppBackend:
                         # which retry cleanup would then take for Studio's.
                         fit_target_reserve_mib = 0,
                     )
-                    if _sidecar_fit_reserve_mib and "--fit-target" in _integrity_flags:
+                    # The capability, not the flag: at the default margin the rebuilt
+                    # flags omit --fit-target, yet the spawn still appends the reserve.
+                    if (
+                        _sidecar_fit_reserve_mib
+                        and use_fit
+                        and server_caps.get("supports_fit_target")
+                    ):
                         logger.info(
                             "%s under --fit on: llama.cpp cannot size the sidecar, so "
                             "--fit-target keeps %.2f GB free for it.",
@@ -32598,45 +32604,68 @@ class LlamaCppBackend:
                 if _gpu_ids_own_device_flags:
                     _spec_placement_extras = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_spec_placement_env)
+                if (
+                    gpu_indices is not None
+                    and not is_vulkan_backend
+                    and (
+                        bool(gpu_ids)
+                        or (
+                            os.environ.get("CUDA_VISIBLE_DEVICES") is None
+                            and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+                        )
+                    )
+                ):
+                    # The spawn pins PCI order for a GPU pick (_p2p_launch_order_pinned).
+                    _spec_placement_env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                _spec_placement_argv = [*cmd, *(_spec_placement_extras or [])]
                 # A device the launch really carries, and not the CPU spelling of it.
                 # Only consulted where the probe found nothing: it is the one remaining
                 # way the child can still be pointed at a GPU.
                 _spec_device_pick = _extra_args_main_device(
-                    [*cmd, *(_spec_placement_extras or [])]
+                    _spec_placement_argv
                 ) or _spec_placement_env.get("LLAMA_ARG_DEVICE")
                 _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
-                    [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
+                    _spec_placement_argv, _spec_placement_env
                 )
                 # The spawn attaches the multi-device reserve per card, except under
                 # --split-mode tensor, whose single meta device it cannot size.
                 # (A single-card launch carries it in _sidecar_fit_reserve_mib already.)
+                # Read off the launch's own argv and env, as the spawn reads them (a layer
+                # launch clears an inherited non-layer split mode, as _launch_split_env).
+                _spec_split_env = dict(_spec_placement_env)
+                if not tensor_parallel and (
+                    (_spec_split_env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+                    not in ("", "layer")
+                ):
+                    _spec_split_env.pop("LLAMA_ARG_SPLIT_MODE", None)
+                    _spec_split_env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
                 _sidecar_reserve_at_spawn = bool(_sidecar_fit_reserve_eligible_mib) and (
-                    _extra_args_split_mode(extra_args, _launch_split_env()) != "tensor"
+                    _extra_args_split_mode(_spec_placement_argv, _spec_split_env) != "tensor"
                 )
                 if _sidecar_reserve_at_spawn:
                     # Only where the spawn can price it: a server with --fit-target, no
                     # --rpc devices ahead of the local list, and an unpinned drafter only
                     # across an unnamed CUDA / ROCm list in a provable device order.
-                    _named_devices = _extra_args_main_device(extra_args) or os.environ.get(
-                        "LLAMA_ARG_DEVICE"
-                    )
-                    _rpc_devices = (_extra_args_device(extra_args, {"--rpc"}) or "").strip() or str(
-                        os.environ.get("LLAMA_ARG_RPC", "")
-                    ).strip()
+                    _named_devices = _spec_device_pick
+                    _rpc_devices = (
+                        _extra_args_device(_spec_placement_argv, {"--rpc"}) or ""
+                    ).strip() or str(_spec_placement_env.get("LLAMA_ARG_RPC", "")).strip()
                     _sidecar_reserve_at_spawn = bool(
                         server_caps.get("supports_fit_target")
                     ) and not (_rpc_devices and not _named_devices)
                     if (
                         _sidecar_reserve_at_spawn
                         and _fit_device_count > 1
-                        and _extra_args_draft_device_pin(extra_args) is None
+                        and _extra_args_draft_device_pin(_spec_placement_argv) is None
                     ):
                         _sidecar_reserve_at_spawn = (
                             not is_vulkan_backend
                             and not _named_devices
                             and not (
                                 self._GPU_IDS_ARE_PCI_INDICES is True
-                                and str(os.environ.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+                                and str(_spec_placement_env.get("CUDA_DEVICE_ORDER", ""))
+                                .strip()
+                                .upper()
                                 != "PCI_BUS_ID"
                                 and self._smi_uuid_mask_order() is None
                             )
