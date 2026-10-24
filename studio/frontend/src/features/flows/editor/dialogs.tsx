@@ -213,7 +213,7 @@ export function PlanDialog({
   }, [open, flowId]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>What this flow needs</DialogTitle>
           <DialogDescription>
@@ -255,7 +255,7 @@ export function DownloadRunDialog() {
   const total = downloadBytes(missing);
   return (
     <Dialog open={pending !== null} onOpenChange={(open) => !open && close()}>
-      <DialogContent className="max-w-lg" data-testid="flows-download-run">
+      <DialogContent className="sm:max-w-xl" data-testid="flows-download-run">
         <DialogHeader>
           <DialogTitle>Download models to run this flow?</DialogTitle>
           <DialogDescription>
