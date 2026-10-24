@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
+"""torchao blockwise_fp8_gemm: found under both module paths, and routed away from sm_100 (no GPU needed)."""
+
+import sys
+import types
+
+import pytest
+import torch
+
+from unsloth.kernels import fp8 as F8
+
+OLD, NEW = F8._TORCHAO_BLOCKWISE_GEMM_MODULES
+
+
+def _stub(monkeypatch, name, fn):
+    if fn is None:
+        monkeypatch.setitem(sys.modules, name, None)  # import_module raises ModuleNotFoundError
+    else:
+        monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(blockwise_fp8_gemm = fn))
+
+
+def test_module_paths():
+    assert OLD == "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
+    assert NEW == "torchao.kernel.blockwise_quantization"
+
+
+@pytest.mark.parametrize(
+    "old, new, expect",
+    [("old", "new", "old"), (None, "new", "new"), ("old", None, "old"), (None, None, None)],
+)
+def test_import_fallback(monkeypatch, old, new, expect):
+    fns = {"old": lambda *a, **k: "old", "new": lambda *a, **k: "new"}
+    _stub(monkeypatch, OLD, fns.get(old))
+    _stub(monkeypatch, NEW, fns.get(new))
+    got = F8._import_torchao_blockwise_gemm()
+    assert (got is None) if expect is None else (got() == expect)
+
+
+def test_import_skips_module_without_symbol(monkeypatch):
+    monkeypatch.setitem(sys.modules, OLD, types.SimpleNamespace())
+    _stub(monkeypatch, NEW, lambda: "new")
+    assert F8._import_torchao_blockwise_gemm()() == "new"
+
+
+def _devices(
+    monkeypatch,
+    tma_arch,
+    capability = (9, 0),
+):
+    # tma_arch[i]: device i is sm_100; the others report `capability`.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: bool(tma_arch))
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(tma_arch))
+    monkeypatch.setattr(F8, "_fp8_tma_gemm_arch_at", lambda index: tma_arch[index])
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda index = None: (10, 0) if tma_arch[index] else capability,
+    )
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(F8, "_FP8_TMA_GEMM", True)
+    monkeypatch.setattr(F8, "_TensorDescriptor", object)
+
+
+@pytest.mark.parametrize(
+    "has_torchao, tma_arch, expect",
+    [
+        (False, [False], "triton"),
+        (False, [True], "triton"),
+        (True, [False], "torchao"),  # H100 / L4 / A100
+        (True, [True], "triton"),  # B200: the TMA kernel
+        (True, [True, True], "triton"),
+        (True, [True, False], "torchao"),  # mixed host: torchao hands sm_100 calls back per call
+        (True, [], "torchao"),
+    ],
+)
+def test_select(monkeypatch, has_torchao, tma_arch, expect):
+    _devices(monkeypatch, tma_arch)
+    monkeypatch.setattr(
+        F8, "torchao_blockwise_gemm", (lambda *a, **k: None) if has_torchao else None
+    )
+    want = {"triton": F8.w8a8_block_fp8_matmul_triton, "torchao": F8.torchao_block_matmul}[expect]
+    assert F8._select_fp8_block_matmul() is want
+
+
+@pytest.mark.parametrize("switch", ["kill_switch", "no_descriptor"])
+def test_select_without_tma_prefers_torchao(monkeypatch, switch):
+    _devices(monkeypatch, [True])
+    monkeypatch.setattr(F8, "torchao_blockwise_gemm", lambda *a, **k: None)
+    if switch == "kill_switch":
+        monkeypatch.setattr(F8, "_FP8_TMA_GEMM", False)
+    else:
+        monkeypatch.setattr(F8, "_TensorDescriptor", None)
+    assert F8._select_fp8_block_matmul() is F8.torchao_block_matmul
+
+
+@pytest.mark.parametrize(
+    "capability, expect",
+    [((8, 9), "triton"), ((9, 0), "torchao"), ((12, 0), "torchao"), ((8, 0), "torchao")],
+)
+def test_select_by_capability(monkeypatch, capability, expect):
+    _devices(monkeypatch, [False], capability)
+    monkeypatch.setattr(F8, "torchao_blockwise_gemm", lambda *a, **k: None)
+    want = {"triton": F8.w8a8_block_fp8_matmul_triton, "torchao": F8.torchao_block_matmul}[expect]
+    assert F8._select_fp8_block_matmul() is want
+
+
+def test_rocm_keeps_torchao(monkeypatch):
+    _devices(monkeypatch, [False], (8, 9))
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    monkeypatch.setattr(F8, "torchao_blockwise_gemm", lambda *a, **k: None)
+    assert F8._select_fp8_block_matmul() is F8.torchao_block_matmul
+
+
+def test_prefer_triton_per_device(monkeypatch):
+    _devices(monkeypatch, [False, True])
+    assert not F8._prefer_triton_block_matmul_at(torch.device("cuda", 0))
+    assert F8._prefer_triton_block_matmul_at(torch.device("cuda", 1))
+
+
+@pytest.mark.parametrize(
+    "block_size, dtype, expect",
+    [
+        ([128, 128], torch.bfloat16, "torchao"),
+        ([128, 128], torch.float16, "triton"),  # torchao writes bf16 only
+        ([128, 128], torch.float32, "triton"),
+        ([128, 64], torch.bfloat16, "triton"),  # torchao indexes the N scale with block_size[1]
+    ],
+)
+def test_torchao_block_matmul_routes(monkeypatch, block_size, dtype, expect):
+    calls = []
+    monkeypatch.setattr(F8, "w8a8_block_fp8_matmul_triton", lambda *a, **k: calls.append("triton"))
+    monkeypatch.setattr(
+        F8,
+        "torchao_blockwise_gemm",
+        lambda *a, **k: calls.append(("torchao", k["block_size"])) or a[0],
+    )
+    meta = lambda *shape: torch.empty(*shape, device = "meta", dtype = torch.float8_e4m3fn)
+    K, N = 512, 256
+    act_s = torch.empty(64, K // block_size[1], device = "meta")
+    w_s = torch.empty(N // block_size[0], K // block_size[1], device = "meta")
+    F8.torchao_block_matmul(meta(64, K), meta(N, K), act_s, w_s, block_size, output_dtype = dtype)
+    assert calls == (["triton"] if expect == "triton" else [("torchao", block_size[1])])
