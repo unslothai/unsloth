@@ -22,7 +22,7 @@ import {
 import { documentFromState, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowParam } from "../types";
-import { downloadBytes, modelsToDownload } from "../ux-rules";
+import { downloadBytes, modelSignature, modelsToDownload } from "../ux-rules";
 import { downloadBlob } from "./node-actions";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
@@ -274,8 +274,12 @@ export function DownloadRunDialog() {
           <Button
             onClick={() => {
               const options = pending?.options ?? {};
+              // A pick changed while the dialog was open (undo): plan again rather than confirm unseen models.
+              const same =
+                pending?.models ===
+                modelSignature(useDocStore.getState().graph.nodes);
               close();
-              void runFlow({ ...options, downloadsConfirmed: true });
+              void runFlow({ ...options, downloadsConfirmed: same });
             }}
             data-testid="flows-download-and-run"
           >

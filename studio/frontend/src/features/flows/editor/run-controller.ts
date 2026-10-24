@@ -126,7 +126,7 @@ async function heldForDownloads(
   if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
-  useUiStore.getState().setPendingRun({ options: { ...options }, plan });
+  useUiStore.getState().setPendingRun({ options: { ...options }, plan, models: signature });
   return true;
 }
 

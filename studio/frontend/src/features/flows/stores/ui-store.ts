@@ -26,6 +26,8 @@ export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 export interface PendingRun {
   options: Record<string, unknown>;
   plan: FlowPlan;
+  /** The model picks the plan was made for: a confirmation only covers these. */
+  models?: string;
 }
 
 export interface UiState {
