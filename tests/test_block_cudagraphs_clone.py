@@ -54,7 +54,7 @@ def test_cudagraphs_opt_in_flag(monkeypatch):
 
 def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
     """Variable lengths recorded a graph set per new length: 3.5x slower steps and a pool that
-    grew every step on an L4. Past the cap a new shape runs the compiled block without graphs."""
+    grew every step on an L4. One shape past the cap runs every later call without graphs."""
     calls = []
 
     def fake_compile(fn, **kwargs):
@@ -89,8 +89,9 @@ def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
 
     assert step(16) == {"graphs"}
     assert step(24) == {"graphs"}
+    assert step(16) == {"graphs"}
     assert step(32) == {"plain"}  # third shape: over the cap
-    assert step(16) == {"graphs"}  # admitted shapes keep their graphs
+    assert step(16) == {"plain"}  # graphs stay off, also for admitted shapes
     assert step(40) == {"plain"}
 
 

@@ -25,9 +25,10 @@ _COMPILE_OPTIONS = {
 # shapes only pay off (each new sequence length records another graph and holds its memory).
 if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
     _COMPILE_OPTIONS["triton.cudagraphs"] = True
-# Block input shapes that may record graphs. Variable-length batches (padding, padding-free) would
+# Block input shapes that may record graphs. Variable-length batches (padded to the batch max) would
 # otherwise record a graph set per new length: 3.5x slower steps and a pool that grows every step.
-# Shapes past the cap run the same compiled block without graphs.
+# One shape past the cap turns graphs off for that layer kind: the same compiled block runs without
+# them (admitted shapes kept re-recording at new tree positions, so their pool still grew).
 try:
     _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
 except ValueError:
@@ -760,6 +761,7 @@ def _wrap(cls, compile_options):
             options = {**compile_options, "triton.cudagraphs": False},
         )
     graph_shapes = set()
+    graphs_off = [False]
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -768,12 +770,14 @@ def _wrap(cls, compile_options):
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
-                if graphs:
+                if graphs and not graphs_off[0]:
                     shape = tuple(hidden_states.shape)
                     if shape not in graph_shapes:
-                        if len(graph_shapes) >= _CUDAGRAPH_MAX_SHAPES:
-                            return plain(self, hidden_states, *args, **kwargs)
                         graph_shapes.add(shape)
+                        graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
+                if graphs and graphs_off[0]:
+                    return plain(self, hidden_states, *args, **kwargs)
+                if graphs:
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
                     return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
