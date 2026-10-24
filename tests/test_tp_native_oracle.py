@@ -32,7 +32,9 @@ def _load_tp():
     models.__path__ = [os.path.join(REPO, "unsloth", "models")]
     sys.modules.setdefault("unsloth", pkg)
     sys.modules.setdefault("unsloth.models", models)
-    spec = importlib.util.spec_from_file_location(name, os.path.join(REPO, "unsloth", "models", "tp_native.py"))
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(REPO, "unsloth", "models", "tp_native.py")
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
@@ -67,7 +69,14 @@ ARCHS = {
 }
 
 
-def build(repo, overrides = None, lora = True, seed = 0, train_norms = False, **lora_kwargs):
+def build(
+    repo,
+    overrides = None,
+    lora = True,
+    seed = 0,
+    train_norms = False,
+    **lora_kwargs,
+):
     from transformers import AutoConfig, AutoModelForCausalLM
 
     config = AutoConfig.from_pretrained(repo)
@@ -98,7 +107,12 @@ def build(repo, overrides = None, lora = True, seed = 0, train_norms = False, **
     return model.eval()
 
 
-def _batch(model, seed = 1, bsz = 2, seq = 7):
+def _batch(
+    model,
+    seed = 1,
+    bsz = 2,
+    seq = 7,
+):
     vocab = tpn._text_config(model).vocab_size
     g = torch.Generator().manual_seed(seed)
     return torch.randint(0, vocab, (bsz, seq), generator = g)
@@ -136,16 +150,24 @@ def _shard_copy(region, rank, tp):
         in_parts = (weight.shape[1],)
         with torch.no_grad():
             if col:
-                base.weight = torch.nn.Parameter(tpn.shard_slice(weight, 0, proj.parts, rank, tp), False)
+                base.weight = torch.nn.Parameter(
+                    tpn.shard_slice(weight, 0, proj.parts, rank, tp), False
+                )
                 if base.bias is not None:
-                    base.bias = torch.nn.Parameter(tpn.shard_slice(base.bias, 0, proj.parts, rank, tp), False)
+                    base.bias = torch.nn.Parameter(
+                        tpn.shard_slice(base.bias, 0, proj.parts, rank, tp), False
+                    )
             else:
-                base.weight = torch.nn.Parameter(tpn.shard_slice(weight, 1, in_parts, rank, tp), False)
+                base.weight = torch.nn.Parameter(
+                    tpn.shard_slice(weight, 1, in_parts, rank, tp), False
+                )
                 base.bias = None
             for adapter in getattr(child, "lora_A", {}):
                 A, B = child.lora_A[adapter], child.lora_B[adapter]
                 if col:
-                    B.weight = torch.nn.Parameter(tpn.shard_slice(B.weight, 0, proj.parts, rank, tp))
+                    B.weight = torch.nn.Parameter(
+                        tpn.shard_slice(B.weight, 0, proj.parts, rank, tp)
+                    )
                 else:
                     A.weight = torch.nn.Parameter(tpn.shard_slice(A.weight, 1, in_parts, rank, tp))
     if region.kind == "attention":
@@ -232,12 +254,16 @@ def test_simulated_tp_matches_unsharded(arch):
         if key in got:
             torch.testing.assert_close(got[key], ref[key], rtol = 1e-4, atol = 1e-6, msg = key)
     if arch == "qwen3":
-        assert any(k.endswith("q_norm.weight") for k in got)  # the per-head norm grad sum was compared
+        assert any(
+            k.endswith("q_norm.weight") for k in got
+        )  # the per-head norm grad sum was compared
 
 
 @pytest.mark.parametrize("tp", [2, 4])
 def test_simulated_tp_gqa_widths(tp):
-    model = build(QWEN3, {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 32})
+    model = build(
+        QWEN3, {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 32}
+    )
     ids = _batch(model)
     ref_loss, ref_logits = _loss(model, ids)
     sim, _ = simulate(model, tp)
@@ -258,7 +284,9 @@ def test_mutation_unsummed_replicated_factor_fails():
     child = getattr(tpn._unwrap(sim).get_submodule(region.path).copies[0], proj.name)
     key = f"{region.path}.{proj.name}.lora_A.default.weight"
     with pytest.raises(AssertionError):
-        torch.testing.assert_close(child.lora_A["default"].weight.grad, ref[key], rtol = 1e-4, atol = 1e-6)
+        torch.testing.assert_close(
+            child.lora_A["default"].weight.grad, ref[key], rtol = 1e-4, atol = 1e-6
+        )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -289,7 +317,11 @@ def test_plan_covers_every_layer(arch):
         parts = {p.name: p.parts for r in plan.regions for p in r.projs}
         text = tpn._text_config(model)
         hd = text.hidden_size // text.num_attention_heads
-        assert parts["qkv_proj"] == (text.num_attention_heads * hd, text.num_key_value_heads * hd, text.num_key_value_heads * hd)
+        assert parts["qkv_proj"] == (
+            text.num_attention_heads * hd,
+            text.num_key_value_heads * hd,
+            text.num_key_value_heads * hd,
+        )
         assert parts["gate_up_proj"] == (text.intermediate_size, text.intermediate_size)
     else:
         assert styles == {
@@ -337,7 +369,10 @@ def test_user_plan_overrides():
     swapped = tpn.derive_tp_plan(model, 2, {**plan, "layers.*.mlp.up_proj": "rowwise"}).styles()
     assert swapped["model.layers.0.mlp.up_proj"] == "rowwise"
     missing = {k: v for k, v in plan.items() if "down_proj" not in k}
-    assert tpn.derive_tp_plan(model, 2, missing).styles() == tpn.derive_tp_plan(model, 2, plan).styles()
+    assert (
+        tpn.derive_tp_plan(model, 2, missing).styles()
+        == tpn.derive_tp_plan(model, 2, plan).styles()
+    )
 
 
 def test_unknown_module_inside_region_is_refused():

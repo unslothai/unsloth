@@ -149,7 +149,9 @@ class TPPlan:
     tp_size: int
     regions: list
     source: str  # "user" / "transformers" / "structural"
-    replicated_layers: int = 0  # decoder layers with no region (e.g. linear attention): run replicated
+    replicated_layers: int = (
+        0  # decoder layers with no region (e.g. linear attention): run replicated
+    )
 
     def styles(self):
         """{projection path: style} (the plan in transformers form, local paths)."""
@@ -329,7 +331,11 @@ def _check_divisible(what, value, tp, path):
         )
 
 
-def derive_tp_plan(model, tp_size, plan = None) -> TPPlan:
+def derive_tp_plan(
+    model,
+    tp_size,
+    plan = None,
+) -> TPPlan:
     """The regions, projections and head counts tensor parallelism will shard, validated for tp_size.
     Raises ValueError (with the reason) for anything v1 cannot shard correctly."""
     tp_size = int(tp_size)
@@ -374,7 +380,9 @@ def derive_tp_plan(model, tp_size, plan = None) -> TPPlan:
     if user:
         source = "user"
     else:
-        source = "transformers" if any(p.from_plan for r in regions for p in r.projs) else "structural"
+        source = (
+            "transformers" if any(p.from_plan for r in regions for p in r.projs) else "structural"
+        )
     return TPPlan(tp_size = tp_size, regions = regions, source = source, replicated_layers = replicated)
 
 
@@ -526,7 +534,6 @@ def _unpermute(tensor, dim, parts, tp):
 
 def _dtensor_api():
     from torch.distributed.tensor import DTensor, Partial, Replicate, Shard
-
     return DTensor, Partial, Replicate, Shard
 
 
@@ -592,27 +599,36 @@ def _refuse_base(path, proj_module, weight, base):
     if weight is None:
         raise ValueError(f"Unsloth: '{path}' ({cls}) has no dense weight (GPTQ / AWQ?).")
     if getattr(base, "qweight", None) is not None or cls.startswith(("QuantLinear", "WQLinear")):
-        raise ValueError(f"Unsloth: tensor parallelism v1 does not support GPTQ / AWQ weights ({path}).")
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support GPTQ / AWQ weights ({path})."
+        )
     if cls == "Linear8bitLt" or type(weight).__name__ == "Int8Params":
         raise ValueError(
             f"Unsloth: tensor parallelism v1 does not support bitsandbytes 8-bit weights ({path}); load in "
             "4-bit or 16-bit."
         )
     fp8 = {
-        getattr(torch, n, None) for n in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
+        getattr(torch, n, None)
+        for n in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
     }
     if weight.dtype in fp8 or getattr(base, "weight_scale", None) is not None:
         raise ValueError(f"Unsloth: tensor parallelism v1 does not support fp8 weights ({path}).")
     if getattr(type(base), "_unsloth_mxfp4_packed_linear", False):
-        raise ValueError(f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path}).")
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path})."
+        )
     if getattr(base, "weight_fake_quantizer", None) is not None:
-        raise ValueError(f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path}).")
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path})."
+        )
     if not _is_params4bit(weight) and type(weight) not in (nn.Parameter, torch.Tensor):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 cannot shard '{path}' weights of type {type(weight).__name__}."
         )
     if not _is_params4bit(weight) and not weight.is_floating_point():
-        raise ValueError(f"Unsloth: tensor parallelism v1 cannot shard {weight.dtype} weights ({path}).")
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 cannot shard {weight.dtype} weights ({path})."
+        )
     if weight.requires_grad:
         raise ValueError(
             f"Unsloth: tensor parallelism v1 shards LoRA / QLoRA training only; '{path}' has a trainable base "
@@ -661,7 +677,17 @@ def _as_param(tensor, like):
     return param
 
 
-def _set_dtensor(module, name, full, mesh, placement, parts = None, shard_dim = None, rank = 0, tp = 1):
+def _set_dtensor(
+    module,
+    name,
+    full,
+    mesh,
+    placement,
+    parts = None,
+    shard_dim = None,
+    rank = 0,
+    tp = 1,
+):
     """Replace module.<name> by a DTensor parameter: Shard(shard_dim) of `full` (parts permuted so each
     rank's parts are contiguous) or Replicate."""
     DTensor, _, Replicate, Shard = _dtensor_api()
@@ -669,7 +695,11 @@ def _set_dtensor(module, name, full, mesh, placement, parts = None, shard_dim = 
         local = shard_slice(full.detach(), shard_dim, parts, rank, tp)
         shape = list(full.shape)
         dt = DTensor.from_local(
-            local, mesh, [Shard(shard_dim)], run_check = False, shape = torch.Size(shape),
+            local,
+            mesh,
+            [Shard(shard_dim)],
+            run_check = False,
+            shape = torch.Size(shape),
             stride = torch.empty(shape, device = "meta").stride(),
         )
     else:
@@ -796,7 +826,9 @@ def _region_pre_hook(module, args, kwargs):
         return args, kwargs
     if args and isinstance(args[0], torch.Tensor):
         return (copy_to_tp(args[0], group),) + tuple(args[1:]), kwargs
-    raise RuntimeError(f"Unsloth: tensor parallel region {type(module).__name__} got no hidden_states.")
+    raise RuntimeError(
+        f"Unsloth: tensor parallel region {type(module).__name__} got no hidden_states."
+    )
 
 
 def _region_finish(module, y):
@@ -813,7 +845,9 @@ def _region_post_hook(module, args, output):
         return _region_finish(module, output)
     if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
         return type(output)((_region_finish(module, output[0]), *output[1:]))
-    raise RuntimeError(f"Unsloth: tensor parallel region {type(module).__name__} returned {type(output)}.")
+    raise RuntimeError(
+        f"Unsloth: tensor parallel region {type(module).__name__} returned {type(output)}."
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -824,7 +858,9 @@ def _region_post_hook(module, args, output):
 def _tp_projection_forward(self, x, *args, **kwargs):
     weight, base = _weight(self)
     W = _local(weight)
-    bias = base.bias if self._unsloth_tp_style == COLWISE else None  # row bias: once, after the reduce
+    bias = (
+        base.bias if self._unsloth_tp_style == COLWISE else None
+    )  # row bias: once, after the reduce
     bias = None if bias is None else _local(bias)
     input_dtype = x.dtype
     if _is_params4bit(W):
@@ -882,7 +918,6 @@ def _refuse_generate(*args, **kwargs):
 
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
-
     with torch.no_grad():
         for param in model.parameters():
             if param.requires_grad:
@@ -920,7 +955,12 @@ def _set_local_heads(module, region, tp):
         module.__dict__["config"] = local
 
 
-def apply_tensor_parallel(model, tp_mesh = None, plan = None, config: Optional[TPConfig] = None):
+def apply_tensor_parallel(
+    model,
+    tp_mesh = None,
+    plan = None,
+    config: Optional[TPConfig] = None,
+):
     """Shard every decoder attention / MLP of `model` (the PeftModel for LoRA, after get_peft_model) over
     the 1-D `tp_mesh` (None = all ranks). Returns the model, changed in place. Idempotent."""
     if is_tensor_parallel(model):
@@ -935,7 +975,10 @@ def apply_tensor_parallel(model, tp_mesh = None, plan = None, config: Optional[T
     tp = tp_mesh.size()
     rank = tp_mesh.get_local_rank()
     group = tp_mesh.get_group()
-    if any(_is_dtensor(p) for p in model.parameters()) or (getattr(model, "tp_size", None) or 1) > 1:
+    if (
+        any(_is_dtensor(p) for p in model.parameters())
+        or (getattr(model, "tp_size", None) or 1) > 1
+    ):
         raise ValueError(
             "Unsloth: this model is already distributed (DTensor parameters or a transformers tp_plan); "
             "load it without tp_plan before apply_tensor_parallel."
@@ -950,10 +993,11 @@ def apply_tensor_parallel(model, tp_mesh = None, plan = None, config: Optional[T
         for name, norm in region.norms:
             for p in norm.parameters():
                 if type(p) not in (nn.Parameter, torch.Tensor):
-                    raise ValueError(f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__}).")
+                    raise ValueError(
+                        f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__})."
+                    )
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
-
         _sync_trainable(model, group, dist.get_global_rank(group, 0))
     for region in tp_plan.regions:
         for proj in region.projs:
@@ -983,7 +1027,11 @@ def apply_tensor_parallel(model, tp_mesh = None, plan = None, config: Optional[T
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
             f"({tp_plan.source} plan), embeddings / lm_head / norms replicated"
-            + (f", {tp_plan.replicated_layers} layers replicated" if tp_plan.replicated_layers else "")
+            + (
+                f", {tp_plan.replicated_layers} layers replicated"
+                if tp_plan.replicated_layers
+                else ""
+            )
             + "."
         )
     return model
@@ -998,7 +1046,17 @@ def _shard_projection(region, proj, mesh, rank, tp):
     if _is_params4bit(weight):
         _shard_params4bit(f"{region.path}.{proj.name}", base, weight, proj.style, parts, rank, tp)
     else:
-        _set_dtensor(base, "weight", weight, mesh, "shard", parts if col else in_parts, 0 if col else 1, rank, tp)
+        _set_dtensor(
+            base,
+            "weight",
+            weight,
+            mesh,
+            "shard",
+            parts if col else in_parts,
+            0 if col else 1,
+            rank,
+            tp,
+        )
     if base.bias is not None:
         if col:
             _set_dtensor(base, "bias", base.bias, mesh, "shard", parts, 0, rank, tp)
@@ -1015,7 +1073,9 @@ def _shard_projection(region, proj, mesh, rank, tp):
                 _set_dtensor(A, "weight", A.weight, mesh, "shard", in_parts, 1, rank, tp)
                 _set_dtensor(B, "weight", B.weight, mesh, "replicate")
     module._unsloth_tp_style = proj.style
-    module._unsloth_tp_local = _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
+    module._unsloth_tp_local = (
+        _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
+    )
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
@@ -1024,7 +1084,12 @@ def _shard_projection(region, proj, mesh, rank, tp):
 # --------------------------------------------------------------------------------------------------
 
 
-def tp_clip_grad_norm_(parameters, max_norm, mesh = None, eps = 1e-6):
+def tp_clip_grad_norm_(
+    parameters,
+    max_norm,
+    mesh = None,
+    eps = 1e-6,
+):
     """Clip by the global 2-norm: sharded gradients' squares summed over tp, replicated ones counted once."""
     import torch.distributed as dist
 
@@ -1048,7 +1113,11 @@ def tp_clip_grad_norm_(parameters, max_norm, mesh = None, eps = 1e-6):
         else:
             sq = g.float().square().sum()
         replicated = sq if replicated is None else replicated + sq
-    device = params[0].grad.device if not _is_dtensor(params[0].grad) else params[0].grad.to_local().device
+    device = (
+        params[0].grad.device
+        if not _is_dtensor(params[0].grad)
+        else params[0].grad.to_local().device
+    )
     total = torch.zeros((), device = device) if replicated is None else replicated.to(device)
     if group is not None:
         shard_sq = torch.zeros((), device = device) if sharded is None else sharded.to(device)
@@ -1095,6 +1164,8 @@ def save_tp_adapter(model, save_directory, **kwargs):
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)
     if kwargs["is_main_process"]:
-        model.save_pretrained(save_directory, state_dict = {k: v.cpu() for k, v in state.items()}, **kwargs)
+        model.save_pretrained(
+            save_directory, state_dict = {k: v.cpu() for k, v in state.items()}, **kwargs
+        )
     if dist.is_initialized():
         dist.barrier()

@@ -68,7 +68,13 @@ def _train(model, ids, steps, clip):
     return logits, grads, losses, norms
 
 
-def _case_parity(rank, world, tmp, arch, overrides = None):
+def _case_parity(
+    rank,
+    world,
+    tmp,
+    arch,
+    overrides = None,
+):
     from torch.distributed.device_mesh import init_device_mesh
     from safetensors.torch import load_file
 
@@ -101,7 +107,9 @@ def _case_parity(rank, world, tmp, arch, overrides = None):
         "ref": ref_out,
         "tp": tp_out,
         "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
-        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors")) if rank == 0 else None,
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors"))
+        if rank == 0
+        else None,
         "local_q": (tuple(q.to_local().shape), tuple(q.shape), q.placements[0].dim),
         "fsdp2_refused": fsdp2_refused,
     }
@@ -117,7 +125,9 @@ def _case_fused(rank, world, tmp):
         import importlib.util
 
         here = os.path.dirname(os.path.abspath(__file__))
-        spec = importlib.util.spec_from_file_location("_tp_conftest", os.path.join(here, "conftest.py"))
+        spec = importlib.util.spec_from_file_location(
+            "_tp_conftest", os.path.join(here, "conftest.py")
+        )
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
         import unsloth
         from unsloth.kernels import fast_lora
@@ -131,7 +141,9 @@ def _case_fused(rank, world, tmp):
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     calls = []
     apply = fast_lora._apply
-    fast_lora._apply = lambda function, *args: calls.append(function.__name__) or apply(function, *args)
+    fast_lora._apply = lambda function, *args: calls.append(function.__name__) or apply(
+        function, *args
+    )
     out = {}
     for fused in (False, True):
         calls.clear()
@@ -139,7 +151,9 @@ def _case_fused(rank, world, tmp):
         tp_native.apply_tensor_parallel(model, mesh["tp"])
         attn = tp_native._unwrap(model).model.layers[0].self_attn
         g = torch.Generator().manual_seed(5)
-        X = torch.randn(2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g, requires_grad = True)
+        X = torch.randn(
+            2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g, requires_grad = True
+        )
         Xr = tp_native.copy_to_tp(X, attn._unsloth_tp_group)
         if fused:
             Q, K, V = fast_lora.apply_lora_qkv(attn, Xr, inplace = False)
@@ -234,7 +248,13 @@ def _case_qlora(rank, world, tmp, nested):
             name = next(n for n, m in model.named_modules() if m is base)
             local = bnb.functional.dequantize_4bit(base.weight.data, base.weight.quant_state)
             col = proj.style == tpn.COLWISE
-            want = tpn.shard_slice(full[name], 0 if col else 1, proj.parts if col else (full[name].shape[1],), rank, world)
+            want = tpn.shard_slice(
+                full[name],
+                0 if col else 1,
+                proj.parts if col else (full[name].shape[1],),
+                rank,
+                world,
+            )
             assert local.shape == want.shape, (name, local.shape, want.shape)
             shard_err = max(shard_err, float((local - want).abs().max()))
     ids = _batch(ref)
@@ -272,7 +292,11 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -286,7 +310,10 @@ def _spawn(case, world = 2, **kwargs):
             p.join(600)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        return [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
 
 
 def _check_parity(results, world):
@@ -342,12 +369,17 @@ def test_fused_lora_functions_read_local_shards():
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
     for res in results:
         plain, fused = res[False], res[True]
-        assert plain["calls"] == [] and fused["calls"] == ["LoRA_QKV", "LoRA_W"], (plain["calls"], fused["calls"])
+        assert plain["calls"] == [] and fused["calls"] == ["LoRA_QKV", "LoRA_W"], (
+            plain["calls"],
+            fused["calls"],
+        )
         torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
         torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
-            torch.testing.assert_close(fused["grads"][name], plain["grads"][name], rtol = 1e-4, atol = 1e-6, msg = name)
+            torch.testing.assert_close(
+                fused["grads"][name], plain["grads"][name], rtol = 1e-4, atol = 1e-6, msg = name
+            )
 
 
 def test_apply_refuses_a_2d_mesh():
