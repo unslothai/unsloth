@@ -5117,7 +5117,8 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
         effective = timeout if live is _NO_LIVE_READ_TIMEOUT else live
         if effective is None:
             data = await _orig(max_bytes, timeout = None)
-            current["park"].feed(data)
+            if not current.get("parser_feeds"):
+                current["park"].feed(data)
             return data
         crossed_at: Optional[float] = None
         window = effective
@@ -5139,7 +5140,8 @@ def _install_park_aware_read(response: httpx.Response, stall_grace: Callable[[],
                 )
                 window = min(effective, grace_left)
             else:
-                current["park"].feed(data)
+                if not current.get("parser_feeds"):
+                    current["park"].feed(data)
                 return data
 
     stream.read = read
@@ -5229,6 +5231,17 @@ async def _aiter_llama_stream_items(
         and _install_park_aware_read(response, stall_grace)
     )
     park_above = None if stall_grace is None else ServerParkNotices(stall_grace)
+    if grace_below:
+        # One tracker for both: a notice h11 read along with the headers never reaches the
+        # wrapped read, only this parser, which then feeds the read's tracker in its place.
+        _shared_park = getattr(
+            (getattr(response, "extensions", None) or {}).get("network_stream"),
+            "_unsloth_park_state",
+            None,
+        )
+        if _shared_park is not None:
+            park_above = _shared_park["park"]
+            _shared_park["parser_feeds"] = True
     if track_prefill_progress:
         from core.inference.llama_cpp import LlamaCppBackend
 

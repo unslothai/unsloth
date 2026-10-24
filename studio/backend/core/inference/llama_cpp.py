@@ -41156,6 +41156,16 @@ class LlamaCppBackend:
         user_cancel = cancel_event
         cancel_event = _interrupt_event(cancel_event, preempt_event)
         text_iter = response.iter_text()
+        park_notices = None
+        try:
+            _shared_park = getattr(
+                response.extensions.get("network_stream"), "_unsloth_park_state", None
+            )
+        except Exception:
+            _shared_park = None
+        if _shared_park is not None and _shared_park["notices"] is not None:
+            park_notices = _shared_park["notices"]
+            _shared_park["parser_feeds"] = True
         if first_token_deadline is None:
             first_token_deadline = start_first_token_wait()
         last_chunk_at: Optional[float] = None
@@ -41181,6 +41191,8 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, socket_timeout(remaining_s))
                 chunk = next(text_iter)
+                if park_notices is not None:
+                    park_notices.feed(chunk)
                 starts_output = last_chunk_at is not None
                 if chunk and last_chunk_at is None:
                     prefill_sse_buffer += chunk
@@ -41361,11 +41373,15 @@ class LlamaCppBackend:
                 if stream is None or getattr(stream, "_unsloth_cancel_wrapped", False):
                     continue
                 orig_read = stream.read
+                # `_iter_text_cancellable` feeds `notices` once it takes them: a notice h11 read
+                # along with the headers never reaches this read.
+                park_state = {"notices": notices, "parser_feeds": False}
 
                 def read(
                     max_bytes,
                     timeout = None,
                     _orig = orig_read,
+                    _park = park_state,
                 ):
                     effective = _live_read_timeout(timeout)
                     started = time.monotonic()
@@ -41418,12 +41434,13 @@ class LlamaCppBackend:
                                     continue
                                 raise
                             continue  # slow but alive: keep reading
-                        if notices is not None:
+                        if notices is not None and not _park["parser_feeds"]:
                             notices.feed(data)
                         return data
 
                 stream.read = read
                 stream._unsloth_cancel_wrapped = True
+                stream._unsloth_park_state = park_state
         except Exception:
             logger.debug("Could not install cancel-aware read", exc_info = True)
 
