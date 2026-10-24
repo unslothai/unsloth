@@ -90,16 +90,12 @@ export interface RunOptions {
   forceNodes?: string[];
   params?: Record<string, unknown>;
   bake?: boolean;
-  /** The user already agreed to download the models this run needs. */
   downloadsConfirmed?: boolean;
 }
 
 const PLAN_CHECK_TIMEOUT_MS = 4000;
 
-/**
- * True when the run must wait for the user: some model it needs is not on this computer yet. Asks the plan once per
- * set of model picks; a slow or failed plan never blocks the run (the run reports its own errors).
- */
+/** True when the run waits for the user to agree to downloads; a slow or failed plan never blocks the run. */
 async function heldForDownloads(
   flowId: string,
   options: RunOptions,

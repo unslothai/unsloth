@@ -123,7 +123,6 @@ export function needsLine(needs: string[] | null | undefined): string | null {
   return `Needs: ${labels.join(", ")}`;
 }
 
-/** Models the run would have to download first: not loaded and not on disk. */
 export function modelsToDownload(
   models: PlanModel[] | null | undefined,
 ): PlanModel[] {
@@ -146,7 +145,6 @@ export function planCheck(
   return plan.errors && plan.errors.length > 0 ? "unchecked" : "clear";
 }
 
-/** Total download size, or null when any size is unknown. */
 export function downloadBytes(models: PlanModel[]): number | null {
   let total = 0;
   for (const m of models) {
@@ -156,10 +154,7 @@ export function downloadBytes(models: PlanModel[]): number | null {
   return total;
 }
 
-/**
- * Which models a flow's blocks pick, as one string: a run whose picks match the last checked run (where nothing
- * had to download) skips the plan request.
- */
+/** Which models the enabled blocks pick, as one string (the download check's cache key). */
 export function modelSignature(
   nodes: Record<
     string,
