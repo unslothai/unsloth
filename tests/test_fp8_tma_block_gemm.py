@@ -44,10 +44,11 @@ def test_tma_matches_pointer_kernel_bitwise(M, N, K, dtype, monkeypatch):
     _, Wq, Ws, qa, sa = _inputs(M, N, K)
     calls = []
     real = fp8_mod._launch_fp8_tma_gemm
-    monkeypatch.setattr(fp8_mod, "_launch_fp8_tma_gemm", lambda *a: (calls.append(1), real(*a))[1])
+    monkeypatch.setattr(fp8_mod, "_launch_fp8_tma_gemm", lambda *a: (calls.append(a[5]), real(*a))[1])
     out = fp8_mod.w8a8_block_fp8_matmul_triton(qa, Wq, sa, Ws, [128, 128], output_dtype = dtype)
     monkeypatch.undo()
-    assert calls, "TMA path did not run"
+    assert M in calls, "TMA path did not run for this GEMM"  # a[5] is M; the self check uses M = 200
+    assert fp8_mod._FP8_TMA_GEMM, "self check disabled the TMA path"
     ref = _pointer(qa, Wq, sa, Ws, dtype, monkeypatch)
     bits = {2: torch.int16, 4: torch.int32}[out.element_size()]
     assert torch.equal(out.view(bits), ref.view(bits))
