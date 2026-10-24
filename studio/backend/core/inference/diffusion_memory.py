@@ -5372,8 +5372,7 @@ def _unique_tensors(module: Any) -> list:
 
 
 def _module_pin_mib(module: Any) -> int:
-    """Pinned host MiB an up-front group-offload pin of ``module`` takes: the slab arena's packing when it is on
-    (``_apply_group_offloading_packed``), else ``_module_host_mib``'s per-tensor rounding."""
+    """Pinned host MiB of an up-front pin of ``module``: slab packing when the arena is on, else per-tensor rounding."""
     from .diffusion_pinned_arena import arena_reserved_bytes, pin_arena_enabled
 
     if not pin_arena_enabled():
@@ -6363,8 +6362,7 @@ def _apply_group_offload(
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
-        # starts with start_background_pins once the load has committed.
+        # background_pin: applied unpinned; a _GroupPinner pins it once the load commits (start_background_pins).
         if background_pin is None:
             background_pin = bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
         defer = (

@@ -14,7 +14,6 @@ from core.inference import diffusion_pinned_arena as arena_mod
 
 @pytest.fixture
 def unpinned_slabs(monkeypatch):
-    """Slabs from pageable memory (no CUDA here)."""
     requests = []
 
     def alloc(nbytes):
