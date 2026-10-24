@@ -9,7 +9,6 @@ import torch
 
 def test_mamba_skips_dt_proj():
     from unsloth.models.vision import _architecture_skip_modules
-
     assert "dt_proj" in _architecture_skip_modules(["mamba"])
 
 
@@ -42,9 +41,7 @@ def test_skip_key_keeps_tiny_mamba_dt_proj_out_of_bnb():
     from unsloth.models.vision import _architecture_skip_modules
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
-    config = MambaConfig(
-        vocab_size = 64, hidden_size = 16, state_size = 4, num_hidden_layers = 2, expand = 2
-    )
+    config = MambaConfig(vocab_size = 64, hidden_size = 16, state_size = 4, num_hidden_layers = 2, expand = 2)
     with torch.device("meta"):
         model = MambaForCausalLM(config)
     skip = list(SKIP_QUANTIZATION_MODULES) + _architecture_skip_modules(["mamba"])
@@ -66,5 +63,13 @@ def test_skip_key_keeps_tiny_mamba_dt_proj_out_of_bnb():
         for name, m in model.named_modules()
         if name.endswith(("dt_proj", "in_proj", "x_proj"))
     }
-    assert all(not isinstance(model.get_submodule(n), bnb.nn.Linear4bit) for n in kinds if n.endswith("dt_proj")), kinds
-    assert any(isinstance(model.get_submodule(n), bnb.nn.Linear4bit) for n in kinds if n.endswith("in_proj")), kinds
+    assert all(
+        not isinstance(model.get_submodule(n), bnb.nn.Linear4bit)
+        for n in kinds
+        if n.endswith("dt_proj")
+    ), kinds
+    assert any(
+        isinstance(model.get_submodule(n), bnb.nn.Linear4bit)
+        for n in kinds
+        if n.endswith("in_proj")
+    ), kinds
