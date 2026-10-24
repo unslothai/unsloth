@@ -1708,6 +1708,12 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
+            {/* Saves only these sampling values, so it sits under them. */}
+            {!isExternalModel && currentCheckpoint ? (
+              <Suspense fallback={null}>
+                <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
+              </Suspense>
+            ) : null}
           </div>
         </CollapsibleSection>
 
@@ -1739,11 +1745,6 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
             )}
 
-            {!isExternalModel && currentCheckpoint ? (
-          <Suspense fallback={null}>
-            <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
-          </Suspense>
-            ) : null}
       </div>
       </div>
       </div>

@@ -70,21 +70,20 @@ async function saveSamplingForCurrentModel({
 
 export default function SaveForModelButton(deps: Deps) {
   return (
-    <div className="border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] py-5 dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]">
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          saveSamplingForCurrentModel(deps).catch((error: unknown) => {
-            deps.notify.error(
-              error instanceof Error ? error.message : String(error),
-            );
-          });
-        }}
-      >
-        Save for this model
-      </Button>
-    </div>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="self-start"
+      onClick={() => {
+        saveSamplingForCurrentModel(deps).catch((error: unknown) => {
+          deps.notify.error(
+            error instanceof Error ? error.message : String(error),
+          );
+        });
+      }}
+    >
+      Save for this model
+    </Button>
   );
 }
