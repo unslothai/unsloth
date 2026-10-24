@@ -997,8 +997,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         install_methods()
 
 
-# Backends with the single-tensor collectives (all_gather_into_tensor / reduce_scatter_tensor). Others
-# (MPI) keep the list all_gather + all_reduce path.
+# Backends with single-tensor collectives; others (MPI) keep the list path.
 _FUSED_GATHER_BACKENDS = ("nccl", "gloo", "xccl", "hccl", "ucc")
 
 
@@ -1010,8 +1009,7 @@ def _fused_gather_ok(group) -> bool:
     return "mpi" not in backend and any(name in backend for name in _FUSED_GATHER_BACKENDS)
 
 
-# reduce_scatter_tensor / all_gather_into_tensor are deprecated for reduce_scatter_single /
-# all_gather_single on newer torch (same signatures).
+# Newer torch deprecates *_tensor for *_single (same signatures).
 _reduce_scatter = getattr(dist, "reduce_scatter_single", None) or getattr(
     dist, "reduce_scatter_tensor", None
 )
@@ -1036,8 +1034,7 @@ class _GatherSequence(torch.autograd.Function):
             dist.all_gather(parts, x, group = group)
             return torch.cat(parts, dim = 1)
         batch, local, rest = x.shape[0], x.shape[1], x.shape[2:]
-        # The gather concatenates along dim 0, so the sequence dim goes first. A fresh
-        # output (no view base), as torch.cat gave.
+        # Gather concatenates on dim 0, so sequence goes first; fresh output like torch.cat.
         out = x.new_empty((batch, size * local, *rest))
         if batch == 1:
             _all_gather_into(

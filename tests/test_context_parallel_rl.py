@@ -719,7 +719,6 @@ def test_grpo_dapo_token_count_follows_the_adopted_completions():
 
 
 def _gather_both_paths(x, weight, group, rank, size):
-    # The same gather + loss through the list all_gather / all_reduce path and the fused path.
     results = {}
     for fused in (False, True):
         calls = []
