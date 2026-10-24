@@ -513,10 +513,9 @@ test("closing an editor before its sharing UI loads cancels the import, while ef
   const tree = elements(module.SharedRunConfigControls(props));
   assert.equal(tree[0].type, "LazyImportBoundary");
   const fallback = (tree[0].props.fallback as StubElement).props;
-  assert.equal(fallback.disabled, true);
-  assert.ok(
-    String(fallback.className).endsWith(` ${props.className}`),
-    "the placeholder keeps the caller's classes",
+  assert.deepEqual(
+    [fallback.disabled, fallback.className],
+    [true, props.className],
   );
   assert.equal(find(tree, "lazy")?.props.target, hubTarget);
   assert.equal(find(tree, "lazy")?.props.hydrated, false);

@@ -60,9 +60,9 @@ export function SharedRunConfigActions({
       <Button
         type="button"
         size="icon-sm"
-        variant="ghost"
-        // The ghost dark hover is too faint on the picker panel; this is its filled buttons' hover.
-        className={`dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] ${className}`}
+        // A filled circle, the same fill as Reset beside it.
+        variant="outline"
+        className={className}
         aria-label="Share"
         title="Share"
         disabled={!ready || disabled}
