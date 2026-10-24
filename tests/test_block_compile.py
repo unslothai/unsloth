@@ -1463,3 +1463,20 @@ def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
     assert len(got) == len(want)
     for g, w in zip(got, want):
         torch.testing.assert_close(g.detach(), w)
+
+
+@pytest.mark.parametrize("backend", ["AUTO", "TRITON"])
+def test_training_flex_options_keep_a_callers_backend(backend):
+    """BACKEND supersedes FORCE_USE_FLEX_ATTENTION, and torch 2.10+ raises when both are set."""
+    M = _load()
+    options = {"BACKEND": backend}
+    assert M._training_flex_options(options) == options
+    assert M._training_flex_options({"ROWS_GUARANTEED_SAFE": True}) == {
+        "ROWS_GUARANTEED_SAFE": True,
+        "FORCE_USE_FLEX_ATTENTION": True,
+    }
+    flex = pytest.importorskip("torch.nn.attention.flex_attention")
+    if not hasattr(flex, "_apply_kernel_options") or "BACKEND" not in getattr(flex, "FlexKernelOptions", {}).__annotations__:
+        return
+    q = torch.randn(1, 1, 16, 16)
+    flex._apply_kernel_options(q, q, q, False, M._training_flex_options(options))
