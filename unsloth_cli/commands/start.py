@@ -2147,6 +2147,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "tensor_parallel": "tensor_parallel",
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
+    "requested_reasoning_budget": "reasoning_budget",
+    "requested_reasoning_budget_message": "reasoning_budget_message",
     # The applied value is null when the runtime refused the request.
     # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
     "mlx_kv_quant_requested": "mlx_kv_quant",

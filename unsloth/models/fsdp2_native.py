@@ -2134,13 +2134,62 @@ def native_load_optimizer(model, optimizer, path_or_state):
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
     rename_optimizer_state_for(_inner_optimizer(optimizer), state)
-    set_optimizer_state_dict(
-        _native_root(model),
-        _inner_optimizer(optimizer),
-        state,
-        options = StateDictOptions(full_state_dict = True),
-    )
+    root = _native_root(model)
+    inner = _inner_optimizer(optimizer)
+    unstepped = _unstepped_optimizer_params(root, inner, state)
+    # torch refuses a trainable parameter without saved state, and strict = False would keep the
+    # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
+    try:
+        for param in unstepped:
+            param.requires_grad_(False)
+        set_optimizer_state_dict(
+            root,
+            inner,
+            state,
+            options = StateDictOptions(full_state_dict = True),
+        )
+    finally:
+        for param in unstepped:
+            param.requires_grad_(True)
+    for param in unstepped:
+        inner.state.pop(param, None)
     return state
+
+
+def _unstepped_optimizer_params(root, optimizer, state):
+    """Trainable parameters listed in the saved param groups but with no saved state (never got a
+    gradient). Raises for one not listed at all: another model's optimizer."""
+    saved_state = state.get("state") or {}
+    if not isinstance(saved_state, dict) or all(isinstance(k, int) for k in saved_state):
+        return []  # not keyed by FQN: torch loads it as given
+    try:
+        from torch.distributed.checkpoint.state_dict import _get_fqns
+    except ImportError:
+        _get_fqns = None
+    fqns = {}
+    for name, param in root.named_parameters(remove_duplicate = False):
+        names = _get_fqns(root, name) if _get_fqns is not None else {name}
+        fqns.setdefault(param, set()).update(names)
+    listed = {f for g in state.get("param_groups") or [] for f in (g.get("params") or [])}
+    saved = set(saved_state)
+    unstepped, seen, unknown = [], set(), []
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            names = fqns.get(param)
+            if not param.requires_grad or not names or names & saved:
+                continue
+            if names & listed:
+                if id(param) not in seen:
+                    seen.add(id(param))
+                    unstepped.append(param)
+            else:
+                unknown.append(sorted(names)[0])
+    if unknown:
+        raise RuntimeError(
+            f"Unsloth: the optimizer checkpoint has no entry for {unknown[0]} ({len(unknown)} "
+            "parameters), so it was not saved from this model's optimizer."
+        )
+    return unstepped
 
 
 # Sharded (torch.distributed.checkpoint) resume. The optimizer directory is opt-in
@@ -2244,7 +2293,12 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
     unstepped = _match_saved_optimizer_keys(state, directory, root)
+    # Hyperparameter keys the checkpoint lacks (another optimizer class, or an older torch) keep this
+    # optimizer's values; dcp.load would refuse them as missing.
+    unsaved = _drop_unsaved_group_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
+    for index, key, value in unsaved:
+        state["param_groups"][index].setdefault(key, value)
     if unstepped:
         # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
         # groups, without state. Anything else without state is not this optimizer's checkpoint.
@@ -2263,6 +2317,23 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
     return state
+
+
+def _drop_unsaved_group_keys(state, directory):
+    """Removes (and returns as (group index, key, value)) the param group entries of the dcp.load
+    target that the checkpoint does not hold."""
+    from torch.distributed.checkpoint import FileSystemReader
+
+    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    dropped = []
+    for index, group in enumerate(state.get("param_groups") or []):
+        prefix = f"param_groups.{index}."
+        if not isinstance(group, dict) or not any(k.startswith(prefix) for k in metadata):
+            continue  # not flattened per key: leave it to dcp.load
+        for key in [k for k in group if k != "params"]:
+            if prefix + key not in metadata:
+                dropped.append((index, key, group.pop(key)))
+    return dropped
 
 
 def _match_saved_optimizer_keys(
@@ -2290,6 +2361,14 @@ def _match_saved_optimizer_keys(
         entry = per_param[fqn]
         for name in [n for n in entry if f"state.{fqn}.{n}" not in metadata]:
             del entry[name]
+        for name, value in list(entry.items()):
+            # Saved as a tensor where this optimizer keeps a plain value (torch AdamW's tensor step
+            # resumed into bitsandbytes' int step): read the tensor, the rename converts it.
+            md = metadata[f"state.{fqn}.{name}"]
+            size = getattr(md, "size", None)
+            dtype = getattr(getattr(md, "properties", None), "dtype", None)
+            if not isinstance(value, torch.Tensor) and size is not None and dtype is not None:
+                entry[name] = torch.empty(tuple(size), dtype = dtype)
         if not entry:
             del per_param[fqn]
             unstepped.append(fqn)

@@ -3254,6 +3254,17 @@ def end_cfg_render(pipe: Any) -> None:
         router.end_render()
 
 
+def release_cfg_prefix_kv(pipe: Any) -> None:
+    """Drop the replica's prefix-KV copies (and their hold on the primary's tensors) after the last denoise step."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return
+    if router is not None:
+        router.kv_mirrors.clear()
+        router.kv_declined.clear()
+
+
 def uninstall_cfg_parallel(pipe: Any) -> None:
     try:
         router = _CFG_ROUTERS.pop(pipe, None) if pipe is not None else None
