@@ -170,6 +170,34 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
+def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
+    """Quantized tensor types across EVERY model file the sd.cpp process loads, or None if any GGUF is unreadable.
+
+    The env override is process-wide: the pinned ggml-cuda applies it to every quantized matmul, so a k-quant
+    text encoder or VAE beside a Q8_0 diffusion model would leave MMQ too. The diffusion model must be a readable
+    GGUF; a non-GGUF companion (safetensors) loads dense and adds no quantized types."""
+    types = gguf_quantized_weight_types(files.diffusion_model)
+    if types is None:
+        return None
+    for path in (
+        files.vae,
+        files.audio_vae,
+        files.clip_l,
+        files.clip_g,
+        files.t5xxl,
+        files.llm,
+        files.llm_vision,
+        files.qwen2vl,
+    ):
+        if not path or not str(path).lower().endswith(".gguf"):
+            continue
+        extra = gguf_quantized_weight_types(path)
+        if extra is None:
+            return None
+        types |= extra
+    return types
+
+
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
