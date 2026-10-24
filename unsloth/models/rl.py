@@ -4035,7 +4035,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             from ._gc_config_default import track_explicit_gradient_checkpointing
             track_explicit_gradient_checkpointing(_patched_config)
         except Exception as e:
-            logger.info(f"Unsloth: Could not track explicit gradient_checkpointing on {RLConfig_name}: {e}")
+            logger.info(
+                f"Unsloth: Could not track explicit gradient_checkpointing on {RLConfig_name}: {e}"
+            )
     if _patched_config is not None:
         _register_config_pickle_fallback(_displaced_config, _patched_config)
 

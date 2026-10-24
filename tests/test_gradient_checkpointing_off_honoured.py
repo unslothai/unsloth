@@ -33,7 +33,12 @@ def _load_module():
 
 def _config_class():
     class Config:
-        def __init__(self, output_dir = None, gradient_checkpointing = True, **kwargs):
+        def __init__(
+            self,
+            output_dir = None,
+            gradient_checkpointing = True,
+            **kwargs,
+        ):
             self.output_dir = output_dir
             self.gradient_checkpointing = gradient_checkpointing
 
@@ -89,7 +94,7 @@ def test_honour_rules(capsys):
 
 
 _E2E = textwrap.dedent(
-    r'''
+    r"""
     import json, os, sys, types
     import unsloth  # noqa: F401
     # UNSLOTH_ALLOW_CPU=1 skips the TRL trainer rewrite; run it so SFTTrainer is Unsloth's, as on a GPU host.
@@ -152,7 +157,7 @@ _E2E = textwrap.dedent(
         "on_default": run(True, {}),
     }
     print("E2E_RESULT " + json.dumps(results))
-    '''
+    """
 )
 
 
