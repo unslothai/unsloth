@@ -193,6 +193,11 @@
 		font-family: var(--font-heading) !important;
 		font-weight: 500 !important;
 	}
+	/* Every red button, hand-rolled ones included, takes the button shade of red. */
+	button,
+	[role="button"] {
+		--destructive: var(--destructive-button);
+	}
 }
 
 
@@ -281,6 +286,8 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Red buttons: this as text, at 10% as the fill. */
+	--destructive-button: #ce4035;
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
 	--border-base: oklch(0.9208 0 0);
@@ -512,6 +519,7 @@
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #fcfcfc;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	--destructive-button: #ed716a;
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
