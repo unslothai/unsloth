@@ -2081,11 +2081,12 @@ def _unstepped_optimizer_params(root, optimizer, state):
         names = _get_fqns(root, name) if _get_fqns is not None else {name}
         fqns.setdefault(param, set()).update(names)
     listed = {f for g in state.get("param_groups") or [] for f in (g.get("params") or [])}
+    saved = set(saved_state)
     unstepped, seen, unknown = [], set(), []
     for group in optimizer.param_groups:
         for param in group["params"]:
             names = fqns.get(param)
-            if not param.requires_grad or not names or names & set(saved_state):
+            if not param.requires_grad or not names or names & saved:
                 continue
             if names & listed:
                 if id(param) not in seen:
