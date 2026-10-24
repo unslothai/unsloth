@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -225,7 +225,7 @@ import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
-import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { isLoadInFlightPhase, watchSavingPhase } from "@/lib/swap-save-phase";
 import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
@@ -1606,7 +1606,9 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
 type Busy = "loading" | "unloading" | "generating" | null;
 // baseRepo: only a reload of a resident model the page did not load sends one, to rebuild the same companions.
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string; baseRepo?: string };
-type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile"> & {
+  fieldFiles?: ImageComponentFiles;
+};
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1907,8 +1909,41 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [textEncoderFiles, setTextEncoderFiles] = useState("");
-  const [vaeFile, setVaeFile] = useState("");
+  const [initialComponents] = useState<ImageComponentFiles>(() =>
+    rememberedModel ? seedImageComponents(rememberedModel) : {},
+  );
+  const componentFieldsOwner = useRef(initialComponents);
+  const [textEncoderFiles, setTextEncoderFiles] = useState((initialComponents.textEncoderFiles ?? []).join("\n"));
+  const [vaeFile, setVaeFile] = useState(initialComponents.vaeFile ?? "");
+  const componentFieldsShown = useRef(initialComponents);
+  useEffect(() => {
+    componentFieldsShown.current = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+  }, [textEncoderFiles, vaeFile]);
+  const pickComponentFiles = useCallback(
+    (model: ImageModelKey): ImageComponentFiles => {
+      const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+      const pick = componentFilesForModel(typed, componentFieldsOwner.current, model);
+      componentFieldsOwner.current = pick.owner;
+      if (pick.replaceEncoders) setTextEncoderFiles((pick.files.textEncoderFiles ?? []).join("\n"));
+      if (pick.replaceVae) setVaeFile(pick.files.vaeFile ?? "");
+      return pick.files;
+    },
+    [textEncoderFiles, vaeFile],
+  );
+  const componentsReconciled = useRef(false);
+  const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const reconcileInitialComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (componentsReconciled.current || initialLoadProbe === "pending") return;
+      componentsReconciled.current = true;
+      if (initialLoadProbe === "loading" || !rememberedModel) return;
+      const bare = reconcileRememberedComponents(rememberedModel, loaded);
+      if (!bare) return;
+      setRememberedModel(bare);
+      pickComponentFiles(bare);
+    },
+    [rememberedModel, pickComponentFiles, initialLoadProbe],
+  );
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -1944,6 +1979,22 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const residentReconciledFor = useRef<DiffusionStatus | null>(null);
+  const reconcileResidentComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (initialLoadProbe === "pending" || busy === "loading") return;
+      if (residentReconciledFor.current === loaded) return;
+      residentReconciledFor.current = loaded;
+      const bare = forgetStaleResidentComponents(loaded);
+      if (bare) setRememberedModel(bare);
+    },
+    [initialLoadProbe, busy],
+  );
+  useEffect(() => {
+    if (!status?.loaded) return;
+    reconcileInitialComponents(status);
+    reconcileResidentComponents(status);
+  }, [status, reconcileInitialComponents, reconcileResidentComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
@@ -2198,6 +2249,7 @@ export function ImagesPage({
     lastLoadSig.current = null;
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
+    clearPendingImageLoad();
     setCanReapply(false);
     // Stopping the poll also stops its "cancelled or evicted" branch, which is what hands back a
     // pick that never became resident, so do it here exactly as that branch would.
@@ -3408,6 +3460,21 @@ export function ImagesPage({
   );
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
+  const rememberFinishedLoad = useCallback((target: LastLoad, loaded: DiffusionStatus, recovered = false) => {
+    if (!matchesRememberedModel(target, loaded)) return;
+    const remembered = withEngagedFamily(target, loaded);
+    rememberImageModel(remembered);
+    setRememberedModel(remembered);
+    const files = rememberLoadedImageComponents(target, loaded);
+    if (files && recovered) {
+      const fill = recoveredComponentFields(componentFieldsShown.current, componentFieldsOwner.current, files, target.kind);
+      if (fill.replaceEncoders) setTextEncoderFiles((fill.shown.textEncoderFiles ?? []).join("\n"));
+      if (fill.replaceVae) setVaeFile(fill.shown.vaeFile ?? "");
+      componentFieldsShown.current = fill.shown;
+    }
+    if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, target.kind);
+  }, []);
+
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
     const seq = cancelSeq.current;
@@ -3431,11 +3498,9 @@ export function ImagesPage({
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
-        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
-          const remembered = withEngagedFamily(lastLoad.current, loaded);
-          rememberImageModel(remembered);
-          setRememberedModel(remembered);
-        }
+        const started = lastLoad.current;
+        lastLoad.current = finishedLoadTarget(started, loaded);
+        if (lastLoad.current) rememberFinishedLoad(lastLoad.current, loaded, lastLoad.current !== started);
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
@@ -3463,6 +3528,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
@@ -3488,6 +3554,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
@@ -3519,7 +3586,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -3581,18 +3648,31 @@ export function ImagesPage({
     void (async () => {
       await refreshStatus();
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
+      let inFlight = false;
       try {
         const p = await getDiffusionLoadProgress();
-        if (p.phase === "downloading" || p.phase === "finalizing") {
+        inFlight = isLoadInFlightPhase(p.phase);
+        if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
           loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
+        } else if (p.phase === "ready") {
+          const ticket = ++statusTicket.current;
+          const loaded = await getDiffusionStatus();
+          setStatusIfNewest(ticket, loaded);
+          const resumed = finishedLoadTarget<LastLoad>(null, loaded);
+          if (resumed) {
+            lastLoad.current = resumed;
+            rememberFinishedLoad(resumed, loaded, true);
+          }
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      if (!inFlight) clearPendingImageLoad();
+      setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
         const g = await getGenerateProgress();
@@ -3616,7 +3696,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
 
   // Seed the sliders from a resident model's recipe when the page finds one it did not load,
   // else a resident flux.1-dev generates garbage at 9 steps. Guarded by a per-repo ref.
@@ -3856,6 +3936,7 @@ export function ImagesPage({
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      const fieldFiles = componentFileFields(opts.kind, picked.text_encoder_file, picked.vae_file);
       // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
       // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
       const redirected = redirectRetiredImagePick({
@@ -3876,7 +3957,9 @@ export function ImagesPage({
         baseRepo: opts.baseRepo,
         textEncoderFiles: componentFiles.text_encoder_file,
         vaeFile: componentFiles.vae_file,
+        fieldFiles: { textEncoderFiles: fieldFiles.text_encoder_file, vaeFile: fieldFiles.vae_file },
       };
+      rememberPendingImageLoad(lastLoad.current);
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3884,7 +3967,7 @@ export function ImagesPage({
       const retryPick = pickSeq.current;
       const retryOversized = retryWhileCurrent(
         () => retryPick === pickSeq.current && startLoad === loadSeq.current,
-        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+        () => void retryLoadRef.current?.(repoId, opts, { ...picked, allow_oversized_load: true }),
       );
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
@@ -3925,6 +4008,7 @@ export function ImagesPage({
         resyncEvicted(pendingEvicted.current, "image");
       } catch (err) {
         pendingEvicted.current = [];
+        clearPendingImageLoad();
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
@@ -4279,8 +4363,17 @@ export function ImagesPage({
         pickToast.dismissAll();
         if (!owns()) return true;
       }
+      const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
+      const withPicked = (a: LoadAdvanced): LoadAdvanced =>
+        picked
+          ? {
+              ...a,
+              text_encoder_file: picked.textEncoderFiles?.length ? picked.textEncoderFiles : undefined,
+              vae_file: picked.vaeFile || undefined,
+            }
+          : a;
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      let advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+      let advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
       // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
       // checkpoint is the one the load opens (the backend redirects the same picks).
       const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
@@ -4293,7 +4386,7 @@ export function ImagesPage({
       if (redirected.repoId !== repoId) {
         repoId = redirected.repoId;
         opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
-        advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
+        advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
@@ -4406,7 +4499,7 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
+    [stage, currentLoadAdvanced, pickComponentFiles, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway, dismissLoadAnyway],
   );
   const loadOrStageRef = useRef(loadOrStage);
   useEffect(() => {
@@ -4416,10 +4509,23 @@ export function ImagesPage({
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
       if (!meta.ggufFilename) return null;
+      const opts = { kind: "gguf", filename: meta.ggufFilename } as const;
+      const advanced = currentLoadAdvanced(repoId, false);
+      const { files } = componentFilesForModel(
+        { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() },
+        componentFieldsOwner.current,
+        { repoId, ...opts },
+      );
       const plan = await requestDownloadPlan(
         repoId,
-        { kind: "gguf", filename: meta.ggufFilename },
-        currentLoadAdvanced(repoId, false),
+        opts,
+        modelSelectionAction === "download"
+          ? advanced
+          : {
+              ...advanced,
+              text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+              vae_file: files.vaeFile || undefined,
+            },
       );
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -4429,7 +4535,7 @@ export function ImagesPage({
           plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
-    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
+    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage, modelSelectionAction, textEncoderFiles, vaeFile],
   );
 
   const beginPick = useCallback(() => {
@@ -4638,8 +4744,13 @@ export function ImagesPage({
       void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
       return;
     }
-    void handleLoad(l.repoId, opts);
-  }, [engineChoice, handleLoad, loadOrStage, status]);
+    const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
+    void handleLoad(l.repoId, opts, {
+      ...currentLoadAdvanced(l.repoId),
+      text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+      vae_file: files.vaeFile || undefined,
+    });
+  }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -5731,6 +5842,7 @@ export function ImagesPage({
               : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
           status,
         );
+        forgetStaleImageComponents(model, status);
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -5752,6 +5864,7 @@ export function ImagesPage({
       // "Generate anyway" on an unloaded model: the retry's finally clears the one-shot before this runs.
       allowOversized: oversizedOnce.current,
     };
+    const recalled = recalledComponentFiles(rememberedModel);
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
@@ -5760,8 +5873,8 @@ export function ImagesPage({
         ...currentLoadAdvanced(rememberedModel.repoId, false, true),
         family_override: rememberedModel.familyOverride,
         // The recalled build's own encoder / VAE files, not whatever the fields hold now.
-        text_encoder_file: rememberedModel.textEncoderFiles,
-        vae_file: rememberedModel.vaeFile,
+        text_encoder_file: recalled.textEncoderFiles,
+        vae_file: recalled.vaeFile,
       },
     );
     if (!started) pendingRecalledGeneration.current = null;

@@ -308,6 +308,9 @@ del _guard_dataset_media
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# Studio decides training / export / chat-only from its own hardware detection, so keep
+# `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Must not import unsloth here (pulls torch/GPU); before transformers reads sentencepiece.
 from utils.sentencepiece_guard import disable_sentencepiece_on_windows as _no_sentencepiece

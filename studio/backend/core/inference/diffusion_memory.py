@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from .rocm_bf16 import is_rocm_torch
 
 
@@ -487,6 +487,37 @@ def _same_view(tensor: Any, view: Any) -> bool:
     )
 
 
+def _prune_pin_layout(layout: list, host: dict, buffer_host: dict) -> None:
+    """Drop, in place, the layout entries whose kept host weight is no longer their pinned view, and the chunks left
+    with none: the layout's own references would otherwise keep those pinned chunks alive."""
+    kept = []
+    for buf, entries in layout:
+        live = []
+        for entry in entries:
+            name, view = entry[0], entry[2]
+            tensor = buffer_host.get(name[1:]) if name.startswith("\0") else host.get(name)
+            if tensor is None:
+                continue
+            # A torchao wrapper weight has one entry per inner tensor (as ``_upload_pinned_chunks`` reads them).
+            inner = None if name.startswith("\0") else _wrapper_inner(tensor)
+            if inner is not None:
+                if any(_same_view(t, view) for _, t in inner):
+                    live.append(entry)
+            elif _same_view(tensor, view):
+                live.append(entry)
+        if live:
+            kept.append((buf, live))
+    layout[:] = kept
+
+
+def _prune_state_layout(state: dict) -> None:
+    layout = state.get("pin_layout")
+    if layout:
+        _prune_pin_layout(layout, state.get("host") or {}, state.get("buffer_host") or {})
+        if not layout:
+            state.pop("pin_layout", None)
+
+
 def _upload_pinned_chunks(
     module: Any, layout: list, host: dict, owner: dict, buffer_host: dict, device: Any
 ) -> int:
@@ -715,6 +746,8 @@ def _wrap_cpu_offload_hook(
                 pass
         out = init_hook(mod)
         _capture(mod)
+        # a weight cast or replaced on the device comes back as a new host tensor: release its pinned chunk now
+        _prune_state_layout(state)
         version.clear()
         buffer_version.clear()
         return out
@@ -736,6 +769,8 @@ def _wrap_cpu_offload_hook(
             for name in list(buffer_host):
                 if current.get(name) is not buffer_host[name]:
                     buffer_host.pop(name, None)
+            # changed while offloaded (a dtype cast, a replacement): its pinned chunk is not kept for nothing
+            _prune_state_layout(state)
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
@@ -1523,13 +1558,197 @@ def _budget_reserve_kind(memory: DeviceMemory) -> str:
     return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
+_LOAD_BUDGET_FRACTIONS: dict[str, float] = {}
+_LOAD_BUDGET_LOCK = threading.Lock()
+_BUDGET_SCOPE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "unsloth_vram_budget_scope", default = None
+)
+_UPCOMING_LOAD_FRACTION: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "unsloth_vram_budget_upcoming_load", default = None
+)
+
+
+def _live_vram_budget_fraction() -> float:
+    from utils.vram_budget_settings import get_vram_budget_fraction
+    return float(get_vram_budget_fraction())
+
+
+def _vram_budget_fraction() -> float:
+    """The fraction the reserve readers charge."""
+    scope = _BUDGET_SCOPE.get()
+    with _LOAD_BUDGET_LOCK:
+        if scope is not None and scope[0] == "load" and scope[2] is not None:
+            return float(scope[2])
+        if scope is not None and scope[1] in _LOAD_BUDGET_FRACTIONS:
+            return _LOAD_BUDGET_FRACTIONS[scope[1]]
+        if scope is None:
+            upcoming = _UPCOMING_LOAD_FRACTION.get()
+            if upcoming is not None:
+                return float(upcoming)
+        pinned = tuple(_LOAD_BUDGET_FRACTIONS.values())
+    return min(pinned) if pinned else _live_vram_budget_fraction()
+
+
+def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
+    """Decorator: run a backend load (snapshots the live Budget) or generation under ``owner``'s budget scope."""
+
+    def wrap(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def scoped(*args: Any, **kwargs: Any) -> Any:
+            outer = _BUDGET_SCOPE.get()
+            if load and outer is not None and outer[0] == "load" and outer[1] == owner:
+                return fn(*args, **kwargs)
+            if load:
+                fraction: Optional[float] = _UPCOMING_LOAD_FRACTION.get()
+                if fraction is None:
+                    try:
+                        fraction = _live_vram_budget_fraction()
+                    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+                        fraction = None
+                scope = ("load", owner, fraction)
+            else:
+                scope = ("generate", owner, None)
+            token = _BUDGET_SCOPE.set(scope)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _BUDGET_SCOPE.reset(token)
+
+        return scoped
+
+    return wrap
+
+
+def snapshot_upcoming_load_budget() -> Optional[float]:
+    """Snapshot the live VRAM Budget for the load this request is preparing, before it ranks GPUs, so the ranking, the plan and the load itself agree."""
+    fraction = _UPCOMING_LOAD_FRACTION.get()
+    if fraction is not None:
+        return fraction
+    try:
+        fraction = _live_vram_budget_fraction()
+    except Exception:  # noqa: BLE001
+        return None
+    _UPCOMING_LOAD_FRACTION.set(fraction)
+    return fraction
+
+
+@contextlib.contextmanager
+def upcoming_load_budget() -> Iterator[Optional[float]]:
+    """``snapshot_upcoming_load_budget`` for a block only (a ranking helper that runs outside a request's own context)."""
+    if _UPCOMING_LOAD_FRACTION.get() is not None:
+        yield _UPCOMING_LOAD_FRACTION.get()
+        return
+    try:
+        fraction: Optional[float] = _live_vram_budget_fraction()
+    except Exception:  # noqa: BLE001
+        fraction = None
+    token = _UPCOMING_LOAD_FRACTION.set(fraction)
+    try:
+        yield fraction
+    finally:
+        _UPCOMING_LOAD_FRACTION.reset(token)
+
+
+def carry_load_budget(fn: Callable) -> Callable:
+    """Wrap a load's worker-thread target so it inherits the fraction the calling load began with."""
+    scope = _BUDGET_SCOPE.get()
+    fraction = (
+        scope[2] if scope is not None and scope[0] == "load" else _UPCOMING_LOAD_FRACTION.get()
+    )
+    if fraction is None:
+        return fn
+
+    @functools.wraps(fn)
+    def carried(*args: Any, **kwargs: Any) -> Any:
+        token = _UPCOMING_LOAD_FRACTION.set(float(fraction))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _UPCOMING_LOAD_FRACTION.reset(token)
+
+    return carried
+
+
+def commit_load_budget_fraction(owner: str) -> None:
+    """Publish the fraction ``owner``'s load planned with, alongside its committed state. Never raises."""
+    scope = _BUDGET_SCOPE.get()
+    fraction = scope[2] if scope is not None and scope[0] == "load" and scope[1] == owner else None
+    if fraction is None:
+        try:
+            fraction = _live_vram_budget_fraction()
+        except Exception:  # noqa: BLE001
+            return
+    with _LOAD_BUDGET_LOCK:
+        _LOAD_BUDGET_FRACTIONS[owner] = float(fraction)
+
+
+def release_load_budget_fraction(owner: str) -> None:
+    """Drop ``owner``'s snapshot when its committed pipeline is torn down."""
+    with _LOAD_BUDGET_LOCK:
+        _LOAD_BUDGET_FRACTIONS.pop(owner, None)
+
+
+def _user_budget_reserve_mib(base: Optional[int]) -> int:
+    """What the user's VRAM Budget setting keeps free of ``base``."""
+    if not base or int(base) <= 0:
+        return 0
+    try:
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT
+        fraction = _vram_budget_fraction()
+    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+        return 0
+    if not fraction < VRAM_FRACTION_DEFAULT:
+        return 0
+    return int(base * (1.0 - fraction))
+
+
+def user_budget_reserve_share() -> float:
+    """The share of each card the user's VRAM Budget keeps free."""
+    try:
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT
+        fraction = _vram_budget_fraction()
+    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+        return 0.0
+    return 1.0 - fraction if fraction < VRAM_FRACTION_DEFAULT else 0.0
+
+
+def user_budget_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
+    """What the user's VRAM Budget keeps free on ``device`` (``total_bytes`` total), in bytes."""
+    kind = str(getattr(device, "type", device) or "").split(":")[0]
+    if kind in ("cpu", "mps") or not total_bytes:
+        return 0
+    try:
+        return _user_budget_reserve_mib(int(total_bytes) >> 20) << 20
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _device_user_budget_reserve_mib(memory: DeviceMemory, base: Optional[int]) -> int:
+    """:func:`_user_budget_reserve_mib` for ``memory``, 0 where the LLM path ignores the setting too."""
+    backend = str(getattr(memory, "backend", "") or "").split(":")[0]
+    if (
+        backend in ("mps", "cpu")
+        or getattr(memory, "memory_kind", None) == "system_memory"
+        or getattr(memory, "metal_working_set_mib", None) is not None
+    ):
+        return 0
+    return _user_budget_reserve_mib(base)
+
+
+def _planner_reserve_mib(memory: DeviceMemory, base: int) -> int:
+    return max(
+        _reserve_mib(_budget_reserve_kind(memory), base),
+        _device_user_budget_reserve_mib(memory, base),
+    )
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
     free memory is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    return max(0, int(memory.free_mib) - _reserve_mib(_budget_reserve_kind(memory), base))
+    return max(0, int(memory.free_mib) - _planner_reserve_mib(memory, base))
 
 
 def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -1538,7 +1757,11 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2)
+    reserve = max(
+        2048,
+        _reserve_mib(_budget_reserve_kind(memory), base) // 2,
+        _device_user_budget_reserve_mib(memory, base),
+    )
     return max(0, int(memory.free_mib) - reserve)
 
 
@@ -2013,7 +2236,7 @@ def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
     total = memory.total_mib
     if total is None:
         return None
-    return int((int(total) - _reserve_mib(_budget_reserve_kind(memory), int(total))) * 0.85)
+    return int((int(total) - _planner_reserve_mib(memory, int(total))) * 0.85)
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
@@ -2439,7 +2662,14 @@ def plan_diffusion_memory(
             companion_dense_mib = companion_dense_mib,
             text_encoder_dense_mib = text_encoder_dense_mib,
             base_overhead_mib = base_overhead_mib,
-            free_mib = device_memory.free_mib,
+            free_mib = (
+                None
+                if device_memory.free_mib is None
+                else int(device_memory.free_mib)
+                - _device_user_budget_reserve_mib(
+                    device_memory, device_memory.total_mib or device_memory.free_mib
+                )
+            ),
             policy = policy,
             stream_transformer = stream_transformer,
         )
@@ -3383,8 +3613,13 @@ _RESIDENT_DIT_SLACK_MIN_MIB = 1024
 
 
 def _resident_dit_slack_mib(memory: Any) -> int:
+    """The measured-residency margin, or what the user's VRAM Budget keeps free when larger (as the planner reserve)."""
     base = getattr(memory, "total_mib", None) or getattr(memory, "free_mib", None) or 0
-    return max(_RESIDENT_DIT_SLACK_MIN_MIB, int(int(base) * _RESIDENT_DIT_SLACK_FRACTION))
+    return max(
+        _RESIDENT_DIT_SLACK_MIN_MIB,
+        int(int(base) * _RESIDENT_DIT_SLACK_FRACTION),
+        _device_user_budget_reserve_mib(memory, int(base)),
+    )
 
 
 def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: int) -> bool:
@@ -4133,7 +4368,9 @@ def release_for_decode(
         if dev.index is None:
             dev = torch.device("cuda", torch.cuda.current_device())
         need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
-        free = int(torch.cuda.mem_get_info(dev)[0])
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        # keep the VRAM Budget reserve free, like every other decode-time check
+        free -= user_budget_reserve_bytes(dev, total)
         # only the cache an ordinary decode allocation can reuse: a CUDA graph pool's free blocks are not
         cached = max(
             0,
@@ -6282,7 +6519,21 @@ def image_activation_verdict(
     overhead = max(0, int(base_overhead_mib))
     # Base overhead counts here too: the load plan sums it with the activations.
     numbers = dict(needed_mib = int(needed), tiled_needed_mib = tiled, budget_mib = int(budget))
-    if int(needed) + overhead <= int(budget) or (not conditioned and needed <= planned):
+    if int(needed) + overhead <= int(budget):
+        return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
+    if not conditioned and needed <= planned:
+        if (
+            tiled is not None
+            and int(tiled) + overhead <= int(budget)
+            and _device_user_budget_reserve_mib(
+                device_memory, device_memory.total_mib or device_memory.free_mib
+            )
+            > _reserve_mib(
+                _budget_reserve_kind(device_memory),
+                device_memory.total_mib or device_memory.free_mib,
+            )
+        ):
+            return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
     if tiled is not None and (
         int(tiled) + overhead <= int(budget) or (not conditioned and tiled <= planned)

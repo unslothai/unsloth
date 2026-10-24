@@ -98,7 +98,9 @@ class ComponentFileRef:
 
     @property
     def name(self) -> str:
-        return os.path.basename(self.local_path or self.filename or self.spec)
+        if self.local_path:
+            return re.split(r"[\\/]", self.spec)[-1] or os.path.basename(self.local_path)
+        return os.path.basename(self.filename or self.spec)
 
     @property
     def is_hub(self) -> bool:

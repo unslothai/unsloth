@@ -257,6 +257,12 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
+# No accelerator at all: zoo chose its CPU backend and skipped every GPU patch. Stop here, before
+# any CUDA/Triton work, and let __init__ load the CPU backend instead (as the MLX branch does).
+if unsloth_zoo.__dict__.get("_IS_CPU_BACKEND", False):
+    from . import _CPUBackendSelected
+    raise _CPUBackendSelected()
+
 try:
     import torch
 except ModuleNotFoundError:
