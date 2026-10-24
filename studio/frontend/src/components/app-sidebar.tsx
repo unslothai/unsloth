@@ -5753,8 +5753,20 @@ export function AppSidebar() {
     P: RowMenuParts,
   ) {
     const isProjectPinned = pinnedProjectIdSet.has(project.id);
-    // Listed, not sorted: the sorted list leaves out the project's pinned and sectioned chats.
-    const projectChats = listedChatsByProjectId.get(project.id) ?? [];
+    // Every chat in the project, read in full: the sidebar lists only a folder's first page, and
+    // none for a collapsed folder, so its loaded rows are not the whole project.
+    const archiveProjectChats = async () => {
+      let all: SidebarItem[];
+      try {
+        all = await readAllSidebarRows(sidebarRowQuery({ projectId: project.id }));
+      } catch (err) {
+        toast.error(translate("settings.data.failedToArchiveChats"), {
+          description: err instanceof Error ? err.message : undefined,
+        });
+        return;
+      }
+      await archiveChatItems(all);
+    };
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
@@ -5777,10 +5789,7 @@ export function AppSidebar() {
             current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
-          <P.Item
-            disabled={projectChats.length === 0}
-            onSelect={() => void archiveChatItems(projectChats)}
-          >
+          <P.Item onSelect={() => void archiveProjectChats()}>
             <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
             <span>Archive chats</span>
           </P.Item>
