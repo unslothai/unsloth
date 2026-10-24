@@ -627,6 +627,16 @@ def _ltx23_prequant_pick(
     return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
 
 
+def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
+    """Resident: untiled when it fits, tiled as fallback, never on SPEED_OFF (bit-identical). Cosmos3 under any
+    placement: its stock tiles leave a seam at 480 / 832 px, and its reference pipeline decodes untiled."""
+    if device != "cuda":
+        return False
+    if family in COSMOS3_FAMILIES:
+        return True
+    return offload_policy == "none" and speed != SPEED_OFF
+
+
 def _memory_mode_resolved(memory_mode: Any, plan: Any, offload_policy: str) -> tuple:
     """A ``fast`` that had to offload is a fallback valued at the engaged policy ("FAST -> GROUP", not "FAST -> FAST")."""
     if plan.requested_mode == MEMORY_MODE_FAST and offload_policy != OFFLOAD_NONE:
@@ -9881,13 +9891,7 @@ class VideoBackend:
             if vae_tiling and fam.name in COSMOS3_FAMILIES:
                 from .video_cosmos3 import install_untiled_encode
                 install_untiled_encode(pipe, logger = logger)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
-            # Cosmos3 always: its stock tiles leave a seam at 480 / 832 px, and its reference pipeline decodes untiled.
-            if (
-                offload_policy == "none"
-                and target.device == "cuda"
-                and (effective_speed != SPEED_OFF or fam.name in COSMOS3_FAMILIES)
-            ):
+            if _decodes_untiled_when_fits(fam.name, offload_policy, target.device, effective_speed):
                 from .video_vae_untiled import install_untiled_decode
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
