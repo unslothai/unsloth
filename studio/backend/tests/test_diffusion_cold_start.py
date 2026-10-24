@@ -168,7 +168,6 @@ def test_a_detailer_pass_neither_compiles_a_whole_compiled_unet_nor_feeds_the_re
         ), "a Detailer crop shape was recorded for the background compile"
         job.close()
         assert counter.compiles == 0
-        # After the pass the gate is gone: a main render compiles as before.
         net(torch.randn(2, 8), return_dict = False)
     assert counter.compiles == 1
 

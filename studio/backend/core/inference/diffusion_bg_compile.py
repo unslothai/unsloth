@@ -71,16 +71,13 @@ def no_record():
 
 
 def auxiliary() -> bool:
-    """True inside an ``auxiliary_pass`` (a Detailer crop inpaint)."""
     return _AUXILIARY.get()
 
 
 @contextlib.contextmanager
 def auxiliary_pass():
-    """A follow-up generation at a data-dependent size (the Detailer's crop inpaints): eager, no CUDA-graph capture,
-    nothing recorded for the background compile, not counted as a generation. Each face box is its own size, so on a
-    static compile (SDXL U-Net) every detection was a fresh whole-module compile, and its graphs used up the per-module
-    cap the main render's resolutions need. ComfyUI's FaceDetailer runs these crops eager too."""
+    """Detailer crop inpaints: eager, uncaptured, unrecorded, uncounted. Each box is its own size, so compiling
+    them recompiled per detection and used up the per-module graph cap the main render needs."""
     tokens = (_AUXILIARY.set(True), _NO_RECORD.set(True), _FORCE_EAGER.set(True))
     try:
         yield
@@ -91,9 +88,8 @@ def auxiliary_pass():
 
 
 def gate_compiled_eager(modules: Any) -> Callable[[], None]:
-    """Route each ``Module.compile``d module (a whole-compiled U-Net) to its eager ``_call_impl`` while
-    ``force_eager`` is set; returns the restore. Without it ``force_eager`` only reaches guarded regional blocks and
-    graph wrappers, whose eager path still calls the compiled U-Net."""
+    """Route ``Module.compile``d modules to eager ``_call_impl`` under ``force_eager``; returns the restore.
+    Without it force_eager only reaches regional blocks and graph wrappers, which still call the compiled U-Net."""
     installed: list = []
     for module in modules or ():
         inner = getattr(module, "_compiled_call_impl", None)

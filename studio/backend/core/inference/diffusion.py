@@ -14090,7 +14090,6 @@ class DiffusionBackend:
                 # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
                 # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
                 if aux_pass:
-                    # Ran eager at a crop size: no compiled shape to register, no compile to kick.
                     pass
                 elif bg_eager:
                     # Nothing compiled ran, so nothing to register or save yet.
