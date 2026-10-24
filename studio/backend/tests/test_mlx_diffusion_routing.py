@@ -38,8 +38,11 @@ class _Engine:
         self.fail_next_load: Optional[str] = None
         self.hang_load = False
         self.cancelled = threading.Event()
+        # Each engine's own load epoch, as the real engines keep one (bumped by begin_load / unload).
+        self._load_token = 0
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict:
+        self._load_token += 1
         self.log.append((self.name, "load"))
         self.load_kwargs = {"repo_id": repo_id, **kwargs}
         self._load_error = None
@@ -65,8 +68,17 @@ class _Engine:
             return {"phase": "downloading"}
         return {"phase": "ready" if self._state is not None else None}
 
-    def unload(self, *, expected_account: Optional[str] = None) -> dict:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if = None,
+    ) -> Optional[dict]:
+        # As the real engines: a conditional unload rechecks under the engine's lock first.
+        if only_if is not None and not only_if():
+            return None
         self.log.append((self.name, "unload"))
+        self._load_token += 1
         self._state = None
         self._loading = False
         return self.status()
@@ -522,6 +534,90 @@ def test_unload_frees_both_engines(rig):
     with pytest.raises(RuntimeError, match = DIFFUSION_NOT_LOADED_MSG):
         _img2img(rig.engine)
     assert ("diffusers", "load") not in rig.log
+
+
+def test_a_conditional_unload_the_load_no_longer_holds_tears_nothing_down(rig):
+    # A load token whose load ended: refused before the drain, so the fallback keeps running.
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    cancel = threading.Event()
+    rig.engine._fallback_cancel = cancel
+    epoch = rig.engine._epoch
+    assert rig.engine.unload(only_if = lambda: False) is None
+    assert rig.log == [] and not cancel.is_set() and rig.engine._epoch == epoch
+
+
+def test_a_conditional_unload_of_the_named_load_frees_both_engines(rig):
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    status = rig.engine.unload(only_if = lambda: True)
+    assert rig.log == [("mlx", "unload"), ("diffusers", "unload")]
+    assert status["loaded"] is False
+
+
+def test_a_conditional_unload_refused_by_the_mlx_recheck_keeps_the_fallback_model(rig):
+    # The named load ended between the router's check and the MLX engine's recheck under its lock.
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    answers = iter([True, False])
+    assert rig.engine.unload(only_if = lambda: next(answers)) is None
+    assert ("diffusers", "unload") not in rig.log
+
+
+def test_the_routed_load_epoch_survives_the_fallback(rig):
+    # media_load_ids reads _load_token as the load's epoch: a diffusers fallback serves the same load,
+    # so the epoch must not jump to the other engine's own counter.
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    media_load_ids._reset_for_tests()
+    try:
+        rig.mlx._load_token = 5  # the two engines' own counters differ
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("diffusion", rig.engine, "t1")
+            rig.engine.begin_load(
+                "unsloth/Z-Image-Turbo-GGUF",
+                gguf_filename = "z-image-turbo-Q4_0.gguf",
+                local_files_only = True,
+                hf_token = None,
+                model_kind = "gguf",
+            )
+            media_load_ids.admitted("diffusion", rig.engine, "t1", prior)
+        epoch = rig.engine._load_token
+        assert media_load_ids.current_id("diffusion", rig.engine) == "t1"
+        _img2img(rig.engine)  # served by the diffusers fallback
+        assert (
+            rig.engine._primary() is rig.diffusers
+            and rig.diffusers._load_token != rig.mlx._load_token
+        )
+        assert rig.engine._load_token == epoch
+        assert media_load_ids.current_id("diffusion", rig.engine) == "t1"
+        rig.engine.unload()
+        assert rig.engine._load_token == epoch + 1
+    finally:
+        media_load_ids._reset_for_tests()
+
+
+def test_a_refused_load_keeps_the_routed_load_epoch(rig, monkeypatch):
+    # MLX refuses a second load while one is in flight; that load's admitted epoch must still match.
+    epoch = rig.engine._load_token
+
+    def refuse(repo_id, **kwargs):
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    monkeypatch.setattr(rig.mlx, "begin_load", refuse)
+    with pytest.raises(RuntimeError):
+        rig.engine.begin_load(
+            "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_0.gguf",
+            local_files_only = True,
+            hf_token = None,
+            model_kind = "gguf",
+        )
+    assert rig.engine._load_token == epoch
 
 
 def test_a_scoped_unload_never_cancels_another_accounts_fallback(rig):

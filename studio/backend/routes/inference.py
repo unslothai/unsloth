@@ -3797,6 +3797,10 @@ from models.inference import (
     SttLoadRequest,
     GenerateRequest,
     DiffusionLoadRequest,
+    MediaUnloadOutcome,
+    MediaUnloadRequest,
+    DiffusionLoadUnloadedResponse,
+    DiffusionUnloadResponse,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
     MaskSegmentRequest,
@@ -51397,6 +51401,31 @@ def _activate_checked(check, activate):
         before_engine_switch.reset(token)
 
 
+def _activate_unless_cancelled(preflight, check, activate):
+    """``_activate_checked``, refused before an engine switch unloads the active engine once an unload
+    cancelled this load's preflight. The preflight lock is taken at that check and held until the
+    switch is done (not through an sd-cli install before it), so a cancel lands before or after it."""
+    if preflight is None:
+        return _activate_checked(check, activate)
+    from core.inference.chat_swap_kv import raise_if_load_cancelled
+
+    held = []
+
+    def _check():
+        if not held:
+            preflight.lock.acquire()
+            held.append(True)
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+        if check is not None:
+            check()
+
+    try:
+        return _activate_checked(_check, activate)
+    finally:
+        if held:
+            preflight.lock.release()
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -51880,7 +51909,7 @@ async def load_diffusion_model(
     from core.inference.chat_swap_kv import preparing_load
 
     try:
-        with preparing_load("image"):
+        with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers, and the inner loader redacted native paths
@@ -51982,8 +52011,12 @@ async def load_diffusion_model_gated(
     from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from utils.native_path_leases import redact_native_paths
 
+    from core.inference import media_load_ids
+
     backend = get_diffusion_backend()
     try:
+        # A load an unload already cancelled by its token starts nothing (checked again at admission).
+        media_load_ids.refuse_cancelled("diffusion", request.load_token)
         # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
@@ -52186,17 +52219,29 @@ async def load_diffusion_model_gated(
         note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
-        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
+        from core.inference.chat_swap_kv import (
+            preparing_load_token,
+            raise_if_load_cancelled,
+            run_unless_load_cancelled,
+        )
 
         raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+        preflight = preparing_load_token()
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
+            # Checked under the preflight lock, so a cancelled load never unloads the video model.
             await asyncio.to_thread(
-                _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
+                run_unless_load_cancelled,
+                _DIFFUSION_LOAD_CANCELLED,
+                _unload_native_video_sharing_the_sd_cpp_tree,
+                multi_model_mode,
+                evicted_slots,
             )
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
-            _activate_checked,
+            _activate_unless_cancelled,
+            preflight,
             functools.partial(refuse_replacing_media, DIFFUSION, multi_model_mode, media_names)
             if multi_model_mode == "always"
             else None,
@@ -52297,6 +52342,7 @@ async def load_diffusion_model_gated(
             # Snapshotted BEFORE the worker starts: a cached load can publish before begin_load returns.
             prior_state = loaded_state_of(engine)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
+            prior_load = media_load_ids.admitting("diffusion", engine, request.load_token)
             started = engine.begin_load(
                 request.model_path,
                 display_repo_id = request.display_repo_id,
@@ -52331,6 +52377,7 @@ async def load_diffusion_model_gated(
                     _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
                 ),
             )
+            media_load_ids.admitted("diffusion", engine, request.load_token, prior_load)
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
             # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
             _cancel_upsampler_warm_start()
@@ -52338,8 +52385,6 @@ async def load_diffusion_model_gated(
             # relabels the resident model.
             note_engine_pick(request.engine, engine, prior_state)
             return started
-
-        preflight = preparing_load_token()
 
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
@@ -53972,34 +54017,70 @@ async def clear_gallery_transcripts(current_subject: str = Depends(get_current_s
     return {"removed": removed}
 
 
-@studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
+@studio_router.post("/images/unload", response_model = DiffusionUnloadResponse)
 @account_access.gpu_busy_route
 async def unload_diffusion_model(
+    request: Optional[MediaUnloadRequest] = None,
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    account_access.require_resident_control("diffusion")
+    expected_load_id = request.expected_load_id if request is not None else None
+    if not expected_load_id:
+        account_access.require_resident_control("diffusion")
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
-    if account_access.managed_account():
+    if not expected_load_id and account_access.managed_account():
         account_access.require_resident_control(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
-    from core.inference.chat_swap_kv import cancel_preparing_loads
+    if not expected_load_id:
+        # Load POSTs still in preflight for this account (all, when the unload is not account scoped).
+        # A token unload ends only the load it names, and refuses that one if it has not started.
+        from core.inference.chat_swap_kv import cancel_preparing_loads
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "image",
+            current_account_id(),
+            any_account = account_access.account_scope() is None,
+        )
+    else:
+        from core.inference.chat_swap_kv import cancel_preparing_loads
 
-    await asyncio.to_thread(
-        cancel_preparing_loads,
-        "image",
-        current_account_id(),
-        any_account = account_access.account_scope() is None,
-    )
-    unload = get_active_diffusion_engine().unload
+        # The POST carrying this token, if it is still in preflight: stopped, or registered (which the
+        # check below then names), before any engine switch or eviction it would run. The engine is
+        # resolved after that settles: a POST that finished switching registered on the new one.
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "image",
+            current_account_id(),
+            load_token = expected_load_id,
+        )
+    active = get_active_diffusion_engine()
+    unload = active.unload
     if account_access.account_scope() is not None:
         unload = functools.partial(unload, expected_account = current_account_id())
-    # Before the teardown waits on the generation slot a launching warm start holds.
-    _cancel_upsampler_warm_start()
-    status_dict = await asyncio.to_thread(unload)
+    if expected_load_id:
+        from core.inference import media_load_ids
+
+        def guarded_unload(only_if):
+            account_access.require_resident_control("diffusion")
+            if account_access.managed_account():
+                account_access.require_resident_control("diffusion", active.status().get("repo_id"))
+            _cancel_upsampler_warm_start()
+            return unload(only_if = only_if)
+
+        # Only the load that token started, checked and unloaded under the admission lock; any other
+        # load (a newer one, the UI's, another account's) is left alone and not described.
+        outcome, status_dict = await asyncio.to_thread(
+            media_load_ids.unload_if_current, "diffusion", active, expected_load_id, guarded_unload
+        )
+        if outcome != "unloaded":
+            return MediaUnloadOutcome(unloaded = False, outcome = outcome)
+    else:
+        # Before the teardown waits on the generation slot a launching warm start holds.
+        _cancel_upsampler_warm_start()
+        status_dict = await asyncio.to_thread(unload)
     # The FLUX.3 prompt upsampler serves the image model: it leaves with it instead of holding VRAM to its keep-alive.
     from core.inference import flux3_prompt_upsampler as pup
 
@@ -54017,12 +54098,17 @@ async def unload_diffusion_model(
     # An unload answers with the state it left behind, which still names the model it dropped.
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
-    return redact_host_paths(
+    answer = redact_host_paths(
         restore_inventory_handles(
             DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
         ),
         via_api_key = via_api_key,
     )
+    if expected_load_id:
+        return DiffusionLoadUnloadedResponse(
+            **jsonable_encoder(answer), unloaded = True, outcome = "unloaded"
+        )
+    return answer
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
@@ -54032,10 +54118,17 @@ async def diffusion_status(
 ):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
-    from core.inference.diffusion_engine_router import active_status
+    from core.inference import media_load_ids
+    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = await asyncio.to_thread(active_status)
+    engine = get_active_diffusion_engine()
+    # What active_status() answers, with the load id of the same state, so an unload can name
+    # exactly what this answer shows.
+    raw_status, load_id, resident_load_id = await asyncio.to_thread(
+        media_load_ids.snapshot_ids, "diffusion", engine, engine.status
+    )
+    status_dict = await asyncio.to_thread(annotate_status, raw_status)
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Step-skip counters trace a render as it runs, which generate-progress hides from other accounts:
@@ -54053,6 +54146,7 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
+    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
