@@ -1222,13 +1222,17 @@ def _rocm_flash_probe_bytes(
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
     """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare. Unknown memory state counts as no room."""
+    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
+    room."""
     try:
         import torch
 
-        free, _total = torch.cuda.mem_get_info(device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
         cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return free + max(int(cached), 0) >= need * 1.25 + (256 << 20)
+        reserve = user_budget_reserve_bytes(device, total)
+        return free + max(int(cached), 0) - reserve >= need * 1.25 + (256 << 20)
     except Exception:  # noqa: BLE001
         return False
 

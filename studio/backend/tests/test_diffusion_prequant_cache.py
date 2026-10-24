@@ -98,7 +98,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv(C.ENV_MAX_GB, raising = False)
     monkeypatch.delenv("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", raising = False)
     C._HEADER_MEMO.clear()
-    getattr(C, "_UNREACHABLE", {}).clear()  # the per-process unreachable verdict
+    getattr(C, "_UNREACHABLE", {}).clear()
     return root
 
 
@@ -1114,7 +1114,6 @@ def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkey
 
 
 def _sharded_hub_snapshot(tmp_path: Path, n: int) -> list[str]:
-    """``n`` symlinked shards of one Hub snapshot, each blob named by its sha256 like the real cache."""
     import hashlib
 
     repo_dir = tmp_path / "hub" / "models--org--sharded"
@@ -1134,16 +1133,15 @@ def _sharded_hub_snapshot(tmp_path: Path, n: int) -> list[str]:
 
 @pytest.fixture
 def blackholed_hub(monkeypatch):
-    """The Hub endpoint accepts and never answers: every request through huggingface_hub's own HTTP stack times out
-    (a mocked transport, no socket). Yields the list of requested URLs."""
+    """Every Hub request times out via a mocked transport; yields the requested URLs."""
     import huggingface_hub
 
     seen: list = []
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
     C._REMOTE_MEMO.clear()
-    getattr(C, "_UNREACHABLE", {}).clear()  # the per-process unreachable verdict
+    getattr(C, "_UNREACHABLE", {}).clear()
     set_factory = getattr(huggingface_hub, "set_client_factory", None)
-    if set_factory is None:  # older huggingface_hub (requests): fail the call itself the same way
+    if set_factory is None:  # older huggingface_hub (requests)
         import requests
 
         def metadata(url, **_k):
@@ -1170,17 +1168,16 @@ def blackholed_hub(monkeypatch):
 def test_a_blackholed_hub_costs_one_probe_per_process_not_one_per_shard_per_lookup(
     env, tmp_path, blackholed_hub
 ):
-    """Unreachable but not flagged offline (captive portal, dropped packets): each probe waits out its 5 s timeout,
-    so four shards over three lookups used to cost twelve timeouts (60 s) before the cached entry was served."""
+    """Unreachable but not flagged offline: 4 shards x 3 lookups used to cost 12 timeouts."""
     shards = _sharded_hub_snapshot(tmp_path, 4)
     for _ in range(3):
-        assert C._hub_source_stale(shards) is False  # unanswerable: the local snapshot stands
+        assert C._hub_source_stale(shards) is False
     assert len(blackholed_hub) == 1
     assert "org/sharded" in blackholed_hub[0]
 
 
 def test_an_http_answer_is_not_taken_for_an_unreachable_hub(env, tmp_path, monkeypatch):
-    """A gated / 5xx answer is per repo: it must not silence the freshness check of the next repo or shard."""
+    """A gated / 5xx answer is per repo: it must not silence other probes."""
     import huggingface_hub
     from huggingface_hub.errors import HfHubHTTPError
 
@@ -1199,7 +1196,6 @@ def test_an_http_answer_is_not_taken_for_an_unreachable_hub(env, tmp_path, monke
 
 
 def test_the_hub_is_asked_again_once_the_unreachable_verdict_expires(env, tmp_path, monkeypatch):
-    """The verdict is a TTL, not a latch: a network that comes back resumes the freshness check."""
     import huggingface_hub
 
     shards = _sharded_hub_snapshot(tmp_path, 2)
@@ -1215,13 +1211,13 @@ def test_the_hub_is_asked_again_once_the_unreachable_verdict_expires(env, tmp_pa
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", down)
     assert C._hub_source_stale(shards) is False
     assert len(calls) == 1
-    C._UNREACHABLE[C._endpoint()] -= C._REMOTE_TTL_SECONDS + 1  # the verdict aged out
+    C._UNREACHABLE[C._endpoint()] -= C._REMOTE_TTL_SECONDS + 1
     monkeypatch.setattr(
         huggingface_hub,
         "get_hf_file_metadata",
         lambda url, **_k: calls.append(url) or types.SimpleNamespace(etag = "f" * 64),
     )
-    assert C._hub_source_stale(shards) is True  # back online: main moved, the entry is stale
+    assert C._hub_source_stale(shards) is True
     assert len(calls) == 2 and blob != "f" * 64
 
 
