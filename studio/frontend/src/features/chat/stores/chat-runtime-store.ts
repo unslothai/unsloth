@@ -121,6 +121,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { prefillLabelShown } from "../lib/generation-progress";
 import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
@@ -427,6 +428,36 @@ export type DiffusionCanvasFrame = {
   step: number;
   total: number;
   text: string;
+};
+/** Where llama.cpp placed a loaded GGUF's weights (counts from its log; MiB from its buffers). */
+export type LoadedPlacement = {
+  offloaded: number | null;
+  total: number | null;
+  /** Layers whose MoE experts --fit kept in system memory; null when --fit did not run. */
+  overflowLayers: number | null;
+  gpuWeightsMib: number | null;
+  hostWeightsMib: number | null;
+  /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
+  expertCacheMib: number | null;
+};
+export type LivePrefillProgress = {
+  processed: number;
+  total: number | null;
+  cached: number | null;
+  tokPerS: number | null;
+};
+export type LiveDecodeProgress = {
+  tokens: number;
+  tokPerS: number | null;
+  draftN: number | null;
+  draftAccepted: number | null;
+};
+/** Transient, like the diffusion canvas: set from generation_progress frames, cleared when the run ends. */
+export type LiveGenerationProgress = {
+  prefill: LivePrefillProgress | null;
+  /** Whether "Processing prompt" is up for this pass; see prefillLabelShown. */
+  prefillShown: boolean;
+  decode: LiveDecodeProgress | null;
 };
 export type PendingImageEditReference = {
   threadId: string | null;
@@ -2684,6 +2715,8 @@ type ChatRuntimeStore = {
   specFallbackReason: string | null;
   /** Projector recovery outcome for the active GGUF, or null. */
   mmprojFallbackReason: MmprojFallbackReason | null;
+  /** Where the loaded GGUF's weights went, from llama.cpp's load log; null for other backends. */
+  loadedPlacement: LoadedPlacement | null;
   /** Which drafter the speculative resolution was about ("mtp", "dspark", "dflash").
    *  specFallbackReason alone cannot name the file to fix, since Auto resolves it server-side. */
   specDrafterKind: string | null;
@@ -2782,6 +2815,8 @@ type ChatRuntimeStore = {
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   preemptRecomputedByThreadId: Record<string, boolean>;
+  /** Live prefill / decode progress per conversation, keyed like the diffusion canvas. */
+  liveGenerationByThreadId: Record<string, LiveGenerationProgress>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
    *  Apply can tell an explicit pin from Auto. */
@@ -2972,6 +3007,9 @@ type ChatRuntimeStore = {
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setPreemptRecompute: (threadId: string | null, recomputed: boolean) => void;
+  setLivePrefill: (threadId: string | null, prefill: LivePrefillProgress) => void;
+  setLiveDecode: (threadId: string | null, decode: LiveDecodeProgress) => void;
+  clearLiveGenerationForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -4629,6 +4667,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   generatingStatus: null,
   activeDiffusionCanvasByThreadId: {},
   preemptRecomputedByThreadId: {},
+  liveGenerationByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   deduplicateToolCalls: true,
@@ -4658,6 +4697,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpeculativeType: null,
   specFallbackReason: null,
   mmprojFallbackReason: null,
+  loadedPlacement: null,
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -5172,6 +5212,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         "activeDiffusionCanvasByThreadId",
       );
       move(state.preemptRecomputedByThreadId, "preemptRecomputedByThreadId");
+      move(state.liveGenerationByThreadId, "liveGenerationByThreadId");
       // Its parked calls too, or the row never trades its spinner for the approval mark.
       if (moved.runningByThreadId) {
         const confirmations = adoptFirstTurnConfirmations(
@@ -5355,6 +5396,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               activeModelIsLocal: false,
               specFallbackReason: null,
               mmprojFallbackReason: null,
+              loadedPlacement: null,
               specDrafterKind: null,
             }
           : {}),
@@ -5650,6 +5692,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       preemptRecomputedByThreadId: {},
+      liveGenerationByThreadId: {},
       kvCacheDtype: null,
       mlxKvQuant: null,
       loadedMlxKvQuantRequested: null,
@@ -5672,6 +5715,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpeculativeType: null,
       specFallbackReason: null,
       mmprojFallbackReason: null,
+      loadedPlacement: null,
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
@@ -6360,6 +6404,41 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (recomputed) next[key] = true;
       else delete next[key];
       return { preemptRecomputedByThreadId: next };
+    }),
+  setLivePrefill: (threadId, prefill) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
+      // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
+      return {
+        liveGenerationByThreadId: {
+          ...state.liveGenerationByThreadId,
+          [key]: { prefill, prefillShown, decode: null },
+        },
+      };
+    }),
+  setLiveDecode: (threadId, decode) =>
+    set((state) => {
+      const key = threadId || "__default";
+      const current = state.liveGenerationByThreadId[key];
+      return {
+        liveGenerationByThreadId: {
+          ...state.liveGenerationByThreadId,
+          [key]: {
+            prefill: current?.prefill ?? null,
+            prefillShown: current?.prefillShown ?? false,
+            decode,
+          },
+        },
+      };
+    }),
+  clearLiveGenerationForThread: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if (state.liveGenerationByThreadId[key] === undefined) return state;
+      const next = { ...state.liveGenerationByThreadId };
+      delete next[key];
+      return { liveGenerationByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
