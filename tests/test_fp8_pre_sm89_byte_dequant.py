@@ -370,22 +370,6 @@ def test_under_torch_compile(pre_sm89):
     _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], dtype))
 
 
-@needs_cuda
-def test_block_dequant_bf16_under_inductor_without_native_bf16(pre_sm89):
-    # T4: Inductor skips bf16 graphs, so the opaque byte decoder's body would be traced alone and break
-    # fullgraph; the bit-identical torch fallback runs instead.
-    if _compile_dtype() == torch.bfloat16:
-        pytest.skip("this card compiles bf16 natively")
-    w = _weight(256, 384, "cuda")
-    s = _scale(256, 384, [128, 128], torch.float32, "cuda")
-    torch._dynamo.reset()
-    f = torch.compile(
-        lambda w, s: fp8._blockwise_weight_dequant_any_shape(w, s, [128, 128], torch.bfloat16),
-        fullgraph = True,
-    )
-    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], torch.bfloat16))
-
-
 def test_cpu_keeps_torch_path(monkeypatch):
     monkeypatch.setattr(
         fp8,

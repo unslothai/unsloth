@@ -1535,7 +1535,6 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
             and weight.dtype == torch.float8_e4m3fn
             and weight_scale.ndim == 2
             and (torch.version.hip is None or _hip_bytes_dequant(weight.device, out_dtype))
-            and not (torch.compiler.is_compiling() and _bf16_skipped_by_inductor(weight, out_dtype))
         ):
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
