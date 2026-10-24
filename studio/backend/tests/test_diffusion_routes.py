@@ -759,6 +759,31 @@ def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monk
     assert "30 GB" in resp.json()["detail"]
 
 
+def test_generate_returns_the_load_refusal_of_a_refused_mlx_fallback(client, monkeypatch):
+    from fastapi import HTTPException
+    from core.inference.gpu_arbiter import MULTI_MODEL_REFUSAL_HEADERS
+    from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise FallbackLoadRefusedError(
+            HTTPException(
+                status_code = 409,
+                detail = "Unload the chat model first.",
+                headers = dict(MULTI_MODEL_REFUSAL_HEADERS),
+            )
+        )
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Unload the chat model first."
+    for key, value in MULTI_MODEL_REFUSAL_HEADERS.items():
+        assert resp.headers.get(key) == value
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True

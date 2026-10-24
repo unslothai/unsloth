@@ -1156,3 +1156,212 @@ def test_no_fallback_no_shift_control(rig, monkeypatch, tmp_path):
     )
     monkeypatch.setattr(families, "family_pipeline_available", lambda _f: False)
     assert rig.engine.status().get("shift_control") is None
+
+
+def _gated_rig(rig, gate):
+    rig.engine.begin_load(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_0.gguf",
+        local_files_only = True,
+        hf_token = None,
+        model_kind = "gguf",
+        fallback_gate = gate,
+    )
+    rig.log.clear()
+    return rig
+
+
+def test_the_fallback_gate_wraps_the_diffusers_load_and_never_reaches_an_engine(rig):
+    seen = []
+
+    def _gate(start, cancel = None):
+        seen.append("gate")
+        return start()
+
+    _gated_rig(rig, _gate)
+    assert "fallback_gate" not in (rig.mlx.load_kwargs or {})
+    assert _img2img(rig.engine)["engine"] == "diffusers"
+    assert seen == ["gate"]
+    assert "fallback_gate" not in (rig.diffusers.load_kwargs or {})
+    assert rig.log == [("mlx", "unload"), ("diffusers", "load"), ("diffusers", "generate")]
+
+
+def test_a_refusing_fallback_gate_leaves_mlx_loaded_and_keeps_the_refusal(rig):
+    from fastapi import HTTPException
+
+    refusal = HTTPException(status_code = 409, detail = "training is running")
+
+    def _gate(start, cancel = None):
+        raise routing.FallbackLoadRefusedError(refusal)
+
+    _gated_rig(rig, _gate)
+    with pytest.raises(routing.FallbackLoadRefusedError) as excinfo:
+        _img2img(rig.engine)
+    assert excinfo.value.http is refusal
+    assert rig.log == []
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+    assert _txt2img(rig.engine)["engine"] == "mlx"
+
+
+def test_a_new_load_and_unload_drop_the_old_fallback_gate(rig):
+    _gated_rig(rig, lambda start, cancel = None: (_ for _ in ()).throw(AssertionError("stale gate")))
+    rig.engine.unload()
+    rig.engine.begin_load("unsloth/Z-Image-Turbo-GGUF", model_kind = "gguf", hf_token = None)
+    rig.log.clear()
+    assert _img2img(rig.engine)["engine"] == "diffusers"
+
+
+@pytest.fixture
+def route_gate(monkeypatch):
+    import routes.inference as inference
+    from core.inference import gpu_arbiter as arb
+    from core.inference import gpu_residency
+    from core.training import diffusion_training_service as dts
+
+    class _Trainer:
+        active = False
+
+        def is_active(self):
+            return self.active
+
+        def is_training_active(self):
+            return self.active
+
+        def gpu_load_admission(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _cm():
+                if self.active:
+                    raise dts.TrainingActiveError("Diffusion training is running")
+                yield
+
+            return _cm()
+
+    trainer = _Trainer()
+    import core.training as training
+
+    monkeypatch.setattr(training, "get_training_backend", lambda: trainer)
+    monkeypatch.setattr(dts, "get_diffusion_training_service", lambda: trainer)
+    monkeypatch.setattr(inference.account_access, "require_live_account", lambda: None)
+    monkeypatch.setattr(inference, "_repo_is_in_the_hub_cache", lambda ref: False)
+    noted: list = []
+    monkeypatch.setattr(
+        inference,
+        "_note_load_fetched_with_a_request_token",
+        lambda ref, token: noted.append((ref, token)),
+    )
+    fit = {"kwargs": {}}
+    monkeypatch.setattr(gpu_residency, "media_fit_kwargs", lambda *a, **k: dict(fit["kwargs"]))
+    residents = {arb.DIFFUSION: None}
+    monkeypatch.setattr(arb, "_residents", residents)
+    monkeypatch.setattr(arb, "_sync_from_view", lambda: None)
+    request = SimpleNamespace(
+        model_path = "unsloth/Z-Image-Turbo-GGUF",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        hf_token = "hf_request_token",  # secret-scrub: allow
+        text_encoder_file = None,
+        vae_file = None,
+        text_encoder_files = None,
+    )
+    monkeypatch.setattr(inference.account_access, "media_component_file_references", lambda req: ())
+    gate = inference._mlx_fallback_load_gate(request, None, "off")
+    return SimpleNamespace(
+        gate = gate, trainer = trainer, noted = noted, fit = fit, residents = residents, arb = arb
+    )
+
+
+def test_the_route_gate_runs_a_normal_fallback_and_records_the_token(rig, route_gate):
+    _gated_rig(rig, route_gate.gate)
+    assert _img2img(rig.engine)["engine"] == "diffusers"
+    assert rig.log == [("mlx", "unload"), ("diffusers", "load"), ("diffusers", "generate")]
+    assert route_gate.noted == [
+        ("unsloth/Z-Image-Turbo-GGUF", "hf_request_token"),
+        ("Tongyi-MAI/Z-Image-Turbo", "hf_request_token"),
+    ]
+
+
+def test_the_fallback_is_refused_while_training_runs(rig, route_gate):
+    route_gate.trainer.active = True
+    _gated_rig(rig, route_gate.gate)
+    with pytest.raises(routing.FallbackLoadRefusedError) as excinfo:
+        _img2img(rig.engine)
+    assert excinfo.value.http.status_code == 409
+    assert "training is running" in excinfo.value.http.detail
+    assert rig.log == []
+    assert route_gate.noted == []
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+
+
+def test_the_fallback_is_refused_when_the_trainer_wins_the_admission(rig, route_gate, monkeypatch):
+    import routes.inference as inference
+
+    monkeypatch.setattr(inference, "_guard_diffusion_load_against_training", lambda: None)
+    route_gate.trainer.active = True
+    _gated_rig(rig, route_gate.gate)
+    with pytest.raises(routing.FallbackLoadRefusedError) as excinfo:
+        _img2img(rig.engine)
+    assert excinfo.value.http.status_code == 409
+    assert "Diffusion training is running" in excinfo.value.http.detail
+    assert rig.log == []
+
+
+def test_the_fallback_is_refused_when_it_would_have_to_evict(rig, route_gate):
+    route_gate.residents[route_gate.arb.CHAT] = None
+    _gated_rig(rig, route_gate.gate)
+    with pytest.raises(routing.FallbackLoadRefusedError) as excinfo:
+        _img2img(rig.engine)
+    assert excinfo.value.http.status_code == 409
+    assert rig.log == []
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+
+
+def test_the_fallback_is_refused_when_it_does_not_fit_under_always(rig, route_gate, monkeypatch):
+    from core.inference import gpu_residency
+
+    arb = route_gate.arb
+    route_gate.residents[arb.CHAT] = None
+    route_gate.fit["kwargs"] = {"policy": "always"}
+    monkeypatch.setattr(arb, "_view", lambda: {arb.CHAT: None, arb.DIFFUSION: None})
+    monkeypatch.setattr(
+        arb,
+        "resident_slots",
+        lambda name: [{"kind": "chat", "model": "unsloth/Qwen3-4B"}] if name == arb.CHAT else [],
+    )
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+    _gated_rig(rig, route_gate.gate)
+    with pytest.raises(routing.FallbackLoadRefusedError) as excinfo:
+        _img2img(rig.engine)
+    http = excinfo.value.http
+    assert http.status_code == 409
+    assert http.headers == dict(arb.MULTI_MODEL_REFUSAL_HEADERS)
+    assert rig.log == []
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+
+
+def test_only_an_engine_that_takes_a_fallback_gate_is_handed_one():
+    import routes.inference as inference
+
+    gate = object()
+    assert inference._fallback_gate_kwarg(routing.RoutedMlxEngine().begin_load, gate) == {
+        "fallback_gate": gate
+    }
+    assert inference._fallback_gate_kwarg(lambda repo_id, **kw: None, gate) == {}
+
+
+def test_the_fallback_fit_check_stops_waiting_for_the_arbiter_once_cancelled():
+    # An evictor holding the arbiter lock drains this generation: the wait must end on its cancel, not at the drain timeout.
+    import threading
+    import time
+
+    from core.inference import gpu_arbiter as arb
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.gpu_residency import refuse_unless_fits
+
+    cancel = threading.Event()
+    with arb._lock:
+        threading.Timer(0.2, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
+            refuse_unless_fits(arb.DIFFUSION, cancel = cancel)
+    assert time.monotonic() - started < 5

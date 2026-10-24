@@ -379,6 +379,15 @@ class _RoutedGenerate:
         return self.__self__._generate(**kwargs)
 
 
+class FallbackLoadRefusedError(RuntimeError):
+    """A gate a normal load passes refused the on-demand diffusers load; ``http`` is that load's refusal."""
+
+    def __init__(self, http: Any) -> None:
+        self.http = http
+        detail = getattr(http, "detail", None)
+        super().__init__(detail if isinstance(detail, str) else str(http))
+
+
 class RoutedMlxEngine:
     runs_off_torch_device = False
     parses_prompt_attention = False
@@ -399,6 +408,7 @@ class RoutedMlxEngine:
         self._route_lock = threading.Lock()
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
+        self._fallback_gate: Optional[Callable[..., Any]] = None
         self._epoch = 0
         # Replacement loads between their first epoch bump and registering their options: no fallback registers.
         self._replacing = 0
@@ -499,7 +509,13 @@ class RoutedMlxEngine:
         with self._lock:
             return self._diffusers_ours
 
-    def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
+    def begin_load(
+        self,
+        repo_id: str,
+        *,
+        fallback_gate: Optional[Callable[..., Any]] = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         # Fenced until this load's options are saved, so no request routes on the old model's options.
         ours = self._drain_fallback(replacing = True)
         try:
@@ -514,6 +530,7 @@ class RoutedMlxEngine:
             self._mlx().begin_load(repo_id, **kwargs)
             with self._lock:
                 self._load_kwargs = {"repo_id": repo_id, **kwargs}
+                self._fallback_gate = fallback_gate
         finally:
             with self._lock:
                 # A second bump: a route decided inside the fence holds a stale epoch once it lifts.
@@ -544,6 +561,7 @@ class RoutedMlxEngine:
             self._fallback_cancel = cancel
             self._fallback_done = done
             self._active_generate_account = current_account_id()
+            gate = self._fallback_gate
         bind_generation_cancel(cancel)
         dropped = False
         started = time.perf_counter()
@@ -552,17 +570,25 @@ class RoutedMlxEngine:
             repo_id = kwargs.pop("repo_id")
             if cancel.is_set() or self._epoch != epoch:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            if unload_mlx:
-                self._origin_identity = _identity_of(mlx) or self._origin_identity
-                mlx.unload()
-                dropped = True
+
+            def _start() -> None:
+                nonlocal dropped
+                if unload_mlx:
+                    self._origin_identity = _identity_of(mlx) or self._origin_identity
+                    mlx.unload()
+                    dropped = True
+                    with self._lock:
+                        self._mlx_dropped = True
+                if cancel.is_set() or self._epoch != epoch:
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                diffusers.begin_load(repo_id, **kwargs)
                 with self._lock:
-                    self._mlx_dropped = True
-            if cancel.is_set() or self._epoch != epoch:
-                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            diffusers.begin_load(repo_id, **kwargs)
-            with self._lock:
-                self._diffusers_ours = True
+                    self._diffusers_ours = True
+
+            if gate is None:
+                _start()
+            else:
+                gate(_start, cancel = cancel)
             while True:
                 if cancel.is_set() or self._epoch != epoch:
                     diffusers.unload()
@@ -784,6 +810,7 @@ class RoutedMlxEngine:
                 self._origin_identity = None
                 self._coexist = None
                 self._load_kwargs = None
+                self._fallback_gate = None
         finally:
             with self._lock:
                 self._epoch += 1
