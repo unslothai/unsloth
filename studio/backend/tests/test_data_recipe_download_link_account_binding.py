@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Data Recipe export link must name the account that minted it.
-
-The four sibling signed links in this backend all bind the tenant: preview shares and
-the RAG document link carry an account id and re-bind it at redemption, and gallery
-images and video use media_link_account plus run_as. This one did not, so a link minted
-by a managed account was redeemed with the account ContextVar at its OWNER default.
-Every recipe root is derived from that ContextVar, so the artifact_path the link carries
-was validated under the minter's root and then resolved under the owner's.
-"""
+"""Export links must bind the minting account, so artifact_path is not resolved under the owner's root."""
 
 from __future__ import annotations
 
@@ -82,12 +74,7 @@ def test_an_owner_link_is_redeemed_as_the_owner(monkeypatch):
 
 
 def test_a_managed_link_dies_with_its_account(monkeypatch):
-    """get_account_by_id returning None means deactivated or deleted.
-
-    Asserted on the resolver rather than by driving the dependency with request = None: a bare
-    pytest.raises(Exception) there passes on the AttributeError that the None request raises
-    before the fallback is ever consulted, which is true of the unpatched tree too.
-    """
+    """Assert on the resolver: a bare pytest.raises(Exception) also passes on an AttributeError."""
     token = _mint_as(ALICE)
     import auth.storage
 

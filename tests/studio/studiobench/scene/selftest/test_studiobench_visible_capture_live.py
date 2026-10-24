@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""THE VISIBLE-REGION OBSERVER, in a real browser.
-
-`compare_visible` is tested offline against hand-written captures, which proves the verdict logic
-and proves nothing about whether the captures describe reality. Whether IntersectionObserver sees
-what a user sees -- across a scroll, across mounting and unmounting, at the edge of the viewport --
-is not a question a fixture dictionary can answer, so it is asked of Chromium here.
-
-The three things that would make this instrument quietly wrong, each pinned:
-
-  IT MUST SEE A PARTLY VISIBLE MESSAGE. One pixel into the viewport is visible to a user, and a
-  threshold that rounded it away would exempt real differences at the top and bottom of the screen
-  -- the two places a scroll spends most of its time.
-
-  IT MUST ACCUMULATE ACROSS THE ACTION. An action that scrolls shows messages and hides them again.
-  A single sample at the close of the window compares wherever the scroll happened to stop and
-  silently ignores everything the user saw on the way. The compared set is the UNION.
-
-  IT MUST NOT READ GEOMETRY. `getBoundingClientRect()` / `getClientRects()` on content inside a
-  `content-visibility` locked subtree makes Chromium render that subtree to answer, so a
-  geometry-based visibility probe unlocks exactly what it came to observe. One session reported 0
-  off-screen unrendered roots while the event counter recorded 22 in the skipped state. This test
-  installs a counting trap on both methods and fails if the capture touches either.
-"""
+"""Visible capture sees partly visible rows, accumulates over the action, and never reads geometry."""
 
 from __future__ import annotations
 
@@ -40,9 +18,7 @@ if str(_STUDIO_TESTS) not in sys.path:
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 _PARITY_JS = _STUDIO_TESTS / "studiobench" / "scene" / "parity.js"
 
-#: A thread of tall messages in a short viewport, so only a few are ever on screen. Each message
-#: publishes `aria-posinset`, which is how a windowed arm states thread position, and the capture
-#: keys on it so a window and a full mount are comparable.
+#: Tall messages in a short viewport; capture keys on `aria-posinset` so windows compare.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -106,9 +82,7 @@ def browser():
 def page(browser):
     pg = browser.new_page(viewport = {"width": 800, "height": 600})
     pg.set_content(FIXTURE)
-    # `add_script_tag` after the content, not `add_init_script` before it: Playwright's
-    # `set_content` does not always run init scripts, and the symptom is `window.__sb` simply not
-    # existing, which reads like a broken instrument.
+    # After the content: Playwright's `set_content` does not always run init scripts.
     pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     yield pg
@@ -118,8 +92,7 @@ def page(browser):
 def _watch(page) -> None:
     got = page.evaluate("() => window.__sb.parityVisible.watch()")
     assert got.get("visible_attempted") is True, got
-    # IntersectionObserver's first delivery is asynchronous, so give it a frame before anything
-    # scrolls, or the initial viewport contents are attributed to whatever came next.
+    # IntersectionObserver delivers asynchronously; wait a frame before scrolling.
     page.wait_for_timeout(120)
 
 
@@ -128,14 +101,10 @@ def _capture(page) -> dict:
     return page.evaluate("async () => await window.__sb.parityVisible.capture()")
 
 
-# ── what the viewport actually showed ───────────────────────────────
-
-
 def test_it_reports_only_what_the_viewport_showed(page):
     _watch(page)
     got = _capture(page)
     assert got["visible_attempted"] is True
-    # A 400px viewport over 500px rows: message 1 fills it, message 2 is not reached.
     assert got["ever_visible"] == [1], got["ever_visible"]
     assert set(got["messages"]) == {"1"}
 
@@ -188,17 +157,8 @@ def test_an_unmounted_message_is_still_reported_as_having_been_visible(page):
     assert got["unmounted_at_capture"] == got["ever_visible_count"]
 
 
-# ── the trap ────────────────────────────────────────────────────────
-
-
 def test_the_capture_never_reads_geometry(page):
-    """THE CONTENT-VISIBILITY TRAP, held closed by construction rather than by review.
-
-    Reading a rect inside a `content-visibility` locked subtree makes Chromium render it, so a
-    geometry-based visibility probe destroys the very state it is measuring and then reports that
-    nothing was skipped. If anyone reaches for `getBoundingClientRect` in this path later, this
-    fails.
-    """
+    """Reading rects in a content-visibility subtree renders it, so the capture must never read geometry."""
     page.evaluate(
         """() => {
              window.__geom = 0;
@@ -221,9 +181,6 @@ def test_the_capture_never_reads_geometry(page):
     )
 
 
-# ── refusals ────────────────────────────────────────────────────────
-
-
 def test_capturing_without_watching_is_refused_not_reported_empty(page):
     got = page.evaluate("async () => await window.__sb.parityVisible.capture()")
     assert got["visible_attempted"] is False
@@ -237,22 +194,8 @@ def test_a_page_with_no_thread_viewport_is_refused(page):
     assert "viewport" in got["reason"]
 
 
-# ── the instrument must not charge its own cost to the action ───────
-
-
 def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
-    """WORKSPACE TASK #102, WHICH THIS NEARLY REPEATED.
-
-    The visibility observer's MutationObserver is the one part of this instrument that runs INSIDE
-    the measured action window. The obvious implementation re-runs the full `querySelectorAll` scan
-    on every mutation batch, which charges an O(document) walk to the action, once per batch, on a
-    DOM whose size is the quantity under investigation. That is exactly the defect that reported
-    `delete_message` at 14.3 fps when the action costs 49.0.
-
-    So the top-up walks only `addedNodes`. This is asserted by counting `querySelectorAll` calls
-    against the DOCUMENT while a stream-like mutation storm runs: text churning inside already
-    mounted rows must produce none at all, because childList records do not fire for it.
-    """
+    """The top-up walks only addedNodes, so the measured action is not charged for a whole-document scan."""
     page.evaluate(
         """() => {
              window.__docQsa = 0;
@@ -264,8 +207,7 @@ def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
            }"""
     )
     _watch(page)
-    # The handle is taken BEFORE the baseline, because looking the element up is itself a
-    # document-wide query and would otherwise be counted against the instrument.
+    # Take the handle before the baseline: the lookup is itself a document-wide query.
     page.evaluate(
         """() => {
              const rows = document.querySelectorAll("[data-role]");
@@ -273,7 +215,6 @@ def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
            }"""
     )
     baseline = page.evaluate("() => window.__docQsa")
-    # A stream: the last message's text changes many times, and nothing is added or removed.
     page.evaluate(
         "() => { for (let i = 0; i < 200; i++) window.__last.textContent = 'streaming ' + i; }"
     )
@@ -306,17 +247,10 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
     assert 3 in got["ever_visible"], got["ever_visible"]
 
 
-# Where the virtualizer publishes its ordinals is not a UI change. `runtime/readiness.py` accepts
-# `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on an ancestor row wrapper,
-# walking with `closest()`, because the ordinal belongs on whichever element is the member of
-# the set.
-# The visible-region digest then read every attribute on the message, so an arm taking that
-# option differed from the fully mounted arm on EVERY message while the rendered content was
-# identical. Auto-mode parity was unusable for a DOM shape the gate explicitly permits, and a
-# wall of identical non-findings buries anything real.
+# Readiness accepts ordinals on the message or an ancestor row, so the digest must ignore where
+# they are published or such arms differ on every message.
 
 
-# ── where the virtualizer publishes its ordinals is not a UI change ──
 def _arm_html(ordinals: str, suffix: str = "") -> str:
     """One thread of twenty messages, with the virtualization ordinals published `on_the_message`,
     `on_the_row` wrapper, or `nowhere` -- which is what the shipped build does."""
@@ -420,17 +354,10 @@ def test_a_real_rendering_difference_is_still_caught(browser):
     assert verdict["verdict"] == P.DIFFER, verdict
 
 
-# A rebuilt row is at its own position, not at the end of a lifetime count. `thread_reopen`
-# leaves the thread and comes back, and a FULLY MOUNTED arm removes every message row and
-# creates a new one inside the same document. Those rebuilt rows publish no `aria-posinset`, so
-# their ordinal came from a LIFETIME counter already standing at N: they were stamped N+1..2N
-# while the windowed arm stamped its real 1..N, so `compare_visible` found the two ordinal sets
-# disjoint and reported a hard visible difference for a rebuild that was identical.
+# Rebuilt rows without `aria-posinset` must get their own position, not a lifetime counter value.
 
 
-#: The shipped shape: every message mounted, and NOTHING publishing a virtualization ordinal.
-#: `__rebuild()` is the thread_reopen rebuild, in one commit, in the same document.
-# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
+#: Shipped shape: all messages mounted, no virtualization ordinal; `__rebuild()` mimics thread_reopen.
 REBUILD_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -485,17 +412,11 @@ def test_a_rebuilt_row_carries_its_thread_position_not_a_lifetime_count(browser)
     got = _capture_after_rebuild(browser)
     assert got["ever_visible"] == [1], got["ever_visible"]
     assert set(got["messages"]) == {"1"}, got["messages"]
-    # Every rebuilt row was placed, so nothing was dropped to buy the assertion above.
     assert got["unplaced_rows"] == 0, got
 
 
 def test_a_rebuilt_full_mount_still_matches_a_windowed_arm(browser):
-    """THE SYMPTOM, end to end: the verdict `thread_reopen` was getting on every pair.
-
-    The two arms render the same twenty messages and show the same one. One rebuilds its rows the
-    way a fully mounted arm does on reopen; the other publishes the ordinals the readiness gate
-    requires of a windowed arm. Nothing a user could see differs, and the pair must say so.
-    """
+    """A rebuilt full mount and a windowed arm showing the same messages must still compare as a match."""
     from studiobench.analysis import parity as P
 
     verdict = P.compare_visible(
@@ -529,18 +450,7 @@ def _count_document_queries(pg) -> None:
 
 
 def test_placing_a_batch_of_rebuilt_rows_costs_ONE_document_read_for_the_batch(browser):
-    """THE PRICE OF GETTING THE ORDINAL RIGHT, and the reason a counter was tempting.
-
-    Resolving a position needs the thread's current message list, and `observeAdded` runs inside
-    the MEASURED action window. Read per row, a twenty-row rebuild would charge twenty O(document)
-    walks to `thread_reopen` on a DOM whose size is the quantity under investigation -- workspace
-    task #102 all over again. The index is therefore built once per mutation batch and shared by
-    every row in it.
-
-    Exactly one, in both directions: more than one means the lookup is back on the per-row path,
-    and NONE means no position was resolved from the DOM at all, which is the lifetime counter
-    this replaced.
-    """
+    """Placing a batch of rebuilt rows reads the document once per batch, not once per row."""
     pg = _rebuild_page(browser)
     try:
         _count_document_queries(pg)
@@ -566,7 +476,6 @@ def test_a_row_that_publishes_its_ordinal_costs_no_document_read_at_all(browser)
         _count_document_queries(pg)
         _watch(pg)
         baseline = pg.evaluate("() => window.__docQsa")
-        # Ten more rows, each publishing its own position, in one batch.
         pg.evaluate(
             """() => {
                  const vp = document.getElementById("vp");
@@ -590,22 +499,15 @@ def test_a_row_that_publishes_its_ordinal_costs_no_document_read_at_all(browser)
 
 
 def test_the_structural_digest_still_sees_the_ordinals(browser):
-    """THE SCOPING DECISION, in the browser. The exclusion is passed in by the visible-region
-    caller and is NOT baked into the shared `signature`: the structural digest only ever scores
-    pairs where neither arm is windowing, and there an ordinal appearing on every message is a real
-    change that somebody should be shown."""
+    """Ordinal exclusion is passed in by the visible caller, so structural digests still see ordinals."""
     numbered = _thread_digests(browser, "on_the_message")
     plain = _thread_digests(browser, "nowhere")
     assert set(numbered) == set(plain)
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
 
 
-#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts and
-#: unmounts a row inside ONE task, which is how a row comes to be observed while detached: the
-#: MutationObserver batch runs after both operations, so the node is in `addedNodes` and no
-#: longer among the document's messages and has no position the instrument can honestly claim.
-#: `__remount` hands THE SAME NODE back, as a virtualizer that recycles rows does.
-# ── a recycled node, and the ordinal it used to be denied ──────────────────
+#: `__churn` mounts and unmounts a row in one task so it is observed detached; `__remount` reuses
+#: the same node, as a recycling virtualizer does.
 
 RECYCLE_FIXTURE = """
 <!doctype html><meta charset="utf-8">
@@ -636,16 +538,7 @@ RECYCLE_FIXTURE = """
 
 
 def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
-    """REGRESSION. An unplaceable row must not be blacklisted from ever being placed.
-
-    `observeOne` marked every node it looked at as `seen` BEFORE trying to place it, so a row
-    observed while detached -- unplaceable, and correctly so -- could never be stamped afterwards.
-    A virtualizer that recycles DOM nodes hands that same node back mounted and about to be shown;
-    the early return fired, no ordinal was stamped, and every intersection it reported was dropped
-    for want of one. The row was on screen and absent from `ever_visible`, which is exactly the
-    silence `compare_visible` cannot see: with the other rows placed and matching, it returns
-    MATCH while a visible row went uncompared.
-    """
+    """A row unplaceable on first sight must still be stamped when it later mounts, not blacklisted."""
 
     pg = browser.new_page(viewport = {"width": 800, "height": 600})
     try:
@@ -655,20 +548,16 @@ def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
         _watch(pg)
         pg.evaluate("() => window.__churn()")
         pg.wait_for_timeout(150)
-        # It was refused a position, and that refusal is counted rather than silent.
         assert pg.evaluate("async () => (await window.__sb.parityVisible.capture()).unplaced_rows")
         pg.evaluate("() => window.__remount()")
         got = _capture(pg)
     finally:
         pg.close()
 
-    # Mounted into an empty viewport, so it is message 1 and it is on screen.
     assert got["ever_visible"] == [1], got
 
 
-#: A row that is RENUMBERED IN PLACE: it stays connected, stays intersecting, and is handed to
-#: another message, as a virtualizer that recycles row nodes does. It is not a childList
-#: mutation, so nothing about it reaches a childList-only observer.
+#: Renumbered in place: not a childList mutation, so a childList-only observer misses it.
 RENUMBER_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -692,16 +581,7 @@ RENUMBER_FIXTURE = """
 
 
 def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
-    """REGRESSION. A placed row used to be marked `seen` and never looked at again, which assumed
-    a row's position in the thread cannot change while the node lives. A recycling virtualizer
-    breaks that on purpose.
-
-    The node kept its original `__sbOrdinal`, so the message it now showed was never reported
-    visible, and its content was digested under the position it no longer held: `ever_visible` said
-    [1] and `messages["1"]` carried message 42's digest. Because the row never stopped intersecting
-    the IntersectionObserver had no change to report, and because the mutation observer took
-    childList records only, the renumbering was invisible to every path at once.
-    """
+    """A recycled row renumbered in place must be restamped and reported at its new thread position."""
 
     pg = browser.new_page(viewport = {"width": 800, "height": 600})
     try:
@@ -714,19 +594,13 @@ def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
     finally:
         pg.close()
 
-    # The row is still on screen, so BOTH the position it held and the one it holds now were shown.
     assert 42 in got["ever_visible"], got["ever_visible"]
-    # And its content is filed under the position it actually holds.
     assert "42" in got["messages"], got["messages"]
     assert got["unplaced_rows"] == 0, got
-    # A LEGITIMATE RENUMBER IS NOT A COLLISION. One node holds one position at a time here, so the
-    # collision counter added for the two-rows-one-ordinal case must not fire, or a correct
-    # recycling virtualizer would be refused on every action it recycles a row in.
+    # A legitimate renumber is not a collision.
     assert got["ordinal_collisions"] == 0, got
 
 
-#: TWO MOUNTED ROWS PUBLISHING ONE POSITION. A virtualizer that renumbers a recycled row wrongly
-#: leaves an extra message on screen wearing a position another row already holds.
 COLLISION_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -771,35 +645,16 @@ def _capture_with_ghost(browser, *, before: bool) -> dict:
 
 
 def test_two_rows_sharing_a_thread_position_are_counted_rather_than_overwritten(browser):
-    """THE DEFECT. The digest map is keyed by ordinal and the assignment was unconditional, so the
-    second row in DOM order silently REPLACED the first one's entry; `VIS.ever` is a Set of
-    numbers, so it collapsed the pair as well. Three rows on screen came out of the capture looking
-    exactly like a capture of two.
-
-    Whether that was ever caught was DOM order and nothing else. Reproduced in this browser, the
-    same ghost inserted BEFORE the row it shadows leaves the surviving digest agreeing with the
-    other arm and the pair returns MATCH; inserted after, it returns DIFFER. Last writer wins, so
-    the collision passes exactly when the survivor happens to be the one that agrees.
-    """
+    """Rows sharing a thread position are counted as a collision, not overwritten by the last one."""
     for before in (True, False):
         got = _capture_with_ghost(browser, before = before)
         assert got["ordinal_collisions"] == 1, (before, got)
         assert got["collided_ordinals"] == [1], (before, got)
-        # The counter is not derived from the arithmetic, and this is why: two of the three rows on
-        # screen are filed under one key, so the map still holds two entries.
         assert set(got["messages"]) == {"1", "2"}, got["messages"]
 
 
 def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
-    """THE CONSEQUENCE, through the comparison. Three rows are on screen on one arm and two on the
-    other, and the capture cannot say so: the digest map holds two entries either way and
-    `ever_visible` holds two ordinals either way. So `compare_visible` reached a verdict out of a
-    set it did not know was short, and WHICH verdict depended only on which of the two rows sharing
-    the position happened to be written last -- MATCH when the survivor agrees with the other arm,
-    DIFFER when it does not, neither of them a statement about the row that was dropped.
-
-    Refused rather than answered. A pair whose inputs are known to be incomplete carries no verdict
-    in either direction, which is the rule this file applies to every other unreadable capture."""
+    """A position collision drops a row invisibly, so the pair is refused rather than compared."""
     from studiobench.analysis import parity as P
 
     clean = _capture_with_ghost(browser, before = False)
@@ -812,22 +667,11 @@ def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
 
 
 def test_losing_the_thread_outranks_the_collision_refusal(browser):
-    """THE ONE FINDING A COLLISION CANNOT HAVE MANUFACTURED, so the refusal must not swallow it.
-
-    "One arm's viewport ended EMPTY and the other's did not" is raised with `severe: True` and is
-    documented at that site as not suppressible, because losing the conversation is a different kind
-    of statement from a capture that could not be read. A blanket collision refusal placed ahead of
-    it downgraded it to NOT COMPARABLE.
-
-    A collision provably cannot cause it: a collision needs TWO mounted rows sharing one position,
-    so the map it corrupts still holds an entry. It can merge two entries and never empty a map.
-    """
+    """A collision cannot empty a map, so the severe empty-viewport finding must not be refused with it."""
     from studiobench.analysis import parity as P
 
     ghosted = _capture_with_ghost(browser, before = True)
     assert ghosted["ordinal_collisions"] == 1, ghosted
-    # The other arm ended with nothing on screen at all, the 100K `model_change` shape: 12 mounted
-    # messages to 0, never recovered.
     empty = dict(ghosted)
     empty["messages"] = {}
     empty["ordinal_collisions"] = 0

@@ -43,6 +43,7 @@ function harness() {
       react,
       "@/features/auth": { authFetch, getAuthToken: () => "token" },
       "@/hooks/use-hardware-info": { refreshHardwareInfo: async () => {} },
+      "@/lib/model-lifecycle-events": { notifyModelLifecycle() {} },
       "@/lib/llama-job-events": {
         signalRunningLlamaJob() {},
         subscribeToLlamaJobStarted: () => () => {},

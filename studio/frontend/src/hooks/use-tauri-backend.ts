@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { invalidateHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   MANAGED_ENVIRONMENT_BUSY,
   MANAGED_ENVIRONMENT_UPDATING,
@@ -183,6 +184,7 @@ export function useTauriBackend() {
   const environmentWaitPollsRef = useRef(0);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  const chatOnlyRef = useRef(false);
   // Whether the repair in flight was asked to skip straight to the installer. Read back by
   // approveElevation, which restarts the repair after the system packages land.
   const forcedRepairRef = useRef(false);
@@ -511,6 +513,9 @@ export function useTauriBackend() {
     try {
       await invoke("start_managed_repair", { forceInstaller });
       recordRuntimeRepair(repairReasonRef.current);
+      // The old backend's export verdict would otherwise outlive the repair: the shell remounts
+      // from the module cache, so Export stays disabled after Repair added PyTorch.
+      invalidateHardwareInfo();
       // The repair ends here; what follows is an ordinary start, and holding the flag across it
       // swallows the Retry that server-start-timeout offers.
       releaseRepair();
@@ -570,7 +575,14 @@ export function useTauriBackend() {
     setBackendStatus("stopped");
   }
 
-  async function startInstall() {
+  // Strict check: onClick passes a click event here.
+  async function startInstall(options?: { skipLongPaths?: boolean; chatOnly?: boolean }) {
+    const skipLongPaths = options?.skipLongPaths === true;
+    // Kept for the Linux elevation resume, which restarts the install without options.
+    if (options) {
+      chatOnlyRef.current = options.chatOnly === true;
+    }
+    const chatOnly = chatOnlyRef.current;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -580,7 +592,7 @@ export function useTauriBackend() {
     clearBackendError();
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_install");
+      await invoke("start_install", { skipLongPaths, chatOnly });
       // Install done: start the managed backend we just installed. Don't run the general preflight
       // here, it can attach to an unrelated running CLI/backend before launching ours. The
       // install-complete listener does NOT call startServer() to avoid a double-start race.

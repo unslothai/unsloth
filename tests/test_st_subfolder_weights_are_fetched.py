@@ -12,19 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A sentence-transformers model can have weights at the root AND in subfolders.
-
-`weights_at_root` splits repos two ways, root weights or per-subfolder weights,
-and `unsloth/embeddinggemma-300m` is both: a root `model.safetensors` plus
-`2_Dense/model.safetensors` and `3_Dense/model.safetensors`, which the ST load
-reads as part of the model. `_SUBDIR_WEIGHT_IGNORE_PATTERNS` pruned those two,
-unsloth_zoo's post-download gate correctly flagged the missing weights, and the
-retry excluded the same files again and raised DownloadStallError, blaming the
-network for a request that could never have been satisfied.
-
-Offline: the hub call is stubbed, since a test that depends on the network
-eventually reports a bug that is not there.
-"""
+"""Some ST repos keep weights at the root and in subfolders; the subfolder prune must skip them."""
 
 import json
 import sys
@@ -74,9 +62,6 @@ def modules_json(tmp_path, monkeypatch):
     return _install
 
 
-# ---- detection -----------------------------------------------------------
-
-
 def test_embeddinggemma_layout_is_detected(modules_json):
     modules_json(EMBEDDINGGEMMA)
     assert U._repo_has_weighted_st_subfolders("unsloth/embeddinggemma-300m") is True
@@ -103,10 +88,10 @@ def test_a_repo_without_modules_json_is_not(modules_json):
         "{ not json",
         json.dumps({"not": "a list"}),
         json.dumps([None, 3, "x"]),
-        json.dumps([{"path": "2_Dense"}]),  # no type
-        json.dumps([{"type": "...Dense"}]),  # no path
-        json.dumps([{"path": "  ", "type": "...Dense"}]),  # blank path
-        json.dumps([{"path": "/", "type": "...Dense"}]),  # root, slash only
+        json.dumps([{"path": "2_Dense"}]),
+        json.dumps([{"type": "...Dense"}]),
+        json.dumps([{"path": "  ", "type": "...Dense"}]),
+        json.dumps([{"path": "/", "type": "...Dense"}]),
     ],
 )
 def test_malformed_modules_json_falls_back_to_the_old_behaviour(modules_json, payload):
@@ -135,36 +120,27 @@ def test_the_taxonomy_is_shared_with_unsloth_zoo_not_restated():
     assert '"dense"' not in src.split("_repo_has_weighted_st_subfolders")[1][:2000]
 
 
-# ---- the behaviour that actually changed ---------------------------------
-
-
 def _ignores(
     model_name,
     monkeypatch,
     siblings = None,
     **kw,
 ):
-    """The ignore_patterns `maybe_prefetch_hf_snapshot` actually sends.
-
-    Driven through the real function with the downloader stubbed, not through
-    `_prefetch_ignore_patterns`, which knows nothing about the subdir branch and
-    would have passed either way.
-    """
+    """Drives maybe_prefetch_hf_snapshot itself; _prefetch_ignore_patterns skips the subdir branch."""
     seen = {}
 
     def fake_download(name, **kwargs):
         seen.update(kwargs)
         return "/nonexistent/snapshot"
 
-    # The prefetch is a no-op in offline mode, so clear it: nothing here reaches
-    # the network anyway, the downloader is stubbed.
+    # The prefetch is a no-op in offline mode; the downloader is stubbed anyway.
     for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(flag, raising = False)
 
     import unsloth_zoo.hf_xet_fallback as XF
 
     monkeypatch.setattr(XF, "snapshot_download_with_xet_fallback", fake_download)
-    # The auto format branch calls model_info; unstubbed that is a live request for a real repo.
+    # The auto format branch calls model_info; unstubbed that hits the network.
     import huggingface_hub
 
     class _Api:
@@ -225,8 +201,6 @@ def test_an_older_unsloth_zoo_degrades_instead_of_crashing(modules_json):
         assert U._repo_has_weighted_st_subfolders("unsloth/embeddinggemma-300m") is False
     finally:
         HCS._ST_WEIGHTED_MODULE_TYPES = saved
-    # ...and the taxonomy being back restores the fix, so the assertion above is about the missing name and not about a
-    # broken stub.
     assert U._repo_has_weighted_st_subfolders("unsloth/embeddinggemma-300m") is True
 
 
@@ -301,8 +275,6 @@ def test_a_hub_failure_keeps_the_patterns(monkeypatch):
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
-
-# ---- mixed weight formats: root safetensors, subfolder .bin ---------------
 
 BIN_DENSE_FILES = [
     "config.json",

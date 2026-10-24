@@ -185,6 +185,10 @@ fn looks_like_credential(value: &str) -> bool {
 
 fn replace_known_paths(input: &str, report: &mut RedactionReport) -> String {
     let mut out = input.to_string();
+    // The chosen root whether or not it exists yet: installer errors name it before it does.
+    if let Some(chosen) = crate::studio_home::chosen_root() {
+        out = replace_path_literal(&out, &chosen, "<studio_home>", report);
+    }
     let studio = studio_dir();
     out = replace_path_literal(&out, &studio, "<studio_home>", report);
     if let Some(home) = dirs::home_dir() {

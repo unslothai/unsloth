@@ -43,12 +43,17 @@ interface PlatformState {
   chatOnlyReason: string | null;
   // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
+  chatOnlyHint: string | null;
+  // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
+  // on a no-GPU host that opted in.
+  videoCpuOptIn: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
   lanUrls: string[];
   fetched: boolean;
+  verdictStale: boolean;
   // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
@@ -75,17 +80,20 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
+  chatOnlyHint: null,
+  videoCpuOptIn: false,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
   lanUrls: [],
   fetched: false,
+  verdictStale: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
   // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();
-    return !state.fetched && !state.detectionDeferred;
+    return (!state.fetched || state.verdictStale) && !state.detectionDeferred;
   },
 }));
 
@@ -105,6 +113,13 @@ const HARDWARE_DETECT_WAIT_MS = 5000;
 const HARDWARE_DETECT_POLL_MS = 200;
 // The bounded wait above is spent at most once per page load: see fetchDeviceType.
 let hardwareWaitSpent = false;
+
+/** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
+export function forgetMeasuredVerdict(): void {
+  hardwareWaitSpent = false;
+  // The old deferred flag would mask staleness, so a failed first read would look settled.
+  usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
+}
 
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
@@ -161,6 +176,7 @@ export async function fetchDeviceType(options?: {
         file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
+        video_cpu_opt_in?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -214,10 +230,12 @@ export async function fetchDeviceType(options?: {
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
+      // Provisional keeps the stored verdict (resolveVerdict); deferred settles it without a replaced backend's reason.
+      const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
         data,
-        previous,
+        previous.verdictStale && isDetectionDeferred(data)
+          ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
+          : previous,
       );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
@@ -229,10 +247,17 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
+        chatOnlyHint,
+        // Rides with the verdict: a provisional reply carries neither, so it keeps the stored one.
+        videoCpuOptIn:
+          data.video_cpu_opt_in === undefined
+            ? previous.videoCpuOptIn
+            : data.video_cpu_opt_in === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         fetched: data.device_type !== undefined || keepPlatform,
+        verdictStale: previous.verdictStale && isProvisionalVerdict(data) && !isDetectionDeferred(data),
         detectionDeferred: isDetectionDeferred(data),
       });
       return deviceType;

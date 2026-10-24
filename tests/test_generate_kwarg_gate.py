@@ -48,7 +48,6 @@ class PrepNoKwargs_ForwardHasKey:
 
 
 class PrepHasKeyDirectly:
-    # key directly on prepare -> ACCEPTED.
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -68,7 +67,7 @@ class NoPrepare:
 
 
 class VisionRejectsMM:
-    # Qwen3-VL shape: neither prepare nor forward names mm_token_type_ids -> REJECTED (stripped).
+    # Qwen3-VL shape: neither prepare nor forward names mm_token_type_ids -> REJECTED.
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -82,7 +81,6 @@ class VisionRejectsMM:
 
 
 class VisionAcceptsMM:
-    # forward names mm_token_type_ids and prepare unions it via **kwargs -> ACCEPTED (kept).
     def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
     def forward(
         self,
@@ -92,7 +90,6 @@ class VisionAcceptsMM:
     ): ...
 
 
-# (model, key, expected) per gate case.
 CASES = [
     (
         "prep(**kwargs)+forward(key)  -> accept",
@@ -130,10 +127,8 @@ def test_generate_kwarg_gate():
         assert got is expected, f"{name}: got {got}, expected {expected}"
 
 
-# transformers >= 5 injects logits_to_keep=1 in generate() itself, but the injection
-# is guarded by `"logits_to_keep" not in model_kwargs`, so it is a DEFAULT: popping
-# unconditionally turns an explicit logits_to_keep=0 into 1. Only the values the
-# strict validator would raise on may be stripped.
+# transformers >= 5 injects logits_to_keep=1 only as a default, so popping unconditionally
+# turns an explicit 0 into 1. Strip only values the strict validator rejects.
 
 
 def _filter_logits_kwargs(model, kwargs):
@@ -152,10 +147,8 @@ def test_v5_preserves_a_supported_caller_value():
 
 
 def test_v5_strips_a_value_the_model_would_reject():
-    # renamed away in v5, so the validator raises on it
     model = PrepHasKwargs_ForwardHasKey()
     assert _filter_logits_kwargs(model, {"num_logits_to_keep": 1}) == {}
-    # a VLM whose top-level forward has no logits_to_keep at all
     assert _filter_logits_kwargs(NoPrepare(), {"logits_to_keep": 1}) == {}
 
 
@@ -174,10 +167,7 @@ def test_source_has_no_unconditional_pop():
 
 
 def test_the_v5_gate_uses_the_plain_release_sentinel():
-    # unsloth_zoo's Version() is not packaging's: it keeps the leading numeric run and
-    # appends ".1" for any suffix, so a "5.0.0.dev0" sentinel is 5.0.0.1 and 5.0.0 FINAL
-    # sorts below it, down the legacy 4.x branch. The plain sentinel still catches the
-    # prereleases, which normalize to 5.0.0.1 either way.
+    # unsloth_zoo's Version() maps any suffix to ".1", so a "5.0.0.dev0" sentinel sorts above 5.0.0 final.
     src = open(VISION, encoding = "utf-8").read()
     assert 'Version(transformers_version) < Version("5.0.0")' in src
     assert 'Version("5.0.0.dev0")' not in src

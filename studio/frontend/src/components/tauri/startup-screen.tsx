@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import InstallLocation from "@/components/tauri/install-location";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -10,13 +11,19 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import {
+  enableWindowsLongPaths,
+  windowsLongPathsNeedPrompt,
+} from "@/lib/windows-long-paths";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -27,7 +34,8 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  onInstall: () => void;
+  upgradingToFull?: boolean;
+  onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
   onRetryInstall: () => void;
   onApproveElevation: () => void;
@@ -78,7 +86,64 @@ function CheckingContent() {
   );
 }
 
-function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
+type InstallOptions = { skipLongPaths?: boolean; chatOnly?: boolean };
+
+function NotInstalledContent({
+  onInstall,
+}: {
+  onInstall: (options?: InstallOptions) => void;
+}) {
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "explain" | "elevating"
+  >("idle");
+  const [chatOnly, setChatOnly] = useState(false);
+
+  // Synchronous: a double click lands before the re-render that disables the buttons.
+  const busy = useRef(false);
+
+  async function getStarted() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("checking");
+    if (await windowsLongPathsNeedPrompt()) {
+      busy.current = false;
+      setPhase("explain");
+    } else {
+      onInstall({ chatOnly });
+    }
+  }
+
+  async function allowLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("elevating");
+    const outcome = await enableWindowsLongPaths();
+    // "failed" leaves setup.ps1's own UAC as the fallback.
+    onInstall({ skipLongPaths: outcome === "declined", chatOnly });
+  }
+
+  function skipLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    onInstall({ skipLongPaths: true, chatOnly });
+  }
+
+  if (phase === "explain" || phase === "elevating") {
+    return (
+      <LongPathsExplainer
+        waiting={phase === "elevating"}
+        onContinue={allowLongPaths}
+        onSkip={skipLongPaths}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
@@ -91,11 +156,76 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <Button size="hero" onClick={onInstall}>
+        <Button
+          variant="dark"
+          size="hero"
+          onClick={getStarted}
+          disabled={phase === "checking"}
+        >
           Get Started
         </Button>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="install-chat-only"
+            checked={chatOnly}
+            disabled={phase !== "idle"}
+            onCheckedChange={(checked) => setChatOnly(checked === true)}
+          />
+          <Label
+            htmlFor="install-chat-only"
+            className="text-ui-12 font-normal text-muted-foreground"
+          >
+            Chat only (GGUF): smaller install, no training
+          </Label>
+        </div>
+        <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>
+  );
+}
+
+function LongPathsExplainer({
+  waiting,
+  onContinue,
+  onSkip,
+}: {
+  waiting: boolean;
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <>
+      <Logo />
+      <div className="mt-8 flex max-w-md flex-col items-center gap-2">
+        <p className="text-sm font-medium text-foreground">
+          Windows will ask for permission
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Approve{" "}
+          <span className="font-medium text-foreground">
+            Registry Console Tool
+          </span>{" "}
+          once to turn on long file paths for compiled kernels.
+        </p>
+        {waiting ? (
+          <div className="mt-4 flex items-center gap-2">
+            <Spinner className="size-4 text-primary" />
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              Waiting for Windows permission...
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex gap-3">
+            <Button variant="muted" size="hero" onClick={onSkip}>
+              Skip
+            </Button>
+            <Button variant="dark" size="hero" onClick={onContinue}>
+              Continue
+            </Button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -148,9 +278,11 @@ function InstallingContent({
 function RepairingContent({
   logs,
   progressDetail,
+  upgradingToFull,
 }: {
   logs: string[];
   progressDetail: string | null;
+  upgradingToFull: boolean;
 }) {
   const detailLines = progressDetail
     ? [...logs, progressDetail]
@@ -163,8 +295,14 @@ function RepairingContent({
       </div>
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm font-bold text-foreground">Getting things ready...</p>
-        <p className="text-sm text-muted-foreground">This won’t take long.</p>
+        <p className="text-sm font-bold text-foreground">
+          {upgradingToFull ? "Upgrading to the full install..." : "Getting things ready..."}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {upgradingToFull
+            ? "Downloading PyTorch and its libraries for this machine's GPU. This can take several minutes."
+            : "This won’t take long."}
+        </p>
         <LogDetails label="setup details" lines={detailLines} />
       </div>
     </div>
@@ -210,7 +348,9 @@ function InstallErrorContent({
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
+          <Button variant="dark" size="hero" onClick={onRetryInstall}>
+            Try Again
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -219,10 +359,12 @@ function InstallErrorContent({
 
 function RepairErrorContent({
   error,
+  upgradingToFull,
   onRetry,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  upgradingToFull: boolean;
   onRetry: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -230,12 +372,16 @@ function RepairErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Update failed</p>
+        <p className="text-sm font-medium text-destructive">
+          {upgradingToFull ? "Could not upgrade to the full install" : "Update failed"}
+        </p>
         {error && (
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -266,7 +412,7 @@ function NeedsElevationContent({
         </div>
         <div className="mt-4 flex gap-3">
           <Button variant="muted" size="hero" onClick={onRetryInstall}>Cancel</Button>
-          <Button size="hero" onClick={onApproveElevation}>Allow</Button>
+          <Button variant="dark" size="hero" onClick={onApproveElevation}>Allow</Button>
         </div>
       </div>
     </>
@@ -297,7 +443,9 @@ function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-foreground">Server stopped</p>
         <div className="mt-4">
-          <Button size="hero" onClick={onStartServer}>Start Server</Button>
+          <Button variant="dark" size="hero" onClick={onStartServer}>
+            Start Server
+          </Button>
         </div>
       </div>
     </>
@@ -322,7 +470,9 @@ function ErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -342,6 +492,7 @@ export function StartupScreen({
   progressDetail,
   startupMessage,
   elevationPackages,
+  upgradingToFull = false,
   onInstall,
   onRetry,
   onRetryInstall,
@@ -373,11 +524,18 @@ export function StartupScreen({
           />
         );
       case "repairing":
-        return <RepairingContent logs={logs} progressDetail={progressDetail} />;
+        return (
+          <RepairingContent
+            logs={logs}
+            progressDetail={progressDetail}
+            upgradingToFull={upgradingToFull}
+          />
+        );
       case "repair-error":
         return (
           <RepairErrorContent
             error={error}
+            upgradingToFull={upgradingToFull}
             onRetry={onRetry}
             onCopyDiagnostics={onCopyDiagnostics}
           />

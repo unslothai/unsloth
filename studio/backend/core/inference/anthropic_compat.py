@@ -181,7 +181,7 @@ def anthropic_messages_to_openai(
     ``preserve_thinking`` keeps replayed assistant ``thinking`` blocks as
     ``reasoning_content`` on the converted message, so templates that render
     historical reasoning (Qwen3.6-style ``preserve_thinking``) actually receive
-    it; otherwise thinking is dropped from the prompt. ``redacted_thinking``
+    it; otherwise only the current turn's thinking (after the last real query) is kept. ``redacted_thinking``
     carries only ciphertext and is always dropped.
     """
     result: list[dict] = []
@@ -199,9 +199,26 @@ def anthropic_messages_to_openai(
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 
-    for msg in messages:
+    # The current turn's thinking stays even with preservation off: templates render reasoning after
+    # the last real query (a user message that is not only tool results), as it was generated.
+    last_query = -1
+    for index, msg in enumerate(messages):
         role = msg["role"] if isinstance(msg, dict) else msg.role
         content = msg["content"] if isinstance(msg, dict) else msg.content
+        if role == "user" and (
+            isinstance(content, str)
+            or any(
+                (block.get("type") if isinstance(block, dict) else getattr(block, "type", None))
+                != "tool_result"
+                for block in content
+            )
+        ):
+            last_query = index
+
+    for index, msg in enumerate(messages):
+        role = msg["role"] if isinstance(msg, dict) else msg.role
+        content = msg["content"] if isinstance(msg, dict) else msg.content
+        keep_thinking = preserve_thinking or index > last_query
 
         if isinstance(content, str):
             result.append({"role": role, "content": content})
@@ -235,7 +252,7 @@ def anthropic_messages_to_openai(
                 btype = b.get("type", "")
                 if btype == "text":
                     text_parts.append(b["text"])
-                elif btype == "thinking" and preserve_thinking:
+                elif btype == "thinking" and keep_thinking:
                     t = b.get("thinking") or ""
                     if t:
                         thinking_parts.append(t)
@@ -585,15 +602,33 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def cached_prompt_tokens(usage: Optional[dict]) -> Optional[int]:
+    """Prompt tokens the server reused from its cache (llama-server ``prompt_tokens_details``), or None."""
+    details = (usage or {}).get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if isinstance(cached, bool) or not isinstance(cached, (int, float)):
+        return None
+    return max(0, int(cached))
+
+
+def anthropic_input_split(usage: Optional[dict]) -> tuple[int, int]:
+    """(input_tokens, cache_read_input_tokens): Anthropic counts cache reads apart from input, so the two
+    still sum to the prompt. Nothing is ever reported as cache creation."""
+    usage = usage or {}
+    prompt = int(usage.get("prompt_tokens") or 0)
+    cached = min(prompt, cached_prompt_tokens(usage) or 0)
+    return prompt - cached, cached
+
+
 def _message_delta_usage(usage: Optional[dict]) -> dict:
-    """Usage block for a message_delta event (cumulative token counts). Cache
-    fields are always 0 — no prompt caching backend. ``usage`` may be None when a
+    """Usage block for a message_delta event (cumulative token counts). ``usage`` may be None when a
     metadata event carried usage=None (e.g. only finish_reason set)."""
     usage = usage or {}
+    input_tokens, cache_read = anthropic_input_split(usage)
     return {
-        "input_tokens": usage.get("prompt_tokens", 0),
+        "input_tokens": input_tokens,
         "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
+        "cache_read_input_tokens": cache_read,
         "output_tokens": usage.get("completion_tokens", 0),
     }
 

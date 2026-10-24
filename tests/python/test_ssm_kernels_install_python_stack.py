@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Setup installs causal-conv1d and mamba-ssm prebuilt wheels next to flash-attn, so a Mamba /
-hybrid model does not wait on a download at load time."""
+"""Setup installs flash-attn but not causal-conv1d or mamba-ssm: those (~550 MB) install when a
+model that needs them is trained or loaded (core/training/worker.py, utils/ssm_runtime.py), and
+`unsloth install-kernels` still provisions them ahead of time for offline images. After torch
+moves, setup still removes an installed copy whose compiled extension no longer imports."""
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import re
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 
@@ -22,254 +24,260 @@ sys.path.insert(0, str(STUDIO_DIR / "backend"))
 import install_python_stack as ips  # noqa: E402
 
 SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
-ENV = {"platform_tag": "linux_x86_64", "torch_mm": "2.13", "torch_version": "2.13.0+cu130"}
-DISTS = {"causal_conv1d": "causal-conv1d", "mamba_ssm": "mamba-ssm"}
+TREE = ast.parse(SOURCE)
 
 
-class _Host:
-    """Which kernels are installed and whether they import; the fake install_kernel edits it."""
+def _called_names() -> set[str]:
+    return {
+        node.func.id
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
+def test_setup_has_no_ssm_kernel_step():
+    assert not hasattr(ips, "_ensure_ssm_kernels")
+    assert "install_kernel" not in _called_names()
+    assert '_progress("mamba kernels")' not in SOURCE
+    assert "causal-conv1d + mamba-ssm" not in SOURCE
+
+
+def test_flash_attn_and_the_stale_kernel_check_run_at_all_three_sites():
+    calls = [m.start() for m in re.finditer(r"\n\s+_ensure_flash_attn\(\)\n", SOURCE)]
+    assert len(calls) == 3
+    for start in calls:
+        following = SOURCE[start : start + 120]
+        assert "_remove_stale_ssm_kernels()" in following, following
+    assert "base_total += 1  # flash-attn, Linux and Windows" in SOURCE
+
+
+class _Kernels:
+    """Which SSM distributions are installed and how their extension import ends: True loads,
+    False raises ImportError, None hangs, an int is a raw exit code (negative = signal)."""
 
     def __init__(
         self,
-        installed = (),
-        loading = (),
-        hangs = (),
-        unlaunchable = (),
+        installed: dict,
+        torch_imports = True,
     ):
-        self.installed = set(installed)
-        self.loading = set(loading)
-        self.hangs = set(hangs)
-        self.unlaunchable = set(unlaunchable)
-        self.timeouts = []
+        self.installed = dict(installed)
+        self.torch_imports = torch_imports
+        self.probes: list[str] = []
+        self.removed: list[str] = []
 
     def version(self, distribution):
         return "1.0" if distribution in self.installed else None
 
     def run(self, cmd, *args, **kwargs):
-        self.timeouts.append(kwargs.get("timeout"))
-        for name, distribution in DISTS.items():
-            if cmd[-1] == ips.KERNELS[name][1]:
-                if distribution in self.hangs:
-                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-                if distribution in self.unlaunchable:
-                    raise PermissionError(13, "Access is denied")
-                return SimpleNamespace(returncode = 0 if distribution in self.loading else 1)
-        return SimpleNamespace(returncode = 0)
+        code = cmd[-1]
+        self.probes.append(code)
+        if code == "import torch":
+            if self.torch_imports is None:
+                raise subprocess.TimeoutExpired(cmd, 1)
+            if self.torch_imports:
+                return subprocess.CompletedProcess(cmd, 0, stderr = "")
+            return subprocess.CompletedProcess(
+                cmd, 1, stderr = "OSError: libtorch_cuda.so: cannot open shared object file"
+            )
+        assert "import torch" in code  # the extension probe proves torch imports too
+        extension = "causal_conv1d_cuda" if "causal_conv1d_cuda" in code else "selective_scan_cuda"
+        distribution = "causal-conv1d" if extension == "causal_conv1d_cuda" else "mamba-ssm"
+        state = self.installed[distribution]
+        if state is None:
+            raise subprocess.TimeoutExpired(cmd, 1)
+        if state is True:
+            return subprocess.CompletedProcess(cmd, 0, stderr = "")
+        if state is False:
+            return subprocess.CompletedProcess(
+                cmd,
+                ips._SSM_EXTENSION_BROKEN_EXIT,
+                stderr = f"{extension}: ImportError: {extension}.so: undefined symbol: _ZN3c10",
+            )
+        return subprocess.CompletedProcess(cmd, state, stderr = "Killed")
+
+    def uninstall(self, distribution):
+        self.removed.append(distribution)
+        self.installed.pop(distribution, None)
+        return True
 
 
-def _run(
-    host,
-    install_kernel,
-    *,
-    env = ENV,
-    no_torch = False,
-    macos = False,
-    disabled = False,
-    offline = False,
-):
-    steps, notes = [], []
-    with (
-        mock.patch.object(ips, "NO_TORCH", no_torch),
-        mock.patch.object(ips, "IS_MACOS", macos),
-        mock.patch.object(ips, "IS_WINDOWS", False),
-        mock.patch.object(ips, "_uv_is_offline", return_value = offline),
-        mock.patch.object(ips, "probe_torch_wheel_env", return_value = env) as probe,
-        mock.patch.object(ips, "install_kernel", side_effect = install_kernel) as kernel,
-        mock.patch.object(ips, "_installed_distribution_version", side_effect = host.version),
-        mock.patch.object(ips.subprocess, "run", side_effect = host.run),
-        mock.patch.object(
-            ips, "_uninstall_distribution", side_effect = lambda d: host.installed.discard(d) or True
-        ) as uninstall,
-        mock.patch.object(ips, "_count_install_action") as counted,
-        mock.patch.object(ips, "_step", side_effect = lambda label, value, *_: steps.append(value)),
-        mock.patch.object(ips, "_note", side_effect = lambda message, *_: notes.append(message)),
-        mock.patch.dict(
-            "os.environ", {"UNSLOTH_STUDIO_SKIP_SSM_KERNELS_INSTALL": "1" if disabled else ""}
-        ),
-    ):
-        ips._ensure_ssm_kernels()
-    return SimpleNamespace(
-        kernel = kernel,
-        probe = probe,
-        uninstall = uninstall,
-        counted = counted,
-        steps = steps,
-        notes = notes,
+@contextlib.contextmanager
+def _free_lock(name, **kwargs):
+    yield True
+
+
+def _run_stale_check(monkeypatch, host: _Kernels, **flags):
+    monkeypatch.setattr(ips, "NO_TORCH", flags.get("no_torch", False))
+    monkeypatch.setattr(ips, "IS_MACOS", flags.get("macos", False))
+    monkeypatch.setattr(ips, "_installed_distribution_version", host.version)
+    monkeypatch.setattr(ips, "_uninstall_distribution", host.uninstall)
+    monkeypatch.setattr(ips, "_count_install_action", lambda: None)
+    monkeypatch.setattr(ips, "kernel_install_lock", flags.get("lock", _free_lock))
+    warnings = []
+    monkeypatch.setattr(ips, "_step", lambda label, value, color_fn = None: warnings.append(value))
+    monkeypatch.setattr(ips, "_note", lambda message, color_fn = None: warnings.append(message))
+    monkeypatch.setattr(ips.subprocess, "run", host.run)
+    installs = []
+    monkeypatch.setattr(ips, "install_prebuilt", lambda *a, **k: installs.append(a) or "installed")
+    ips._remove_stale_ssm_kernels()
+    assert installs == []  # never installs anything
+    return warnings
+
+
+def test_stale_kernels_that_no_longer_import_are_removed(monkeypatch):
+    host = _Kernels({"causal-conv1d": False, "mamba-ssm": False})
+    warnings = _run_stale_check(monkeypatch, host)
+    assert host.removed == ["causal-conv1d", "mamba-ssm"]
+    assert len(warnings) == 2
+    # The probe's stderr tail says why.
+    assert "undefined symbol" in warnings[0] and "selective_scan_cuda" in warnings[1]
+
+
+def test_kernels_that_still_import_are_kept(monkeypatch):
+    host = _Kernels({"causal-conv1d": True, "mamba-ssm": False})
+    _run_stale_check(monkeypatch, host)
+    assert host.removed == ["mamba-ssm"]
+
+
+def test_absent_kernels_are_not_probed_or_installed(monkeypatch):
+    host = _Kernels({})
+    _run_stale_check(monkeypatch, host)
+    assert host.probes == [] and host.removed == []
+
+
+def test_a_hung_probe_is_inconclusive_and_keeps_the_kernel(monkeypatch):
+    host = _Kernels({"causal-conv1d": None})
+    _run_stale_check(monkeypatch, host)
+    assert host.removed == []
+
+
+def test_no_torch_or_macos_skips_the_check(monkeypatch):
+    for flags in ({"no_torch": True}, {"macos": True}):
+        host = _Kernels({"causal-conv1d": False})
+        _run_stale_check(monkeypatch, host, **flags)
+        assert host.probes == []
+
+
+@pytest.mark.parametrize("torch_imports", [False, None])
+def test_a_torch_that_does_not_import_keeps_every_kernel(monkeypatch, torch_imports):
+    # A half-finished repair or a transient failure in torch says nothing about the kernels, and an
+    # offline machine could not reinstall them.
+    host = _Kernels({"causal-conv1d": False, "mamba-ssm": False}, torch_imports = torch_imports)
+    warnings = _run_stale_check(monkeypatch, host)
+    assert host.removed == []
+    assert host.probes == ["import torch"]
+    if torch_imports is False:
+        assert "libtorch_cuda.so" in warnings[0]
+
+
+@pytest.mark.parametrize("exit_code", [-9, -11, 1, 2])
+def test_a_killed_or_unrelated_failure_is_inconclusive(monkeypatch, exit_code):
+    # A signal (OOM killer, segfault) or an exit that is not the extension's ImportError / OSError.
+    host = _Kernels({"causal-conv1d": exit_code, "mamba-ssm": exit_code})
+    warnings = _run_stale_check(monkeypatch, host)
+    assert host.removed == []
+    assert all("kept it" in message for message in warnings)
+
+
+def test_the_probed_extensions_match_the_kernel_checks():
+    for name, extension in ips._SSM_KERNEL_EXTENSIONS.items():
+        assert ips.KERNELS[name][1] == f"import torch, {extension}"
+
+
+def test_the_kernel_cli_still_provisions_both_ahead_of_time():
+    from utils import kernel_install
+    assert {"causal_conv1d", "mamba_ssm"} <= set(kernel_install.KERNELS)
+    assert callable(kernel_install.install_kernel)
+
+
+def test_a_busy_install_lock_keeps_the_kernel(monkeypatch):
+    # A Studio load verifying a fresh install holds this lock: never remove it underneath that.
+    @contextlib.contextmanager
+    def _busy(name, **kwargs):
+        yield False
+
+    host = _Kernels({"causal-conv1d": False})
+    warnings = _run_stale_check(monkeypatch, host, lock = _busy)
+    assert host.removed == []
+    assert any("install lock is busy" in message for message in warnings)
+
+
+def test_a_kernel_reinstalled_while_waiting_on_the_lock_is_kept(monkeypatch):
+    # Broken when first probed, but a Studio load / `unsloth install-kernels` held the lock and
+    # reinstalled it: the re-probe under the lock loads, so nothing is removed.
+    host = _Kernels({"causal-conv1d": False})
+
+    @contextlib.contextmanager
+    def _lock_after_reinstall(name, **kwargs):
+        host.installed["causal-conv1d"] = True
+        yield True
+
+    warnings = _run_stale_check(monkeypatch, host, lock = _lock_after_reinstall)
+    assert host.removed == []
+    assert any("now loads" in message and "kept it" in message for message in warnings)
+    extension_probes = [code for code in host.probes if code != "import torch"]
+    assert len(extension_probes) == 2  # probed again under the lock
+
+
+def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
+    host = _Kernels({"causal-conv1d": False})
+
+    @contextlib.contextmanager
+    def _lock_then_hang(name, **kwargs):
+        host.installed["causal-conv1d"] = None
+        yield True
+
+    warnings = _run_stale_check(monkeypatch, host, lock = _lock_then_hang)
+    assert host.removed == []
+    assert any("kept it" in message for message in warnings)
+
+
+def _real_probe(extension, path):
+    return subprocess.run(
+        [sys.executable, "-c", ips._ssm_extension_probe(extension)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        env = {**__import__("os").environ, "PYTHONPATH": str(path)},
     )
 
 
-def _installer(host):
-    def install(name, env, **kwargs):
-        print(f"Unsloth: installed {name} ({name}-x.whl).")
-        host.installed.add(DISTS[name])
-        host.loading.add(DISTS[name])
-        return 0
-
-    return install
+# Stand-ins for selective_scan_cuda / causal_conv1d_cuda: a CUDA build on the host cannot interfere.
+_FAKE_SCAN, _FAKE_CONV = "unsloth_test_selective_scan_ext", "unsloth_test_causal_conv1d_ext"
 
 
-def test_both_kernels_install_for_the_resident_torch():
-    host = _Host()
-    r = _run(host, _installer(host))
-    assert [c.args for c in r.kernel.call_args_list] == [("causal_conv1d", ENV), ("mamba_ssm", ENV)]
-    for call in r.kernel.call_args_list:
-        assert call.kwargs["install_without_gpu"] is True
-    assert r.probe.call_args.kwargs["include_windows"] is True
-    assert r.counted.call_count == 2
-    assert r.steps == [] and r.uninstall.call_count == 0
-    assert r.notes == [
-        "installed causal_conv1d (causal_conv1d-x.whl).",
-        "installed mamba_ssm (mamba_ssm-x.whl).",
-    ]
+def test_the_probe_passes_an_extension_free_mamba_ssm_only(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN})
+    assert _real_probe(_FAKE_SCAN, tmp_path).returncode == 0
+    # causal_conv1d has no extension-free wheel: a missing causal_conv1d_cuda is still broken.
+    missing = _real_probe(_FAKE_CONV, tmp_path)
+    assert missing.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, missing.stderr
+    # A build for another torch: the module is there but does not load.
+    (tmp_path / f"{_FAKE_SCAN}.py").write_text("raise ImportError('undefined symbol: _ZN3c10')\n")
+    broken = _real_probe(_FAKE_SCAN, tmp_path)
+    assert broken.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, broken.stderr
+    assert _FAKE_SCAN in broken.stderr
 
 
-def test_a_kernel_that_already_loads_is_not_looked_up_online():
-    host = _Host(installed = DISTS.values(), loading = DISTS.values())
-    r = _run(host, _installer(host))
-    assert r.kernel.call_count == 0 and r.counted.call_count == 0
-    assert r.notes == [
-        "causal_conv1d already installed and loads.",
-        "mamba_ssm already installed and loads.",
-    ]
-
-
-def test_a_resident_build_that_no_longer_loads_is_removed_when_nothing_replaces_it():
-    host = _Host(installed = DISTS.values())
-
-    def no_wheel(name, env, **kwargs):
-        print(f"Unsloth: no prebuilt {name} for torch 2.15.0; using the torch fallback.")
-        return 0
-
-    r = _run(host, no_wheel)
-    assert [c.args[0] for c in r.uninstall.call_args_list] == ["causal-conv1d", "mamba-ssm"]
-    assert r.steps == [
-        "causal_conv1d does not load with this torch; removed it",
-        "mamba_ssm does not load with this torch; removed it",
-    ]
-
-
-def test_offline_mode_neither_looks_up_nor_installs_but_keeps_what_loads():
-    host = _Host(installed = ["causal-conv1d"], loading = ["causal-conv1d"])
-    r = _run(host, _installer(host), offline = True)
-    assert r.kernel.call_count == 0 and r.uninstall.call_count == 0
-    assert r.notes == [
-        "causal_conv1d already installed and loads.",
-        "mamba_ssm not installed: UV_OFFLINE is set; run `unsloth install-kernels` online",
-    ]
-
-
-def test_offline_still_removes_a_resident_build_that_no_longer_loads():
-    host = _Host(installed = ["mamba-ssm"])
-    r = _run(host, _installer(host), offline = True)
-    assert r.kernel.call_count == 0
-    assert [c.args[0] for c in r.uninstall.call_args_list] == ["mamba-ssm"]
-
-
-def test_a_probe_that_cannot_be_launched_is_inconclusive_not_fatal():
-    host = _Host(installed = ["mamba-ssm"], unlaunchable = ["mamba-ssm"])
-    r = _run(host, lambda name, env, **kwargs: 0)
-    assert r.kernel.call_count == 2 and r.uninstall.call_count == 0
-
-
-def test_the_torch_probe_is_bounded_everywhere_and_a_launch_failure_skips_the_step():
-    host = _Host()
-    r = _run(host, _installer(host))
-    assert r.probe.call_args.kwargs["timeout"] == ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT
-    with mock.patch.object(ips, "probe_torch_wheel_env", side_effect = OSError("no fork")):
-        with mock.patch.object(ips, "install_kernel") as kernel:
-            ips._ensure_ssm_kernels()
-    assert kernel.call_count == 0
-
-
-def test_an_uninstall_that_cannot_launch_warns_instead_of_aborting():
-    host = _Host(installed = DISTS.values())
-    with mock.patch.object(ips, "_uninstall_distribution", side_effect = OSError("no fork")):
-        steps = []
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "_uv_is_offline", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env", return_value = ENV),
-            mock.patch.object(ips, "_installed_distribution_version", side_effect = host.version),
-            mock.patch.object(ips.subprocess, "run", side_effect = host.run),
-            mock.patch.object(ips, "_count_install_action"),
-            mock.patch.object(ips, "_note"),
-            mock.patch.object(
-                ips, "_step", side_effect = lambda label, value, *_: steps.append(value)
-            ),
-        ):
-            ips._ensure_ssm_kernels()
-    assert steps == [
-        "causal_conv1d does not load with this torch and could not be removed; "
-        "uninstall causal-conv1d manually",
-        "mamba_ssm does not load with this torch and could not be removed; "
-        "uninstall mamba-ssm manually",
-    ]
-
-
-def test_captured_failure_text_is_redacted():
-    host = _Host()
-
-    def leaks(name, env, **kwargs):
-        raise RuntimeError("index https://user:s3cret@mirror.example/simple?token=abc failed")
-
-    r = _run(host, leaks)
-    joined = "\n".join(r.notes)
-    assert "s3cret" not in joined and "token=abc" not in joined
-    assert "<redacted>" in joined
-
-
-def test_a_failure_warns_and_the_next_kernel_still_runs():
-    host = _Host()
-    install = _installer(host)
-
-    def first_fails(name, env, **kwargs):
-        if name == "causal_conv1d":
-            raise OSError("disk full")
-        return install(name, env, **kwargs)
-
-    r = _run(host, first_fails)
-    assert r.kernel.call_count == 2
-    assert r.steps == ["Continuing without causal_conv1d"]
-    assert "OSError: disk full" in r.notes
-
-
-def test_a_hung_import_probe_is_bounded_and_never_read_as_broken():
-    host = _Host(installed = ["mamba-ssm"], hangs = ["mamba-ssm"])
-    r = _run(host, lambda name, env, **kwargs: 0)
-    assert r.uninstall.call_count == 0
-    assert host.timeouts
-    assert all(t == ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT for t in host.timeouts)
-
-
-def test_each_call_gets_a_fresh_runner_so_a_repaired_torch_is_probed_again():
-    runners = []
-
-    def record(name, env, **kwargs):
-        runners.append(kwargs["run"])
-        return 0
-
-    _run(_Host(), record)
-    _run(_Host(), record)
-    assert runners[0] is runners[1] and runners[2] is runners[3]
-    assert runners[0] is not runners[2]
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [{"no_torch": True}, {"macos": True}, {"disabled": True}, {"env": None}],
-    ids = ["no-torch", "macos", "opted-out", "no-cuda-torch"],
-)
-def test_nothing_is_installed_when_it_cannot_apply(kwargs):
-    host = _Host()
-    r = _run(host, _installer(host), **kwargs)
-    assert r.kernel.call_count == 0
-
-
-def test_every_flash_attn_site_also_resyncs_the_ssm_kernels():
-    calls = [m.start() for m in re.finditer(r"\n\s+_ensure_flash_attn\(\)\n", SOURCE)]
-    assert len(calls) == 3
-    for start in calls:
-        following = SOURCE[start : start + 200]
-        assert "_ensure_ssm_kernels()" in following, following
-    assert "base_total += 1  # causal-conv1d + mamba-ssm, same gate" in SOURCE
+def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):
+    # Removing it on every update leaves an offline Mamba-2 load without mamba_ssm.
+    pytest.importorskip("torch")
+    monkeypatch.setattr(ips, "_SSM_KERNEL_EXTENSIONS", {"mamba_ssm": _FAKE_SCAN})
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN}, raising = False)
+    monkeypatch.setattr(ips, "NO_TORCH", False)
+    monkeypatch.setattr(ips, "IS_MACOS", False)
+    monkeypatch.setattr(
+        ips,
+        "_installed_distribution_version",
+        lambda d: "2.3.2.post1" if d == "mamba-ssm" else None,
+    )
+    removed = []
+    monkeypatch.setattr(ips, "_uninstall_distribution", lambda d: removed.append(d) or True)
+    monkeypatch.setattr(ips, "_count_install_action", lambda: None)
+    monkeypatch.setattr(ips, "kernel_install_lock", _free_lock)
+    messages = []
+    monkeypatch.setattr(ips, "_step", lambda label, value, color_fn = None: messages.append(value))
+    monkeypatch.setattr(ips, "_note", lambda message, color_fn = None: messages.append(message))
+    ips._remove_stale_ssm_kernels()
+    assert removed == [] and messages == []

@@ -187,22 +187,13 @@ def test_exact_direct_snapshots_produce_complete_resumable_provenance(tmp_path):
 
 
 def test_a_4bit_run_declares_that_the_latest_sidecar_would_strand_it(tmp_path):
-    """The question the upgrade gate asks before it offers an install ahead of a resume.
-
-    Installing the latest transformers is not undoable: the sidecar is a persistent
-    overlay, and from then on ``effective_training_load_in_4bit`` refuses this
-    checkpoint outright. So the gate has to know beforehand, from the STORED config --
-    which is exactly where ``require_exact_resume_resources`` and
-    ``require_exact_model_resource`` do not exist, because ``_sanitize_db_config``
-    strips both before the row is written.
-    """
+    """The upgrade gate must decide from stored config, since a sidecar install cannot be undone."""
     config, event, model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
     persisted = {**config, **normalize_worker_provenance_event(event, config)}
     assert "require_exact_resume_resources" not in persisted
     assert "require_exact_model_resource" not in persisted
 
     assert exact_resume_requires_current_4bit(persisted) is True
-    # And the refusal it is predicting, from the flags routes/training.py rebuilds.
     with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
         with pytest.raises(ExactResumeResourcesUnavailable):
             effective_training_load_in_4bit(
@@ -217,7 +208,6 @@ def test_a_16bit_run_has_no_4bit_load_mode_to_lose(tmp_path):
 
 
 def test_an_unresumable_provenance_is_not_made_worse_by_the_install(tmp_path):
-    # Already refused, so there is no working resume for the install to take away.
     config, event, _model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
     persisted = {**config, **normalize_worker_provenance_event(event, config)}
     persisted[RESOURCE_PROVENANCE_KEY] = {
@@ -452,12 +442,7 @@ def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
 
 
 class _MappingModel(dict):
-    """Stand-in for the shape ``mlx.nn.Module`` has: an object that is also a ``dict``.
-
-    MLX models keep their parameters in the mapping and everything unsloth_zoo records
-    about the load (``_hf_repo``, ``_unsloth_quantized_source``, ...) as plain attributes,
-    so a mapping-first read answers ``None`` for all of them.
-    """
+    """Stand-in for mlx.nn.Module, which is also a dict; its metadata lives in attributes, not keys."""
 
     def __init__(self, **attrs):
         super().__init__()
@@ -491,12 +476,7 @@ def _real_mlx_module(attrs):
     ],
 )
 def test_mlx_runtime_4bit_attests_however_the_model_stores_metadata(tmp_path, make_model):
-    """A model that is also a mapping must attest exactly like a plain object.
-
-    ``mlx.nn.Module`` subclasses ``dict``. Reading its metadata through the mapping
-    protocol finds nothing, which left every runtime-quantized MLX run unattested and so
-    non-resumable, while the plain-object doubles in the tests above kept passing.
-    """
+    """A model that is also a dict must attest like a plain object, or MLX 4-bit runs go unattested."""
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     config = _shared_setup_6(dataset)
@@ -1647,3 +1627,43 @@ def test_provenance_continues_after_failed_finalization(tmp_path):
     assert backend._run_finalized is False
     assert backend._db_config[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
     update.assert_called_once()
+
+
+def test_resume_refuses_a_different_training_objective(tmp_path):
+    from fastapi import HTTPException
+
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    actual = _shared_setup_5(tmp_path)
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    source_config = {
+        "model_name": "org/selected",
+        "actual_model_repo_id": "org/actual-4bit",
+        "model_snapshot_path": str(actual),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "training_type": "LoRA/QLoRA",
+        "format_type": "alpaca",
+        "load_in_4bit": True,
+        "objective": "dpo",
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    request = TrainingStartRequest(
+        model_name = "org/selected",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        objective = "orpo",
+    )
+    with pytest.raises(HTTPException) as exc:
+        route._prepare_resume_resource_provenance(
+            request, {"model_name": "org/selected", "config_json": source_config}
+        )
+    assert exc.value.status_code == 409 and "objective" in exc.value.detail

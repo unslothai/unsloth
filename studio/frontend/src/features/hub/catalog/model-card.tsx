@@ -24,7 +24,7 @@ import {
 import { OwnerAvatar, useAvatarImageUrl } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
-export const MODEL_CARD_WIDTH_PX = 204;
+export const MODEL_CARD_WIDTH_PX = 224;
 export const MODEL_CARD_HEIGHT_PX = 128;
 
 export type TrendingCardStyle = CSSProperties & {
@@ -294,7 +294,7 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+          className="size-11 shrink-0 rounded-md text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">

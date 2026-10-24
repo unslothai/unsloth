@@ -68,9 +68,6 @@ def no_torch_venv(request, tmp_path_factory):
     return str(venv_python)
 
 
-# ── AST structural checks ─────────────────────────────────────────────
-
-
 class TestDataCollatorsAST:
     """Static analysis: data_collators.py has no top-level torch imports."""
 
@@ -143,9 +140,6 @@ class TestChatTemplatesAST:
                 f"torch import at line {imp.lineno} is at top level"
                 " (should be inside a function)"
             )
-
-
-# ── data_collators.py: exec + dataclass instantiation in no-torch venv ──
 
 
 class TestDataCollatorsNoTorchVenv:
@@ -221,9 +215,6 @@ class TestDataCollatorsNoTorchVenv:
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
-# ── chat_templates.py: exec in no-torch venv ─────────────────────────
-
-
 class TestChatTemplatesNoTorchVenv:
     """Run chat_templates.py in an isolated no-torch venv with stubs."""
 
@@ -261,6 +252,7 @@ class TestChatTemplatesNoTorchVenv:
             # rather than another stub: the suite checks what actually ships.
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
 
             exec(source)
 
@@ -305,6 +297,7 @@ class TestChatTemplatesNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -316,9 +309,6 @@ class TestChatTemplatesNoTorchVenv:
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
-
-
-# ── format_conversion.py: AST + runtime tests ────────────────────────
 
 
 class TestFormatConversionAST:
@@ -343,7 +333,6 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -399,6 +388,7 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -460,6 +450,7 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -484,9 +475,6 @@ class TestFormatConversionNoTorchVenv:
             result.returncode == 0
         ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"
         assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
-
-
-# ── Negative controls ─────────────────────────────────────────────────
 
 
 class TestNegativeControls:
@@ -536,10 +524,8 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected.
             pass
         else:
-            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,

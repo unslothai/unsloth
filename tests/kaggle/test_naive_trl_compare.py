@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The plain-TRL control arm, and the ways a "comparison" proves nothing.
-
-The rules under test are deliberately weak, and that is the point. Two library
-stacks do not produce one fp16 trajectory -- `frontier` measured transformers
-5.5.0 and 5.15.1 disagreeing at step 1 on identical weights, data and seed --
-so a guard that asserts the arms AGREE would be red on ordinary drift. These
-assert only what a comparison is entitled to: the control ran, it converged,
-and it ran the same number of steps as the arm it is printed beside.
-"""
+"""fp16 stacks disagree, so the control asserts only: it ran, converged, same step count as arm."""
 
 from __future__ import annotations
 
@@ -76,10 +68,7 @@ def test_the_arms_are_never_asserted_equal():
 
 
 def test_the_control_module_never_imports_unsloth():
-    """Asserted from the SOURCE, not from a convention. Anything that has
-    imported unsloth has had transformers, trl and peft patched underneath it
-    and is no longer a control; the comparison would be unsloth against itself
-    with extra steps, and it would look exactly like a real result."""
+    """The control must never import unsloth, which patches transformers, trl and peft underneath it."""
     tree = ast.parse((PAYLOAD / "naive_trl_compare.py").read_text(encoding = "utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -92,10 +81,7 @@ def test_the_control_module_never_imports_unsloth():
 
 
 def test_the_payload_runs_the_control_in_a_separate_process():
-    """A control imported into the parent would be patched by whatever the
-    parent imported. It must be spawned, and it must be spawned AFTER the
-    cycles: two 4bit models resident at once on a 14.56GB T4 is how a
-    comparison becomes an OOM blamed on the thing being compared."""
+    """The control runs in a separate process after the cycles, so two 4bit models never share the T4."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "naive_trl_compare.py" in src
     assert "if args.compare_naive_trl:" in src
@@ -105,46 +91,23 @@ def test_the_payload_runs_the_control_in_a_separate_process():
 
 
 def test_the_control_arm_loads_the_repo_unsloth_resolved():
-    """Not the name that was asked for, and the difference is an OOM.
-
-    `load_in_4bit=True` sends unsloth through FLOAT_TO_INT_MAPPER to a
-    pre-quantised `-unsloth-bnb-4bit` sibling. The plain path quantises the
-    ORIGINAL on the fly and has to materialise the 16bit checkpoint first. On
-    gemma-4-E2B-it that asked for 8.75 GiB on top of 7.25 GiB already resident
-    and died (kernel unsloth-probe-latestcompile-r3-cb1125).
-
-    Pointing both arms at the same weights is also the fairer comparison: the
-    question is what the two training stacks do, not which repo each loader
-    picks.
-    """
+    """Both arms load the repo unsloth resolved, since the plain path quantises the original and OOMs."""
     src = (ROOT / "tests" / "kaggle" / "t4_smoke" / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert 'control_model = runs[0].get("resolved_checkpoint") or args.model' in src
     assert '("--model", control_model),' in src
 
 
 def test_the_control_arm_uses_gradient_checkpointing():
-    """Leaving it off was unfair rather than neutral.
-
-    The unsloth arm runs with `gradient_checkpointing="unsloth"`, so a control
-    without it is measured with the single largest memory lever disabled on one
-    side only. On gemma-4-E2B-it that is the difference between a comparison and
-    an OOM: the control asked for 8.75 GiB on top of 8.96 GiB already resident,
-    on a 14.56 GiB card (kernel unsloth-probe-latestcompile-r4-e67ef2).
-    """
+    """The control needs gradient checkpointing too, or it is measured with the biggest memory lever off."""
     src = (PAYLOAD / "naive_trl_compare.py").read_text(encoding = "utf-8")
     assert "use_gradient_checkpointing = True" in src
     assert "gradient_checkpointing = True," in src
-    # Non-reentrant, or a PEFT model's inputs carry no grad and the backward
-    # fails with "element 0 of tensors does not require grad".
+    # Non-reentrant, or a PEFT model's inputs carry no grad and backward fails.
     assert 'gradient_checkpointing_kwargs = {"use_reentrant": False}' in src
 
 
 def test_a_load_time_oom_can_be_reported_rather_than_failed():
-    """Measured: on gemma-4-E2B-it the plain arm asks for 8.75 GiB with 8.96 GiB
-    already resident on a 14.56 GiB T4, at LOAD -- `metrics` is absent, so no
-    step ever ran, and enabling gradient checkpointing changed the number not at
-    all. That is a statement about the card and the checkpoint, not about either
-    training stack."""
+    """Load-time OOM on gemma-4-E2B-it is a card-and-checkpoint fact, so it is reported, not failed."""
     oom = {"error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 8.75 GiB"}
     assert comparison_failures(oom, [{"loss": 1.0}], allow_oom = True) == []
 

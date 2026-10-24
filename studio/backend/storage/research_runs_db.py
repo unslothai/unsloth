@@ -504,6 +504,20 @@ def list_active(thread_id: str) -> list[dict]:
     return [run for row in rows if (run := get_run(row["id"])) is not None]
 
 
+def list_all_active() -> list[dict]:
+    """Every unsettled run in this account, for startup work that is not scoped to one thread."""
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"SELECT id FROM research_runs WHERE status IN ({placeholders}) ORDER BY created_at",
+            tuple(sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [run for row in rows if (run := get_run(row["id"])) is not None]
+
+
 def has_thread_claim(thread_id: str) -> bool:
     conn = get_connection()
     try:
@@ -756,13 +770,23 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
         conn.close()
 
 
-def request_cancel(run_id: str) -> str:
+def request_cancel(run_id: str, expected_attempt: int | None = None) -> str | None:
+    """Stop ``run_id``. With ``expected_attempt``, only if that attempt is still the run's; else None.
+
+    The attempt check shares the cancel's transaction, so a retry or rebind that commits first
+    (both bump retry_count under the same id) can never be cancelled on its predecessor's behalf.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT status FROM research_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, retry_count FROM research_runs WHERE id = ?", (run_id,)
+        ).fetchone()
         if row is None:
             raise KeyError(run_id)
+        if expected_attempt is not None and int(row["retry_count"] or 0) != expected_attempt:
+            conn.commit()
+            return None
         status = row["status"]
         if status in TERMINAL_STATUSES or status == "cancelling":
             conn.commit()

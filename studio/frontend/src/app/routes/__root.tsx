@@ -22,7 +22,6 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  clearNewChatDraft,
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
   startLlamaCppAutoReload,
@@ -365,8 +364,9 @@ function RootLayout() {
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -509,7 +509,6 @@ function RootLayout() {
     incognito?: boolean;
     standalone?: boolean;
   }) => {
-    clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
     // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
     // route, the inferred ones included: a thread or a compare pair opened without ?project= still

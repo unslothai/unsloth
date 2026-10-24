@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One `--out` holds one run, and `--resume` continues the run that is in it.
-
-A cell id is `r{rung}.{arm}.rep{rep}` and nothing more, so the tier that picked the film, the
-cadence the reply streamed at, the instrument level, the corpus and both refs are all invisible to
-the two places that decide what a payload already contains. Two ways that produced a report about
-something nobody ran:
-
-  A RESUME UNDER A DIFFERENT CONFIGURATION SKIPPED EVERYTHING. `--branch main --ab other --resume`
-  into a directory holding a finished `main -> fix` run installs and launches two Unsloth instances, finds
-  every `cell_id` already complete, exits 0, and -- because `_render_ab` keeps the previous table
-  when this session measured nothing -- leaves the OLD comparison standing in `ab.md` to be read
-  as the answer for `other`.
-
-  A FRESH RUN APPENDED TO THE PREVIOUS ONE. `Recorder` opens the payload with `"a"`. The README's
-  own two invocations wrote into one `--out`, and when the second was interrupted the file held a
-  fast-tier 100K cell from an attached Unsloth next to standard-tier 1K and 10K cells from `main`.
-  `--report` scored that as one ladder, took its header from the FIRST `run_meta`, and said
-  `complete: true`.
-"""
+"""One --out holds one run: cell ids omit tier, cadence, corpus and refs, so resume must check them."""
 
 from __future__ import annotations
 
@@ -125,7 +107,6 @@ def _finished_ab(
                 "row_type": "ab_plan",
                 "base_ref": base,
                 "treatment_ref": treatment,
-                # Empty for a treatment the run installed itself, exactly as `run()` records it.
                 "treatment_url": treatment_url,
                 "balanced": False,
                 "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
@@ -137,9 +118,6 @@ def _finished_ab(
         ],
     )
     return paths
-
-
-# ── a resume must be a resume OF THIS RUN ───────────────────────────────────────────────────
 
 
 def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
@@ -157,11 +135,7 @@ def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
 
 
 def test_resuming_a_self_managed_treatment_against_an_attached_one_is_refused(tmp_path):
-    """The label after `--ab` says nothing about where the build came from.
-
-    The payload's treatment was cloned and built by that run; this one points the same label at a
-    server the caller is holding open. Two different builds, one `--ab fix`.
-    """
+    """An --ab label does not say where its build came from; a self-managed and an attached one differ."""
 
     paths = _finished_ab(tmp_path)
     args = parse_args(
@@ -221,11 +195,7 @@ def test_resuming_after_changing_the_cadence_or_the_instrument_level_is_refused(
 
 
 def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
-    """A refusal that costs a clone and a build has said nothing it could not have said at once.
-
-    And it must not leave its own `run_meta` behind: a rejected run's header in the payload it
-    refused to touch would then reject the correctly configured resume that followed it.
-    """
+    """Refusals happen before any install and leave no run_meta that could reject a later resume."""
 
     paths = _finished_ab(tmp_path)
     before = paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -238,9 +208,6 @@ def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
 
     assert paths.payload_jsonl.read_text(encoding = "utf-8") == before
     assert sorted(p.name for p in paths.out.glob("payload*.jsonl")) == ["payload.jsonl"]
-
-
-# ── the controls: a legitimate resume still resumes ──────────────────────────────────────────
 
 
 def test_the_same_configuration_still_resumes(tmp_path):
@@ -306,10 +273,7 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
 
 
 def test_resuming_an_ab_payload_as_a_single_build_run_is_refused(tmp_path):
-    """The other direction of the mode transition, refused for the same reason.
-
-    The A/B's `base` cells stay in the payload and stay first at their rung, so the ladder keeps
-    reporting them and never the `A0` cells this run is about to measure."""
+    """An A/B payload resumed as a single build is refused: its base cells would keep being reported."""
 
     paths = _finished_ab(tmp_path, treatment_url = "http://127.0.0.1:5311")
     args = parse_args(["--tier", "standard", "--branch", "main", "--resume"])
@@ -323,15 +287,7 @@ def test_resuming_an_ab_payload_as_a_single_build_run_is_refused(tmp_path):
 
 
 def test_resuming_a_payload_measured_by_another_instrument_version_is_refused(tmp_path):
-    """A harness upgrade mid-campaign is the one identity change nobody has to type.
-
-    `TOOL_VERSION` is bumped when what an instrument MEASURES changes and for no other reason: at
-    0.2.0 `reasoning_toggle.open_ms` terminates on a settled mount rather than on the `data-state`
-    flip, which is a different quantity under the same name. None of that moves a cell id, so
-    `--resume` into a half-finished 0.1.0 payload from an upgraded tree kept the old completed
-    cells and appended new ones measured by the new instruments. `merged_run_meta` names that
-    mixture, but plain `--report` never calls it -- it reads the FIRST header and pools both.
-    """
+    """TOOL_VERSION bumps when a measured quantity changes, but cell ids do not move, so resume refuses."""
 
     paths = Paths.under(tmp_path / "upgraded")
     _record(
@@ -407,17 +363,7 @@ def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_pat
 
 
 def test_resuming_a_single_build_payload_as_an_ab_is_refused(tmp_path):
-    """`A0` against `base`/`treatment` keeps the new cells from being SKIPPED. It does not keep
-    them out of the REPORT, which is a different question and the one that decides this.
-
-    `score_payload` hands every cell to `measures_from_records`, which keys by rung and keeps the
-    first reading, and `_completion_by_rung` keeps a failure over a success at the same rung. So
-    the payload below -- a single-build run that died at 10K, then an A/B that measured both arms
-    of 10K without a fault -- reports `INCOMPLETE: timeout: the base died at 10K`, scores the rung
-    0 and prints ONSET RUNG: none, over a rung two arms had just measured. The same crash resumed
-    WITHOUT `--ab` reuses the cell id, `latest_attempt_rows` supersedes the dead attempt, and the
-    rung scores. The mode is part of what the payload measured; changing it is not a resume.
-    """
+    """Single-build resumed as A/B keeps its dead cell in the report: the mode is part of identity."""
 
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -455,14 +401,9 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
     )
 
 
-# The two fixture axes. `--stream-tail-chars` and `--corpus-dollars` change what the last turn
-# STREAMS, and neither moves `corpus_hash` (which covers the frozen units on disk and the
-# generator's parameters) or a `cell_id`. They are on `IDENTITY_AXES` for the same reason the
-# tier is: without that, a resume under a changed fixture skips cells measured against a
-# different film and the payload silently becomes one ladder built from two.
+# Fixture axes change what the last turn streams without moving corpus_hash or cell_id.
 
 
-# ── the two fixture axes ────────────────────────────────────────────────────────────────────
 def _fixture_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -571,9 +512,6 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
         assert "stream_tail_chars" in str(excinfo.value)
 
 
-# ── the controls: neither axis may swallow a resume that is legitimate ───────────────────────
-
-
 def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     paths = _fixture_payload(
         tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
@@ -589,17 +527,8 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     assert _resume_set(paths) == {"r10K.A0.rep0"}
 
 
-# ── the browser engine that rendered every number ────────────────────────
-
-
 def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
-    """The engine RENDERED every number in the payload, and the cell id does not name it.
-
-    A run that measured 1K under Chromium, resumed under WebKit to add 10K, skips the completed
-    Chromium cell and measures the new rung under a different renderer -- and the two land in one
-    ladder, which `score_payload` reads as one build getting slower with context. The engine is
-    part of what a payload measured, exactly like the tier and the cadence.
-    """
+    """The cell id does not name the browser engine that rendered every number, so a change is refused."""
 
     paths = _one_engine_rung(tmp_path, "chromium")
     args = parse_args(
@@ -618,11 +547,7 @@ def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
 
 
 def test_the_engine_compared_is_the_one_that_will_launch_not_the_flag(tmp_path):
-    """`--engine` defaults to nothing and `browser.launch` resolves the platform's webview family.
-
-    So the commonest engine change of all is the one where the second invocation names no engine
-    at all, and comparing the flags rather than the resolved engines would wave it through.
-    """
+    """Compare the engine that will launch, not the flag, since an unset --engine resolves per platform."""
 
     from studiobench.runtime.browser import default_engine
 
@@ -658,12 +583,7 @@ def test_the_same_engine_still_resumes(tmp_path):
 
 
 def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_did(tmp_path):
-    """No `stream_tail_chars` and no `corpus_dollars` key at all, which is every payload written
-    before this branch. Resumed UNDER THE DEFAULTS it is asking for the film it already ran, so it
-    resumes and its completed cells are skipped, exactly as they were before either flag existed.
-
-    The other half of that reading -- a resume that does NOT use the defaults -- is the test below.
-    """
+    """A payload with no stream_tail_chars or corpus_dollars key resumes under the defaults, as before."""
 
     paths = _fixture_payload(tmp_path, "old", "sess-old")
     assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -681,16 +601,7 @@ def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_di
 
 
 def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_fixture(tmp_path):
-    """REGRESSION. Absence PROVES the default here, and skipping the axis threw that proof away.
-
-    An axis a payload never declared is normally skipped: it declined to say, so there is nothing
-    to disagree with. These two axes arrived WITH the flags that set them, so a payload written
-    before them could not have run under anything but `stream_tail_chars = None` and
-    `corpus_dollars = False`. Skipping them accepted `--resume --stream-tail-chars 24000` against
-    such a payload, skipped every cell it had completed, and recorded the remaining cells under a
-    different streamed fixture beneath the same cell ids -- the mixed ladder the refusal exists to
-    prevent, arrived at through the one door left open.
-    """
+    """Non-default --stream-tail-chars or --corpus-dollars is refused against a payload without them."""
 
     for name, flags in (
         ("tail", ["--stream-tail-chars", "24000"]),
@@ -709,27 +620,14 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
         assert ("stream_tail_chars" if "--stream-tail-chars" in flags else "corpus_dollars") in (
             message
         )
-        # The refusal has to say WHY an axis the payload never mentions is a difference, or the reader's
-        # next move is to go looking for a key that was never going to be there.
         assert "predates this axis" in message
 
 
-# The measurement-mode axis. `--click-probe` runs a full `page.click`, a real mouse click, a
-# dispatch, a focus and a hover over the thread BEFORE the film starts, and the flag's own help
-# text says it 'makes the cell's timings incomparable with a cell that did not run it'. The cell
-# then carries a `composer_click_ms` measured on a composer all those paths have been through,
-# and a `click_attribution` block a cell without the flag lacks. None of that moves the cell id.
+# --click-probe makes timings incomparable but does not move the cell id.
 
 
-# ── the measurement-mode axis ───────────────────────────────────────────────────────────────
 def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
-    """REGRESSION. Both directions, because either one produces the same mixed ladder.
-
-    Without this the flag was invisible to the check: `click_probe` was in neither `run_meta` nor
-    `requested_identity`, so `--resume --click-probe` against a finished plain payload skipped
-    every completed cell, appended the remaining rungs measured the other way, and reported the
-    two halves as one ladder.
-    """
+    """click_probe must be part of the identity, or resuming with --click-probe would mix two ladders."""
 
     probed = _fixture_payload(tmp_path, "probed", "sess-probed", click_probe = True)
     with pytest.raises(SystemExit) as excinfo:
@@ -804,11 +702,7 @@ def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_
 
 
 def test_the_probe_flag_reaches_the_identity_this_invocation_asks_for():
-    """The check can only refuse a difference it was told about, so the flag has to be requested.
-
-    What the payload has to carry for it to be compared against is asserted end to end, over a
-    `run_meta` a real run wrote, in `test_studiobench_run_acquisition`.
-    """
+    """The identity check refuses only what it is told about, so the click_probe flag must reach it."""
 
     for flags, expected in ((("--click-probe",), True), ((), False)):
         args = parse_args(["--tier", "standard", "--branch", "main", *flags])
@@ -867,16 +761,8 @@ def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_pa
     assert _resume_set(Paths.under(tmp_path / "nothing-here")) == set()
 
 
-# ── the engine controls ───────────────────────────────────────────────────
-
-
 def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
-    """The legacy control for this axis, and the one for a session that never got a browser up.
-
-    `run_meta` is emitted after `browser.launch` returns, so a session with no engine in its
-    header either predates the field or never launched anything. Neither declares an engine, and
-    an axis a row never declared cannot be a difference.
-    """
+    """A payload with no engine in its header predates the field or launched nothing, so it resumes."""
 
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -903,12 +789,7 @@ def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
 
 
 def test_the_report_a_mode_change_would_have_produced(tmp_path):
-    """WHY the refusal above exists, as a number rather than as an argument.
-
-    Both payloads hold the same facts: 10K died under one run and was measured clean under the
-    next. The only difference is whether the repair ran under `--ab`, which changes the arm and
-    so the cell id -- and with it whether the dead attempt is superseded or kept.
-    """
+    """Repairing under --ab changes the cell id, so the dead attempt is kept rather than superseded."""
 
     def _payload(name, repair_arm):
         paths = Paths.under(tmp_path / name)
@@ -931,14 +812,8 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
     same_mode = score_payload(_payload("same", "A0").payload_jsonl, [10_000])
     changed_mode = score_payload(_payload("changed", "base").payload_jsonl, [10_000])
 
-    # Same mode: the retry reuses the cell id, so the crash is superseded and never reaches the
-    # ladder. Change the mode and the same crash is a cell of its own, first at its rung, and it is
-    # what the report prints, over a rung the run being reported measured cleanly.
     assert "died at 10K" not in (same_mode.rungs[0].incomplete_reason or "")
     assert "died at 10K" in (changed_mode.rungs[0].incomplete_reason or "")
-
-
-# ── a fresh run does not append to the run before it ─────────────────────────────────────────
 
 
 def test_a_fresh_run_moves_the_previous_payload_aside(tmp_path):
@@ -978,7 +853,6 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
         resume = False,
         log = lambda *_a: None,
     )
-    # The standard run, killed by the watchdog after 10K.
     _record(
         paths,
         "sess-standard",
@@ -1005,13 +879,9 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     assert payload["header"]["studio_ref"] == "main"
 
 
-# The injection axis. `--inject-stream-cost-ms` burns a known amount of main-thread time per SSE
-# chunk on the TREATMENT arm, so a treatment cell recorded with it is not the same reading as one
-# recorded without, and `cell_id` carries the rung, the arm and the repetition and nothing that
-# could tell.
+# --inject-stream-cost-ms changes treatment readings but nothing in cell_id records it.
 
 
-# ── the injection axis ──────────────────────────────────────────────────────────────────────
 def _injected_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -1033,13 +903,7 @@ def _ab_resume_args(*flags):
 
 
 def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp_path):
-    """REGRESSION, and the expensive half of it.
-
-    Every pair in this payload is complete, so `skippable_cells` skips all of them, `rows` comes
-    back empty with `resumed` non-zero and `completion_exit_code` returns 0. The run pays for two
-    installs, measures nothing, and the recovery gate is then answered out of cells that were never
-    injected -- a calibration reporting that the metric cannot see a cost nobody put there.
-    """
+    """With injection on, a resume that skips every cell scores the recovery gate from uninjected cells."""
 
     paths = _injected_payload(tmp_path, "clean", "sess-1")
 
@@ -1126,17 +990,8 @@ def test_an_unchanged_injection_resumes(tmp_path):
     assert _resume_set(paths) == {"r10K.base.rep0", "r10K.treatment.rep0"}
 
 
-# The external probe axis. `SBENCH_EXTRA_INIT_SCRIPT` installs a caller's own init script into the
-# page, and the run's log says 'this run carries an external probe and is NOT a clean measurement
-# of the build'. It cannot end in a wrong number, because `refuse_if_probed` reads EVERY
-# `run_meta` and every scoring entry point calls it; it is on `IDENTITY_AXES` for what that
-# refusal costs, since the refusal is whole-file and the payload append-only, so a resume that
-# toggles the probe takes the cells recorded before it down with it.
-# It is also the axis most easily toggled by accident: the other four are typed on the command
-# line every time, while a variable that is still set is indistinguishable from one that was
-# never set until the run is over.
+# SBENCH_EXTRA_INIT_SCRIPT is an env var easily left set; toggling it on resume poisons the payload.
 
-# ── the external probe axis ─────────────────────────────────────────────────────────────────
 PROBE = "probes/paint_counter.js"
 
 
@@ -1147,14 +1002,7 @@ def _probe_resume_args():
 def test_resuming_a_clean_payload_with_the_probe_variable_still_set_is_refused(
     tmp_path, monkeypatch
 ):
-    """REGRESSION, and the destructive direction.
-
-    Half a clean ladder is on disk, the variable from an earlier probe experiment is still set in
-    the shell, and the resume was not asking for a probe run at all. Without the axis this
-    installed both sides, ran every rung still owed with the probe in the page, and appended a
-    probed `run_meta` -- after which `refuse_if_probed` refuses the file, INCLUDING the cells that
-    were recorded cleanly hours earlier.
-    """
+    """A leftover SBENCH_EXTRA_INIT_SCRIPT would append a probed run_meta and poison the clean cells."""
 
     paths = _fixture_payload(tmp_path, "clean", "sess-clean")
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)
@@ -1266,16 +1114,7 @@ def test_the_probe_variable_reaches_the_identity_this_invocation_asks_for(monkey
 
 
 def test_one_probed_session_makes_the_clean_cells_beside_it_unscorable(tmp_path):
-    """WHAT THE REFUSAL COSTS, which is the whole reason the axis is worth an entry.
-
-    The mixture is never scored as a result -- that part is already safe, whole-file and with no
-    override -- and this is the price of it being safe. The clean session below scores; the same
-    file scores nothing at all once one probed `run_meta` has been appended after it. A payload is
-    append-only, so this is not recoverable by re-running: it is recoverable only by not doing it.
-
-    Passes on the unfixed code, because it is a property of `refuse_if_probed` rather than of the
-    identity check.
-    """
+    """One probed session makes the whole payload unscorable, and it cannot be undone by re-running."""
 
     paths = _fixture_payload(tmp_path, "mixed", "sess-clean")
     text, _ladder, _payload = build_report(paths.payload_jsonl, [10_000])

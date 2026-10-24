@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The heavy-thread harness must not report a number it did not measure.
-
-`test_heavy_thread_harness_contract.py` pins the SHAPE of the harness: every recorded metric is
-printed, no verdict rests on a Chromium-only counter. This file pins its ARITHMETIC and its
-ORDERING, which is the other way a measurement harness goes false-green: it drives the page, it
-prints a plausible table, and the numbers in it are of something else.
-
-Five defects this file exists to keep out, each one previously live:
-
-  * the frame recorder deciding which action a scheduled callback belongs to from a shared
-    `running` flag, so an action that starts before the previous action's rAF has fired inherits
-    that callback, charges the between-action gap to itself as a frame, and runs two recorder
-    loops from then on;
-  * `median()` dropping a null repetition instead of failing on it, which turns "the menu never
-    opened once in three tries" into a clean three-repetition median;
-  * a settle loop that timed out being indistinguishable, in the table and in the verdict, from a
-    metric the engine does not support;
-  * `menu open+close ms` being the sum of two independently double-rAF-floored timings while only
-    one floor was subtracted from it;
-  * the per-repetition fixture rebuild waiting for the syntax highlighter BEFORE mounting the tool
-    result panes it has to highlight, and never restoring the message the delete action destroys.
-
-The browser-side pieces run under node against the harness's own JS, sliced out of the Python
-source verbatim, on a virtual clock: the frame pump is explicit, so "the next action began before
-the previous action's callback fired" is a deterministic interleaving rather than a race someone
-has to be lucky to catch.
-"""
+"""Pins arithmetic and ordering: the harness must not print plausible numbers it did not measure."""
 
 from __future__ import annotations
 
@@ -51,19 +25,7 @@ HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py"
 
 
 def _sync_api_stub() -> types.ModuleType:
-    """A `playwright.sync_api` that answers for every name a harness may import off it.
-
-    The stub lands in `sys.modules` at collection time and stays there for the rest of the
-    session, so it is not just this file's import that reads it: any later test that imports a
-    harness gets these names instead of the real package's. A stub that spelled out only the
-    names THIS file's harness needs therefore broke the others -- `playwright_strip_ansi_smoke`
-    also imports `Page` and `expect`, and got `cannot import name 'Page' from
-    'playwright.sync_api' (unknown location)` in the CPU job, from a stub two files away.
-
-    Every name resolves to a callable that raises, so the stub can satisfy an import without a
-    harness quietly measuring a browser that is not there. Dunders are left to fail: pytest and
-    inspect probe those, and answering them makes the stub look like a package.
-    """
+    """Stub that answers any playwright.sync_api name with a raising callable; dunders left to fail."""
     module = types.ModuleType("playwright.sync_api")
 
     def __getattr__(name: str):
@@ -81,17 +43,7 @@ def _sync_api_stub() -> types.ModuleType:
 
 
 def _load_harness():
-    """Import the harness module without needing a browser.
-
-    The module imports `playwright.sync_api` at the top for `sync_playwright`, which nothing in
-    this file calls. Stubbing it keeps these tests runnable in the CPU test job, where the
-    Playwright package is not installed, rather than skipping the arithmetic along with the
-    browser.
-
-    The probe imports the name off the submodule rather than the top-level package: a partial
-    install leaves `playwright` importable while `playwright.sync_api` resolves to an empty
-    namespace, which is the same failure with a longer traceback.
-    """
+    """Stubs playwright.sync_api so the CPU job, which lacks Playwright, can import the harness."""
     os.environ.setdefault("PW_ART_DIR", str(TEMP_ROOT / "artifacts"))
     if "playwright.sync_api" not in sys.modules:
         try:
@@ -110,11 +62,8 @@ def _load_harness():
 HARNESS = _load_harness()
 
 
-# ── the node side: the harness's own JS on a virtual clock ────────────
-
-# performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
-# -- the recorder's stall loop reschedules itself forever, so a real timer would keep the process alive past the end of
-# the test.
+# Timers are fake queues: the recorder's stall loop reschedules forever and would keep
+# the process alive.
 FAKE_ENV = """
 let now = 0;
 let rafs = [];
@@ -168,8 +117,6 @@ def run_node(body: str, sources: dict[str, str]) -> dict:
 RECORDER_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT}
 
 
-# ── the recorder must not leak a loop into the next action ────────────
-
 LEAK_BODY = """
 eval(RECORDER_INIT);
 const hv = window.__hv;
@@ -191,27 +138,20 @@ say({ first_frames: first.frames, second_frames: second.frames,
 
 
 def test_the_recorder_starts_the_next_action_with_one_loop() -> None:
-    # Two frames pumped, two frames recorded. A stale callback that survived into this action would be recording
-    # alongside the real one, so every frame is counted twice -- and it compounds, because each begin() can leave
-    # another behind.
+    # A stale callback from the last action would double-count every frame, compounding.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_frames"] == 2, got
 
 
 def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> None:
-    # The stale callback's own `lastFrame` is from the PREVIOUS action, so the interval it pushes spans the gap between
-    # the two actions.
-    # It lands in worst_frame_ms and, once the gap is over 33ms, in frames_over_33 as well: both growth axes.
+    # A stale callback's `lastFrame` is from the previous action, so its interval spans the gap.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_worst"] == 16, got
 
 
-# ── re-open must not stop the clock while Shiki is still running ──────
-
 REOPEN_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "REOPEN_JS": HARNESS.REOPEN_JS}
 
-# A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open actually has: the
-# message roots are back long before the fences inside them are coloured.
+# Re-open remounts instantly then highlights for many frames.
 REOPEN_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -245,9 +185,7 @@ say({
 
 
 def test_reopen_keeps_the_clock_running_until_the_highlighter_stops() -> None:
-    # quiet() settles on three sub-33ms frames, and the lull between two Shiki batches is longer than three frames --
-    # the same lull wait_for_highlighting_settled() needs five stable reads to see through. Settling on frames alone
-    # stops the re-open clock partway through the rebuild.
+    # Shiki's lull between batches is longer than three frames, so frames alone settle too early.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["settleMs"] >= got["lastChangeAt"] - 20, got
 
@@ -259,28 +197,16 @@ def test_reopen_does_not_charge_the_grace_window_to_the_action() -> None:
 
 def test_reopen_counts_no_frames_from_the_grace_window() -> None:
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
-    # 640ms of highlighting at 16ms a frame, and nothing past it.
     assert got["frames"] <= 45, got
 
 
 def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
-    # Same reason, for wall ms, which is a growth axis in its own right.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["wallMs"] <= got["lastChangeAt"] + 120, got
 
 
-# ── no-regression guards: what the timed windows may scan ─────────────
-#
-# GUARDS, not evidence for a finding. They pass on this tree and are here to keep it that way.
-#
-# Both timed windows are measured in the browser and the harness-owned DOM scans inside them are
-# a rounding error today: on Chromium at 300000 characters the re-open window makes 2 selector
-# passes costing 0.4ms of a 2292ms re-open (0.02%), and the menu window makes 2 observer queries
-# and 2 censuses costing 2.7ms of a 3208ms open+close (0.08%). That holds because the count of
-# scans is FIXED while their unit cost grows with the thread (messageCount 0.01ms at 25000 chars,
-# 0.105ms at 300000). Swap one of them for the full census, or move any of them inside the poll
-# loop, and the harness starts adding size-dependent work to the number it publishes. These pin
-# the count.
+# GUARDS: the timed windows must keep a FIXED count of DOM scans, since each scan's cost
+# grows with the thread.
 SCAN_BUDGET_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -329,10 +255,6 @@ def test_the_reopen_window_scans_no_more_than_once_per_frame_of_the_rebuild() ->
 
 
 def test_the_highlight_probe_stays_on_its_interval_inside_the_settle_loop() -> None:
-    # GUARD. quietUntilIdle()'s probe is `pre code span` over the whole document: 0.03ms at 25000
-    # chars and 0.465ms at 300000 on Chromium, 2.05ms on Firefox. Per frame that is an O(nodes)
-    # query inside the window being timed, growing like the signal; on the interval it is a few
-    # milliseconds across the whole settle.
     got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
     assert got["probes"] <= got["probeBudget"], got
 
@@ -378,27 +300,20 @@ say({ notifications, querySelectorCalls, querySelectorAllCalls, openMs: done.ope
 
 
 def test_the_menu_reads_its_open_flag_from_the_mutation_and_not_from_a_scan() -> None:
-    # GUARD. The menu content is portaled to the END of document.body, so a querySelector for it walks the whole
-    # message list, and for the entire open latency it walks it and finds nothing. Measured on Chromium at 300000
-    # chars that query is 0.25ms a call against 0.025ms at 25000.
+    # The menu is portaled to the end of body, so querying it walks the whole message list.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorCalls"] <= got["notifications"] + 1, got
 
 
 def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
-    # GUARD. The tooltip-trigger census is the only querySelectorAll the menu window runs (measured 0.13ms at 300000
-    # chars against 0.005ms at 25000). It is taken once, under the pointer, because an action bar that never mounts
-    # and one that is autohidden at rest are otherwise indistinguishable.
+    # Taken once, under the pointer: a never-mounted bar and an autohidden one look alike.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorAllCalls"] <= 1, got
 
 
-# ── the menu total carries two paint floors, not one ──────────────────
-
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
-# A menu that opens and closes with NO work at all: the flag flips inside the dispatch. Whatever this reports is
-# therefore pure floor.
+# A no-work menu: whatever this reports is pure floor.
 MENU_BODY = """
 eval(RECORDER_INIT);
 let menuOpen = false;
@@ -437,17 +352,13 @@ say({ openMs: done.openMs, closeMs: done.closeMs, total: done.open_close_ms });
 
 
 def test_opening_the_menu_costs_a_whole_double_raf_even_when_it_is_free() -> None:
-    # settle() reads `open` before the MutationObserver callback that would have updated it has been delivered, so its
-    # first true comparison is on the far side of an __nextPaint(). Nothing is wrong with that -- it is what makes the
-    # number a wall-clock one -- but it means the metric carries a floor, and the floor has to be subtracted before a
-    # ratio.
+    # settle() reads `open` before the observer fires, so the metric carries a paint floor.
     got = run_node(MENU_BODY, MENU_SOURCES)
     assert got["openMs"] >= 32, got
 
 
 def test_closing_the_menu_costs_a_second_double_raf() -> None:
-    # And this is the one the single-floor subtraction missed: closing waits out its own
-    # __nextPaint() for exactly the same reason, independently of opening.
+    # Closing waits out its own __nextPaint() too, independently of opening.
     got = run_node(MENU_BODY, MENU_SOURCES)
     assert got["closeMs"] >= 32, got
 
@@ -465,9 +376,6 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
     }
     small, large = HARNESS.growth(cells, pick, floors, [25000, 300000])
     assert (small, large) == (40.0, 940.0), (small, large)
-
-
-# ── a null repetition is a failure, not a sample to drop ──────────────
 
 
 def menu_repetition(open_ms: float | None) -> dict:
@@ -489,9 +397,7 @@ def menu_repetition(open_ms: float | None) -> dict:
 
 
 def test_one_repetition_that_never_opened_the_menu_poisons_the_median() -> None:
-    # Filtering the null out and taking the median of the rest silently changes the sample
-    # population, and the verdict's `openMs is None` check then reads the median of the
-    # repetitions that worked.
+    # Dropping nulls before the median would silently change the sample population.
     summary = HARNESS.summarise(
         [menu_repetition(80.0), menu_repetition(None), menu_repetition(120.0)]
     )
@@ -499,21 +405,16 @@ def test_one_repetition_that_never_opened_the_menu_poisons_the_median() -> None:
 
 
 def test_a_timing_that_was_null_in_every_repetition_is_still_reported() -> None:
-    # Present-and-None, not absent: a key that is missing entirely makes the verdict raise
-    # KeyError instead of naming the action that never happened.
+    # Present-and-None: a missing key makes the verdict raise KeyError.
     summary = HARNESS.summarise([menu_repetition(None), menu_repetition(None)])
     assert "openMs" in summary["menu"] and summary["menu"]["openMs"] is None, summary["menu"]
 
 
 def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
-    # The guard above must not cost the normal case its median.
     summary = HARNESS.summarise(
         [menu_repetition(80.0), menu_repetition(100.0), menu_repetition(120.0)]
     )
     assert summary["menu"]["openMs"] == 100.0, summary["menu"]
-
-
-# ── the verdict must reject an action that never settled ──────────────
 
 
 def clean_cell() -> dict:
@@ -573,7 +474,6 @@ def clean_cell() -> dict:
             "reopen": {
                 **action,
                 "ms": 400.0,
-                # One double-rAF wait, the floor GROWTH_AXES subtracts from the `reopen ms` axis.
                 "paintWaits": 1,
                 "closePaintWaits": 1,
                 "closedMs": 20.0,
@@ -599,14 +499,10 @@ def discriminating_report() -> dict:
 
 
 def test_a_clean_cell_produces_no_harness_failure() -> None:
-    # The guards below are only worth anything if they are silent on a good run.
     assert HARNESS.harness_failures(results_with(clean_cell()), discriminating_report()) == []
 
 
 def test_deferred_fences_are_not_a_harness_failure() -> None:
-    # THE POINT OF MEASURING CHARACTERS.
-    # A real, complete thread now holds far fewer highlighted tokens than before the default moved: 1,322 against 3,216
-    # for one cycle, measured, with the fixture untouched.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["deferredFences"] = 4
     cell["counts"]["highlightedTokens"] = 300
@@ -614,9 +510,7 @@ def test_deferred_fences_are_not_a_harness_failure() -> None:
 
 
 def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
-    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this still does. Tokens
-    # are left HIGH so only the character floor can fail: a thread whose code blocks quietly emptied still renders,
-    # still scrolls and still curves, of something else.
+    # Tokens left HIGH so only the character floor can fail.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["codeChars"] = 6000
     cell["counts"]["highlightedTokens"] = 99999
@@ -656,9 +550,6 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
     assert any("jump action but it never reached a settled state" in f for f in failures), failures
 
 
-# ── the per-repetition fixture ────────────────────────────────────────
-
-
 class StubLocator:
     def __init__(self, log: list, selector: str) -> None:
         self.log = log
@@ -673,12 +564,7 @@ class StubLocator:
 
 
 class StubPage:
-    """Records the order of the calls one_repetition() makes, and nothing else.
-
-    The question this answers is an ORDERING one -- does the highlighter gate run after the panes
-    it has to highlight are mounted, and is the destroyed message put back before the next action
-    measures the thread -- so a call log is the whole instrument.
-    """
+    """A call log of one_repetition(): the test asks about ordering, so the log is the whole instrument."""
 
     ACTION_METRICS = {
         "metrics": {"wall_ms": 1.0, "frames": 1, "worst_frame_ms": 1.0},
@@ -739,9 +625,7 @@ def repetition_log() -> list:
 
 
 def test_the_highlighter_gate_runs_after_the_tool_panes_are_mounted() -> None:
-    # The tool result panes ARE code -- two of the seven fences a content cycle produces -- and Radix does not mount
-    # them until they are expanded. Gating on the highlighter first and expanding second leaves a fresh batch of
-    # unhighlighted fences building inside the keystroke measurement, which is the very next thing timed.
+    # Tool panes are code Radix mounts only on expand, so expand before the highlighter gate.
     log = repetition_log()
     expand = log.index(("evaluate", "expandTools"))
     highlight = log.index(("wait", "highlighting"))
@@ -755,9 +639,7 @@ def test_the_highlighter_gate_runs_before_the_first_measured_action() -> None:
 
 
 def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> None:
-    # The delete removes a message from the repository, permanently. At the smallest size the whole thread is one
-    # ten-kind cycle, so three repetitions take the json fence, then both inline images, then the svg -- and the
-    # fixture census that would have caught it was taken before any repetition ran.
+    # The delete is permanent and at the smallest size the thread is one cycle.
     log = repetition_log()
     assert ("evaluate", "restore") in log, log
     assert (
@@ -768,8 +650,7 @@ def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> N
 
 
 def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() -> None:
-    # Restoring re-imports the thread, which unmounts every tool card and throws away every highlighted fence.
-    # Re-opening straight afterwards would time that rebuild as well as its own.
+    # Restoring re-imports the thread, so re-opening right after would time that rebuild too.
     log = repetition_log()
     restore = log.index(("evaluate", "restore"))
     reopen = log.index(("action", "REOPEN_JS"))
@@ -778,12 +659,8 @@ def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() 
 
 
 def test_the_tool_expand_gate_is_not_satisfied_by_a_thread_of_closed_cards() -> None:
-    # `collapsibleOutputs` is the CollapsibleContent element itself, and Radix keeps that element in the tree for its
-    # collapse animation, so it is there while the card is shut. Measured on this tree at 300000 characters, straight
-    # after seeding and before any expandTools() call: collapsibleOutputs 22 of the 22 expected, codeExecutionPanes 0.
-    # A `collapsibleOutputs >= n` gate is therefore satisfied by the closed thread, which is a wait that cannot fail,
-    # and it released the highlighter gate below it before the two fences per cycle it exists to sequence had mounted.
-    # The pane's <pre> is a CHILD of that element: 0 collapsed, 22 expanded.
+    # Radix keeps CollapsibleContent mounted while shut, so gating on it cannot fail; the
+    # pane's <pre> child is what appears on expand.
     gates = [line for line in HARNESS_SOURCE.splitlines() if "counts()." in line]
     assert gates, "the fixture no longer gates on a count at all"
     for line in gates:
@@ -798,13 +675,7 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     assert "seeded.current = built.messages" in page
 
 
-# ── the declared paint floor ──────────────────────────────────────────
-#
-# `growth()` subtracts `floored` double-rAF vsync floors from both ends of every ratio, and
-# `floored` was a hand-declared integer per axis. Declaring it too low leaves a ~33ms constant in
-# both ends, which drags the ratio towards 1 and can report a real curve as flat; declaring it too
-# high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
-# the constant is checked against the run rather than trusted.
+# The per-axis paint floor is checked against the waits REOPEN_JS counts, not trusted.
 def floor_row(
     observed,
     engine = "chromium",
@@ -819,15 +690,7 @@ def floor_row(
 
 
 def test_reopen_subtracts_only_the_observation_floor() -> None:
-    """A CONSTANT, and one. Reopen is driven by a React state update, so the count check straight
-    after openThread() always still sees the unmounted tree and the loop always waits out one
-    paint before a finished reopen can be observed at all. That wait is the instrument.
-
-    Every further wait is not. The poll shares the rAF queue with the application's own commits,
-    so on a progressive-mount build those waits are the application mounting rows and the time in
-    them is real convergence latency. Reading the measured `paintWaits` here subtracted all of
-    them, which is a subtraction that grows with thread size and differs between the two arms of
-    a comparison -- it removed ~800ms from one arm's 300K cell and ~33ms from the other's."""
+    """Reopen subtracts only its one observation wait; later paint waits are real mount latency."""
     floored = HARNESS.declared_floor("reopen ms")
     assert not callable(floored), "reopen ms reads its floor from the row again"
     assert floored == 1 == HARNESS.REOPEN_OBSERVATION_FLOOR, floored
@@ -839,10 +702,7 @@ def test_a_matching_floor_declaration_is_accepted() -> None:
 
 
 def test_a_multi_commit_reopen_is_not_a_mis_declared_floor() -> None:
-    """The progressive mount window mounts a long thread over several frames, so `ms` -- which
-    runs until messageCount() reaches `before` -- spans one paint wait per widening commit. Ten is
-    an ordinary reading at 100K, not a harness fault, and reporting it as one stops the run after
-    every measurement has already been taken."""
+    """A progressive mount spans one paint wait per widening commit, so ten waits is not a harness fault."""
     assert HARNESS.floor_declaration_problems(floor_row(10)) == []
 
 
@@ -855,12 +715,7 @@ def test_subtracting_a_floor_the_reopen_never_paid_is_a_failure() -> None:
 
 
 def test_the_progressive_mount_frames_stay_in_the_reopen_number() -> None:
-    """End to end, and the regression this file exists to hold.
-
-    Two arms of one comparison at the same size: a single-commit build that pays one wait and a
-    progressive-mount build that pays twenty-four for the same 220 messages. Subtracting the
-    measured count made the slower arm read as the faster one. Only the shared observation floor
-    comes out, so the arms stay ordered the way the clock ordered them."""
+    """Only the shared observation floor is subtracted, so the two arms keep the order the clock gave."""
     pick = next(p for name, p, _f in HARNESS.GROWTH_AXES if name == "reopen ms")
     floored = HARNESS.declared_floor("reopen ms")
 
@@ -930,9 +785,6 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
     assert len(problems) == 1 and "unverified" in problems[0], problems
 
 
-# ── the wall axes carry the floor they actually paid ──────────────────
-
-
 def wall_cells(
     paint_waits: int,
     floor_ms: float = 33.0,
@@ -986,9 +838,6 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
     assert floored({}) == 0
 
 
-# ── an application exception is not engine chatter ────────────────────
-
-
 def error_cell(seed_errors = 0, action_errors = 0) -> dict:
     cell = copy.deepcopy(clean_cell())
     cell["seed_console_errors"] = seed_errors
@@ -1033,8 +882,7 @@ def test_warnings_and_errors_are_captured_into_separate_lists() -> None:
     assert 'page.on("pageerror", lambda e: console_errors.append' in HARNESS_SOURCE
     assert 'if m.type == "error"' in HARNESS_SOURCE, "errors are no longer routed by severity"
     assert 'if m.type == "warning"' in HARNESS_SOURCE, "warnings are no longer routed by severity"
-    # Keyed on the predicate alone, not on the whole expression around it: the first version of this assertion pinned
-    # an exact one-line form and stayed green when the predicate was put back on a line of its own.
+    # Keyed on the predicate alone so reformatting it cannot slip past.
     assert 'm.type in ("warning", "error")' not in HARNESS_SOURCE, (
         "one predicate captures both severities again, so an application exception is filed as "
         "chatter and absorbed by the warning allowance"
@@ -1051,12 +899,7 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
     )
 
 
-# ── a counter rising from zero has to say something ───────────────────
-#
-# No ratio can be formed against zero, so DISCRIMINATION_RATIO never applies to these axes and
-# `large > small` was the whole test. The CI workflow runs one repetition on Chromium, so there is
-# no median to smooth a stray dropped frame, and `harness_failures` accepts any ONE discriminating
-# axis: 0 at 25K and 1 at 100K could carry the entire verdict while every latency axis was flat.
+# No ratio is possible against zero, and one CI repetition has no median to smooth noise.
 def counter_cells(
     small,
     large,
@@ -1123,12 +966,7 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
     )
 
 
-# ── zero-based is not the same as counted ─────────────────────────────
-#
-# The zero branch keyed on `floored`, which only identifies a timing that had a paint floor
-# subtracted. An UNFLOORED timing reads zero at the smallest size whenever the action resolves
-# before the recorder produces a sample, and was then treated as a dropped-frame counter, so a
-# noisy 5ms at the largest size read as a rise of 5 and discriminated.
+# An unfloored timing can read zero at the smallest size; that is not a counter.
 def timing_cells(
     small,
     large,
@@ -1180,9 +1018,7 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     assert (
         HARNESS.COUNTER_AXES <= names
     ), f"COUNTER_AXES names axes that do not exist: {HARNESS.COUNTER_AXES - names}"
-    # Stated exactly rather than pattern-matched. My first attempt keyed on the name not ending
-    # in "ms", which is wrong: the counter axis is called "frames over 33ms" and legitimately
-    # does. Naming the whole set is the point of classifying it explicitly in the first place.
+    # Stated exactly: "frames over 33ms" is a counter despite the ms suffix.
     assert HARNESS.COUNTER_AXES == frozenset(
         f"{action} frames over 33ms" for action in HARNESS.ACTIONS
     ), HARNESS.COUNTER_AXES
@@ -1192,12 +1028,7 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     ), f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
 
 
-# ── the report has to survive being written out ───────────────────────
-#
-# Making the wall floor a callable put the lambda itself into the growth report. main() attaches
-# that report to `results` and json.dumps it, so every complete run raised "Object of type
-# function is not JSON serializable" AFTER taking all its measurements. No unit test caught it
-# because none of them serialised the report, which is the gap this section closes.
+# main() json.dumps the growth report, so a callable in it fails after all measurements.
 def test_the_growth_report_is_json_serializable() -> None:
     report = HARNESS.report_growth(counter_cells(0, 9))
     json.dumps(report)
@@ -1257,9 +1088,6 @@ def wall_cells_for_report(paint_waits: int) -> dict:
     }
 
 
-# ── halves, and counters that never left the noise ────────────────────
-
-
 def test_a_fractional_median_wait_count_is_not_truncated() -> None:
     """`summarise` medians the wait count across repetitions, so an even-repetition run whose
     repetitions paid 1 and 2 reports 1.5. Truncating that to 1 left half a vsync floor in the
@@ -1300,12 +1128,7 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
     assert row["discriminated"] is True, row
 
 
-# ── whole-window axes carry the whole window's floors ─────────────────
-#
-# `quiet()` and `quietUntilIdle()` return `... - this.startedAt`, not the time they themselves
-# took, and `gestureMs` is computed from `startedAt` too. All three therefore span the entire
-# recorder window and contain every double-rAF wait in it. They declared zero, which left roughly
-# twenty vsync floors in both ends of the scroll ratios.
+# quiet(), quietUntilIdle() and gestureMs span the whole recorder window and its floors.
 def axis_floor(name):
     for axis, _pick, floored in HARNESS.GROWTH_AXES:
         if axis == name:
@@ -1322,23 +1145,14 @@ def test_whole_window_axes_use_the_measured_floor(name) -> None:
 
 
 def test_reopen_is_a_partial_window_axis_with_a_constant_floor() -> None:
-    """Reopen is the third kind, and it is neither of the two below.
-
-    `ms` is measured from `reopenStarted`, so it does not span the recorder window and cannot take
-    the window's `paint_waits`. It cannot take its own `paintWaits` either, because that count is
-    a property of how many frames the APPLICATION took to mount, which is the thing the axis is
-    measuring. What it carries is one observation wait, always, on every build.
-    """
+    """Reopen ms spans no recorder window, so it takes one constant observation wait, not window waits."""
     floored = axis_floor("reopen ms")
     assert not callable(floored), "reopen ms reads a per-row wait count again"
     assert floored == HARNESS.REOPEN_OBSERVATION_FLOOR == 1, floored
 
 
 def test_the_reopen_wall_axis_does_not_take_the_window_count_either() -> None:
-    """`reopen wall ms` spans the close loop and the reopen loop, so the window's `paint_waits`
-    carries the progressive mount's commit frames for the same reason `reopen ms` does. Its
-    honest floor is the two terminal observation waits, one per loop. Every other action keeps
-    the measured window count, where those waits really are harness idle between driven steps."""
+    """Reopen wall ms's honest floor is its two terminal observation waits, not the window's count."""
     floored = axis_floor("reopen wall ms")
     assert not callable(floored), "reopen wall ms reads the window count again"
     assert floored == 2, floored
@@ -1347,14 +1161,7 @@ def test_the_reopen_wall_axis_does_not_take_the_window_count_either() -> None:
 
 @pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms"))
 def test_partial_window_axes_keep_their_declared_floor(name) -> None:
-    """The other half of the rule, and it is not symmetry for its own sake.
-
-    `paintedMs` starts at a mark taken after `begin()` and spans one wait while the jump's window
-    holds two. `MENU_JS` awaits no paint at all, so the window count is zero while its two floors
-    are real, coming from `settle()` reading the pre-MutationObserver state on entry. Applying the
-    window count to either would subtract a floor the number never contained, or remove one that
-    it did.
-    """
+    """Partial-window axes keep their own declared floor; the window count does not match their waits."""
     assert not callable(
         axis_floor(name)
     ), f"{name} was given the whole-window floor, which it does not carry"
@@ -1382,7 +1189,7 @@ def test_the_scroll_ratio_is_not_compressed_by_the_gesture_floors() -> None:
         },
     }
     row = HARNESS.report_growth(cells)["chromium"]["scroll gesture ms"]
-    # 700 - 660 = 40, 1300 - 660 = 640: a 16x curve that reads as 1.86x with the floors left in.
+    # A 16x curve that reads as 1.86x with the floors left in.
     assert row["small"] == 40.0 and row["large"] == 640.0, row
     assert row["ratio"] > 10 and row["discriminated"] is True, row
 

@@ -238,7 +238,7 @@ export function RlParamsSection({
         tooltip={t("rl.params.betaHint", { value: DEFAULT_BETA[objective] })}
       >
         <NumberField
-          min={0}
+          min={objective === "grpo" ? 0 : 0.01}
           max={10}
           step={0.01}
           value={s.rlBeta}

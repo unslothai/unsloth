@@ -124,6 +124,7 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | Hermes Agent | `unsloth start hermes` |
 | Pi | `unsloth start pi` |
 | OpenClaw | `unsloth start openclaw` |
+| Mistral Vibe | `unsloth start vibe` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
@@ -191,6 +192,7 @@ For Windows instructions and more information, read our [Unsloth Docker Guide](h
 docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth

@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional, Sequence
 
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
@@ -45,6 +46,7 @@ def sidecar_for(engine: str) -> Any:
 
 
 @_invalidates_gpu_memory("stt load")
+@holds_inference
 def load(
     model: Optional[str],
     engine: str,

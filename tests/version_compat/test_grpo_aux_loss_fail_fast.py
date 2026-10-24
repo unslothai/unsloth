@@ -10,9 +10,7 @@ from tests.version_compat._rl_anchors import RL_PY, _reject_aux_loss_opt_in
 @pytest.mark.parametrize(
     "assignment",
     [
-        # TRL 1.7.0 through the last release.
         "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
-        # TRL main after #7248: the coefficient falls back to the model config's when None.
         'self.aux_loss_enabled = hasattr(text_config, "output_router_logits") and self.router_aux_loss_coef != 0.0',
     ],
 )

@@ -78,7 +78,7 @@ function SandboxFileRow({
         onClick={save}
         disabled={busy}
         title={`Save ${file.name}`}
-        className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+        className="btn-fill flex items-center gap-2 rounded-full px-2 py-1 text-xs text-foreground disabled:opacity-60"
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>
@@ -147,7 +147,9 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    <div className={cn("mt-2 border-t border-dashed pt-2", className)}>
+    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
+    // would separate the header from nothing.
+    <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}
         label={files.length === 1 ? "file created" : "files created"}

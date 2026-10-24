@@ -23,11 +23,17 @@ from urllib.parse import urlparse
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
 # is trusted on.
 MCP_TOOL_PREFIX = "mcp__"
+# tools.MCP_TOOL_SEARCH_NAME; tools imports this module.
+MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
+
+# Never deduplicated: an identical call is new work (the page as it is now, another render).
+REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
 
 
 _CANONICAL_HEAL_ARG = {
@@ -275,6 +281,15 @@ class ToolCallDecision:
 
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
+
+    def tool_approved_event(self, approval_id: str) -> dict[str, Any]:
+        """Tells the run's other followers the parked call was allowed, ahead of tool_end."""
+        return {
+            "type": "tool_approved",
+            "tool_name": self.tool_name,
+            "tool_call_id": self.card_id,
+            "approval_id": approval_id,
+        }
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
         """Return an OpenAI-style tool_call with normalized arguments."""
@@ -681,20 +696,33 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping) or function.get("name") != tool_name:
             continue
-        parameters = _mcp_full_parameters(tool_name) or function.get("parameters")
+        parameters = function.get("parameters")
         return parameters.get("properties") if isinstance(parameters, Mapping) else None
     return None
 
 
-def _mcp_full_parameters(tool_name: str) -> Any:
-    # A large MCP tool is listed with only its top-level parameters; type its arguments by the full schema.
-    if not tool_name.startswith("mcp__"):
-        return None
+def _mcp_tool_spec(tool_name: str) -> Any:
     try:
-        from core.inference.tools import mcp_tool_input_schema  # noqa: PLC0415 -- cycle at import time
-        return mcp_tool_input_schema(tool_name)
-    except Exception:  # noqa: BLE001 -- typing must never break a chat
+        from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_spec(tool_name)
+    except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
         return None
+
+
+def _mcp_fit_loaded(specs: list) -> list:
+    try:
+        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
+        return mcp_fit_loaded(specs)
+    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
+        return specs[:1]
+
+
+def _mcp_tool_search_specs(arguments: Any) -> list:
+    try:
+        from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_search_specs(arguments)
+    except Exception:  # noqa: BLE001 -- a failed load leaves the listing as it was
+        return []
 
 
 def coerce_tool_arguments(
@@ -828,14 +856,72 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Running: {preview}" if preview else "Running command..."
     if tool_name == "view_image":
         return "Viewing image: " + str(arguments.get("path") or "")[:80]
+    if tool_name in MEDIA_CHAT_TOOLS:
+        kind = "image" if tool_name == "generate_image" else "video"
+        return f"Generating {kind}: " + str(arguments.get("prompt") or "")[:60]
     if tool_name == "edit_file":
         # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."
+    if tool_name in BROWSER_TOOL_NAMES:
+        return _browser_status(tool_name, arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
+    return f"Calling: {tool_name}"
+
+
+def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    """The badge for a browser tool: what it does, in the user's terms, not the tool's name."""
+
+    def text(key: str, limit: int = 60) -> str:
+        return " ".join(str(arguments.get(key) or "").split())[:limit]
+
+    ref = text("ref", 12)
+    if tool_name == "browser_navigate":
+        url = text("url", 4096)
+        if url.lower() in ("back", "forward", "reload"):
+            return {
+                "back": "Going back",
+                "forward": "Going forward",
+                "reload": "Reloading the page",
+            }[url.lower()]
+        try:
+            host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
+        except ValueError:
+            host = ""
+        host = host[4:] if host.startswith("www.") else host
+        return f"Opening: {host}" if host else "Opening a page..."
+    if tool_name == "browser_snapshot":
+        return "Reading the page"
+    if tool_name == "browser_find":
+        query = text("query")
+        return f"Finding: {query}" if query else "Finding on the page..."
+    if tool_name == "browser_click":
+        return f"Clicking: {ref}" if ref else "Clicking the page"
+    if tool_name == "browser_type":
+        preview = text("text", 40)
+        return f"Typing: {preview}" if preview else "Typing..."
+    if tool_name == "browser_select":
+        value = text("value", 40)
+        return f"Choosing: {value}" if value else "Choosing an option..."
+    if tool_name == "browser_scroll":
+        return "Scrolling up" if text("direction").lower() == "up" else "Scrolling down"
+    if tool_name == "browser_press_key":
+        key = text("key", 20)
+        return f"Pressing: {key}" if key else "Pressing a key..."
+    if tool_name == "browser_evaluate":
+        return "Running a script on the page"
+    if tool_name == "browser_screenshot":
+        return "Taking a screenshot"
+    if tool_name == "browser_history":
+        query = text("query")
+        return f"Searching browsing history: {query}" if query else "Reading browsing history"
+    if tool_name == "browser_move_mouse":
+        return "Moving the mouse"
+    if tool_name == "browser_drag":
+        return "Dragging"
     return f"Calling: {tool_name}"
 
 
@@ -862,6 +948,14 @@ def is_tool_error(result: str) -> bool:
 
 
 TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
+
+
+def with_appended_text(content, text: str):
+    """``content`` with ``text`` at the end. A part list (an image a tool returned may have joined
+    the turn) gets a text part; formatting it as a string ships the image as base64 prose."""
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": text}]
+    return f"{content}{text}"
 
 
 def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
@@ -1019,8 +1113,8 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
-# edit_file emits it too, for a file it created.
-_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+# edit_file emits it too, for a file it created, and the media tools for the file they rendered.
+_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | MEDIA_CHAT_TOOLS
 
 # Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
 _MCP_TOOL_PREFIX = "mcp__"
@@ -1031,7 +1125,7 @@ _MCP_TOOL_PREFIX = "mcp__"
 # document an MCP tool read, or a page that was fetched, ending in a well-formed one of
 # either is content the model needs, and cutting it leaves the model reasoning over less
 # than the card the user is looking at.
-_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
+_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution", "generate_image"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 # Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
 _WORKSPACE_READ_TOOLS = frozenset({"view_image"})
@@ -1220,6 +1314,9 @@ class ToolLoopController:
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
+        self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        self._listed_count = len(self._tools)
+        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1267,6 +1364,12 @@ class ToolLoopController:
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
+        if (
+            self._mcp_search
+            and tool_name.startswith(MCP_TOOL_PREFIX)
+            and tool_name not in self._allowed_tool_names
+        ):
+            self._load_mcp_tools([_mcp_tool_spec(tool_name)])
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
@@ -1300,10 +1403,13 @@ class ToolLoopController:
         elif (
             self._deduplicate_tool_calls
             and key in self._successful_keys
-            and tool_name not in BROWSER_TOOL_NAMES
+            and tool_name not in REPEATABLE_TOOL_NAMES
+            and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
+            # Nor the media tools: the same prompt again is another image with a fresh seed.
+            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1381,6 +1487,11 @@ class ToolLoopController:
             self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
+            if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
+                self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
+            elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
+                # Also while the catalog is listed in full, for a later turn that defers it.
+                self._remember_mcp_tools([decision.tool_name])
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
         return ToolCallCompletion(
@@ -1389,6 +1500,42 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _load_mcp_tools(self, specs) -> None:
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
+
+        # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
+        # profile at hand, against every family's markup.
+        specs = (
+            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
+        )
+        listed = self._tools[: self._listed_count]
+        listed_names = {_tool_name_from_schema(tool) for tool in listed}
+        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
+        fresh_names = {_tool_name_from_schema(s) for s in fresh}
+        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
+        kept = _mcp_fit_loaded(
+            fresh
+            + [
+                s
+                for s in reversed(self._mcp_loaded)
+                if _tool_name_from_schema(s) not in fresh_names
+            ]
+        )
+        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
+        self._tools = listed + self._mcp_loaded
+        self._allowed_tool_names = {
+            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
+        }
+
+    def _remember_mcp_tools(self, names) -> None:
+        if not names:
+            return
+        try:
+            from core.inference.tools import mcp_record_loaded_tools  # noqa: PLC0415 -- import cycle
+            mcp_record_loaded_tools(self._thread_id, names)
+        except Exception:  # noqa: BLE001 -- remembering for later turns must never break this one
+            pass
 
     def _cap_result(self, text: str, tool_name: str | None) -> str:
         """The card and the model get the same capped body; the frontend envelope stays whole."""

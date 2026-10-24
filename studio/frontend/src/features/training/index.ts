@@ -35,6 +35,8 @@ export {
   useTrainingUnloadGuard,
 } from "./hooks/use-training-unload-guard";
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
+export { useDrafterCapability } from "./hooks/use-drafter-capability";
+export { drafterEligible } from "./lib/drafter-config";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export {
@@ -44,6 +46,12 @@ export {
   uploadNativeTrainingDataset,
   uploadTrainingDataset,
 } from "./api/datasets-api";
+export {
+  type PreviewToken,
+  type TokenPreviewResponse,
+  type TokenPreviewSample,
+  fetchTokenPreview,
+} from "./api/token-preview-api";
 export { clearDeletedDataset } from "./stores/training-config-store";
 export type { CheckFormatResponse } from "./types/datasets";
 export type {
@@ -76,7 +84,20 @@ export type {
   RewardRecord,
   RlSampleGroup,
 } from "./api/rewards-api";
+export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export { rlChartKeys } from "./lib/rl-chart-keys";
+export {
+  RL_IGNORE,
+  RL_REQUIRED_ROLES,
+  RL_ROLES,
+  effectiveTrainingObjective,
+  missingRlRoles,
+  rlObjectiveSupported,
+  resolveRlMapping,
+  syncRlMapping,
+} from "./lib/rl-roles";
+export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
   formatScore,
   readRewardHead,
@@ -108,6 +129,7 @@ export {
 } from "./events";
 export {
   parseYamlConfig,
+  parseRunConfigRlSettings,
   parseYamlRlSettings,
   serializeConfigToYaml,
 } from "./lib/yaml-config";

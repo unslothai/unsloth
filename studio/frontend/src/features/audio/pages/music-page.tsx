@@ -6,13 +6,8 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import type { ComponentProps } from "react";
 import type { AudioGalleryClip } from "../api";
-import {
-  isMusicGenerationModel,
-  macTtsCatalogChoiceIsRunnable,
-} from "../catalog";
 import { AudioHistoryProvider } from "../components/audio-source-input";
 import { Field } from "../components/field";
 import { LyricsEditor } from "../components/lyrics-editor";
@@ -36,17 +31,6 @@ import { TtsOutput, TtsRailFields } from "./tts-workspace";
 export const MUSIC_DESCRIPTION_FIELD_ID = "music-description";
 export const MUSIC_LYRICS_FIELD_ID = "music-lyrics";
 export const MUSIC_SFX_FIELD_ID = "music-sfx-prompt";
-
-export function musicPageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models.filter(
-    (model) =>
-      isMusicGenerationModel(model.id, model.audioType) &&
-      (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
-  );
-}
 
 /** One line under a prompt: example picks while it is empty, the hint once it has text. */
 function ExamplesOrHint({

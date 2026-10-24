@@ -105,6 +105,15 @@ def _resolve_inventory_handles(values):
     return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
 
 
+def _unquote_pasted_path(value):
+    """Windows "Copy as path" quotes the path; quoted, it never exists and reads as an untrusted repo id."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            return text[1:-1]
+    return value
+
+
 def _resolve_inventory_handle(value: str) -> str:
     """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
     try:
@@ -112,6 +121,15 @@ def _resolve_inventory_handle(value: str) -> str:
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
         return value
     return resolve_inventory_handle(value)
+
+
+def _normalized_reward_name(name: str) -> str:
+    # The library lookup's normalisation, so EXACT-ANSWER and exact-answer count as one reward.
+    from core.training.rewards import RewardError, normalize_reward_name
+    try:
+        return normalize_reward_name(name)
+    except RewardError:
+        return name
 
 
 class RewardSelection(BaseModel):
@@ -123,8 +141,42 @@ class RewardSelection(BaseModel):
     weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
 
 
+# (key in the stored run config's rl_settings, TrainingStartRequest field)
+_STORED_RL_SETTINGS = (
+    ("beta", "rl_beta"),
+    ("max_prompt_length", "rl_max_prompt_length"),
+    ("num_generations", "grpo_num_generations"),
+    ("max_completion_length", "grpo_max_completion_length"),
+    ("temperature", "grpo_temperature"),
+    ("variant", "grpo_variant"),
+    ("enable_thinking", "grpo_enable_thinking"),
+    ("system_prompt", "rl_system_prompt"),
+    ("mask_truncated_completions", "grpo_mask_truncated_completions"),
+    ("epsilon_high", "grpo_epsilon_high"),
+)
+
+
 # The strings trainer.normalize_gradient_checkpointing turns into False.
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
+
+
+class DrafterTrainingConfig(BaseModel):
+    """Optional speculative-decoding drafter trained after the fine-tune (omitted or disabled = off)."""
+
+    enabled: bool = False
+    strategy: Literal["auto", "mtp", "eagle3"] = "auto"
+    data_source: Literal["dataset", "regenerate"] = "dataset"
+    max_examples: int = Field(2000, ge = 16, le = 100000)
+    epochs: float = Field(1.0, ge = 0.1, le = 20)
+    learning_rate: Optional[float] = Field(None, gt = 0, le = 1.0)
+    draft_steps: int = Field(3, ge = 1, le = 8)
+
+    @field_validator("max_examples", "draft_steps", "epochs", mode = "before")
+    @classmethod
+    def _reject_booleans(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("expected a number, not a boolean")
+        return value
 
 
 class TrainingStartRequest(BaseModel):
@@ -215,6 +267,16 @@ class TrainingStartRequest(BaseModel):
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
+    early_stopping_patience: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = "Stop after this many evaluations without a lower eval loss and keep the best weights. 0 = off",
+    )
+    drafter: Optional[DrafterTrainingConfig] = Field(
+        None,
+        description = "Train a speculative-decoding drafter (MTP head or EAGLE-3) after the fine-tune",
+    )
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
@@ -230,6 +292,32 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "before")
     @classmethod
+    def _compat_stored_rl_config(cls, values: Any) -> Any:
+        """A resume posts the stored run config back, which nests the RL fields under rl_settings
+        and reward_specs; lift them into the request fields an explicit value has not set."""
+        if not isinstance(values, dict):
+            return values
+        settings = values.get("rl_settings")
+        specs = values.get("reward_specs")
+        if not isinstance(settings, dict) and not isinstance(specs, list):
+            return values
+        values = dict(values)
+        for stored, field in _STORED_RL_SETTINGS:
+            if isinstance(settings, dict) and stored in settings:
+                values.setdefault(field, settings[stored])
+        if isinstance(specs, list):
+            values.setdefault(
+                "grpo_rewards",
+                [
+                    {"name": s.get("name"), "weight": s.get("weight", 1.0)}
+                    for s in specs
+                    if isinstance(s, dict)
+                ],
+            )
+        return values
+
+    @model_validator(mode = "before")
+    @classmethod
     def _compat_split(cls, values: Any) -> Any:
         """Accept legacy 'split' field as alias for 'train_split'."""
         if isinstance(values, dict) and "split" in values:
@@ -240,6 +328,13 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("early_stopping_patience", mode = "before")
+    @classmethod
+    def _reject_boolean_patience(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("early_stopping_patience must be a number, not a boolean")
+        return value
 
     @field_validator("eval_steps", mode = "before")
     @classmethod
@@ -667,6 +762,11 @@ class TrainingStartRequest(BaseModel):
         le = 1000,
         description = "SFT steps on formatted examples before GRPO, so the model already writes the tags. 0 skips it.",
     )
+    grpo_python_reward_isolation: Literal["required", "auto"] = Field(
+        "required",
+        description = "Python rewards: 'required' refuses to start without the OS sandbox; 'auto' "
+        "falls back to software safeguards, which do not isolate files, network or processes.",
+    )
     grpo_rewards: List[RewardSelection] = Field(
         default_factory = list, max_length = 16, description = "Library rewards for GRPO"
     )
@@ -720,7 +820,7 @@ class TrainingStartRequest(BaseModel):
 
     s3_config: Optional[S3Config] = Field(
         None,
-        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
+        description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
     )
 
     @field_validator("target_modules", mode = "before")
@@ -756,13 +856,25 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} cannot train a decision model.")
         if self.is_dataset_image or self.is_dataset_audio or self.is_embedding:
             raise ValueError(f"{objective.upper()} supports text datasets only for now.")
+        if getattr(self, "is_decision", False):
+            raise ValueError(f"{objective.upper()} cannot be combined with decision training.")
         if self.dataset_streaming:
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
+        # The raw-text path returns before role formatting, so the rows would have no prompt.
+        if self.format_type == "raw":
+            raise ValueError(f"{objective.upper()} needs column roles, not the Raw text format.")
+
+        if self.s3_config is not None:
+            # Column roles are picked from inspected columns, which S3 data can't offer yet.
+            raise ValueError(
+                f"{objective.upper()} can't read column roles from S3 data yet. "
+                "Use a Hugging Face or uploaded dataset."
+            )
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
-        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(
-            self.grpo_rewards
-        ):
+        if objective == "grpo" and len(
+            {_normalized_reward_name(r.name) for r in self.grpo_rewards}
+        ) != len(self.grpo_rewards):
             raise ValueError("Each GRPO reward can only be selected once.")
         if self.grpo_format_warmup_steps and not (
             objective == "grpo" and self.grpo_reasoning_format
@@ -773,6 +885,14 @@ class TrainingStartRequest(BaseModel):
                 f"The format warm-up needs a max sequence length of {WARMUP_MIN_SEQ_LENGTH} or more; "
                 "its examples are 800+ tokens and only those under half the context are used."
             )
+        return self
+
+    @model_validator(mode = "after")
+    def _check_preference_beta(self) -> "TrainingStartRequest":
+        # Zero turns DPO's loss constant (no gradient) and drops ORPO's preference term; only
+        # GRPO's KL coefficient may be zero.
+        if self.objective in ("dpo", "orpo") and self.rl_beta == 0:
+            raise ValueError(f"{self.objective.upper()} needs a beta above 0.")
         return self
 
     @model_validator(mode = "after")
@@ -823,6 +943,22 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_drafter(self) -> "TrainingStartRequest":
+        drafter = getattr(self, "drafter", None)
+        if drafter is None or not drafter.enabled:
+            return self
+        if getattr(self, "is_embedding", False) or getattr(self, "is_decision", False):
+            raise ValueError("drafter training is only available for text generation models.")
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError("drafter training is not available for continued pretraining.")
+        if getattr(self, "objective", "sft") != "sft":
+            # The drafter phase reads tokenized SFT rows; RL datasets hold prompts and answers.
+            raise ValueError(
+                f"drafter training is not available with {self.objective.upper()} yet."
+            )
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -832,6 +968,32 @@ class TrainingJobResponse(BaseModel):
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
+
+
+class TokenPreviewRequest(BaseModel):
+    """How a training run would tokenize and mask a few dataset rows, or ``text`` when given. Only
+    the model's tokenizer is read, never its weights."""
+
+    model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
+    load_in_4bit: bool = True
+    dataset_name: Optional[str] = None
+    subset: Optional[str] = None
+    train_split: Optional[str] = None
+    dataset_local_path: Optional[str] = None
+    dataset_known_cached: bool = False
+    format_type: str = "auto"
+    custom_format_mapping: Optional[Dict[str, Any]] = None
+    train_on_completions: bool = False
+    is_cpt: bool = False
+    max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
+    num_samples: int = Field(3, ge = 1, le = 8)
+    seed: int = 0
+    text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
+
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
 
 
 class TrainingStartRequestStatus(BaseModel):
@@ -859,6 +1021,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "training_drafter",
         "finalizing",
         "completed",
         "error",
@@ -1005,6 +1168,7 @@ class DiffusionTrainingStartRequest(BaseModel):
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _unquote_the_base = field_validator("base_model", mode = "before")(_unquote_pasted_path)
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")

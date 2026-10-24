@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The V8 CPU profiler, both ways round.
-
-There are two routes to sampled stacks and they are not interchangeable:
-
-* IN-TRACE (`disabled-by-default-v8.cpu_profiler`). Samples arrive as
-  `Profile` / `ProfileChunk` events on the SAME timeline as `RunTask`,
-  `TimerFire` and `EventDispatch`, on one clock. That is what lets a sample be
-  attributed to a classified task, which is the entire naming pipeline. This is
-  the route `instruments/tracing.py` at L2 takes, and it is the default.
-
-* STANDALONE (`Profiler.start` / `Profiler.stop`). One self-contained profile,
-  no trace, no task tree. Useful as a cross-check on the in-trace parser and as
-  a cheap way to get stacks when a full trace would overflow its buffer, but the
-  samples cannot be joined to task origins.
-
-`Profiler.setSamplingInterval` is in MICROSECONDS and must be set BEFORE
-`Profiler.start`; setting it on a running profiler is silently ignored, which
-looks exactly like the interval you asked for being unavailable.
-
-The cross-check `compare_with_trace_profile` exists because the in-trace parser
-is the load-bearing piece of this layer and it has several ways to be quietly
-wrong (incremental nodes, deltas on a sibling key, chunks on the profiler's own
-thread). Two independent extractions agreeing is worth having.
-"""
+"""Only the in-trace route can attribute samples to task origins; standalone profiles cannot."""
 
 from __future__ import annotations
 
@@ -34,10 +11,9 @@ from typing import Any
 from ..analysis import CellFailure
 from ..analysis.cpuprofile import CallFrame, CpuProfile, Sample
 
-# V8's own default is 1000 us. 100 us resolves a sub-millisecond frame without the sampler becoming the workload.
+# V8 default is 1000 us; 100 us resolves sub-ms frames without dominating the workload.
 DEFAULT_SAMPLING_INTERVAL_US = 100
 
-# Minimum non-synthetic samples on BOTH sides before the two extraction routes may be declared to agree or disagree.
 MIN_JS_SAMPLES_FOR_COMPARISON = 200
 
 
@@ -53,7 +29,7 @@ class StandaloneProfiler:
         if self._running:
             raise RuntimeError("StandaloneProfiler.start called twice")
         self.cdp.send("Profiler.enable")
-        # Order matters: the interval is latched at start.
+        # The interval is latched at start, so set it first.
         self.cdp.send("Profiler.setSamplingInterval", {"interval": int(self.sampling_interval_us)})
         self.cdp.send("Profiler.start")
         self._running = True
@@ -78,14 +54,7 @@ class StandaloneProfiler:
 
 
 def from_profiler_result(raw: dict[str, Any]) -> CpuProfile:
-    """Adapt a `Profiler.stop` payload into the same object the trace path yields.
-
-    The standalone payload is the complete profile in one piece: `nodes` is the
-    full node list, `samples` and `timeDeltas` are flat arrays, and `startTime`
-    and `endTime` are microseconds. Reusing `CpuProfile` means every aggregation
-    and every gate in `analysis/cpuprofile.py` applies unchanged to both routes,
-    so the cross-check compares the same arithmetic on two inputs.
-    """
+    """Maps a Profiler.stop payload onto CpuProfile so both routes share one set of gates and arithmetic."""
     nodes = raw.get("nodes")
     if not nodes:
         raise CellFailure("cpuprofile_empty", "Profiler.stop returned a profile with no nodes")
@@ -130,14 +99,7 @@ def compare_with_trace_profile(
     *,
     tolerance: float = 0.25,
 ) -> dict[str, Any]:
-    """Do the two extraction routes agree on where the time went?
-
-    Compared on the SHARE of JS self time per frame, not on absolute
-    microseconds, because the two profiles cover different windows and different
-    sampling intervals. A large disagreement means one of the two parsers is
-    wrong, and since the in-trace one is the one this layer depends on, that is
-    a finding and not a warning.
-    """
+    """Compares per-frame self-time shares, not microseconds, as the two windows and intervals differ."""
 
     def shares(p: CpuProfile) -> dict[str, float]:
         by_name: dict[str, int] = {}
@@ -158,10 +120,8 @@ def compare_with_trace_profile(
             1 for s in p.samples if (f := p.nodes.get(s.node_id)) is not None and not f.is_synthetic
         )
 
-    # A comparison built on a handful of JS samples cannot distinguish the two parsers from sampling
-    # noise, so it declines to rule. And V8 has ONE CpuProfiler: if the trace carried the profiler
-    # categories, the 'standalone' profile IS the in-trace profile and comparing them always agrees.
-    # Detected structurally rather than trusted to the caller.
+    # Too few JS samples cannot distinguish the parsers from noise. With profiler trace categories
+    # the standalone profile is the in-trace one (V8 has one CpuProfiler), so comparing is vacuous.
     if (
         len(standalone.samples) == len(in_trace.samples)
         and len(standalone.nodes) == len(in_trace.nodes)
@@ -217,18 +177,7 @@ def compare_with_trace_profile(
 
 
 # Harness adapter (INTERFACES.md section 3)
-# MEASURED, NOT ASSUMED, and it changed this design: V8 HAS ONE CPU PROFILER. Starting
-# `Profiler.start` while a trace with `disabled-by-default-v8.cpu_profiler` is running returns THE
-# SAME SAMPLES: on a real capture both routes reported 2169 samples over 17 nodes, because the
-# inspector and tracing profilers share one `CpuProfiler` on the isolate.
-# Two consequences: `compare_with_trace_profile` must refuse to compare a profile with itself,
-# since a cross-check that can never fail reads as corroboration; and this instrument is only
-# meaningful at level 1, where the trace carries NO profiler categories and it gives stacks
-# without the ProfileChunk volume that dominates an L2 buffer (a real L1 capture had 1748 of 1748
-# standalone samples inside the trace's own `RunTask` span, so the standalone profile covers the
-# same interval the trace does; it still carries no task tree, and `_summarise` ranks samples over
-# the whole profile interval rather than per task window). At level 2 and above it stands down
-# and says so.
+# V8 has one CpuProfiler, so this is only meaningful at level 1; at level 2+ it stands down.
 
 import time  # noqa: E402
 

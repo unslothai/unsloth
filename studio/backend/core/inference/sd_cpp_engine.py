@@ -45,6 +45,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
     native_speed_flags,
+    speed_flags_without,
     sd_cli_output_paths,
 )
 
@@ -296,6 +297,20 @@ def _terminate(proc: "subprocess.Popen") -> None:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
         pass
+
+
+def binary_accelerator(binary: Optional[str]) -> Optional[str]:
+    """Accelerator class from the install record, else a cached probe listing (no subprocess); None if unknown."""
+    if not binary:
+        return None
+    try:
+        from core.inference import sd_cpp_backend  # noqa: PLC0415 - the backend imports this module
+        return (
+            sd_cpp_backend._installed_accelerator_of(binary)
+            or sd_cpp_backend.sd_cpp_listed_device(binary, probe = False)[0]
+        )
+    except Exception:  # noqa: BLE001 - unknown keeps the default speed flags
+        return None
 
 
 def _binary_name(stem: str) -> str:
@@ -808,14 +823,16 @@ class SdCppEngine:
         process tree and raises ``SdCppCancelled``.
         """
         offload = list(offload or [])
-        speed = [
-            f
-            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
-            if f not in offload
-        ]
+        binary = self._require_binary()
+        speed = speed_flags_without(
+            native_speed_flags(
+                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary), binary
+            ),
+            offload,
+        )
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
-            self._require_binary(),
+            binary,
             files,
             params,
             output_path = str(self._prepare_out(output_path)),
@@ -873,6 +890,7 @@ class SdCppEngine:
         *,
         output_path: str,
         offload: Optional[list[str]] = None,
+        threads: Optional[int] = None,
         verbose: bool = False,
         extra_args: Optional[list[str]] = None,
         timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
@@ -887,6 +905,7 @@ class SdCppEngine:
             params,
             output_path = str(self._prepare_out(output_path)),
             offload = offload,
+            threads = threads,
             verbose = verbose,
             extra_args = extra_args,
         )

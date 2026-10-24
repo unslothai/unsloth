@@ -4,7 +4,11 @@
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Tabs } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  effectiveTrainingObjective,
+  rlObjectiveSupported,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import type { TrainingObjective } from "@/types/training";
 import type { ReactElement } from "react";
@@ -18,15 +22,21 @@ const HINT_KEYS: Record<TrainingObjective, TranslationKey> = {
 
 export function ObjectiveSelect(): ReactElement {
   const t = useT();
-  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  const selected = useTrainingConfigStore(effectiveTrainingObjective);
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setObjective = useTrainingConfigStore((s) => s.setTrainingObjective);
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+  const modelLocked = !useTrainingConfigStore(rlObjectiveSupported);
+  const preferenceLocked = useTrainingConfigStore((s) => s.isVisionModel);
   // MLX has no RL trainer, and CPT is an objective of its own.
-  const rlLocked = isMac || trainingMethod === "cpt";
+  const rlLocked = isMac || trainingMethod === "cpt" || modelLocked;
   const lockedReason = isMac
     ? t("rl.objective.macLocked")
-    : t("rl.objective.cptLocked");
+    : modelLocked
+      ? t("rl.objective.modelLocked")
+      : t("rl.objective.cptLocked");
+  // A locked selector shows what the run will use, not a stored RL choice it ignores.
+  const objective = rlLocked ? "sft" : selected;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -41,11 +51,15 @@ export function ObjectiveSelect(): ReactElement {
           size="compact"
           options={[
             { value: "sft", label: t("rl.objective.sft") },
-            { value: "dpo", label: t("rl.objective.dpo"), disabled: rlLocked },
+            {
+              value: "dpo",
+              label: t("rl.objective.dpo"),
+              disabled: rlLocked || preferenceLocked,
+            },
             {
               value: "orpo",
               label: t("rl.objective.orpo"),
-              disabled: rlLocked,
+              disabled: rlLocked || preferenceLocked,
             },
             {
               value: "grpo",

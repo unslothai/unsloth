@@ -36,11 +36,7 @@ def _component_body(tsx: str, name: str) -> str | None:
 
 
 def _assistant_bar_source(tsx: str) -> str:
-    """AssistantActionBar and every thread.tsx component it renders, transitively.
-
-    The harnesses act on the last ASSISTANT message, so a control only counts if the assistant
-    bar renders it: a whole-file search would still find a label in the user message's bar.
-    """
+    """Only the assistant bar's own render tree, since a whole-file search would match the user bar."""
     seen: dict[str, str] = {}
     queue = ["AssistantActionBar"]
     while queue:

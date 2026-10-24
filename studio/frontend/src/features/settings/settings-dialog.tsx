@@ -4,6 +4,7 @@
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
 import { Button } from "@/components/ui/button";
+import { DropdownGlowContext } from "@/components/ui/dropdown-glow";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
@@ -48,6 +50,7 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -251,7 +254,6 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
@@ -302,6 +304,7 @@ export function SettingsDialog() {
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
   const hubSource = useHubSource();
+  const canUpgradeToFullInstall = useFullInstallUpgrade() !== null;
   const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
@@ -341,7 +344,13 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
+      const entries = renderedSearchEntries(
+        SETTINGS_SEARCH_INDEX,
+        tab.id,
+        hubSource,
+        isOwner,
+        canUpgradeToFullInstall,
+      )
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -358,13 +367,19 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource, isOwner]);
+  }, [query, t, visibleTabs, hubSource, isOwner, canUpgradeToFullInstall]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
     entry: string;
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
+  useLayoutEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }, [panelTab]);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
@@ -492,9 +507,8 @@ export function SettingsDialog() {
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
             "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
-            // Soft shadow, no outline ring. Pin --radius to the light value so
-            // corner rounding matches in dark mode.
-            "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
+            // Soft shadow, no outline ring.
+            "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
@@ -523,11 +537,18 @@ export function SettingsDialog() {
                 !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
               )}
             >
-              <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
+              {/* Visual only: the dialog's sr-only DialogTitle already names it. */}
+              <p
+                aria-hidden={true}
+                className="shrink-0 px-3 pt-3 pb-3 text-lg font-semibold text-sidebar-foreground group-data-stacked/settings:hidden"
+              >
+                {t("settings.dialog.title")}
+              </p>
+              <div className="relative mx-1 mb-3 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -539,9 +560,9 @@ export function SettingsDialog() {
                     }
                   }}
                   data-type-to-activate="settings-search"
-                  placeholder={t("settings.dialog.searchPlaceholder")}
+                  placeholder={t("common.search")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+                  className="h-[calc(36px*var(--ui-space-scale,1))] w-full rounded-full border-0 bg-accent pr-8 pl-10 text-ui-14p5 text-foreground outline-none transition-colors placeholder:text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -594,14 +615,6 @@ export function SettingsDialog() {
                   )}
                 </div>
               ) : null}
-              <p
-                className={cn(
-                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground group-data-stacked/settings:hidden",
-                  results !== null && "hidden",
-                )}
-              >
-                {t("settings.dialog.title")}
-              </p>
               <nav
                 ref={attachRail}
                 onScroll={onRailScroll}
@@ -680,42 +693,45 @@ export function SettingsDialog() {
             </aside>
 
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-              <button
-                type="button"
-                onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={t("settings.dialog.closeAriaLabel")}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
-              </button>
-              <div
-                ref={mainScrollRef}
-                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
-              >
-                {/* Only a panel's first view waits, so the fallback is delayed and a
-                    promptly arriving panel never flashes it. */}
-                <SettingsPanelBoundary
-                  tab={panelTab}
-                  message={t("settings.dialog.panelFailed")}
-                  reloadLabel={t("settings.dialog.panelReload")}
+              {/* The pane is the page colour, not the dialog's card, so its dropdowns glow in --background. */}
+              <DropdownGlowContext.Provider value={null}>
+                <button
+                  type="button"
+                  onClick={closeDialog}
+                  className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label={t("settings.dialog.closeAriaLabel")}
                 >
-                  <Suspense
-                    fallback={
-                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
-                        {t("common.loading")}
-                      </div>
-                    }
+                  <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+                </button>
+                <div
+                  ref={mainScrollRef}
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                >
+                  {/* Only a panel's first view waits, so the fallback is delayed and a
+                      promptly arriving panel never flashes it. */}
+                  <SettingsPanelBoundary
+                    tab={panelTab}
+                    message={t("settings.dialog.panelFailed")}
+                    reloadLabel={t("settings.dialog.panelReload")}
                   >
-                    <Tab
-                      searchEntry={
-                        pendingScroll?.tab === panelTab
-                          ? pendingScroll.entry
-                          : undefined
+                    <Suspense
+                      fallback={
+                        <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                          {t("common.loading")}
+                        </div>
                       }
-                    />
-                  </Suspense>
-                </SettingsPanelBoundary>
-              </div>
+                    >
+                      <Tab
+                        searchEntry={
+                          pendingScroll?.tab === panelTab
+                            ? pendingScroll.entry
+                            : undefined
+                        }
+                      />
+                    </Suspense>
+                  </SettingsPanelBoundary>
+                </div>
+              </DropdownGlowContext.Provider>
             </main>
           </div>
         </DialogContent>

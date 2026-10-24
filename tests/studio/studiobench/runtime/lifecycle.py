@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install, launch and authenticate a real Unsloth. VENDORED from `studio_test_kit`.
-
-Vendored on purpose. The shipped artifact is a single `studiobench.pyz` a tester runs on a machine
-that has an Unsloth and nothing else, so it cannot import a module that lives elsewhere in this
-repository. The logic is `studio_test_kit.lifecycle` plus `studio_test_kit.auth`, with two
-deliberate changes:
-
-- **stdlib only.** `studio_test_kit.auth` uses `httpx`; this uses `urllib.request`, so `--doctor`
-  and `--attach` work on a machine with nothing pip-installed but Playwright.
-- **The password-change gate is handled.** A current Unsloth mints a bootstrap password and sets
-  `must_change_password`, and until it is cleared EVERY authenticated route answers
-  `403 Password change required` while `/healthz` answers 200 and login itself succeeds. That
-  failure is silent one request too late, and it is what stops a thread from being seeded at all.
-"""
+"""Vendored from studio_test_kit; stdlib-only, so the shipped zipapp needs nothing beyond Playwright."""
 
 from __future__ import annotations
 
@@ -44,8 +31,7 @@ class StudioInstall:
     bootstrap_password: Optional[str] = None
     port: Optional[int] = None
     pid: Optional[int] = None
-    #: The commit `branch` RESOLVED TO, which is the build that was installed. `branch` is what the
-    #: caller typed, and a branch or a movable tag is not a build. See `__main__.commit_problems`.
+    # The commit `branch` resolved to; a branch or movable tag is not a build.
     commit: Optional[str] = None
 
     @property
@@ -53,25 +39,14 @@ class StudioInstall:
         return f"http://127.0.0.1:{self.port}"
 
 
-#: What the backend gives an access token (`auth/authentication.py`,
-#: ACCESS_TOKEN_EXPIRE_MINUTES). Only a FALLBACK: the expiry enforced is the `exp` claim read
-#: from the token itself, and this is what to assume when the server hands back something that
-#: is not a readable JWT.
+# Fallback token TTL (backend ACCESS_TOKEN_EXPIRE_MINUTES); the JWT exp claim wins when readable.
 ACCESS_TOKEN_TTL_S = 60 * 60
-#: How far ahead of `exp` a token is replaced. Seeding a 1M-token thread is ONE request with a
-#: 900 second timeout, so a token merely valid when the request is written is not good enough:
-#: it must still be valid when the server finishes reading the body.
+# Refresh margin: seeding a 1M-token thread is one request with a 900s timeout.
 TOKEN_REFRESH_MARGIN_S = 15 * 60
 
 
 def jwt_expiry(token: str) -> Optional[float]:
-    """The `exp` claim of a JWT, in unix seconds, WITHOUT verifying anything.
-
-    This is not authentication, it is a clock: the harness holds a token the server issued and
-    needs to know when the server will stop accepting it. Verification is the server's job and it
-    does it on every request. Anything unreadable returns None and the caller falls back to
-    `ACCESS_TOKEN_TTL_S`.
-    """
+    """Reads exp without verifying anything; it is a clock for refresh, not authentication."""
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
@@ -84,47 +59,19 @@ def jwt_expiry(token: str) -> Optional[float]:
 
 @dataclass
 class StudioAuth:
-    """The harness's own credentials, WHICH OUTLIVE THE TOKEN THEY WERE HANDED.
-
-    THE RUN IS LONGER THAN THE TOKEN. An access token is good for one hour
-    (`ACCESS_TOKEN_EXPIRE_MINUTES = 60`) and this harness authenticated once per arm, at setup,
-    before the first install. A standard A/B at four repetitions is 24 films of 243 seconds --
-    97 minutes of cells alone, before seeding, calibration and two installs -- so the token the
-    seeder holds expires PART WAY THROUGH, and every request after that answers 401: the next
-    `create_thread` fails and the cell dies. In the browser it is worse than an error, because the
-    SPA's own 401 path clears its tokens and navigates to the login route, which reaches Playwright
-    as `Execution context was destroyed, most likely because of a navigation` -- the exact shape of
-    a flake, arriving on a schedule.
-
-    So the token is REPLACED BEFORE IT EXPIRES rather than after it fails. `token()` is what every
-    authenticated request asks for and it re-authenticates whenever `exp` is inside
-    `TOKEN_REFRESH_MARGIN_S`; `auth_request_json` additionally recovers from a 401 that arrives
-    anyway, because a clock skew between this process and the server is exactly the case a
-    deadline computed here cannot see.
-
-    RE-LOGIN, NOT REFRESH, and the difference matters. `POST /api/auth/refresh` is SINGLE USE
-    (`storage.consume_refresh_token`) and the refresh token this object holds is the same one the
-    page was seeded with. Spending it here would invalidate the copy in the SPA's localStorage and
-    log the page out to fix the harness -- trading this defect for itself. A password login mints a
-    fresh pair and touches nothing the page owns.
-    """
+    """Re-logs in before exp, not refresh: refresh tokens are single use, and the page holds one copy."""
 
     access_token: str
     refresh_token: str
     base_url: str
     username: str
     password: str
-    #: Unix seconds, from the token's own `exp`. None means unknown, treated as `ACCESS_TOKEN_TTL_S`
-    #: from the moment this object was built.
     expires_at: Optional[float] = None
-    #: Called with `self` after the token is replaced. The browser context seeds its localStorage
-    #: from a SNAPSHOT of these values, so whoever owns that context re-seeds it here.
+    # Called after rotation; the browser context seeds localStorage from a snapshot and must re-seed.
     on_rotate: Optional[Callable[["StudioAuth"], None]] = None
     rotations: int = field(default = 0, init = False)
-    #: Turned off the first time a FRESH token still reads as expiring, which means the `exp` this
-    #: process reads and the server's clock do not agree. See `rotate`.
+    # Disabled when a fresh token still reads as expiring (clock skew with the server).
     proactive: bool = field(default = True, init = False)
-    #:The last `on_rotate` failure, kept rather than raised. See `rotate`.
     hook_error: Optional[str] = field(default = None, init = False)
 
     def __post_init__(self) -> None:
@@ -145,29 +92,8 @@ class StudioAuth:
         return self.access_token
 
     def rotate(self) -> str:
-        """Log in again and adopt the new pair. Raises if the server will not have us.
-
-        The password is the one THIS harness rotated to (`authenticate` clears the
-        password-change gate up front), so there is a credential to log in with for as long as the
-        run lasts.
-
-        A FRESH TOKEN THAT IS ALREADY INSIDE THE MARGIN TURNS THE PROACTIVE HALF OFF, and this is
-        the guard against the one way "refresh before `exp`" can run away. `needs_refresh` compares
-        the server's `exp` against THIS PROCESS'S clock, and the two are not required to agree: a
-        Unsloth running 45 minutes behind, or a deployment that shortens
-        `ACCESS_TOKEN_EXPIRE_MINUTES` below the margin, makes every token ever issued look like it
-        is about to expire. Without this, every single request would log in again and append
-        another init script to the browser context for the rest of the run. So the condition is
-        tested against a token known to be one second old: if even that one is inside the margin,
-        the margin is not usable here and the token is left to `auth_request_json`'s 401 recovery,
-        which asks the server rather than the clock.
-
-        THE HOOK CANNOT FAIL THE CREDENTIAL. `on_rotate` re-seeds a Playwright context, which can
-        throw for reasons that have nothing to do with authentication -- a closed context, a page
-        that crashed. The token has already been replaced by then and the caller's request must go
-        out; the failure is recorded on `hook_error` instead of being raised through a function
-        whose job was to hold a credential.
-        """
+        """Refresh is skipped for a token already inside the margin, or clock skew would re-login
+        per request."""
         fresh = login(self.base_url, self.username, self.password)
         self.access_token = fresh.access_token
         self.refresh_token = fresh.refresh_token or self.refresh_token
@@ -191,21 +117,8 @@ def auth_request_json(
     body: Optional[dict] = None,
     timeout: float = 30.0,
 ) -> Any:
-    """`request_json` with credentials that survive a long run: refreshed BEFORE `exp`, and
-    re-minted once more if the server rejects the token anyway.
-
-    Both halves are needed. The proactive half is what keeps a 900 second seeding PUT from dying
-    half way through a request that was valid when it started. The reactive half covers what this
-    process cannot compute: a clock offset against the server, an Unsloth restarted underneath the
-    run, or a token invalidated by something else. One retry only -- a 401 that survives a fresh
-    login is a real refusal and must be raised, not looped on.
-
-    The token is fetched OUTSIDE the `try`, so a 401 raised by the login inside `token()` is not
-    mistaken for a 401 from this request and answered with a second login. The backend locks an
-    account out after five failures in a minute (`routes/auth.py`, `_LOGIN_MAX_FAILS`), so a wrong
-    credential retried at double rate reaches the lockout twice as fast and the run then dies on a
-    429 that says nothing about the password.
-    """
+    """Retries a 401 once after a fresh login; the login stays outside the try, so its 401 is not
+    retried."""
     bearer = auth.token()
     try:
         return request_json(url, method = method, body = body, token = bearer, timeout = timeout)
@@ -218,15 +131,7 @@ def auth_request_json(
 
 @dataclass
 class ProviderSeed:
-    """One external provider entry for the SPA's localStorage.
-
-    `provider_type` is **"custom"**, not "openai", and the difference decides whether this
-    benchmark measures anything. The backend routes `openai` to `/v1/responses`; `custom` is the
-    generic OpenAI-compatible entry and is routed to `{base_url}/chat/completions` with the body
-    relayed and the SSE lines forwarded verbatim, which is the path a real llama.cpp, vLLM or
-    Ollama server takes and the only one that puts our own event stream in front of the app's
-    parser.
-    """
+    """Must be custom, not openai: openai routes to /v1/responses, which never reaches this pacer."""
 
     provider_type: str
     name: str
@@ -260,29 +165,10 @@ def pacer_provider(
 
 
 def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -> str:
-    """Create the provider in the BACKEND and return the id IT assigned.
-
-    LOCALSTORAGE SEEDING ALONE IS NOT ENOUGH ON A CURRENT STUDIO, and this is the second half of
-    the reason nothing was ever generated. `studio_test_kit.auth` seeds three localStorage keys and
-    its docstring says that is sufficient to drive any external provider end to end. It was; it is
-    not now. The provider list the SPA validates a selection against comes from
-    `GET /api/providers/`, so with a provider only in localStorage the model picker renders the
-    model with the label "No longer offered" and pressing send throws `Connection not found`
-    before any request is made. Both symptoms were observed directly against a shipped build.
-
-    So the provider is created over REST and the id the BACKEND assigns is what the selection
-    checkpoint must name. A client-generated id would not be found either.
-
-    No API key is sent. For `custom` the backend omits the Authorization header entirely when the
-    key is empty, which is what a local llama.cpp or vLLM server expects, and it saves this
-    harness from having to RSA-encrypt a dummy secret against the server's published public key
-    just to have it ignored.
-    """
+    """The SPA checks selections against GET /api/providers/, so the id must be the backend's own."""
     existing = auth_request_json(auth, f"{base_url.rstrip('/')}/api/providers/") or []
     for row in existing:
-        # Idempotent across runs. Every run binds a NEW ephemeral pacer port, so a stale entry points at
-        # a port nothing is listening on and gives the picker two identically named models of which one
-        # is dead.
+        # Idempotent: each run binds a new pacer port, so a stale entry would be a dead duplicate model.
         if row.get("display_name") == provider.name:
             try:
                 auth_request_json(
@@ -309,24 +195,9 @@ def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -
 
 
 def external_checkpoint_id(provider: ProviderSeed, model_id: str) -> str:
-    """The app's own id for "this model, on this external provider".
-
-    SEEDING THE PROVIDER IS NOT ENOUGH, and this is the difference between a benchmark and a page
-    that does nothing. With the provider seeded but no model SELECTED, the composer accepts text,
-    the send button is enabled, the message is stored to the thread -- and no completion request
-    is ever made. Measured: the first end-to-end run finished every action, reported nine of
-    sixteen ran, and recorded an assistant message with zero characters, because the reply that
-    was supposed to be measured was never asked for. The pacer's request log was empty, which is
-    the only reason it was caught.
-
-    `chat-runtime-store.ts` restores the selection from
-    `unsloth_chat_last_external_checkpoint`, in the format `buildExternalModelId` produces.
-    """
+    """Must use buildExternalModelId's format, which chat-runtime-store reads back on restore."""
     from urllib.parse import quote
     return f"external::{provider.id}::{quote(model_id, safe = '')}"
-
-
-# ── HTTP, stdlib ────────────────────────────────────────────────────
 
 
 class HttpError(RuntimeError):
@@ -373,9 +244,6 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
     return False
 
 
-# ── install and launch ──────────────────────────────────────────────
-
-
 def _run(
     cmd: list[str],
     cwd: Optional[Path] = None,
@@ -395,22 +263,10 @@ def _run(
 
 
 def checkout_ref(repo: Path, ref: str) -> str:
-    """Put `repo` on `ref`, whatever kind of ref it is. Returns the commit checked out.
-
-    NOT `git clone --branch <ref>` AND NOT `reset --hard origin/<ref>`. `--branch` resolves against
-    the remote's advertised branches and tags -- `git clone -h` calls it "checkout <branch> instead
-    of the remote's HEAD" -- so a commit sha fails with `Remote branch <sha> not found in upstream
-    origin` before anything is installed, and `origin/<sha>` is not a name that exists either.
-    CONTRIBUTING-perf.md asks for exactly that ref: a change that has already merged is measured as
-    `merge commit` against `merge commit^1`, and neither of those is a branch.
-
-    So the ref is fetched and then resolved locally: `FETCH_HEAD` when the fetch could name it,
-    `origin/<ref>` when it is a branch, and the ref itself when it is already an object here.
-    """
+    """Not git clone --branch: it only accepts branch and tag names, so a commit sha or ref^1 fails."""
     fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd = repo, check = False)
     if fetched.returncode != 0:
-        # A ref the remote will not serve by name (an old server, or `ref^1`, a local expression). Fetch
-        # everything and resolve it here.
+        # The remote may not serve this ref by name (e.g. `ref^1`), so fetch everything and resolve locally.
         _run(["git", "fetch", "--tags", "origin"], cwd = repo, check = False)
     candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
     candidates += [f"origin/{ref}", ref]
@@ -431,9 +287,7 @@ def checkout_ref(repo: Path, ref: str) -> str:
     )
 
 
-#: What `install.sh` is allowed. A multi-gigabyte download and build, documented as 'budgeted at
-#: up to 45 minutes' and explicitly NOT part of a tier's wall clock. Named rather than inlined
-#: because the run's watchdog has to add it to a deadline it would otherwise fire inside.
+# install.sh budget, excluded from tier wall clock; the watchdog adds it to its deadline.
 INSTALL_TIMEOUT_S = 60 * 45
 
 
@@ -450,11 +304,9 @@ def install_studio(
     if not (reuse_clone and (repo / ".git").exists()):
         if repo.exists():
             shutil.rmtree(repo)
-        # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a branch,
-        # a tag and a commit sha instead of two that disagree about what a ref is.
+        # Clone without --branch so branches, tags and shas share one checkout path.
         _run(["git", "clone", remote, str(repo)])
-    # KEPT, not discarded: `checkout_ref` is the only place that knows which commit a ref names, and
-    # the ref alone cannot tell a resumed run that `main` moved underneath it.
+    # Kept so a resumed run can detect that a branch moved underneath it.
     commit = checkout_ref(repo, branch)
     install_sh = repo / "install.sh"
     if not install_sh.exists():
@@ -504,21 +356,12 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
     return None
 
 
-#: How long to keep looking for the launched server's pid. It appears once the server has forked
-#: and exec'd, after `setsid -f` has returned, so this is a poll rather than a read. Named so a
-#: test can set it to zero.
+# Polled because the pid appears only after `setsid -f` returns; tests set it to zero.
 PID_DISCOVERY_TIMEOUT_S = 15.0
 
 
 def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]:
-    """The pid of the Unsloth serving `port`, or None. Polls, because it appears asynchronously.
-
-    THE PROCESS WE LAUNCHED IS NOT THE PROCESS WE SPAWNED. `launch_studio` runs the server under
-    `setsid -f`, which always forks and lets the parent exit without waiting, so the pid `Popen`
-    returns belongs to a `setsid` that is gone by the time the server binds; the server itself is
-    reparented into a session of its own and cannot be reached through our process group. `pgrep`
-    is the only handle on it, and it can only be taken once the server exists.
-    """
+    """The pid Popen returns is setsid's, not the server's, so the server is found by port with pgrep."""
     if timeout_s is None:
         timeout_s = PID_DISCOVERY_TIMEOUT_S
     deadline = time.time() + max(0.0, timeout_s)
@@ -542,12 +385,7 @@ def port_is_busy(
     host: str = "127.0.0.1",
     timeout_s: float = 1.0,
 ) -> bool:
-    """Is something already accepting connections on `port`?
-
-    A plain connect, not a bind: the server we are about to launch is DETACHED and binds in a
-    process of its own, so the only question this can answer is whether the port is already
-    somebody's -- and if it is, it will not be ours.
-    """
+    """Connects rather than binds, since the detached server binds later; a busy port is not ours."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout_s)
         try:
@@ -564,18 +402,7 @@ def launch_studio(
     healthz_timeout_s: int = 240,
     password_timeout_s: int = 30,
 ) -> StudioInstall:
-    # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, the half of the abandoned-server
-    # failure no cleanup can reach. `--keep-studio` leaves an Unsloth running on this port, so the
-    # next run's `unsloth studio -p <port>` finds one of our own servers and aborts rather than
-    # binding, or falls back to the NEXT port when the pid record is unreadable. Either way nothing
-    # this run launched is on `port`.
-    # `studio/backend/run.py::_resolve_port`, `avoid_own_studio`.
-    # Everything downstream then agrees the launch worked: `_discover_pid` pgreps and finds the OLD
-    # process, `wait_for_healthz` takes its 200 from it, and `authenticate` retries with
-    # `BENCH_PASSWORD`, which a previous run has already rotated that Unsloth to. The run measures
-    # the build the PREVIOUS invocation installed while `run_meta` records the ref this one asked
-    # for, and `stop_studio` kills the server the caller asked to keep. No reading anywhere says
-    # which build answered.
+    # Refuse a busy port before launching, or we would measure a stale server left by --keep-studio.
     if port_is_busy(port):
         holder = _discover_pid(port, 0.0)
         raise RuntimeError(
@@ -590,8 +417,7 @@ def launch_studio(
     log_path.write_text("")
     bin_path = _find_unsloth_bin(install)
     env = {"UNSLOTH_STUDIO_HOME": str(install.home), **(extra_env or {})}
-    # NOT `UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1`: that opt-in SSRF guard rejects any
-    # non-global address, which is exactly the pacer's 127.0.0.1 base URL.
+    # The opt-in SSRF guard would reject the pacer's 127.0.0.1 base URL.
     env.pop("UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS", None)
     cmd = [
         "setsid",
@@ -611,17 +437,10 @@ def launch_studio(
     install.bootstrap_password = _read_bootstrap_password(
         install.home, log_path, time.time() + password_timeout_s
     )
-    # BEFORE the health check, not after. An Unsloth that starts and stays unhealthy used to raise
-    # here with `install.pid` still None, so `stop_studio` had nothing to kill and the detached
-    # server was left on the requested port. The next attempt then aborts rather than binding while
-    # `wait_for_healthz` gets its 200 from the STALE process, measuring the build the previous
-    # attempt installed while recording the ref this one asked for: the one failure this harness may
-    # never produce quietly.
+    # Discover the pid before the health check so a never-healthy server can still be stopped.
     install.pid = _discover_pid(port)
     healthy = wait_for_healthz(install.base_url, healthz_timeout_s)
     if install.pid is None:
-        # One more look: a server slow enough to miss the window above is exactly the one whose health
-        # check just timed out, and the one that most needs terminating.
         install.pid = _discover_pid(port, 0.0)
     if not healthy:
         stop_studio(install)
@@ -636,8 +455,6 @@ def stop_studio(install: StudioInstall) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-
-# ── auth ────────────────────────────────────────────────────────────
 
 BENCH_PASSWORD = "studiobench-Passw0rd!"
 
@@ -664,18 +481,8 @@ def authenticate(
     password: str,
     new_password: str = BENCH_PASSWORD,
 ) -> StudioAuth:
-    """Log in and CLEAR the password-change gate if it is set.
-
-    Not optional and not cosmetic. When `must_change_password` is set, login succeeds and returns
-    a token, `/healthz` answers 200, and every route this harness needs -- create a thread, seed
-    its messages, read them back -- answers `403 Password change required`. Nothing announces it;
-    the run simply fails to seed a thread and reports an empty one. So the gate is read from
-    `/api/auth/status` up front and cleared through the one endpoint that accepts the gated token.
-    """
-    # Try the supplied password, then the one a PREVIOUS studiobench run rotated to. Unsloth mints a
-    # bootstrap password and demands it be changed, and this function is what changes it, so the
-    # second run against the same home is handed a password that no longer exists and gets a 401
-    # pointing at `reset-password`. Trying both makes reruns and `--resume` work.
+    """Clears must_change_password first: until then every route returns 403 while /healthz returns 200."""
+    # Also try the password a previous run rotated to, so reruns and --resume work.
     attempts = [password, new_password] if password != new_password else [password]
     auth = None
     last: Optional[Exception] = None
@@ -722,33 +529,7 @@ def seed_init_script(
     providers: list[ProviderSeed],
     extra_local_storage: Optional[dict] = None,
 ) -> str:
-    """localStorage the SPA reads on its FIRST paint, so it boots already logged in and already
-    holding the provider. The plaintext key is RSA-encrypted by the SPA per request against the
-    server's published public key, so seeding it plainly here is the supported path.
-
-    THE REFRESH TOKEN GOES UNDER THE KEY THE APP READS, which is
-    `unsloth_auth_refresh_token` (`features/auth/session.ts`, `AUTH_REFRESH_TOKEN_KEY`) and not
-    `unsloth_refresh_token`, which nothing in the frontend has ever read. Seeded under the wrong
-    name the page boots with an access token and NO way to renew it, so one hour in --
-    `ACCESS_TOKEN_EXPIRE_MINUTES = 60`, shorter than a standard A/B -- the first request to answer
-    401 takes `authFetch` down the branch that clears the tokens and navigates to the login route.
-    Playwright reports that as `Execution context was destroyed, most likely because of a
-    navigation`, which reads as a flake and is not one: it is the clock. With the right key the
-    SPA rotates its own pair through `POST /api/auth/refresh` and the film carries on.
-
-    That endpoint is SINGLE USE, which is why the harness re-authenticates by password instead of
-    spending this token itself -- see `StudioAuth`. This copy belongs to the page.
-
-    AND THE AUTH KEYS ARE WRITTEN ONLY BY THE FRESHEST WRITER. An init script is a snapshot that
-    re-runs on EVERY navigation, and there is one navigation per cell, so a script carrying the
-    token this run started with would keep putting it back over whatever the SPA had rotated to.
-    The harness re-seeds after `StudioAuth.rotate`, but Playwright says outright that "the order of
-    evaluation of multiple scripts installed via browser_context.add_init_script() and
-    page.add_init_script() is not defined", so "the newest one was added last" decides nothing.
-    Each script therefore compares its own token's `exp` against the one already in storage and
-    writes only if it is carrying the later one. That converges on the freshest token whatever
-    order they run in, which is the only property worth having here.
-    """
+    """Writes unsloth_auth_refresh_token, the app's key; each script writes only a later-expiring token."""
     auth_payload = {
         "unsloth_auth_token": auth.access_token,
         "unsloth_auth_refresh_token": auth.refresh_token,
@@ -762,8 +543,7 @@ def seed_init_script(
     }
     for k, v in (extra_local_storage or {}).items():
         payload[k] = v if isinstance(v, str) else json.dumps(v)
-    # `exp` out of an unverified JWT payload, base64url with the padding this token does not carry.
-    # Anything unreadable scores 0, so a token nobody can date never displaces one that can be.
+    # Read exp from the unverified JWT (unpadded base64url); unreadable tokens score 0.
     exp_of = (
         "const expOf = (t) => { try { let p = String(t).split('.')[1]"
         ".replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '='; "

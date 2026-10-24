@@ -41,6 +41,9 @@ name: Windows Application Control CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
       - 'scripts/uninstall.ps1'
@@ -89,7 +92,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -97,6 +100,7 @@ permissions:
 
 jobs:
   applocker-denied-launcher:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: installer survives a denied unsloth.exe
     runs-on: windows-latest
     timeout-minutes: 45
@@ -467,7 +471,7 @@ jobs:
 
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-application-control
           path: logs/

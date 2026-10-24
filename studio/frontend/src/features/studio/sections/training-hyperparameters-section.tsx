@@ -23,11 +23,14 @@ import {
   MLX_OPTIMIZER_OPTIONS,
   OPTIMIZER_OPTIONS,
 } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  effectiveTrainingObjective,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow, ParamsSliderRow } from "./params-section-controls";
 import { RlParamsSection } from "./rl/rl-params-section";
@@ -87,6 +90,7 @@ export function TrainingHyperparametersSection({
     useShallow((state) => ({
       epochs: state.epochs,
       isDecision: state.modelType === "decision",
+      isEmbedding: state.isEmbeddingModel || state.modelType === "embeddings",
       optimizerType: state.optimizerType,
       lrSchedulerType: state.lrSchedulerType,
       batchSize: state.batchSize,
@@ -95,6 +99,7 @@ export function TrainingHyperparametersSection({
       warmupSteps: state.warmupSteps,
       saveSteps: state.saveSteps,
       evalSteps: state.evalSteps,
+      earlyStoppingPatience: state.earlyStoppingPatience,
       randomSeed: state.randomSeed,
       setOptimizerType: state.setOptimizerType,
       setLrSchedulerType: state.setLrSchedulerType,
@@ -105,12 +110,12 @@ export function TrainingHyperparametersSection({
       setEpochs: state.setEpochs,
       setSaveSteps: state.setSaveSteps,
       setEvalSteps: state.setEvalSteps,
+      setEarlyStoppingPatience: state.setEarlyStoppingPatience,
       setRandomSeed: state.setRandomSeed,
     })),
   );
   // Only mounted in advanced mode, so start expanded when the user switches to it.
   const [open, setOpen] = useState(true);
-  const [tab, setTab] = useState<HyperparameterTab>("optimization");
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
   const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
@@ -118,13 +123,18 @@ export function TrainingHyperparametersSection({
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
-  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  const objective = useTrainingConfigStore((s) =>
+    effectiveTrainingObjective(s),
+  );
   // Picking an RL objective opens its settings; going back to SFT leaves a tab that no longer exists.
-  useEffect(() => {
-    setTab((current) =>
-      objective !== "sft" ? "rl" : current === "rl" ? "optimization" : current,
-    );
-  }, [objective]);
+  const [tab, setTab] = useState<HyperparameterTab>(
+    objective !== "sft" ? "rl" : "optimization",
+  );
+  const [tabObjective, setTabObjective] = useState(objective);
+  if (tabObjective !== objective) {
+    setTabObjective(objective);
+    setTab(objective !== "sft" ? "rl" : tab === "rl" ? "optimization" : tab);
+  }
   const baseTabs = [
     { value: "optimization", label: t("studio.params.optimization") },
     { value: "schedule", label: t("studio.params.schedule") },
@@ -402,6 +412,25 @@ export function TrainingHyperparametersSection({
                 className="w-28 font-mono"
               />
             </ParamsRow>
+            {!store.isDecision && !store.isEmbedding && (
+              <ParamsRow
+                label={t("studio.params.earlyStoppingPatience")}
+                tooltip={t("studio.params.earlyStoppingPatienceTooltip")}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="1000"
+                  disabled={store.evalSteps <= 0}
+                  value={store.earlyStoppingPatience}
+                  onChange={(event) =>
+                    store.setEarlyStoppingPatience(Number(event.target.value))
+                  }
+                  className="w-28 font-mono"
+                />
+              </ParamsRow>
+            )}
             <ParamsRow
               label={t("studio.params.seed")}
               tooltip={t("studio.params.seedTooltip")}

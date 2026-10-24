@@ -24,7 +24,9 @@ export const TooltipIconButton = forwardRef<
   TooltipIconButtonProps
 >(({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
   return (
-    <Tooltip>
+    // No grace area: the label is wider than the icon, so the path to it covers the next icon in
+    // a row and kept this label up (and that icon's away) while the pointer rested there.
+    <Tooltip disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
         <Button
           variant="ghost"

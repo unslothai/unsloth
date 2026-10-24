@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-# NVFP4 compressed-tensors checkpoints (unsloth/Qwen3.8-27B-NVFP4 layout) stay packed and train W4A16 with LoRA.
 import os
 import sys
 
@@ -18,7 +17,7 @@ import _nvfp4_fixtures as fx  # noqa: E402
 
 
 class _Checkpoints(dict):
-    # Built on first use, so a transformers without qwen3_5 (4.57.x) still runs the qwen3 cases.
+    # Built lazily so transformers 4.57.x without qwen3_5 still runs the qwen3 cases.
     def __init__(self, tmp_path_factory):
         super().__init__()
         self.tmp_path_factory = tmp_path_factory
@@ -69,7 +68,6 @@ def test_fixture_decompresses_to_the_packed_weights(ckpt, arch):
         str(module.quantization_status.value) == "compressed"
         and module.weight_packed.dtype == torch.uint8
     )
-    # The broad MLP target overlaps the last layer's FP8 override; the override wins, as in the real checkpoint.
     last = next(n for n, k in kinds.items() if k == "fp8" and ".mlp." in n)
     assert _module(model, last).quantization_scheme.weights.num_bits == 8
 
@@ -88,8 +86,6 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
     assert model._unsloth_compressed_tensors_nvfp4 == len(nvfp4)
     assert getattr(model, "ct_decompress_hook", None) is None and not model._forward_pre_hooks
     keys = set(safe_open(os.path.join(path, "model.safetensors"), "pt").keys())
-    # Same keys as the checkpoint, except that decompressed layers are dense and drop their scales
-    # (a tied lm_head may add its alias).
     dense = [n for n, k in kinds.items() if k == "fp8"] + ["lm_head"]
     keys -= {n + ".weight_scale" for n in dense}
     assert set(model.state_dict()) - {"lm_head.weight"} == keys - {"lm_head.weight"}
@@ -99,7 +95,7 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
     for name, kind in kinds.items():
         module = _module(model, name)
         if kind == "fp8":
-            assert module.weight.dtype == torch.bfloat16  # decompressed per module
+            assert module.weight.dtype == torch.bfloat16
     with torch.no_grad():
         model(input_ids = torch.randint(0, 1000, (2, 8), device = "cuda"))
     for name in nvfp4:
@@ -116,7 +112,7 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
 
 
 def test_dtype_casts_keep_the_nvfp4_storage_dtypes(ckpt, monkeypatch):
-    # model.to(fp16) must not cast the scales: an fp16 global scale overflows past 65504 and zeroes the layer.
+    # model.to(fp16) must not cast the scales: an fp16 global scale overflows past 65504.
     from unsloth.models import loader_utils
 
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
@@ -132,7 +128,6 @@ def test_dtype_casts_keep_the_nvfp4_storage_dtypes(ckpt, monkeypatch):
         model.to(torch.float16)
         assert {n: p.dtype for n, p in module.named_parameters()} == dtypes
         assert torch.equal(module(x), want) and want.abs().max() > 0
-        # Fused LoRA paths dequantize through the quant state, which must follow the cast.
         assert module.weight.quant_state.dtype == torch.float16
 
 
@@ -144,7 +139,6 @@ def _fp8_route_available():
 @pytest.mark.parametrize("ct_helper", [True, False])
 @pytest.mark.parametrize("kind", ["nvfp4", "fp8"])
 def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, ct_helper, monkeypatch):
-    # merge_and_unload / merge_adapter / merged_4bit add the dense delta into base_layer.weight.
     from peft import LoraConfig, get_peft_model
     from unsloth.models import loader_utils
 
@@ -204,8 +198,7 @@ def test_dora_reads_the_dense_routed_weight(ckpt, kind, monkeypatch):
 
 @pytest.mark.parametrize("merge", [False, True])
 def test_saved_checkpoint_reloads_with_plain_transformers(ckpt, merge, tmp_path, monkeypatch):
-    # save_pretrained (after merge_and_unload or not): per-module decompressed layers such as lm_head and the
-    # merged ones are dense, so they must join the ignore list, or the reload reads them as FP8 / packed.
+    # Decompressed layers must join the ignore list, or the reload reads them as FP8 / packed.
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM
     from unsloth.models import loader_utils
@@ -231,15 +224,13 @@ def test_saved_checkpoint_reloads_with_plain_transformers(ckpt, merge, tmp_path,
     )
     with torch.no_grad():
         got = reloaded(input_ids = ids).logits.float()
-    # Plain compressed-tensors fake-quantizes activations (W4A4 / W8A8), so only close, not equal;
-    # a layer read in the wrong format gives logits near zero.
+    # Plain compressed-tensors fake-quantizes activations, so only close, not equal.
     assert (got - want).abs().max() < 0.1 * want.abs().max()
 
 
 @pytest.mark.parametrize("init", ["pissa_niter_2", "olora", "loftq", "orthogonal"])
 def test_svd_style_lora_inits_see_the_dense_base(ckpt, init, monkeypatch):
-    # PiSSA / OLoRA rewrite base_layer.weight from its SVD / QR and orthogonal init builds adapters in its dtype,
-    # so the packed base goes dense first.
+    # PiSSA / OLoRA rewrite base_layer.weight from SVD / QR, so the packed base goes dense first.
     from peft import LoraConfig, get_peft_model
     from unsloth.models import loader_utils
 
@@ -264,7 +255,6 @@ def test_svd_style_lora_inits_see_the_dense_base(ckpt, init, monkeypatch):
 
 
 def test_lora_ga_preprocess_sees_the_dense_base(ckpt, monkeypatch):
-    # preprocess_loraga sets requires_grad on each target weight before get_peft_model runs.
     peft = pytest.importorskip("peft")
     if not hasattr(peft, "preprocess_loraga"):
         pytest.skip("PEFT without LoRA-GA")
@@ -295,7 +285,6 @@ def test_lora_ga_preprocess_sees_the_dense_base(ckpt, monkeypatch):
 
 
 def test_corda_preprocess_sees_the_dense_base(ckpt, monkeypatch):
-    # preprocess_corda multiplies each target weight by its input covariance before get_peft_model runs.
     corda = pytest.importorskip("peft.tuners.lora.corda")
     from peft import LoraConfig, get_peft_model
     from peft.tuners.lora.config import CordaConfig
@@ -406,7 +395,7 @@ def test_fp8_group_routes_with_the_fp8_kernels_by_default(ckpt, monkeypatch):
         ("qwen3", "FastModel", False),
         ("qwen3_5", "FastModel", False),
         ("qwen3_5", "FastLanguageModel", False),
-        # The qwen3 fixture has an untied FP8 lm_head, which the FP8 route once handed to the fused CE loss.
+        # qwen3 has an untied FP8 lm_head that must not reach the fused CE loss.
         ("qwen3", "FastModel", True),
     ],
 )
@@ -416,7 +405,7 @@ def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, fp8_kernels
 
 @pytest.mark.parametrize("api", ["FastLanguageModel", "FastModel"])
 def test_lora_trains_in_float16(ckpt, api, tmp_path):
-    # T4 / V100 load in fp16: the NVFP4 quant state must dequantize to fp16, and the bf16-only FP8 kernels stay off.
+    # T4 / V100 load in fp16: the NVFP4 quant state must dequantize to fp16, FP8 kernels stay off.
     _check_lora_case(ckpt, "qwen3", api, None, tmp_path, dtype = "float16")
 
 
@@ -437,7 +426,7 @@ def _check_lora_case(
             pytest.skip("installed unsloth_zoo predates the FP8 kernel route")
     path, _ = ckpt[arch]
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # A fresh process per case: patches and the compiled module cache from one loader leak into the next.
+    # Fresh process per case: patches and the compile cache leak between loaders.
     env = dict(
         os.environ,
         PYTHONPATH = root + os.pathsep + os.environ.get("PYTHONPATH", ""),
@@ -468,7 +457,6 @@ def _check_lora_case(
     assert run.returncode == 0 and lines, run.stderr[-3000:]
     r = json.loads(lines[-1][len("LORA_CASE ") :])
     assert all(torch.isfinite(torch.tensor(r["losses"]))) and r["losses"][-1] < r["losses"][0]
-    # The packed base is never cast into, and activations reach it in a float dtype (W4A16, not uint8).
     assert r["input_dtypes"] and set(r["input_dtypes"]) <= {
         "torch.bfloat16",
         "torch.float16",
@@ -477,14 +465,13 @@ def _check_lora_case(
     assert r["packed_unchanged"] and r["packed_dtype"] == "torch.uint8" and r["lora_changed"]
     assert "adapter_model.safetensors" in r["saved"]
     assert r["adapters_equal"]
-    # FastLanguageModel trains through fused LoRA kernels; a plain PEFT reload differs by ~0.04 on bf16 main too.
+    # FastLanguageModel's fused LoRA kernels differ from a plain PEFT reload by ~0.04 on bf16.
     if api == "FastModel":
         assert r["reload_max_abs"] <= 1e-2
 
 
 def test_float8_lora_adapters_are_upcast_on_every_peft():
-    # PEFT < 0.19 gives an FP8 base float8 LoRA weights, on get_peft_model and on PeftModel.from_pretrained;
-    # the FP8 route beside NVFP4 relies on Unsloth's upcast.
+    # PEFT < 0.19 gives an FP8 base float8 LoRA weights; Unsloth's upcast fixes that.
     import unsloth  # noqa: F401
     from peft import LoraConfig, get_peft_model
 

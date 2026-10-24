@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The launch-time health probe for the managed llama.cpp runtime.
-
-Quarantine takes files out of a tree that is otherwise present and whose marker still
-says installed. Preflight decided staleness on the managed Python alone, so the desktop
-launched and the missing DLL surfaced at model load as an unrelated-looking error.
-``installed_runtime_health`` is what the capability payload answers with instead.
-
-The payload tables are covered by ``test_keep_install_backcompat_9979``; tested here is
-the composition around them: nothing installed is not a broken install, a missing runtime
-directory differs from a gutted one, and the probe pays for no GPU detection.
-"""
+"""Launch health probe for managed llama.cpp; an absent install is not broken; runs no GPU detection."""
 
 import importlib.util
 import json
@@ -167,14 +157,10 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
 
 
 def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
-    """An absent marker is a runtime nobody installed; a present but unreadable one is a real
-    tree whose write was interrupted. Short-circuiting the second to None left preflight Ready
-    with a library missing, the exact failure this probe catches. The keep path grades such a
-    marker as an unknown backend anyway, so grading it here stays no stricter."""
+    """An unparsable marker still grades the tree; only a missing marker means nothing is installed."""
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
-    # The payload is empty, so the tree is broken and must be offered for repair.
     assert ILP.installed_runtime_health(root) == (False, "llama_runtime_payload_incomplete")
 
 
@@ -241,11 +227,7 @@ def _windows_tree(tmp_path: Path, names, *, marker: str) -> Path:
 
 
 def test_an_unparseable_marker_over_a_prebuilt_tree_still_owes_the_shared_payload(tmp_path):
-    """Codex 3962938529, P2. An unreadable marker names no source, and the source-gated
-    groups were dropped with it, so on Windows llama.dll stood in for the whole payload: an
-    interrupted marker plus a quarantined ggml-base.dll answered healthy and the runtime
-    launched into the loader error this probe exists to pre-empt. The source is read off the
-    tree instead, from a name only a published bundle ships."""
+    """An unreadable marker names no source, so the tree is read for a name only published bundles ship."""
     host = _windows_host()
     root = _windows_tree(tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker = '{"release_tag": "b108')
     assert ILP.load_prebuilt_metadata(root) is None
@@ -260,10 +242,7 @@ def test_an_unparseable_marker_over_a_prebuilt_tree_still_owes_the_shared_payloa
 
 
 def test_an_unparseable_marker_over_a_source_build_stays_lenient(tmp_path):
-    """The other half of the same rule, and the reason it reads the tree rather than assuming
-    published: setup.ps1 links statically and ships none of those names, so requiring them
-    would fail health on a tree _existing_install_runs keeps, and the repair would run every
-    launch with nothing to change."""
+    """A source-built tree with an unparsable marker is not required to ship published-only DLL names."""
     host = _windows_host()
     root = _windows_tree(
         tmp_path,
@@ -275,10 +254,7 @@ def test_an_unparseable_marker_over_a_source_build_stays_lenient(tmp_path):
 
 
 def test_the_windows_quantize_implementation_is_required_alongside_the_server_one(tmp_path):
-    """Codex 3962938556, P2. The upstream split gives llama-quantize.exe its own -impl library
-    exactly as it gives llama-server.exe one, and a b10798 bundle ships both, so requiring only
-    the server's left a quarantined llama-quantize-impl.dll reading as healthy while
-    quantization could not start."""
+    """Windows requires llama-quantize-impl.dll too, as llama-quantize cannot start without it."""
     host = _windows_host()
     root = _windows_tree(
         tmp_path,
@@ -294,11 +270,7 @@ def test_the_windows_quantize_implementation_is_required_alongside_the_server_on
 
 
 def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(tmp_path):
-    """Codex 3962938550, P1. A real ROCm bundle carries amdhip64_7.dll, hipblas.dll and
-    libhipblaslt.dll beside ggml-hip.dll, all four matching a "*hip*.dll" group, so
-    quarantining the one module ggml loads left the group satisfied by three libraries that
-    cannot stand in for it. Names read off
-    app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip."""
+    """ggml-hip.dll is required by name, since a '*hip*' glob matches other ROCm libraries."""
     groups = ILP.runtime_payload_health_groups(
         "windows-rocm", source_label = "published", tag = "b10798"
     )
@@ -321,16 +293,8 @@ def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(t
 
 
 def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
-    """The tar payloads ship versioned chains (libggml.so -> libggml.so.0 -> libggml.so.0.9.8)
-    and Path.glob does not follow links, so quarantining the versioned target left every
-    pattern satisfied by links the loader cannot open. Fixed in _runtime_payload_has, which
-    this probe and the keep decision share, so the two tighten together.
-
-    All three rungs, which is what a release ships and what the sentence above already said;
-    this used to build only the outer two. The middle rung is the SONAME, the name a
-    DT_NEEDED entry records, and _payload_match_is_loadable now needs to see whether the
-    family has one before it can say what the versionless name means.
-    """
+    """Dangling symlinks must not count: a quarantined versioned target left its links satisfying
+    the glob."""
     if os.name == "nt":
         pytest.skip("the shipped Windows payload has no symlink chains")
     root = _installed(tmp_path, binaries = True)
@@ -366,12 +330,7 @@ def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
 
 @pytest.mark.parametrize("suffix", [".vir", ".quarantined", "_infected"])
 def test_a_library_renamed_in_place_no_longer_satisfies_its_group(tmp_path, suffix):
-    """Quarantine that renames rather than deletes. Every Linux group ends in ``.so*``, so
-    the renamed victim kept matching its own pattern: on a real b10840 install, renaming
-    libggml-base.so.0 to libggml-base.so.0.vir left this answering (True, "") while
-    llama-server exited with "cannot open shared object file: libggml-base.so.0" and
-    _existing_install_runs answered False. Preflight then reported Ready and the launch
-    failed at model load with no repair offered, which is the whole point of the probe."""
+    """A renamed-in-place library must not satisfy its group: '.so*' globs still matched it."""
     if os.name == "nt":
         pytest.skip("the Windows groups name the extension, so a suffix misses them already")
     root = _installed(tmp_path, binaries = True)
@@ -422,11 +381,7 @@ def test_an_entrypoint_is_still_a_file_the_loader_would_start(tmp_path):
 
 @pytest.mark.parametrize("name", ["llama-server", "libggml-base.so.0", "ggml-base.dll"])
 def test_a_zero_length_file_is_not_a_payload_or_an_entrypoint(tmp_path, name):
-    """Codex 3973660774, P1. An interrupted extraction, and security software that empties
-    a file rather than taking it, both leave the directory entry, so is_file() and the
-    execute bit stayed true. The fingerprint sees the length change and re-probes, and the
-    probe then answered healthy, so the repair the re-probe existed to trigger was never
-    offered. _existing_install_runs rejects the same tree on ENOEXEC or a loader failure."""
+    """A zero-length file is neither a payload library nor a runnable entrypoint, even when executable."""
     empty = tmp_path / name
     empty.write_text("", encoding = "utf-8")
     assert ILP._payload_match_is_loadable(empty) is False
@@ -460,12 +415,7 @@ def test_a_truncated_llama_server_is_broken_not_healthy(tmp_path):
 
 
 def test_a_legacy_windows_cuda_marker_still_owes_the_paired_runtime(tmp_path):
-    """Codex 3973660801, P2. Markers written before ``runtime_asset`` existed name no paired
-    archive, so the cudart trio was dropped from the table and losing one member read as
-    healthy while llama-server.exe died in the loader, with no repair offered and the marker
-    never backfilled. The three arrive and go together, so one of them still being there is
-    what says this install was paired; a machine on a system CUDA toolkit has none of them
-    and is asked for none."""
+    """Legacy CUDA markers lack runtime_asset; any present cudart trio member means all three are owed."""
     host = _windows_host()
     trio = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
     marker = json.dumps({"source": "published", "tag": "b10830", "backend": "cuda"})
@@ -504,12 +454,7 @@ def _macos_host():
 
 
 def _macos_payload(runtime_dir: Path) -> None:
-    """The dylib set a real macos-arm64 bundle ships, chains and all.
-
-    Taken from llama-b10840-mix-d5c17a0-bin-macos-arm64.tar.gz rather than invented: each
-    library is libX.dylib -> libX.0.dylib -> libX.<version>.dylib, and the accelerator and
-    transport backends sit beside the core ones matching the same broad prefix.
-    """
+    """macos-arm64 dylibs from a real bundle; each library is a three-name symlink chain."""
     for stem, version in (
         ("libllama-common", "0.4.0"),
         ("libllama", "0.4.0"),
@@ -524,8 +469,7 @@ def _macos_payload(runtime_dir: Path) -> None:
         (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding = "utf-8")
         os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
         os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
-    # The entrypoint impl split, which the same bundle ships UNVERSIONED: plain files, no
-    # libX.0 chain. Listing it was incomplete before, not the bundle.
+    # The impl split ships UNVERSIONED plain files, no libX.0 chain.
     for stem in ("libllama-server-impl", "libllama-quantize-impl"):
         (runtime_dir / f"{stem}.dylib").write_text("x", encoding = "utf-8")
 
@@ -541,8 +485,6 @@ def _macos_tree(tmp_path: Path) -> Path:
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}"
         binary.write_text("x", encoding = "utf-8")
-        # An installed entrypoint is executable, and the probe now asks for that
-        # rather than for mere presence, the way _existing_install_runs does.
         os.chmod(binary, 0o755)
     _macos_payload(runtime_dir)
     return root
@@ -614,8 +556,6 @@ def test_losing_the_macos_install_name_link_is_caught(tmp_path):
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     (runtime_dir / "libggml.0.dylib").unlink()
-    # The terminal file is still there and still a real file, which is what made this
-    # read as healthy.
     assert (runtime_dir / "libggml.0.23.0.dylib").is_file()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (
         False,
@@ -722,8 +662,7 @@ def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name)
     wrapper.mkdir()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
     wrapper.rmdir()
-    # The keep decision is deliberately not relaxed with it: replacing a rotten wrapper
-    # is the installer's business, and only the launch verdict must stay no stricter.
+    # The keep decision stays strict: replacing a rotten wrapper is the installer's job.
     wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
     os.chmod(wrapper, 0o644)
     assert ILP._damaged_entrypoint(root, _macos_host()) == wrapper
@@ -747,11 +686,7 @@ def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):
 
 
 def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
-    """The two are one question asked twice, so they are checked against each other.
-
-    ``_discovery_would_select`` mirrors ``_usable_binary``; a drift here is a runtime that
-    launches a binary we called fine, or a repair of one we called broken.
-    """
+    """_discovery_would_select must mirror the backend's _usable_binary, or health and launch disagree."""
     backend_dir = str(Path(__file__).resolve().parents[3] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
@@ -767,7 +702,6 @@ def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
         assert ILP._discovery_would_select(candidate, host) == _usable_binary(
             candidate, platform = platform
         ), mode
-    # Absent on both sides, whatever the platform.
     candidate.unlink()
     assert ILP._discovery_would_select(candidate, _macos_host()) is False
     assert _usable_binary(candidate, platform = "linux") is False

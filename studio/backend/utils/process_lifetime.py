@@ -950,6 +950,12 @@ def collect_descendants_known(
     if not pid:
         # Not a question about a process, so there is nothing indeterminate about it.
         return [], True
+    if not is_signalable_pid(pid):
+        # Below the floor. Every process on the host descends from init, so walking pid 1
+        # hands the whole machine to a caller that is about to SIGTERM what it gets back:
+        # a stand-in process with pid 1 in a test did exactly that and took the user's
+        # session down. Nothing under init is ours by descent.
+        return [], True
     # Windows records the creating pid on a process and never clears it, not even when
     # that parent exits and its number is handed to something else, so the raw table
     # lists strangers created by an earlier holder of this pid as children of it. A real
@@ -2016,6 +2022,19 @@ def is_process_shutting_down() -> bool:
     return _shutdown_latch.is_set()
 
 
+_quit_signal_at: Optional[float] = None
+
+
+def mark_quit_signal_received() -> None:
+    global _quit_signal_at
+    if _quit_signal_at is None:
+        _quit_signal_at = time.monotonic()
+
+
+def seconds_since_quit_signal() -> Optional[float]:
+    return None if _quit_signal_at is None else time.monotonic() - _quit_signal_at
+
+
 def begin_process_lifecycle() -> None:
     """Clear the latch for an embedded host that calls run_server again.
 
@@ -2023,7 +2042,9 @@ def begin_process_lifecycle() -> None:
     reuse the interpreter, and a latch that never cleared would refuse every spawn of
     the second session.
     """
+    global _quit_signal_at
     _shutdown_latch.clear()
+    _quit_signal_at = None
 
 
 def terminate_all(timeout: float = 5.0) -> "list[int]":

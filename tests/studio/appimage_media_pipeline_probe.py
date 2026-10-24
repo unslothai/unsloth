@@ -19,7 +19,6 @@ GST_STATE_NULL, GST_STATE_PLAYING = 1, 4
 GST_MESSAGE_EOS, GST_MESSAGE_ERROR = 1 << 0, 1 << 11
 EXPORT = re.compile(r'^export ([A-Z0-9_]+)="([^"]*)"$')
 
-# Cover the formats used by the media galleries.
 REQUIRED_ELEMENTS = (
     "playbin",
     "decodebin",
@@ -31,7 +30,6 @@ REQUIRED_ELEMENTS = (
     "opusdec",
     "wavparse",
 )
-# Dictation may use either host audio stack.
 CAPTURE_ELEMENTS = ("pulsesrc", "alsasrc")
 
 

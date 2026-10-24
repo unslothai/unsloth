@@ -17,9 +17,9 @@ from real_accelerator import (
 import torch
 
 
-# Keep in step with a grep for `_per_layer_device` across the repository (#3538).
+# Keep in step with a grep for `_per_layer_device` across the repository.
 READERS = {
-    # llama's reader is nested, which is why the scope is located from the call site.
+    # llama's reader is nested, so the scope is located from the call site.
     "unsloth/models/llama.py": ("temp_gates", "temp_ups"),
     "unsloth/models/granite.py": (),
     "unsloth/models/gemma.py": ("out_weights",),
@@ -293,7 +293,6 @@ def test_move_to_device_accepts_every_resolution(device, index):
     per_device_buffers = tuple(range(8))
     assert per_device_buffers[buffer_index] == buffer_index
 
-    # The move is only performed where it cannot need hardware.
     if resolved.type == "cpu":
         moved = move_to_device(resolved, torch.zeros(2))
         assert moved.device == torch.device("cpu")

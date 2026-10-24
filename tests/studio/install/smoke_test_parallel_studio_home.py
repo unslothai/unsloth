@@ -79,11 +79,8 @@ def _launch_backend(
     log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
-    # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a Unsloth root from the caller's shell and
-    # resolve to the wrong install.
     env["UNSLOTH_STUDIO_HOME"] = str(studio_home)
     env.pop("STUDIO_HOME", None)
-    # Popen dups stdout into the child, so closing the parent's handle here is safe.
     with log_path.open("w") as fh:
         return subprocess.Popen(
             [
@@ -215,7 +212,6 @@ def run(n_installs: int, keep: bool) -> int:
     backends: list[tuple[str, Path, Path, int, subprocess.Popen]] = []
     failed = False
     try:
-        # ---- parallel installs --------------------------------------------
         _log(f"launching {n_installs} parallel installs (--local --no-torch)")
         with ThreadPoolExecutor(max_workers = n_installs) as pool:
             futures = []
@@ -240,7 +236,6 @@ def run(n_installs: int, keep: bool) -> int:
                         f"{test_root / 'logs' / f'install_{label}.log'}"
                     )
 
-        # ---- install-layout invariants ------------------------------------
         _log("verifying install-time invariants")
         observed = []
         for label in labels:
@@ -253,7 +248,6 @@ def run(n_installs: int, keep: bool) -> int:
             raise TestFailure(f"studio_install_id collision: {ids}")
         _log(f"  {len(ids)} unique studio_install_ids, all redirected HOMEs clean")
 
-        # ---- parallel backend launches ------------------------------------
         _log(f"launching {n_installs} backends in parallel")
         for label in labels:
             port = _free_port()
@@ -264,7 +258,6 @@ def run(n_installs: int, keep: bool) -> int:
             backends.append((label, studio_home, fake_home, port, proc))
             _log(f"  {label} -> port {port} (pid {proc.pid})")
 
-        # ---- wait for health ----------------------------------------------
         _log("waiting for /api/health on each backend")
         health_payloads: dict[str, dict] = {}
         with ThreadPoolExecutor(max_workers = n_installs) as pool:
@@ -277,7 +270,6 @@ def run(n_installs: int, keep: bool) -> int:
                 health_payloads[label] = fut.result()
                 _log(f"  {label}: healthy")
 
-        # ---- runtime invariants -------------------------------------------
         _log("checking runtime invariants")
         seen_root_ids: set[str] = set()
         for (label, studio_home, _fh, port, proc), obs in zip(backends, observed):

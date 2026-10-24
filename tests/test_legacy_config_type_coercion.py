@@ -157,7 +157,7 @@ def test_lossless_conversions():
 def test_values_transformers_accepts_are_not_touched():
     from transformers import LlamaConfig
 
-    # attention_dropout is annotated int | float | None: an int is valid and must stay an int.
+    # attention_dropout is annotated int | float | None, so an int must stay an int.
     config = LlamaConfig(attention_dropout = 0)
     assert type(config.attention_dropout) is int
 
@@ -166,11 +166,11 @@ def test_values_transformers_accepts_are_not_touched():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"hidden_size": "64"},  # string for a number
-        {"hidden_size": 64.5},  # fractional float for int
-        {"mlp_bias": 2},  # non 0/1 int for a bool that was never a truthiness int
-        {"mlp_bias": "true"},  # string for bool
-        {"problem_type": "not_a_problem_type"},  # string outside a Literal
+        {"hidden_size": "64"},
+        {"hidden_size": 64.5},
+        {"mlp_bias": 2},  # non 0/1 int for a bool
+        {"mlp_bias": "true"},
+        {"problem_type": "not_a_problem_type"},
     ],
 )
 def test_real_errors_still_raise(kwargs):

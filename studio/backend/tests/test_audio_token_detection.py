@@ -69,12 +69,10 @@ def test_gemma3n_audio_soft_token_is_audio_vlm():
 
 
 def test_gemma4_pipe_audio_token_is_audio_vlm():
-    # Gemma 4 uses <|audio|> (and <|image|>) instead of *_soft_token.
     assert _classify(["<bos>", "<|image|>", "<|audio|>"]) == "audio_vlm"
 
 
 def test_csm_uppercase_audio_not_classified_as_audio_vlm():
-    # csm uses uppercase <|AUDIO|> + <|audio_eos|>; must stay csm, not audio_vlm.
     tokens = ["<|AUDIO|>", "<|audio_eos|>"]
     assert _classify(tokens) == "csm"
 
@@ -91,11 +89,7 @@ def test_non_audio_tokens_classify_none():
 
 
 def test_orpheus_snac_codebook_beats_a_stray_audio_marker():
-    """Orpheus ships 28k <custom_token_N> SNAC codes AND a lone <|audio|>.
-
-    audio_vlm was tested first and won, so a TTS model came back as audio-INPUT:
-    is_audio stayed False and the Audio page refused it.
-    """
+    """SNAC codebook tokens must outrank a lone <|audio|> marker, or TTS is misread as audio input."""
     tokens = ["<|audio|>"] + [f"<custom_token_{i}>" for i in range(28683)]
     assert _classify(tokens) == "snac"
     assert is_audio_input_type(_classify(tokens)) is False
@@ -153,14 +147,12 @@ def _detect_checked(
 
 
 def test_a_gated_repo_is_not_reported_as_definitively_non_audio(monkeypatch):
-    # 401 on every tokenizer_config path: nothing was read, so None means unknown.
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(401), _Resp(401)])
     assert audio_type is None
     assert definitive is False
 
 
 def test_a_readable_repo_without_audio_tokens_is_definitive(monkeypatch):
-    # 200 with a plain tokenizer, then a 404 for the LLM/ variant: a real negative.
     plain = {"added_tokens_decoder": {"0": {"content": "<bos>"}}}
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, plain), _Resp(404)])
     assert audio_type is None
@@ -177,17 +169,10 @@ def test_a_detected_codec_is_definitive(monkeypatch):
 
 
 def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
-    """A filesystem path is not a repo id, so the Hub URL would be nonsense.
-
-    /loras hits this for every adapter directory without its own tokenizer, and a transient
-    failure is never cached, so it paid two 15s timeouts per checkpoint on every scan while
-    blocking the event loop that called it.
-    """
+    """Local paths must never reach the Hub fetch, which would stall each adapter directory on timeouts."""
     from utils.models import model_config
 
-    # Recorded rather than raised: the fetch loop catches every exception and treats it as
-    # a transient failure, so a raising stub would be swallowed and the test would pass
-    # against the unfixed code.
+    # Recorded, not raised: the fetch loop swallows exceptions as transient failures.
     fetched = []
 
     import requests
@@ -200,7 +185,6 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
     result, definitive = model_config._detect_audio_from_tokenizer(str(adapter))
     assert fetched == [], fetched
     assert result is None
-    # Nothing was read, so the answer is not definitive and must not be cached.
     assert definitive is False
 
 
@@ -245,7 +229,6 @@ def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True)[0] is None
     clock[0] += model_config._AUDIO_OFFLINE_MISS_TTL_S + 1
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True) == ("snac", True)
-    # Definitive now, so it is in the real cache and the miss entry is gone.
     assert model_config._audio_offline_miss_cache == {}
 
 
@@ -274,10 +257,8 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     added there without a marker here would silently stop being detected."""
     from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
-    # Fails when a codec is added, which is the point: add its marker too.
     assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
 
-    # Whatever each pattern matches, the marker scan must let it through to the parse.
     samples = {
         "csm": ["<|AUDIO|>", "<|audio_eos|>"],
         "whisper": ["<|startoftranscript|>"],
@@ -291,7 +272,6 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
         assert may_hold_audio_tokens(json.dumps(tokens)), audio_type
     assert may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
 
-    # And an ordinary text tokenizer is settled without a parse.
     assert not may_hold_audio_tokens(
         json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
     )
@@ -327,7 +307,6 @@ def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
     )
 
     assert result is None
-    # Read successfully, so "not audio" is a definitive answer, not an unknown.
     assert definitive is True
     assert parsed == [], parsed
 
@@ -382,11 +361,7 @@ def _detect_against_cache(
     responses = None,
     **kwargs,
 ):
-    """Drive the probe against a cached snapshot, recording the Hub reads it still makes.
-
-    Returns ``(result, file_reads, document_reads)``. ``listed`` is what the repo document
-    says the repo holds; None stands for no document being available.
-    """
+    """Returns (result, file_reads, document_reads); listed=None means the repo document is unavailable."""
     import types as _types
 
     from utils.models import model_config as mc
@@ -431,11 +406,7 @@ def _tokenizer(marker):
 def test_the_current_snapshot_answers_without_fetching_the_file(
     monkeypatch, tmp_path, marker, expected
 ):
-    """Every tokenizer path this repo has was read from disk, so a fetch would re-read it.
-
-    The repo document is still read -- that is what says which paths the repo has. What the
-    snapshot saves is fetching the files themselves.
-    """
+    """The repo document is still read; the snapshot only saves fetching the tokenizer files."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer(marker)}
     )
@@ -572,10 +543,7 @@ def test_a_tokenizer_that_is_unreadable_still_asks_the_hub(monkeypatch, tmp_path
 
 
 def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tmp_path):
-    """The negative rests on having read every tokenizer path the repo lists. A document
-    that lists none satisfies that vacuously while proving nothing, and the answer here is
-    cached for the life of the process -- so the markers in LLM/tokenizer_config.json
-    would be missed for good. Nothing is answerable from it, so it answers nothing."""
+    """A repo document listing no files must not answer negatively; the result is cached for the process."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
     )
@@ -613,11 +581,7 @@ def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch
 
 
 def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
-    """The raw scan that decides whether a file is worth parsing reads the text, so a
-    content written as a JSON escape does not match it. Go's encoding/json escapes < and >
-    that way by default, so it is a shape real tooling uploads. The Hub fallback decodes
-    before it looks; standing in for it has to classify what it would have classified, or
-    the miss becomes a definitive negative cached for the life of the process."""
+    """Markers written as JSON unicode escapes must still be found, or a miss gets cached as negative."""
     from utils.models.model_config import _may_hold_audio_tokens
 
     escaped = (

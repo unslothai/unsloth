@@ -42,6 +42,7 @@ export function applyPerModelConfigToRuntime(
   const engineKvCacheDtype = config.engineKvCacheDtype ?? "auto";
   const engineSeed = config.engineSeed ?? null;
   const engineGpuMemoryUtilization = config.engineGpuMemoryUtilization ?? null;
+  const loadIn4bit = config.loadIn4bit !== false;
   if (
     maxSeqLength !== store.params.maxSeqLength ||
     engine !== (store.params.engine ?? "auto") ||
@@ -50,7 +51,8 @@ export function applyPerModelConfigToRuntime(
     engineKvCacheDtype !== (store.params.engineKvCacheDtype ?? "auto") ||
     engineSeed !== (store.params.engineSeed ?? null) ||
     engineGpuMemoryUtilization !==
-      (store.params.engineGpuMemoryUtilization ?? null)
+      (store.params.engineGpuMemoryUtilization ?? null) ||
+    loadIn4bit !== (store.params.loadIn4bit !== false)
   ) {
     store.setParams({
       ...store.params,
@@ -61,6 +63,7 @@ export function applyPerModelConfigToRuntime(
       engineKvCacheDtype,
       engineSeed,
       engineGpuMemoryUtilization,
+      loadIn4bit,
     });
   }
   const gpuSelection =
@@ -75,6 +78,8 @@ export function applyPerModelConfigToRuntime(
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
+    mlxPleOffload: config.mlxPleOffload ?? null,
+    mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -143,6 +148,7 @@ export function currentRuntimePerModelConfig(
     engineKvCacheDtype: s.params.engineKvCacheDtype ?? "auto",
     engineSeed: s.params.engineSeed ?? null,
     engineGpuMemoryUtilization: s.params.engineGpuMemoryUtilization ?? null,
+    loadIn4bit: s.params.loadIn4bit !== false,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -150,6 +156,8 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
+    mlxPleOffload: s.mlxPleOffload ?? null,
+    mlxExpertOffload: s.mlxExpertOffload ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -200,12 +208,15 @@ export function perModelConfigsEqual(
     (a.engineSeed ?? null) === (b.engineSeed ?? null) &&
     (a.engineGpuMemoryUtilization ?? null) ===
       (b.engineGpuMemoryUtilization ?? null) &&
+    (a.loadIn4bit !== false) === (b.loadIn4bit !== false) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
+    (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&

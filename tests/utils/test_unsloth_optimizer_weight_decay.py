@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
-# `embedding_learning_rate` routes optimizer creation through
-# `_create_unsloth_optimizer`, which read the decay from `optimizer_kwargs`.
-# transformers keeps the decay on the param groups and only puts it in
-# optimizer_kwargs for schedule-free and stable_adamw, so the `.get(..., 0.0)`
-# default always won and the whole run trained with no weight decay, silently,
-# with the value the user set still on the config.
 
 from types import MethodType, SimpleNamespace
 
@@ -21,8 +14,8 @@ EMBEDDING = "model.embed_tokens.modules_to_save.default.weight"
 
 def _model(torch, nn):
     model = nn.Module()
-    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
-    model.norm = nn.LayerNorm(4)  # neither weight nor bias decays
+    model.proj = nn.Linear(4, 4)
+    model.norm = nn.LayerNorm(4)
     embed = nn.Module()
     embed.modules_to_save = nn.ModuleDict({"default": nn.Linear(4, 4, bias = False)})
     inner = nn.Module()
@@ -76,7 +69,6 @@ def test_weight_decay_from_the_config_reaches_the_param_groups():
 
 
 def test_biases_and_norms_stay_out_of_the_decay():
-    # Trainer.get_decay_parameter_names excludes them on the path this replaces.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -128,9 +120,7 @@ def _optimizer(
 
 
 def test_no_empty_param_groups():
-    # An empty group is not free. AdafactorSchedule reads group["params"][0] with no
-    # guard, and torch's load_state_dict insists the checkpoint have the same number
-    # of groups, so an empty one is a crash and a broken resume for nothing.
+    # AdafactorSchedule reads group['params'][0] unguarded, and load_state_dict needs equal group counts.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -151,11 +141,10 @@ def test_adafactor_schedule_survives_the_split():
             param.grad = torch.randn_like(param)
     optimizer.step()
 
-    assert AdafactorSchedule(optimizer).get_lr()  # IndexError if any group is empty
+    assert AdafactorSchedule(optimizer).get_lr()
 
 
 def test_a_lora_run_started_before_this_can_still_resume():
-    # The old two-group build is what every checkpoint out there was written with.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -181,7 +170,7 @@ def test_a_lora_run_started_before_this_can_still_resume():
     old.step()
 
     new = _optimizer(torch, model, 0.1)
-    new.load_state_dict(old.state_dict())  # ValueError if the group count moved
+    new.load_state_dict(old.state_dict())
 
 
 def _decay_names(torch, model):
@@ -215,7 +204,6 @@ def _legacy_optimizer(
 
 
 def test_a_full_finetune_checkpoint_from_before_the_split_still_resumes():
-    # Trainable norms give the new layout three groups where the checkpoint has two.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -233,18 +221,14 @@ def test_a_full_finetune_checkpoint_from_before_the_split_still_resumes():
     assert len(new.param_groups) != len(saved["param_groups"]), "no migration exercised"
     new.load_state_dict(saved)
 
-    # Not just "it loaded": every parameter must get ITS OWN moments back.
     state = new.state_dict()["state"]
     flat = [p for group in new.param_groups for p in group["params"]]
     for index, param in enumerate(flat):
         assert float(state[index]["exp_avg"].sum()) == pytest.approx(want[named[id(param)]])
-    # and the decay the run was configured with, not the 0.0 the checkpoint carries.
     assert any(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
 
 
 def test_a_checkpoint_that_is_not_the_old_shape_is_refused_not_guessed():
-    # Fails closed: pairing a parameter with another parameter's moments would corrupt
-    # the run silently, which is worse than the error this keeps.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -259,7 +243,6 @@ def test_a_checkpoint_that_is_not_the_old_shape_is_refused_not_guessed():
 
 
 def test_the_scheduler_survives_the_same_resume():
-    # Fixing only the optimizer moves the failure one line later, into base_lrs.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     from torch.optim.lr_scheduler import LambdaLR
@@ -276,19 +259,18 @@ def test_the_scheduler_survives_the_same_resume():
         LambdaLR(new_optimizer, lambda step: 1.0), new_optimizer
     )
     new_scheduler.load_state_dict(saved)
-    new_scheduler.step()  # ValueError from zip(strict=True) if base_lrs was not expanded
+    new_scheduler.step()
     assert len(new_scheduler.base_lrs) == len(new_optimizer.param_groups)
 
 
 def test_a_checkpoint_with_the_same_group_count_but_a_different_shape_migrates():
-    # No trainable embedding: legacy is [all non-embeddings, empty], new is
-    # [decayed, non-decayed]. Two groups either way, so a count check misses it.
+    # Legacy [all, empty] vs new [decayed, non-decayed]: two groups either way, so a count check misses it.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     from unsloth.trainer import _create_unsloth_optimizer
 
     model = nn.Module()
-    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    model.proj = nn.Linear(4, 4)
     trainable = [p for p in model.parameters() if p.requires_grad]
     old = torch.optim.AdamW(
         [
@@ -329,8 +311,7 @@ def test_the_plateau_scheduler_min_lrs_are_remapped_too():
     saved = old.state_dict()
 
     new_optimizer = _optimizer(torch, model, 0.1)
-    # transformers loads the optimizer before the scheduler; that is what marks the
-    # checkpoint legacy, so the sequence matters and is reproduced here.
+    # transformers loads the optimizer before the scheduler, which marks the checkpoint legacy.
     new_optimizer.load_state_dict(_legacy_optimizer(torch, model).state_dict())
     new_scheduler = _install_legacy_scheduler_resume(
         ReduceLROnPlateau(new_optimizer, min_lr = 1e-7), new_optimizer
@@ -338,13 +319,11 @@ def test_the_plateau_scheduler_min_lrs_are_remapped_too():
     new_scheduler.load_state_dict(saved)
     assert len(new_scheduler.min_lrs) == len(new_optimizer.param_groups)
     for _ in range(14):
-        new_scheduler.step(1.0)  # RuntimeError if min_lrs is still the legacy length
+        new_scheduler.step(1.0)
 
 
 def test_resuming_a_lora_checkpoint_keeps_the_corrected_decay():
-    # Old and new layouts coincide here, so nothing needs reshaping, but torch takes the
-    # hyperparameters from the saved dict: without the migration the run reloads the 0.0
-    # this change exists to correct and trains undecayed again, silently.
+    # torch takes hyperparameters from the saved dict, so without migration weight decay reloads as 0.0.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -364,15 +343,13 @@ def test_resuming_a_lora_checkpoint_keeps_the_corrected_decay():
 
 
 def test_scheduler_state_of_equal_length_is_remapped_by_role_not_position():
-    # No trainable embedding: both current groups are non-embeddings, so the saved
-    # [ordinary, embedding] pair is the same length but means something else.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     from torch.optim.lr_scheduler import LambdaLR
     from unsloth.trainer import _create_unsloth_optimizer, _install_legacy_scheduler_resume
 
     model = nn.Module()
-    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    model.proj = nn.Linear(4, 4)
     trainable = [p for p in model.parameters() if p.requires_grad]
     old_optimizer = torch.optim.AdamW(
         [{"params": trainable, "lr": 2e-4}, {"params": [], "lr": 5e-5}], lr = 2e-4
@@ -398,9 +375,7 @@ def test_scheduler_state_of_equal_length_is_remapped_by_role_not_position():
 
 
 def test_the_scheduler_hook_stays_out_of_the_checkpoint():
-    # A scheduler's state_dict is its __dict__ minus the optimizer, so hooking by
-    # instance attribute puts an unpicklable closure into every checkpoint and the
-    # FIRST save fails, resume or no resume.
+    # A scheduler's state_dict is its __dict__, so an instance-attribute hook breaks pickling.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     import io
@@ -413,17 +388,13 @@ def test_the_scheduler_hook_stays_out_of_the_checkpoint():
 
     state = scheduler.state_dict()
     assert not [key for key, value in state.items() if callable(value)], state.keys()
-    torch.save(state, io.BytesIO())  # PicklingError if the hook leaked into the state
+    torch.save(state, io.BytesIO())
     torch.save(optimizer.state_dict(), io.BytesIO())
-    # and it is still an ordinary scheduler to everyone else
     assert isinstance(scheduler, LambdaLR)
 
 
 def test_the_scheduler_hook_survives_an_optimizer_wrapper():
-    # accelerator.prepare swaps in an AcceleratedOptimizer before create_scheduler runs.
-    # It defines no __getattr__, so asking it directly finds no roles and the hook would
-    # quietly do nothing on the ordinary training path. That property of the real class is
-    # asserted here too, so this stops passing if accelerate ever changes it.
+    # accelerate's AcceleratedOptimizer defines no __getattr__, so the hook must unwrap it.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     from torch.optim.lr_scheduler import LambdaLR
@@ -460,9 +431,7 @@ def test_the_scheduler_hook_survives_an_optimizer_wrapper():
 
 
 def test_migration_keeps_optimizer_specific_group_state():
-    # Schedule-free and friends keep algorithm progress in the param group itself;
-    # rebuilding from the fresh group would reset it while keeping the per-parameter
-    # state, leaving the resumed optimizer inconsistent with itself.
+    # Schedule-free keeps progress in the param group; rebuilding it would desync from per-param state.
     torch = pytest.importorskip("torch")
     nn = torch.nn
 
@@ -479,22 +448,18 @@ def test_migration_keeps_optimizer_specific_group_state():
     new.load_state_dict(old.state_dict())
     assert all(group["k"] == 17 for group in new.param_groups), new.param_groups
     assert all(group["weight_sum"] == 3.5 for group in new.param_groups), new.param_groups
-    # but the decay is still the corrected one, not the checkpoint's 0.0
     assert all(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
 
 
 def test_a_current_two_group_checkpoint_is_not_mistaken_for_a_legacy_one():
-    # With no trainable embedding both current groups are non_embeddings, so a checkpoint
-    # this code wrote also has two scheduler entries. Remapping it by role would copy the
-    # first group's value over the second, and distinct per-group min_lr floors would come
-    # back collapsed. Length cannot tell the two apart; only the optimizer load can.
+    # Remapping a non-legacy two-group checkpoint by role would collapse distinct min_lr floors.
     torch = pytest.importorskip("torch")
     nn = torch.nn
     from torch.optim.lr_scheduler import ReduceLROnPlateau
     from unsloth.trainer import _create_unsloth_optimizer, _install_legacy_scheduler_resume
 
     model = nn.Module()
-    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    model.proj = nn.Linear(4, 4)
 
     def build():
         optimizer = _create_unsloth_optimizer(
@@ -515,7 +480,7 @@ def test_a_current_two_group_checkpoint_is_not_mistaken_for_a_legacy_one():
     assert saved["min_lrs"] == [1e-7, 2e-7]
 
     resumed = build()
-    resumed.load_state_dict(written_by_this_code.state_dict())  # not a legacy shape
+    resumed.load_state_dict(written_by_this_code.state_dict())
     scheduler = _install_legacy_scheduler_resume(
         ReduceLROnPlateau(resumed, min_lr = [1e-7, 2e-7]), resumed
     )

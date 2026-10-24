@@ -47,6 +47,9 @@ name: Clean machine install
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'install.ps1'
@@ -158,11 +161,10 @@ concurrency:
   # The event is in the group so a scheduled run and a push to main, which share a ref,
   # cannot coalesce: only one run stays pending per group, and cancel-in-progress protects
   # the running run, never the pending one, so a merge burst would drop the nightly.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -217,6 +219,7 @@ jobs:
 
   # ── macOS: the reported failure ────────────────────────────────────────────
   macos:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: mac ${{ matrix.os }} / ${{ matrix.mode }} / ${{ matrix.delivery }}${{ matrix.flags && format(' {0}', matrix.flags) || '' }}
     needs: select
     runs-on: ${{ matrix.os }}
@@ -514,7 +517,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           # Two rows differ only in `flags`, so flags must be in the name: artifacts are
           # immutable per run and the second upload 409s.
@@ -949,7 +952,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: clean-linux-${{ matrix.label }}
           path: |
@@ -1269,7 +1272,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: clean-wsl-ubuntu2404
           path: logs/
@@ -1278,6 +1281,7 @@ jobs:
 
   # ── Windows ───────────────────────────────────────────────────────────────
   windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: win ${{ matrix.os }} / winget=${{ matrix.winget }}
     needs: select
     runs-on: ${{ matrix.os }}
@@ -1637,7 +1641,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: clean-win-${{ matrix.os }}-${{ matrix.winget }}
           path: logs/
@@ -1663,7 +1667,7 @@ jobs:
     name: virgin win container / probe
     needs: select
     # Only a gate for the install rows: skipped with them when none is selected.
-    if: needs.select.outputs.windows_container_install_count != '0'
+    if: (needs.select.outputs.windows_container_install_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-2022
     timeout-minutes: 30
     env:
@@ -1731,7 +1735,7 @@ jobs:
           docker rm -f virgin 2>&1 | Out-Null
           exit 0
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: virgin-win-probe
@@ -1742,7 +1746,7 @@ jobs:
   windows_container_install:
     name: virgin win container / overlay=${{ matrix.overlay }}
     needs: [select, windows_container_probe]
-    if: needs.select.outputs.windows_container_install_count != '0'
+    if: (needs.select.outputs.windows_container_install_count != '0') && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -1897,7 +1901,7 @@ jobs:
           docker rm -f virgin 2>&1 | Out-Null
           exit 0
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: virgin-win-container-overlay-${{ matrix.overlay }}

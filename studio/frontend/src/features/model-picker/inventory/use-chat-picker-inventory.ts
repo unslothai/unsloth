@@ -153,6 +153,9 @@ export function useChatPickerInventory(
             // task, and a task of null is what every unclassified CHAT repo carries, so without
             // this it lands in the chat On Device list as a load that cannot succeed.
             !row.companion &&
+            // Same for a base repo a GGUF image load borrowed its VAE / text encoder from: a click
+            // reads it as a torn download and fetches the full denoiser. The Hub still lists it.
+            !row.companionPrefetch &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,

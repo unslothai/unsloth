@@ -166,6 +166,11 @@ Describe 'only the automatic fallback is gated' {
         $script:SetupText.Substring($skip, $install - $skip) | Should -Match 'building without HTTPS'
     }
 
+    It 'a winget that cannot launch does not abort setup at the optional OpenSSL install' {
+        # #13662: under ErrorActionPreference Stop a bare call aborted the whole install.
+        $script:SetupText | Should -Match ([regex]::Escape('try {') + '\s+' + [regex]::Escape('Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev'))
+    }
+
     It 'the gate checks the fallback flag before asking' {
         $script:SetupText | Should -Match ([regex]::Escape('$script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and'))
     }

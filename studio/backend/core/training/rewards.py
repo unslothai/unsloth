@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import os
 import re
 import shutil
 import threading
@@ -23,9 +24,23 @@ from typing import Any, Callable, Iterable, Optional
 
 import yaml
 
+try:
+    import re._constants as _sre
+    import re._parser as _sre_parse
+except ImportError:  # pragma: no cover  (Python < 3.11)
+    import sre_constants as _sre
+    import sre_parse as _sre_parse
+
+try:  # regex takes a per-call timeout; a user pattern must not stall a GRPO step or the server
+    import regex as _rx
+except ImportError:  # pragma: no cover
+    _rx = None
+
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
 MAX_PATTERN_CHARS = 2_000
+# regex compiles {n} repeats by unrolling them, nested counts multiplying.
+MAX_PATTERN_EXPANSION = 10_000
 RULE_TYPES = ("regex", "exact_match", "numeric", "json_schema", "length")
 NORMALIZERS = ("strip", "lower", "remove_commas", "collapse_spaces")
 
@@ -57,8 +72,12 @@ def normalize_reward_name(name: str) -> str:
 
 
 def _user_root() -> Path:
-    from utils.paths import workspace_root
-    return workspace_root() / _MANAGED_DIR
+    # account_path refuses a library swapped for a link out of the account's workspace.
+    from utils.paths.storage_roots import account_path
+    try:
+        return account_path(_MANAGED_DIR)
+    except ValueError as exc:
+        raise RewardError("The reward library is a link outside this account's workspace.") from exc
 
 
 def _split_markdown(raw: str) -> tuple[dict, dict]:
@@ -72,16 +91,25 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
         raise RewardError("REWARD.md YAML frontmatter is not closed.")
     head, body = parts[0][3:], parts[1]
     try:
-        meta = yaml.safe_load(head) or {}
+        meta = yaml.load(head, Loader = _NoAliasLoader) or {}
         # A Python body is code, not YAML.
         if isinstance(meta, dict) and meta.get("kind") == "python":
             return meta, {"code": body.lstrip("-").strip("\n")}
-        rule = yaml.safe_load(body.lstrip("-\n")) or {}
+        rule = yaml.load(body.lstrip("-\n"), Loader = _NoAliasLoader) or {}
     except yaml.YAMLError as exc:
         raise RewardError("REWARD.md contains invalid YAML.") from exc
     if not isinstance(meta, dict) or not isinstance(rule, dict):
         raise RewardError("REWARD.md frontmatter and body must both be mappings.")
     return meta, rule
+
+
+class _NoAliasLoader(yaml.SafeLoader):
+    """Aliases (and the merge keys built on them) let a few hundred bytes expand without bound."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.events.AliasEvent):
+            raise RewardError("REWARD.md cannot use YAML aliases (*name) or merge keys.")
+        return super().compose_node(parent, index)
 
 
 def _number(value: Any, field: str) -> float:
@@ -110,9 +138,73 @@ def _validate_extract(extract: Any) -> Optional[dict]:
     raise RewardError("extract needs 'between' or 'regex'.")
 
 
+# Names GRPOTrainer passes to reward functions itself (or never passes); a column cannot use them.
+# Names TRL passes to rewards itself, plus dataset schema keys it reinterprets (chosen next to a
+# conversational prompt raises "Invalid keys in the example").
+_TRL_REWARD_ARGS = frozenset(
+    {"prompt", "prompts", "completion", "completions", "completion_ids", "trainer_state"}
+    | {"chosen", "rejected", "messages", "label", "images"}
+)
+
+# Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
+MATCH_TIMEOUT_S = 1.0
+
+
+def _expanded_size(parsed) -> int:
+    total = 0
+    for op, av in parsed:
+        count = 1
+        if op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT, getattr(_sre, "POSSESSIVE_REPEAT", None)):
+            low, high, av = av
+            count = max(low if high == _sre.MAXREPEAT else high, 1)
+        stack, inner = [av], 0
+        while stack:
+            item = stack.pop()
+            if isinstance(item, _sre_parse.SubPattern):
+                inner += _expanded_size(item)
+            elif isinstance(item, (list, tuple)):
+                stack.extend(item)
+        total += count * max(inner, 1)
+        if total > MAX_PATTERN_EXPANSION:
+            break
+    return total
+
+
+def _check_expansion(pattern: str) -> None:
+    try:
+        size = _expanded_size(_sre_parse.parse(pattern, re.DOTALL | re.MULTILINE))
+    except re.error as exc:
+        raise RewardError(f"Invalid regex: {exc}") from exc
+    if size > MAX_PATTERN_EXPANSION:
+        raise RewardError("Regex repeat counts are too large; use * or + for long runs.")
+
+
+def _match(
+    pattern: str,
+    text: str,
+    fullmatch: bool = False,
+):
+    if _rx is None:
+        raise RewardError(_NO_REGEX_MODULE)
+    _check_expansion(pattern)
+    compiled = _rx.compile(pattern, _rx.DOTALL | _rx.MULTILINE)
+    try:
+        if fullmatch:
+            return compiled.fullmatch(text, timeout = MATCH_TIMEOUT_S)
+        return compiled.search(text, timeout = MATCH_TIMEOUT_S)
+    except TimeoutError:
+        return None
+
+
+_NO_REGEX_MODULE = "Regex rules need the 'regex' package, which bounds each match; it is missing from this install."
+
+
 def _compile(pattern: Any) -> re.Pattern:
+    if _rx is None:
+        raise RewardError(_NO_REGEX_MODULE)
     if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_PATTERN_CHARS:
         raise RewardError(f"pattern must be a non-empty string under {MAX_PATTERN_CHARS} chars.")
+    _check_expansion(pattern)
     try:
         return re.compile(pattern, re.DOTALL | re.MULTILINE)
     except re.error as exc:
@@ -138,12 +230,20 @@ def validate_rule(rule: dict) -> dict:
         if mode not in ("fullmatch", "search"):
             raise RewardError("regex mode must be 'fullmatch' or 'search'.")
         out["mode"] = mode
+        if rule.get("extract") is not None:
+            # Kept only when given, so rules saved without one keep their shape.
+            out["extract"] = _validate_extract(rule["extract"])
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind in ("exact_match", "numeric"):
         out["extract"] = _validate_extract(rule.get("extract"))
         column = rule.get("compare_to", "answer")
         if not isinstance(column, str) or not column:
             raise RewardError("compare_to must name a dataset column.")
+        if column in _TRL_REWARD_ARGS:
+            raise RewardError(
+                f"compare_to cannot be '{column}': TRL reserves that name. Map the column as "
+                "the answer role and compare to 'answer' instead."
+            )
         out["compare_to"] = column
         # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
         out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
@@ -158,6 +258,8 @@ def validate_rule(rule: dict) -> dict:
             bands = rule.get("bands")
             if not isinstance(bands, list) or not bands:
                 raise RewardError("numeric needs a non-empty bands list.")
+            if not all(isinstance(b, dict) for b in bands):
+                raise RewardError("Each numeric band needs 'within' and 'score'.")
             out["bands"] = sorted(
                 (
                     {
@@ -165,7 +267,6 @@ def validate_rule(rule: dict) -> dict:
                         "score": _number(b.get("score"), "bands.score"),
                     }
                     for b in bands
-                    if isinstance(b, dict)
                 ),
                 key = lambda b: b["within"],
             )
@@ -175,19 +276,40 @@ def validate_rule(rule: dict) -> dict:
         schema = rule.get("schema", {})
         if not isinstance(schema, dict):
             raise RewardError("schema must be a mapping.")
-        out["schema"] = {
-            "type": schema.get("type", "object"),
-            "required": [str(k) for k in schema.get("required", []) or []],
-        }
+        # Only type and required are enforced; silently dropping others would reward wrong output.
+        unsupported = sorted(str(k) for k in schema if k not in ("type", "required"))
+        if unsupported:
+            raise RewardError(
+                f"schema supports only type and required (got {', '.join(unsupported)})."
+            )
+        schema_type = schema.get("type", "object")
+        if not isinstance(schema_type, str) or schema_type not in _JSON_TYPES:
+            raise RewardError(f"schema.type must be one of {', '.join(_JSON_TYPES)}.")
+        # Strings only: str() of a nested YAML alias expands it exponentially.
+        required = schema.get("required", [])
+        if (
+            not isinstance(required, list)
+            or len(required) > 64
+            or not all(isinstance(k, str) and len(k) <= 256 for k in required)
+        ):
+            raise RewardError("schema.required takes up to 64 key names.")
+        out["schema"] = {"type": schema_type, "required": list(required)}
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
         out["score"] = _validate_score(rule.get("score", {}), ("over", "under"))
+    # Dropped silently, it would score a different text than the rule says.
+    for key in ("extract", "reference_extract"):
+        if rule.get(key) is not None and key not in out:
+            raise RewardError(f"{kind} rules take no {key}.")
     return out
 
 
 def parse_reward_markdown(raw: str, folder_name: Optional[str] = None) -> dict:
     meta, rule = _split_markdown(raw)
+    # str() on a YAML alias tree expands it exponentially, so check the type first.
+    if not isinstance(meta.get("name") or "", str):
+        raise RewardError("name must be a string.")
     name = normalize_reward_name(meta.get("name") or folder_name or "")
     if folder_name and name != folder_name:
         raise RewardError(f"Frontmatter name '{name}' does not match folder '{folder_name}'.")
@@ -230,11 +352,15 @@ def validate_python(code: Any, entry: Any) -> str:
         tree = ast.parse(code)
     except SyntaxError as exc:
         raise RewardError(f"Python syntax error on line {exc.lineno}: {exc.msg}") from exc
-    if not any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry
+    defs = [
+        node
         for node in tree.body
-    ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry
+    ]
+    if not defs:
         raise RewardError(f"The code does not define a top-level function named '{entry}'.")
+    if isinstance(defs[-1], ast.AsyncFunctionDef):
+        raise RewardError(f"'{entry}' is async; rewards are called directly, so use a plain def.")
     return code + "\n"
 
 
@@ -251,7 +377,10 @@ def render_reward_markdown(spec: dict) -> str:
 
 
 def _roots() -> tuple[tuple[str, Path], ...]:
-    return (("user", _user_root()), ("bundled", _BUNDLED_ROOT))
+    try:
+        return (("user", _user_root()), ("bundled", _BUNDLED_ROOT))
+    except RewardError:
+        return (("bundled", _BUNDLED_ROOT),)
 
 
 def _read_root(source: str, root: Path) -> list[dict]:
@@ -269,7 +398,7 @@ def _read_root(source: str, root: Path) -> list[dict]:
             continue
         record = {"name": child.name, "source": source, "valid": True, "error": None}
         try:
-            record.update(parse_reward_markdown(manifest.read_text("utf-8"), child.name))
+            record.update(parse_reward_markdown(manifest.read_text(encoding = "utf-8"), child.name))
         except (RewardError, OSError, UnicodeDecodeError) as exc:
             record.update(
                 {"valid": False, "error": str(exc), "kind": "rule", "description": "", "rule": None}
@@ -305,11 +434,38 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
     spec = parse_reward_markdown(raw)
     target = _user_root() / spec["name"]
     with _LOCK:
-        if target.exists() and not overwrite:
+        # Same rule as the listing: never write through a link planted in the library.
+        if target.is_symlink() or (target / "REWARD.md").is_symlink():
+            raise RewardError(f"'{spec['name']}' is a link; remove it before importing.")
+        if (target / "REWARD.md").exists() and not overwrite:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
+        root = target.parent
+        if (
+            not target.exists()
+            and root.is_dir()
+            and sum(1 for _ in root.iterdir()) >= MAX_REWARDS_PER_ROOT
+        ):
+            # The listing reads only the first MAX_REWARDS_PER_ROOT entries, so more would vanish.
+            raise RewardError(f"The reward library is full ({MAX_REWARDS_PER_ROOT} rewards).")
+        # Re-render from the parsed spec so only validated fields reach disk; defaults it fills in
+        # can push a file near the limit over it.
+        text = render_reward_markdown(spec)
+        if len(text.encode("utf-8")) > MAX_REWARD_MD_BYTES:
+            raise RewardError(
+                f"REWARD.md is larger than {MAX_REWARD_MD_BYTES // 1024} KB once saved."
+            )
+        created = not target.exists()
         target.mkdir(parents = True, exist_ok = True)
-        # Re-render from the parsed spec so only validated fields reach disk.
-        (target / "REWARD.md").write_text(render_reward_markdown(spec), encoding = "utf-8")
+        # Replace atomically so a failed write never leaves a truncated reward (or an empty folder).
+        tmp = target / f".REWARD.md.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(text, encoding = "utf-8")
+            os.replace(tmp, target / "REWARD.md")
+        except BaseException:
+            tmp.unlink(missing_ok = True)
+            if created:
+                shutil.rmtree(target, ignore_errors = True)
+            raise
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 
@@ -354,7 +510,7 @@ def _extract(text: str, extract: Optional[dict]) -> Optional[str]:
             return None
         j = text.find(end, i + len(start))
         return text[i + len(start) : j] if j >= 0 else None
-    match = re.search(extract["regex"], text, re.DOTALL | re.MULTILINE)
+    match = _match(extract["regex"], text)
     if not match:
         return None
     return match.group(1) if match.groups() else match.group(0)
@@ -381,16 +537,37 @@ def _to_float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _reject_constant(name: str):
+    # NaN / Infinity are not JSON (RFC 8259 section 6); json.loads accepts them by default.
+    raise ValueError(f"{name} is not valid JSON")
+
+
+_JSON_TYPES = ("object", "array", "string", "number", "integer", "boolean", "null")
+
+
 def _json_matches(text: str, schema: dict) -> bool:
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence, and
+    # json.loads skips the whitespace anyway.
+    fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     try:
-        value = json.loads(fenced.group(1) if fenced else text)
-    except (ValueError, TypeError):
+        value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
+    except (ValueError, TypeError, RecursionError):
         return False
-    expected = {"object": dict, "array": list, "string": str, "number": (int, float)}.get(
-        schema["type"]
-    )
-    if expected is not None and not isinstance(value, expected):
+    kind = schema["type"]
+    # bool is an int subclass, so it is excluded from number and integer by hand.
+    if kind == "null":
+        ok = value is None
+    elif kind in ("number", "integer"):
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        # 1e999 parses to inf without passing through parse_constant.
+        ok = ok or (isinstance(value, float) and math.isfinite(value))
+        # An int may be past float range, so only a float is asked whether it is whole.
+        ok = ok and (kind == "number" or isinstance(value, int) or value.is_integer())
+    else:
+        ok = isinstance(
+            value, {"object": dict, "array": list, "string": str, "boolean": bool}[kind]
+        )
+    if not ok:
         return False
     return (
         all(key in value for key in schema["required"])
@@ -406,10 +583,17 @@ def score_rule(
 ) -> float:
     kind = rule["type"]
     if kind == "regex":
-        pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
-        hit = (
-            pattern.fullmatch(text.strip()) if rule["mode"] == "fullmatch" else pattern.search(text)
-        )
+        if rule.get("extract"):
+            text = _extract(text, rule["extract"])
+            if text is None:
+                return rule["score"]["miss"]
+        if rule["mode"] == "fullmatch":
+            # Stripped as a fallback only: a pattern may require boundary whitespace itself.
+            hit = _match(rule["pattern"], text, fullmatch = True) or (
+                text != text.strip() and _match(rule["pattern"], text.strip(), fullmatch = True)
+            )
+        else:
+            hit = _match(rule["pattern"], text)
         return rule["score"]["match" if hit else "miss"]
     if kind == "length":
         return rule["score"]["over" if len(text) > rule["max_chars"] else "under"]
@@ -424,7 +608,8 @@ def score_rule(
     reference = str(reference)
     if rule.get("reference_extract"):
         # No match means the reference is already the bare answer.
-        reference = _extract(reference, rule["reference_extract"]) or reference
+        extracted = _extract(reference, rule["reference_extract"])
+        reference = reference if extracted is None else extracted
     if kind == "exact_match":
         same = _normalize(part, rule["normalize"]) == _normalize(str(reference), rule["normalize"])
         return rule["score"]["match" if same else "miss"]
@@ -438,6 +623,10 @@ def score_rule(
     return rule["else"]
 
 
+# A rendered prompt's assistant prefill, under a name no dataset column (reward reference) takes.
+PREFILL_COLUMN = "_studio_prefill"
+
+
 def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     """A TRL reward function; its __name__ becomes the rewards/<name>/mean log key."""
     rule = spec["rule"]
@@ -449,6 +638,8 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
         **kwargs,
     ) -> list[float]:
         references = kwargs.get(column) if column else None
+        # A pre-rendered prompt's assistant prefill, which TRL would have restored itself.
+        prefills = kwargs.get(PREFILL_COLUMN)
         out = []
         for i, completion in enumerate(completions or []):
             ref = (
@@ -456,7 +647,10 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
                 if isinstance(references, (list, tuple)) and i < len(references)
                 else None
             )
-            out.append(float(score_rule(rule, completion_text(completion), ref)))
+            text = completion_text(completion)
+            if isinstance(prefills, (list, tuple)) and i < len(prefills) and prefills[i]:
+                text = prefills[i] + text
+            out.append(float(score_rule(rule, text, ref)))
         return out
 
     reward.__name__ = spec["name"].replace("-", "_")
@@ -468,7 +662,10 @@ def preview_scores(
     text: str,
     reference: Any = None,
     row: Optional[dict] = None,
-    prompt: Optional[str] = None,
+    prompt: Any = None,
+    owner: Optional[str] = None,
+    python_isolation: str = "required",
+    system_prompt: Optional[str] = None,
 ) -> tuple[list[dict], Optional[dict]]:
     """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did)."""
     python = [s for s in specs if s.get("kind") == "python"]
@@ -479,7 +676,15 @@ def preview_scores(
         if row is None and reference is not None:
             row = {"answer": reference}
         try:
-            python_scores, isolation = preview_python_scores(python, text, row or {}, prompt)
+            python_scores, isolation = preview_python_scores(
+                python,
+                text,
+                row or {},
+                prompt,
+                owner = owner,
+                mode = python_isolation,
+                system_prompt = system_prompt,
+            )
         except PythonRewardError as exc:
             raise RewardError(str(exc)) from exc
     out = []
@@ -487,6 +692,9 @@ def preview_scores(
         if s.get("kind") == "python":
             score = python_scores.get(s["name"])
         else:
-            score = score_rule(s["rule"], text, reference)
+            # Training reads the rule's compare_to column (make_reward_func), so the preview does too.
+            column = s["rule"].get("compare_to")
+            ref = row[column] if row and column in row else reference
+            score = score_rule(s["rule"], text, ref)
         out.append({"name": s["name"], "score": score})
     return out, isolation

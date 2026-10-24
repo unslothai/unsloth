@@ -46,7 +46,7 @@ def encode(
     buf = io.BytesIO()
     with av.open(buf, mode = "w", format = fmt) as out:
         stream = out.add_stream(codec, rate = rate, layout = layout)
-        step = rate // 50  # 20 ms frames, as a recorder delivers them
+        step = rate // 50
         for start in range(0, count, step):
             chunk = packed[:, start * channels : min(count, start + step) * channels]
             arr = np.ascontiguousarray(chunk)
@@ -154,13 +154,21 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
     assert not list(directory.iterdir())
 
 
+def test_an_upload_with_a_damaged_frame_keeps_the_audio_after_it(client):
+    data = bytearray(encode("mp3", "libmp3lame", 44100, "mono", 20.0))
+    middle = len(data) // 2
+    data[middle : middle + 2048] = bytes(range(256)) * 8
+    response = _upload(client, bytes(data), "damaged.mp3")
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_s"] > 19
+
+
 def test_an_oversize_body_is_refused_while_streaming():
     seen: list[int] = []
     with pytest.raises(audio_inputs.AudioInputError) as refused:
         body = _chunks([b"\x00" * 1024] * 100, seen)
         asyncio.run(audio_inputs.save_stream(body, "big.wav", max_bytes = 4096))
     assert (refused.value.status, refused.value.detail) == (413, "Audio is too large.")
-    # Refused at the chunk that crossed the cap: the rest of the body was never read.
     assert len(seen) == 5
     assert not list(audio_inputs.inputs_dir().iterdir())
 
@@ -171,7 +179,7 @@ def test_an_oversize_body_is_refused_while_streaming():
         ({"AUDIO_INPUT_MAX_BYTES": 2048}, lambda: wav_bytes(2.0), 413, "Audio is too large."),
         ({"MAX_SECONDS": 1}, lambda: wav_bytes(2.0), 413, "Audio is longer than 0 minutes."),
         ({}, lambda: b"", 400, "Audio is empty."),
-        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Studio can read."),
+        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Unsloth can read."),
         ({}, _video_without_audio, 400, "This file has no audio stream."),
     ],
 )
@@ -217,7 +225,6 @@ def test_expired_inputs_are_swept_without_waiting_for_another_upload(monkeypatch
     monkeypatch.setattr(audio_inputs, "_now", lambda: clock[0])
     input_id = _save(wav_bytes(0.5), "a.wav")["id"]
     clock[0] += audio_inputs.TTL_SECONDS + 1
-    # An account that never uploaded gets no inputs folder from the sweep.
     other = {"account_id": "acct-b", "username": "bob", "role": "user"}
     monkeypatch.setattr(storage, "list_accounts", lambda: [other])
     monkeypatch.setattr(audio_inputs, "account_path", lambda rel: tmp_path / "acct-b" / rel)
@@ -238,7 +245,6 @@ def test_a_prepared_reference_is_24k_mono_cut_to_thirty_seconds_and_cached():
 
 
 def test_preparing_a_clip_copy_sweeps_expired_copies_without_an_upload(tmp_path):
-    # Cloning from history never uploads, so the sweep has to run from here too.
     directory = audio_inputs.inputs_dir()
     stale = directory / "c-old.24000.mono.m30.wav"
     stale.write_bytes(wav_bytes(0.2))
@@ -281,7 +287,6 @@ def test_transcribe_sends_a_16k_mono_copy_and_saves_nothing(client, monkeypatch)
     assert calls == [(16000, 1, model, None, None, "cpu")]
     source, clip_q = f"{INPUTS}/source/transcribe", {"clip_id": _clip()["id"]}
     assert client.post(source, params = clip_q, json = {"model": "m"}).status_code == 200
-    # Two sources, or none, are refused; a path is not a field.
     assert client.post(url, params = clip_q, json = {"model": "m"}).status_code == 400
     assert client.post(source, json = {"model": "m"}).status_code == 400
     assert client.post(url, json = {"model": "m", "path": "/etc/passwd"}).status_code == 422
@@ -316,7 +321,6 @@ def test_the_byte_cap_counts_only_kept_inputs(client, monkeypatch):
     clock[0] += 10
     new = _save(encode("wav", "pcm_s16le", 16000, "mono", 0.5, 700.0), "n.wav")["id"]
     size = lambda i: (audio_inputs.inputs_dir() / f"{i}.wav").stat().st_size
-    # Newest + small fit; the big one in the middle does not, and evicting it frees its bytes.
     cap = size(new) + size(small) + 10
     assert audio_inputs.sweep(byte_cap = cap) == 1
     assert [audio_inputs.input_path(i) is not None for i in (small, big, new)] == [

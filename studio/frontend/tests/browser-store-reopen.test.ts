@@ -27,13 +27,11 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.notEqual(shown(), first);
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 2");
-  // Two quick reopens: the last one wins.
   open("version 3");
   open("version 4");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 4");
   assert.equal(useBrowserStore.getState().tabs.length, 1);
-  // Closing another tab while a reopen is queued keeps the queued bytes.
   store.openFile({ blob: new Blob(["other"]), name: "b.txt", key: "sandbox/b.txt" });
   open("version 5");
   store.closeTab(useBrowserStore.getState().tabs[1]?.id ?? "");
@@ -186,6 +184,22 @@ test("a duplicated form result asks before posting again; a duplicated page just
   assert.equal(sentPosts.has(currentEntry(pageTab)), false);
 });
 
+test("a duplicated tab opens the page its links reached, not the one its entry started on", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/", { newTab: true });
+  const tab = useBrowserStore.getState().tabs.at(-1);
+  assert.ok(tab);
+  store.updateTab(tab.id, { displayUrl: "https://a.example/deep" });
+  store.duplicateTab(tab.id);
+  const tabs = useBrowserStore.getState().tabs;
+  const copy = tabs[tabs.findIndex((candidate) => candidate.id === tab.id) + 1];
+  assert.ok(copy);
+  const entry = currentEntry(copy);
+  assert.equal(entry.kind === "web" && entry.url, "https://a.example/deep");
+  const original = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? copy);
+  assert.equal(original.kind === "web" && original.url, "https://a.example/");
+});
+
 test("a form result pushed out of the cache still asks before posting again", () => {
   const store = useBrowserStore.getState();
   store.openUrl("https://example.com/pay", { method: "POST", body: "card=1" });
@@ -200,7 +214,6 @@ test("a form result pushed out of the cache still asks before posting again", ()
     assert.ok(tab);
     cachePage(currentEntry(tab), { kind: "html", url: `https://example.com/${i}`, base: `https://example.com/${i}`, refresh: null, html: "x" });
   }
-  // What the page view checks: no cached copy, already sent, so it asks rather than resending.
   assert.equal(cachedPage(entry), undefined);
   assert.equal(sentPosts.has(entry), true);
 });
@@ -309,4 +322,29 @@ test("leaving a chat closes a duplicated page that no longer claims the card's k
   );
   store.closeChatPages();
   assert.equal(useBrowserStore.getState().tabs.length, 0);
+});
+
+test("a file opened at a page asks for it again on every reopen, and a reopen with no page leaves it", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  const open = (page?: number) =>
+    store.openFile({ blob: new Blob(["%PDF"]), name: "guide.pdf", key: "rag:doc-1", ...(page ? { page } : {}) });
+  const target = () => {
+    const state = useBrowserStore.getState();
+    return state.fileViews[state.activeTabId ?? ""]?.pageTarget ?? null;
+  };
+  open(3);
+  const first = target();
+  assert.deepEqual(first, { page: 3 });
+  open(3);
+  assert.deepEqual(target(), { page: 3 });
+  assert.notEqual(target(), first);
+  open(7);
+  assert.deepEqual(target(), { page: 7 });
+  const seventh = target();
+  open();
+  assert.equal(target(), seventh);
+  assert.equal(useBrowserStore.getState().tabs.length, 1);
+  store.openFile({ blob: new Blob(["%PDF"]), name: "other.pdf", key: "rag:doc-2" });
+  assert.equal(target(), null);
 });

@@ -260,6 +260,13 @@ class EngineAdapter:
                 else []
             ),
             *(["--trust-remote-code"] if trust_remote_code else []),
+            # Prefix caching is on by default in both; this only reports its hits in usage.
+            "--enable-prompt-tokens-details" if self.name == "vllm" else "--enable-cache-report",
+            *(
+                vllm_speculative_args(model)
+                if self.name == "vllm" and not options.get("no_speculative_config")
+                else []
+            ),
             *self.extra_args,
             "--host",
             "127.0.0.1",
@@ -301,6 +308,59 @@ ADAPTERS = {
 }
 
 
+def _wsl_guest_to_host(path: str, nt: "bool | None" = None) -> str:
+    """`/mnt/c/x` (the path the Windows WSL engine is given) back to `C:\\x` for host-side reads."""
+    import os
+    import re
+
+    if (os.name == "nt" if nt is None else nt) and re.match(r"^/mnt/[a-zA-Z](/|$)", path):
+        return path[5].upper() + ":\\" + path[7:].replace("/", "\\")
+    return path
+
+
+def vllm_speculative_args(model) -> list[str]:
+    """`--speculative-config` for a merged Studio export that carries a drafter trained with the
+    fine-tune (drafter.json): its own MTP head, or the EAGLE-3 drafter in `<export>/eagle3`."""
+    import json
+    import os
+
+    if not isinstance(model, str):
+        return []
+    host = _wsl_guest_to_host(model)
+    if not os.path.isdir(host):
+        return []
+    try:
+        with open(os.path.join(host, "drafter.json"), encoding = "utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(info, dict):
+        return []
+    # A drafter vLLM cannot run (llama.cpp-only EAGLE-3 targets, some MTP families) must not stop
+    # the model from starting.
+    if isinstance(info.get("engines"), dict) and not info["engines"].get("vllm"):
+        return []
+    steps = info.get("draft_steps") or 3
+    if info.get("strategy") == "mtp":
+        spec = {"method": "mtp", "num_speculative_tokens": int(steps)}
+    elif info.get("strategy") == "eagle3" and os.path.isfile(
+        os.path.join(host, "eagle3", "config.json")
+    ):
+        spec = {
+            "method": "eagle3",
+            # The path vLLM sees: the WSL guest's when the model path was translated for it.
+            "model": (
+                model.rstrip("/") + "/eagle3"
+                if host != model
+                else os.path.join(os.path.abspath(model), "eagle3")
+            ),
+            "num_speculative_tokens": int(steps),
+        }
+    else:
+        return []
+    return ["--speculative-config", json.dumps(spec, separators = (",", ":"))]
+
+
 def launch_arguments(
     engine,
     python,
@@ -338,6 +398,9 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 RESERVE_SHARE = 0.06
 
 
+MANAGED_ENGINE_BUDGET_FLOOR = 0.80
+
+
 def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
@@ -356,7 +419,9 @@ def gpu_memory_fraction(
         rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
-        fraction = get_vram_budget_fraction()
+        # vLLM / SGLang cannot offload to the CPU, so a GGUF-only low budget must not shrink them;
+        # the per-load engine_gpu_memory_utilization still caps lower.
+        fraction = max(get_vram_budget_fraction(), MANAGED_ENGINE_BUDGET_FLOOR)
         for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:

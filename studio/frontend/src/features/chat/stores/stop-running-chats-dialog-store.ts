@@ -5,8 +5,8 @@ import { create } from "zustand";
 
 type Resolver = (confirmed: boolean) => void;
 
-/** What confirming does to the model: reload it, or leave none loaded. */
-export type StopRunningChatsEffect = "reload" | "unload";
+/** What confirming does: reload, leave no model loaded, or unload just this one. */
+export type StopRunningChatsEffect = "reload" | "unload" | "unloadOne";
 
 // One at a time: a new request declines any pending one so no promise leaks.
 let pendingResolver: Resolver | null = null;

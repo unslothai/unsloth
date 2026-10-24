@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #9214: "Enable connections" is a frontend-only flag, so the request guard is the
-// whole enforcement; custom TTS posted assistant text with connections switched off.
+// "Enable connections" is frontend-only, so the request guard is the whole enforcement.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -36,7 +35,6 @@ type StubProvider = {
   updatedAt?: number;
 };
 
-/** The adapter with both stores faked and a fetch that only logs. */
 function load(
   connectionsEnabled: boolean,
   {
@@ -73,10 +71,14 @@ function load(
     {
       "@/features/auth": {
         authFetch: async (
-          _input: string,
+          input: string,
           init: { body: string },
           options?: { beforeRetry?: () => void },
         ) => {
+          // The Unsloth Studio engine first lists the loaded models; it is not a speech request.
+          if (input === "/v1/models") {
+            return { ok: true, json: async () => ({ data: [] }) };
+          }
           if (beforeAuthenticatedRetry) {
             beforeAuthenticatedRetry();
             options?.beforeRetry?.();
@@ -88,6 +90,12 @@ function load(
             arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
           };
         },
+      },
+      // The Unsloth Studio engine's model lookup.
+      "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+      "../../settings/api/openai-model-catalog": {
+        audioModelsFromCatalog: () => [],
+        loadedSpeechModelId: () => null,
       },
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
@@ -120,6 +128,7 @@ function load(
         },
       },
       "@/lib/toast": { toast: { error: () => {} } },
+      "@/features/audio/audio-workspace-constants": { TTS_MAX_TOKENS: 8192 },
     },
   );
   return {
@@ -171,7 +180,10 @@ test("read-aloud sends the speech text, not the markdown source (#12547)", async
     toSpeech: (text) => `spoken(${text})`,
   });
   new adapter.StudioSpeechSynthesisAdapter().speak("**Done.**");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The model lookup adds a request before the speech one.
+  for (let i = 0; i < 20 && posted.length === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   assert.equal(JSON.parse(posted[0]).messages[0].content, "spoken(**Done.**)");
 });
 
@@ -322,7 +334,7 @@ test("authFetch invokes its policy guard after refresh and before retry", async 
   }
 });
 
-// #9214: a failed key migration leaves the connection selectable on the retained key.
+// A failed key migration leaves the connection selectable on the retained key.
 test("custom TTS forwards a retained legacy key when the connection has none saved", async () => {
   const { adapter, posted } = load(true, {
     providers: [
@@ -354,8 +366,7 @@ test("custom TTS sends no key when the connection already has one saved", async 
   assert.equal("encrypted_api_key" in JSON.parse(posted[0]), false);
 });
 
-// #9214: a deleted connection left ttsProviderId persisted, so the select pointed at a
-// missing item and every read aloud posted the stale id. Mirrors the dictation guard.
+// A deleted connection must not leave a stale ttsProviderId posted on every read aloud.
 test("the custom TTS selection is dropped when its connection disappears", () => {
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(

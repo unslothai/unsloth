@@ -12,6 +12,7 @@ import {
   LR_DEFAULT_LORA,
   RL_LEARNING_RATES,
 } from "@/config/training";
+import { usePlatformStore } from "@/config/env";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -27,6 +28,7 @@ import {
 } from "../api/models-api";
 import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
@@ -49,7 +51,12 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import {
+  effectiveTrainingObjective,
+  rlObjectiveSupported,
+} from "../lib/rl-roles";
 import { runConfigDraftSelections } from "../lib/run-config-draft";
+import { parseRunConfigRlSettings } from "../lib/yaml-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -120,6 +127,12 @@ function canReapplyModelDefaults(modelName: string): boolean {
 }
 
 const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
+
+// Saved runs and YAML files carry it, but it is not a model default: switching models keeps it.
+function earlyStoppingPatienceFrom(value: unknown): number {
+  const patience = Number(value);
+  return Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0;
+}
 
 // evalSteps is left alone: it follows the chosen eval split, not the model.
 const GENERIC_MODEL_DEFAULTS = Object.fromEntries(
@@ -573,12 +586,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
 
             // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
-            const objective = get().trainingObjective;
+            // Judged against the incoming model: an embedding or audio model runs SFT.
+            const objective = effectiveTrainingObjective({
+              ...get(),
+              modelType: inferredModelType,
+              isEmbeddingModel: isEmbedding,
+              isVisionModel: !!modelDetails.is_vision,
+            });
             const rlLearningRate =
               shouldApplyTrainingDefaults && !isDecision && objective !== "sft"
                 ? { learningRate: RL_LEARNING_RATES[objective] }
                 : {};
-
             // Fill a copied CPT run's missing history, but preserve values captured by
             // any method transition the user made while this request was pending.
             const fallbackProvenanceRefresh = options?.fillMethodProvenance
@@ -600,6 +618,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             const restoreStreaming =
               !isDecision &&
+              get().trainingObjective === "sft" &&
               settingsBeforeDecision?.datasetStreaming === true &&
               nextStreamingState.datasetSource === "huggingface" &&
               nextStreamingState.maxSteps > 0;
@@ -693,7 +712,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   set({ isLoadingModelDefaults: false });
                   return;
                 }
-                const currentObjective = get().trainingObjective;
+                // An RL choice the model cannot use (embeddings, audio) leaves the run on SFT.
+                const currentObjective = effectiveTrainingObjective(get());
                 const lrPatch =
                   get().trainingMethodProvenance.learningRateManuallySet ||
                   (modelConfigHasLR && currentObjective === "sft")
@@ -972,6 +992,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetEvalSplit: null,
         manualDatasetOptionsValid: true,
         datasetManualMapping: emptyManualMapping(),
+        rlRoleMapping: {},
         datasetSystemPrompt: "",
         datasetLabelMapping: {},
         datasetAdvisorNotification: null,
@@ -1303,12 +1324,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
               state.trainOnCompletions;
           }
+          // An RL objective keeps its own learning rate; the method's rate is an SFT default.
+          const effective = effectiveTrainingObjective(state);
+          const rlObjective =
+            trainingMethod !== "cpt" &&
+            effective !== "sft" &&
+            !state.trainingMethodProvenance.learningRateManuallySet
+              ? effective
+              : null;
           setUserEdit({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
             ...(trainingMethod === "cpt" ? { trainingObjective: "sft" } : {}),
+            ...(rlObjective
+              ? { learningRate: RL_LEARNING_RATES[rlObjective] }
+              : {}),
           });
         },
         selectHfDataset: selectHfDatasetInternal,
@@ -1368,6 +1400,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit: null,
             manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
+            rlRoleMapping: {},
             datasetSliceStart: null,
             datasetSliceEnd: null,
             isDatasetImage: null,
@@ -1396,6 +1429,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit: null,
             manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
+            rlRoleMapping: {},
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
@@ -1623,6 +1657,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           notifyStreamingCompat(streamingPatch);
         },
+        setEarlyStoppingPatience: (earlyStoppingPatience) =>
+          setUserEdit({ earlyStoppingPatience }),
+        setDrafterEnabled: (drafterEnabled) => setUserEdit({ drafterEnabled }),
+        setDrafterStrategy: (drafterStrategy) =>
+          setUserEdit({ drafterStrategy }),
+        setDrafterDataSource: (drafterDataSource) =>
+          setUserEdit({ drafterDataSource }),
+        setDrafterMaxExamples: (drafterMaxExamples) =>
+          setUserEdit({ drafterMaxExamples }),
+        setDrafterEpochs: (drafterEpochs) => setUserEdit({ drafterEpochs }),
+        setDrafterLearningRate: (drafterLearningRate) =>
+          setUserEdit({ drafterLearningRate }),
+        setDrafterDraftSteps: (drafterDraftSteps) =>
+          setUserEdit({ drafterDraftSteps }),
+        setDrafterCapability: (drafterCapability) => set({ drafterCapability }),
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
@@ -1670,27 +1719,25 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (state.trainingObjective === trainingObjective) return;
           // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
-          // Decision models train a classifier head, so they stay on SFT too.
           if (
-            (state.trainingMethod === "cpt" || state.modelType === "decision") &&
+            (state.trainingMethod === "cpt" || !rlObjectiveSupported(state)) &&
             trainingObjective !== "sft"
           ) {
             return;
           }
           const patch: Partial<TrainingConfigState> = { trainingObjective };
+          // GRPO's KL coefficient may be 0; DPO and ORPO need a positive beta, so fall back to theirs.
+          if (trainingObjective !== "grpo" && state.rlBeta === 0) {
+            patch.rlBeta = null;
+          }
           if (!state.trainingMethodProvenance.learningRateManuallySet) {
             patch.learningRate =
               trainingObjective === "sft"
                 ? state.trainingMethod === "full"
                   ? LR_DEFAULT_FULL
-                  : LR_DEFAULT_LORA
+                  : (state.trainingMethodProvenance.modelAdapterLearningRate ??
+                    LR_DEFAULT_LORA)
                 : RL_LEARNING_RATES[trainingObjective];
-          }
-          if (trainingObjective !== "sft") {
-            // TRL formats these rows itself; SFT-only toggles would be silently ignored.
-            patch.trainOnCompletions = false;
-            patch.packing = false;
-            patch.datasetStreaming = false;
           }
           setUserEdit(patch);
         },
@@ -1748,7 +1795,37 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainingMethodEditGeneration += 1;
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = selections.selectedModel;
-          setUserEdit({ ...hyperparameters, ...selections });
+          setUserEdit({
+            ...hyperparameters,
+            ...selections,
+            earlyStoppingPatience: earlyStoppingPatienceFrom(
+              config.early_stopping_patience,
+            ),
+            ...drafterStateFrom(config.drafter),
+          });
+          // RL runs keep their roles in custom_format_mapping, which selections read as chat roles.
+          const { trainingObjective, ...rl } = parseRunConfigRlSettings(config);
+          // MLX has no RL trainer: an RL run restores its other settings for SFT, without RL roles.
+          if (
+            trainingObjective !== "sft" &&
+            usePlatformStore.getState().deviceType === "mac"
+          ) {
+            setUserEdit({ trainingObjective: "sft", datasetManualMapping: {} });
+          } else if (
+            trainingObjective !== "sft" &&
+            selections.modelType !== "decision" &&
+            get().trainingMethod !== "cpt"
+          ) {
+            setUserEdit({
+              ...rl,
+              trainingObjective,
+              rlRoleMapping: get().datasetManualMapping,
+              datasetManualMapping: {},
+              trainOnCompletions: false,
+              packing: false,
+              datasetStreaming: false,
+            });
+          }
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {
             applyTrainingDefaults: false,
@@ -1790,12 +1867,30 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (patch.trainOnCompletions !== undefined) {
             _trainOnCompletionsExplicitModel = get().selectedModel;
           }
+          const importsPatience = Object.hasOwn(
+            config.training ?? {},
+            "early_stopping_patience",
+          );
+          const importsDrafter = Object.hasOwn(
+            config.training ?? {},
+            "drafter",
+          );
           setUserEdit((state) => {
             const importsCompletionsInCpt =
               state.trainingMethod === "cpt" &&
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
+              ...(importsPatience
+                ? {
+                    earlyStoppingPatience: earlyStoppingPatienceFrom(
+                      config.training?.early_stopping_patience,
+                    ),
+                  }
+                : {}),
+              ...(importsDrafter
+                ? drafterStateFrom(config.training?.drafter)
+                : {}),
               ...(patch.trainOnCompletions !== undefined
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),

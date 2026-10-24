@@ -8,6 +8,7 @@ export {
   openModelsDir,
   pickNativeDocumentFolder,
   pickHuggingFaceCacheDir,
+  pickNativeModelFolder,
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
   registerNativeDatasetPath,

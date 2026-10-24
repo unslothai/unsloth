@@ -10,6 +10,29 @@ _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
 _SETUP_ARGV=("$@")
 _SETUP_START_PWD=$PWD
+# Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
+_setup_anchor_path() {
+    local remaining=${PATH-} entry anchored="" last=false
+    while :; do
+        case "$remaining" in
+            *:*) entry=${remaining%%:*}; remaining=${remaining#*:} ;;
+            *) entry=$remaining; last=true ;;
+        esac
+        # Bash expands a leading ~ in PATH itself, so a literal ~/bin is not relative.
+        case "$entry" in
+            /*|\~*) ;;
+            ""|.) entry=$_SETUP_START_PWD ;;
+            *) entry="${_SETUP_START_PWD%/}/${entry#./}" ;;
+        esac
+        anchored="${anchored:+$anchored:}$entry"
+        [ "$last" = true ] && break
+    done
+    PATH=$anchored
+    export PATH
+    hash -r 2>/dev/null || true
+}
+_setup_anchor_path
+unset -f _setup_anchor_path
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
@@ -407,15 +430,15 @@ _mirror_probe() {
 
 _mirror_url() {
     case "$1" in
-        pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
-        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        pypi) echo "https://files.pythonhosted.org/packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
         torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
         npmmirror-node) echo "$_MIRROR_NPM/-/binary/node/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
         npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
         npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
-        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
+        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
         pypi-index) echo "https://pypi.org/simple/uv/" ;;
         torch-index) echo "https://download.pytorch.org/whl/cpu/torch/" ;;
         cernet-pypi-index) echo "$_MIRROR_PYPI/uv/" ;;
@@ -1699,17 +1722,22 @@ fi
 # llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
 # UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+# (mirrors install.sh), followed by the studio/ child of UNSLOTH_HOME.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+_studio_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$_studio_override" ]; then
+    _studio_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_studio_override" ]; then
+        _studio_override_var="UNSLOTH_HOME (studio child)"
+        _studio_override="${_studio_override%/}/studio"
+    fi
+fi
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -1775,7 +1803,7 @@ _uv_is_bucket_name() {
         ''|*[!0-9]*) return 1 ;;
     esac
     case "${1%-v*}" in
-        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        archive|binaries|builds|built-wheels|environments|files|flat-index) ;;
         git|interpreter|osv|python|sdists|simple|wheels) ;;
         *) return 1 ;;
     esac
@@ -2793,9 +2821,9 @@ _setup_http_get_timed() {
 #
 # Only the four mainstream targets are pinned; the rest fall through to the existing path
 # rather than risk a binary for the wrong triple.
-_SETUP_UV_PINNED_VERSION="0.12.1"
+_SETUP_UV_PINNED_VERSION="0.13.5"
 # sha256 of astral's versioned install.sh for that release; the fallback below runs only those exact bytes.
-_SETUP_UV_INSTALLER_SH_SHA256="d3f5412d38c99f9d024901843bf98206f0d2c6dbe64df40d0b740e2751ca62c1"
+_SETUP_UV_INSTALLER_SH_SHA256="1c6e7f025499664633ac2dce43a210800510e9ef0625c52e034a8afdf8bf177a"
 
 # Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
 # run the GNU build", and astral drops to its musl-static archive below its floor.
@@ -2826,10 +2854,10 @@ _setup_uv_pinned_asset() {
             case "$_supa_arch" in
                 x86_64|amd64)
                     [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
-                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f" ;;
                 aarch64|arm64)
                     [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
-                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2840,9 +2868,9 @@ _setup_uv_pinned_asset() {
             fi
             case "$_supa_arch" in
                 x86_64)
-                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                    echo "uv-x86_64-apple-darwin.tar.gz b0f52b0e3945b4107d89024ea38e625683011fbfc05a0d98f9fa2d6dcee28c66" ;;
                 arm64|aarch64)
-                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                    echo "uv-aarch64-apple-darwin.tar.gz 743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2854,13 +2882,13 @@ _setup_uv_pinned_asset() {
 _setup_uv_pinned_wheel() {
     case "$1" in
         uv-x86_64-unknown-linux-gnu.tar.gz)
-            echo "packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 27211df9b277f440dea438a4e525ba40250fb721ad39b8927eefc2d91f9aea15" ;;
+            echo "packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946" ;;
         uv-aarch64-unknown-linux-gnu.tar.gz)
-            echo "packages/9a/c7/29e426865c2eb8df61253dae93b953523f48c9fca1e471c7e49ff068f19a/uv-0.12.1-py3-none-manylinux_2_28_aarch64.whl b255ac23958e45f39f9c7a4cd65890df5ef46f539a3b14de03bd296bbba9cb60" ;;
+            echo "packages/4c/92/d83d019c63c1ccc6ff17df2bfe76270412f9766e7e71aa4d4ccbf018683f/uv-0.13.5-py3-none-manylinux_2_28_aarch64.whl 91e58e304b63b6c91bac5561459ab0c3ea24f17bc01ea9359d69fed72142978f" ;;
         uv-x86_64-apple-darwin.tar.gz)
-            echo "packages/fd/07/a417475380e901f4325d13b09938baab227b0c143547124b944c5bc71783/uv-0.12.1-py3-none-macosx_10_12_x86_64.whl 41b8fc2335f682312a1ca39a7b4abfd6af800992065c663582ca3e4d51cf9258" ;;
+            echo "packages/e3/2a/dcae794203261e49564bb9ff7c4b64a093f69ac73476cc8ce54c1deed3a1/uv-0.13.5-py3-none-macosx_10_12_x86_64.whl 337a14829bb499e114989df4f908f134ff37f1fb6c33497541cfb05b28080e39" ;;
         uv-aarch64-apple-darwin.tar.gz)
-            echo "packages/c9/68/391ff0cc3d8020e64adc43bb4e50607f744c69e792fb7623dc7c1526704b/uv-0.12.1-py3-none-macosx_11_0_arm64.whl 2e9b0b86e180abc5968b979c6e25203b32e85969abb5083ee1e8b88a5aa98a76" ;;
+            echo "packages/d2/26/9ac45211123244ea68be852775093af487a64debc13621a2de239f8ebe73/uv-0.13.5-py3-none-macosx_11_0_arm64.whl a42c85fa8156e1e5e2cecdbc77bb818ea1dcf5f78b8e2a8f84c7fe4f16f0702e" ;;
         *) return 1 ;;
     esac
 }
@@ -3247,9 +3275,9 @@ _SETUP_UV_PROBE_MISS=""
 _SETUP_UV_LOOKED=""
 _SETUP_UV_DIR=""
 _SETUP_UV_TOO_OLD=""
-# install.sh's UV_MIN_VERSION, for its reason: below it uv's managed-Python manifest tops out at
-# a CPython that cannot import torch, which the installer refuses to build on.
-_SETUP_UV_MIN_VERSION="0.9.3"
+# install.sh's UV_MIN_VERSION, for its reason: below it uv's bundled roots still trust the
+# compromised emSign CAs (GHSA-hq85-5cpj-mr62).
+_SETUP_UV_MIN_VERSION="0.13.4"
 
 # True when uv's --version line names a release at least as new as $2. Unreadable is false: the
 # candidate is left alone and the download runs, as it did before this search existed.
@@ -3341,19 +3369,46 @@ _setup_find_installed_uv() {
 }
 
 USE_UV=false
-if command -v uv &>/dev/null; then
+# A uv on PATH below the floor is passed over like an installed one, and kept only when the
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the OS trust store.
+_SETUP_UV_PATH_OLD=""
+if command -v uv &>/dev/null && command -v mktemp >/dev/null 2>&1; then
+    _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
+    _spu_ver=""
+    if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
+        read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+        case "$_spu_ver" in
+            "uv "*) _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+                        || _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+            *) _SETUP_UV_PATH_OLD=$(command -v uv) ;;
+        esac
+    elif [ -n "$_spu_file" ]; then
+        _SETUP_UV_PATH_OLD=$(command -v uv)
+    fi
+    if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
+    unset _spu_file _spu_ver
+fi
+if command -v uv &>/dev/null && [ -z "$_SETUP_UV_PATH_OLD" ]; then
     USE_UV=true
 elif _setup_find_installed_uv; then
     _setup_uv_dir="$_SETUP_UV_DIR"
     # Read-only reuse, fine under a stage root. Appended: a python beside uv (~/.local/bin
     # often has one) must not step in front of the staged $VENV_DIR/bin/python.
     export PATH="$PATH:$_setup_uv_dir"
+    if [ -n "$_SETUP_UV_PATH_OLD" ]; then
+        # In front of the old uv on PATH, with the venv's bin still first.
+        PATH="$_setup_uv_dir:$PATH"
+        [ -z "${VIRTUAL_ENV:-}" ] || PATH="$VIRTUAL_ENV/bin:$PATH"
+        export PATH
+    fi
     step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
     USE_UV=true
     unset _setup_uv_dir
 elif [ -n "$STAGE_ROOT" ]; then
-    step "uv" "using pip inside the staged environment"
+    [ -n "$_SETUP_UV_PATH_OLD" ] || step "uv" "using pip inside the staged environment"
 elif {
+    [ -n "${_SETUP_UV_TOO_OLD:-}" ] || _SETUP_UV_TOO_OLD="$_SETUP_UV_PATH_OLD"
     if [ -n "${_SETUP_UV_TOO_OLD:-}" ]; then
         step "uv" "the uv at $_SETUP_UV_TOO_OLD is older than $_SETUP_UV_MIN_VERSION; installing the pinned release"
     elif [ -n "${_SETUP_UV_PROBE_MISS:-}" ]; then
@@ -3370,9 +3425,31 @@ elif {
 }; then
     # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
     # own destination first, and prepending here would let a stale ~/.local/bin/uv shadow the
-    # 0.12.1 we just verified, so the rest of setup would run the wrong one.
+    # pinned uv we just verified, so the rest of setup would run the wrong one.
     [ "$_SETUP_UV_PINNED_OK" = true ] || export PATH="$HOME/.local/bin:$PATH"
     command -v uv &>/dev/null && USE_UV=true
+fi
+# No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
+[ -z "$_SETUP_UV_PATH_OLD" ] || [ "$USE_UV" = true ] || ! command -v uv &>/dev/null || USE_UV=true
+# Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the OS store
+# decides instead, where there is one (UV_NATIVE_TLS too: uv before 0.11 reads only that).
+# A download that failed while online lands here too; UV_SYSTEM_CERTS=0 opts out.
+if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] && [ "${UV_SYSTEM_CERTS:-1}" != 0 ] \
+   && command -v mktemp >/dev/null 2>&1; then
+    _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
+    _spu_ver=""
+    if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
+        read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+    fi
+    if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
+    case "$_spu_ver" in
+        "uv "*)
+            if ! _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+               && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
+                export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-1}" UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+            fi ;;
+    esac
+    unset _spu_file _spu_ver
 fi
 
 fast_install() {
@@ -4427,6 +4504,28 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
+        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
+        # amd-smi names only the first device, so a covered lspci peer (the same rule as
+        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
+        if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
+            _setup_k2_peer=""
+            if command -v lspci >/dev/null 2>&1; then
+                while IFS= read -r _setup_k2_ln; do
+                    [ -n "$_setup_k2_ln" ] || continue
+                    printf '%s\n' "$_setup_k2_ln" | grep -Eqi "$_setup_k2_name_ere" && continue
+                    if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
+                        # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
+                        [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
+                        _setup_k2_peer=1
+                        break
+                    fi
+                done <<EOF
+$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+EOF
+            fi
+            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+        fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
             substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
@@ -4475,6 +4574,7 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Deliberately NOT written back into _setup_mkt: the supported table keys on it and
     # would start feeding --rocm-gfx to the prebuilt and whisper commands on the KFD path.
     _setup_unsupported_gfx_any() {
+        _setup_k2_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'  # install.sh's _krackan2_ere
         # Peer guard FIRST, so it covers the named hit too: amd-smi reports one market name,
         # the first device's, so where an RX 5700 precedes an RX 7900 the name IS the 5700.
         # Only when lspci can answer: with no adapter list there is no peer to find, and
@@ -4482,14 +4582,31 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_unsup_pci=""
         if command -v lspci >/dev/null 2>&1; then
             _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Beside a Krackan Point 2 CPU the APU's own line may carry the Krackan die name it
+            # shares with gfx1152 (1002:1114), so a gfx1152 answer there is not a peer (install.sh).
+            _setup_unsup_k2cpu=""
+            if printf '%s\n' "$1" | grep -Eqi "$_setup_k2_ere" \
+               || grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; then
+                _setup_unsup_k2cpu=1
+            fi
             while IFS= read -r _setup_unsup_ln; do
                 [ -n "$_setup_unsup_ln" ] || continue
-                if _setup_supported_gfx_from_name "$_setup_unsup_ln" >/dev/null 2>&1; then
+                # A Krackan Point 2 APU's own line is not a covered peer (its names overlap gfx1152's).
+                printf '%s\n' "$_setup_unsup_ln" | grep -Eqi "$_setup_k2_ere" && continue
+                if _setup_unsup_peer=$(_setup_supported_gfx_from_name "$_setup_unsup_ln" 2>/dev/null); then
+                    [ -n "$_setup_unsup_k2cpu" ] && [ "$_setup_unsup_peer" = gfx1152 ] && continue
                     return 1
                 fi
             done <<EOF
 $_setup_unsup_pci
 EOF
+        fi
+        # Krackan Point 2 (gfx1153) before the name tables, which map its names to gfx1152; the
+        # CPU name counts only beside an AMD display adapter, as in install.sh.
+        if printf '%s\n%s\n' "$1" "$_setup_unsup_pci" | grep -Eqi "$_setup_k2_ere" \
+           || { [ -n "$_setup_unsup_pci" ] && grep -Eqi "$_setup_k2_ere" /proc/cpuinfo 2>/dev/null; }; then
+            echo gfx1153
+            return 0
         fi
         # Only on a HIT: a nonempty but unmapped name (a generic "AMD Radeon Graphics"
         # from rocminfo) used to end the lookup here, so the lspci scan below never ran
@@ -4546,7 +4663,7 @@ EOF
        { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
         _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
     fi
     if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
@@ -4570,9 +4687,18 @@ EOF
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
         fi
-        substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
-        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
-        substep "it afterwards has no effect until you install or update again."
+        if [ "$_setup_unsup_gfx" = gfx1153 ]; then
+            substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
+        else
+            substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+            substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+            substep "it afterwards has no effect until you install or update again."
+        fi
+        # gfx1153 keeps its llama.cpp HIP bundle: forward the arch, which a runtime-less probe
+        # cannot read. RDNA 1 / Polaris have none, so they stay unforwarded.
+        if [ "$_setup_unsup_gfx" = gfx1153 ] && [ -z "$_setup_gfx" ]; then
+            _setup_gfx=gfx1153
+        fi
     elif [ -n "$_setup_mkt" ]; then
         # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
         # arm above: a card with no ROCm wheels also reaches here with a name, and
@@ -4656,23 +4782,18 @@ _master_root_note_is_honoured() {
     _mrn_legacy_studio=$(CDPATH= cd -P -- "${HOME:-}/.unsloth/studio" 2>/dev/null && pwd -P) \
         || _mrn_legacy_studio="${HOME:-}/.unsloth/studio"
     if [ "$_mrn_studio" = "$_mrn_legacy_studio" ]; then
-        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself is the" >&2
+        echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself is the" >&2
         echo "      default install at $_mrn_studio, where no reader honours a recorded root. That" >&2
         echo "      root cannot be recorded, so a later launch or uninstall will not find them." >&2
         echo "      Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or re-export UNSLOTH_HOME whenever" >&2
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
-    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
-    # rather than leave a file that reads as a recorded root and behaves as none.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
-    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Studio itself lives at" >&2
+    echo "NOTE: the managed runtimes were installed under $_mrn_root, but Unsloth Studio itself lives at" >&2
     echo "      $STUDIO_HOME, which is outside it. That root cannot be recorded, so a later launch" >&2
     echo "      or uninstall will not find them. Set UNSLOTH_STUDIO_HOME=$_mrn_root/studio, or" >&2
     echo "      re-export UNSLOTH_HOME whenever you run Unsloth." >&2

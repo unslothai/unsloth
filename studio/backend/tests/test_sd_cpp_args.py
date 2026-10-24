@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the sd-cli command builder (``sd_cpp_args.py``).
-
-Pure: no torch, no subprocess, no files. Just argv construction and the
-policy -> offload-flag / family -> text-encoder-flag mappings.
-"""
+"""Unit tests for the sd-cli command builder: argv construction and the policy-to-flag mappings only."""
 
 from __future__ import annotations
 
@@ -42,16 +38,12 @@ def _pair(cmd: list[str], flag: str):
     return cmd[cmd.index(flag) + 1] if flag in cmd else None
 
 
-# ── family text-encoder wiring ──────────────────────────────────────────────
-
-
 def test_te_flags_by_family():
     assert text_encoder_flags_for_family("z-image") == ("--llm",)
     assert text_encoder_flags_for_family("qwen-image") == ("--qwen2vl",)
     assert text_encoder_flags_for_family("flux.1") == ("--clip_l", "--t5xxl")
     assert text_encoder_flags_for_family("flux.2-klein") == ("--llm",)
-    # Not --qwen2vl, even though the family name starts with the same three words: 2.1 conditions
-    # on Qwen3-VL and the qwen2vl door additionally enables Qwen2-VL's vision preprocessing.
+    # Not --qwen2vl: 2.1 conditions on Qwen3-VL and the qwen2vl path adds Qwen2-VL preprocessing.
     assert text_encoder_flags_for_family("qwen-image-2.1") == ("--llm",)
     assert text_encoder_flags_for_family("unknown") == ()
 
@@ -81,15 +73,13 @@ def _physical_metal(monkeypatch):
 
 
 def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
-    # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no per-op CPU fallback, so an LLM
-    # text encoder killed sd-server mid-generation on macOS (macos-14, FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
+    # ggml Metal aborts on non-contiguous RMS_NORM with no CPU fallback (exits -6 on macOS).
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
     monkeypatch.setattr("sys.platform", "darwin")
     assert metal_text_encoder_flags() == ["--clip-on-cpu"]
     for other in ("linux", "win32"):
         monkeypatch.setattr("sys.platform", other)
         assert metal_text_encoder_flags() == []
-    # Opt back in once ggml grows the kernel.
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", "1")
     assert metal_text_encoder_flags() == []
@@ -121,7 +111,6 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
     assert server.count("--clip-on-cpu") == 1
     assert cli.count("--clip-on-cpu") == 1
     assert video.count("--clip-on-cpu") == 1
-    # An offload policy that already pins the encoder must not emit it twice.
     dual = build_sd_cpp_server_command(
         binary = "sd-server",
         files = files,
@@ -314,9 +303,15 @@ def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
     branch = source.index("if forced_cpu:", guard)
     # Neither acquires nor releases VIDEO: an old MPS model keeps its claim until the worker tears it down.
     assert source[branch : source.index('elif device != "cpu":', branch)].strip() == (
-        "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
+        "if forced_cpu:\n            status_dict = await asyncio.to_thread(begin)"
     )
-    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
+    # ``begin`` only re-checks the Always media gate under the arbiter lock; it takes no GPU claim.
+    begin_def = source.rindex("def begin():", 0, branch)
+    assert source[begin_def : source.index("\n\n", begin_def)].strip() == (
+        "def begin():\n"
+        "            return begin_media_load(VIDEO, multi_model_mode, media_names, _begin_load)"
+    )
+    assert branch < source.index("return acquire_for_request(\n                            VIDEO,")
 
 
 def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):
@@ -382,11 +377,46 @@ def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []
     assert native_speed_flags("") == []
-    # default now includes conv-direct: ~9% faster sampling on CPU (z-image Q8_0, 192 threads) at identical RSS and unchanged decode.
+    # conv-direct: ~9% faster CPU sampling at identical RSS.
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
     assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
     with pytest.raises(ValueError):
         native_speed_flags("ludicrous")
+
+
+def test_native_speed_flags_drop_conv_direct_on_vulkan_and_rocm(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    monkeypatch.setattr(_sd_cpp_args_module, "_runs_on_apple_metal", lambda *_a, **_k: False)
+    fa_only = ["--diffusion-fa"]
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    for accel in ("vulkan", "rocm", "ROCm"):
+        assert native_speed_flags("default", [], accel) == fa_only
+        assert native_speed_flags("max", [], accel) == fa_only
+    for accel in ("cuda", "cpu", None):
+        assert native_speed_flags("default", [], accel) == full
+    assert (
+        native_speed_flags("default", ["--backend", "diffusion=Vulkan0,te=cpu"], "cuda") == fa_only
+    )
+    assert native_speed_flags("default", ["--backend", "diffusion=ROCm1"], None) == fa_only
+    assert native_speed_flags("default", ["--backend", "diffusion=CUDA0"], "vulkan") == full
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu"], "vulkan") == full
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "1")
+    assert native_speed_flags("default", [], "vulkan") == full
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "0")
+    assert native_speed_flags("default", [], "cuda") == fa_only
+
+
+def test_server_command_carries_accelerator(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    monkeypatch.setattr(_sd_cpp_args_module, "_runs_on_apple_metal", lambda *_a, **_k: False)
+    files = SdCppModelFiles(diffusion_model = "/m/dit.gguf")
+    kw = dict(host = "127.0.0.1", port = 1, native_speed = "default")
+    assert "--diffusion-conv-direct" not in build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "vulkan", **kw
+    )
+    assert "--diffusion-conv-direct" in build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "cuda", **kw
+    )
 
 
 def test_offload_none_is_empty():
@@ -397,7 +427,6 @@ def test_offload_group_streams_with_flash_attention():
     flags = offload_flags(OFFLOAD_GROUP)
     assert "--offload-to-cpu" in flags
     assert "--diffusion-fa" in flags
-    # group keeps CLIP/VAE resident -> no per-component cpu flags
     assert "--clip-on-cpu" not in flags
     assert "--vae-on-cpu" not in flags
 
@@ -412,45 +441,26 @@ def test_offload_model_pushes_everything_to_cpu_and_tiles():
         "--diffusion-fa",
     ):
         assert expected in flags
-    # sequential maps the same as model
     assert offload_flags(OFFLOAD_SEQUENTIAL) == flags
 
 
 def test_offload_can_keep_the_vae_off_the_cpu_path():
-    """H3's audio VAE aborts on the CPU path, so `low_vram` has to drop just that flag.
-
-    `ggml_conv_1d` hardcodes an F16 im2col destination and
-    `ggml_compute_forward_im2col_f16` then asserts the kernel is F16, while sd.cpp's
-    `audio_conv_weight_type` maps only BF16 to F16 and lets F32 through:
-    `GGML_ASSERT(src0->type == GGML_TYPE_F16) failed`, SIGABRT, exit 134. Converting the
-    checkpoint to fp16 does not help, since the type is imposed inside sd.cpp.
-
-    Everything else the policy asks for still applies. The denoiser dominates, so
-    `--offload-to-cpu` is where the saving is; dropping the mode entirely would cost far
-    more than dropping this one flag.
-    """
+    """H3 audio VAE asserts F16 on the CPU path, so only --vae-on-cpu is dropped under low_vram."""
     for policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
         flags = offload_flags(policy, vae_on_cpu = False)
         assert "--vae-on-cpu" not in flags
         for expected in ("--offload-to-cpu", "--clip-on-cpu", "--vae-tiling", "--diffusion-fa"):
             assert expected in flags, f"{policy}: {expected} should survive"
-    # The default is unchanged for every other family.
     assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
-    # And it is a no-op where the policy never emitted it.
     assert offload_flags(OFFLOAD_GROUP, vae_on_cpu = False) == offload_flags(OFFLOAD_GROUP)
 
 
 def test_offload_forced_flags_dedup():
-    # vae_tiling/diffusion_fa forced on with a policy that already sets them
     flags = offload_flags(OFFLOAD_MODEL, vae_tiling = True, diffusion_fa = True)
     assert flags.count("--vae-tiling") == 1
     assert flags.count("--diffusion-fa") == 1
-    # forced on top of a no-offload policy
     none_forced = offload_flags(OFFLOAD_NONE, vae_tiling = True, diffusion_fa = True)
     assert none_forced == ["--diffusion-fa", "--vae-tiling"]
-
-
-# ── full command construction ───────────────────────────────────────────────
 
 
 def test_build_zimage_command_minimal():
@@ -471,10 +481,9 @@ def test_build_zimage_command_minimal():
     assert _pair(cmd, "--width") == "512"
     assert _pair(cmd, "--height") == "768"
     assert _pair(cmd, "--steps") == "8"
-    assert _pair(cmd, "--cfg-scale") == "1"  # 1.0 -> "1"
+    assert _pair(cmd, "--cfg-scale") == "1"
     assert _pair(cmd, "--seed") == "42"
     assert _pair(cmd, "--output") == "/out/x.png"
-    # unset encoders are omitted
     assert "--t5xxl" not in cmd
     assert "--qwen2vl" not in cmd
 
@@ -511,7 +520,6 @@ def test_build_appends_offload_and_extra_args_last():
     assert "--offload-to-cpu" in cmd
     assert _pair(cmd, "--threads") == "8"
     assert "-v" in cmd
-    # extra args come after everything Unsloth set (last-wins for power users)
     assert cmd[-2:] == ["--rng", "cuda"]
 
 
@@ -520,7 +528,7 @@ def test_build_negative_prompt_and_batch():
     params = SdCppGenParams(prompt = "x", negative_prompt = "blurry")
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--negative-prompt") == "blurry"
-    # A CLI batch would silently drop every image after the first (the runner collects only the literal --output path), so the builder rejects it.
+    # The runner collects only the literal --output path, so a CLI batch would drop images.
     with pytest.raises(ValueError, match = "single-image"):
         build_sd_cpp_command(
             "/bin/sd-cli",
@@ -532,7 +540,7 @@ def test_build_negative_prompt_and_batch():
 
 def test_build_omits_unset_optional_params():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
-    params = SdCppGenParams(prompt = "x")  # no steps/cfg/seed/sampler
+    params = SdCppGenParams(prompt = "x")
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     for flag in (
         "--steps",
@@ -564,16 +572,13 @@ def test_build_requires_diffusion_model_and_prompt():
         )
 
 
-# ── img2img / inpaint / edit / LoRA (Phase 6) ───────────────────────────────
-
-
 def test_build_img2img_adds_init_and_strength():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
     params = SdCppGenParams(prompt = "make it autumn", init_img = "/in/src.png", strength = 0.6)
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--init-img") == "/in/src.png"
     assert _pair(cmd, "--strength") == "0.6"
-    assert _pair(cmd, "--mode") == "img_gen"  # img2img is still img_gen mode
+    assert _pair(cmd, "--mode") == "img_gen"
 
 
 def test_build_inpaint_adds_mask():
@@ -585,7 +590,6 @@ def test_build_inpaint_adds_mask():
 
 
 def test_build_inpaint_mask_without_init_img_rejected():
-    # sd-cli inpaint needs a source image, so a --mask with no --init-img is rejected up front instead of emitting doomed argv.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(prompt = "x", mask = "/in/mask.png")
     with pytest.raises(ValueError, match = "init_img is required"):
@@ -593,7 +597,6 @@ def test_build_inpaint_mask_without_init_img_rejected():
 
 
 def test_build_rejects_none_prompt():
-    # A None prompt must be rejected, not coerced to the literal string "None" and forwarded into argv.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     with pytest.raises(ValueError, match = "prompt is required"):
         build_sd_cpp_command(
@@ -605,14 +608,12 @@ def test_build_edit_repeats_ref_image():
     files = SdCppModelFiles(diffusion_model = "/m/flux.gguf")
     params = SdCppGenParams(prompt = "add a hat", ref_images = ("/r/a.png", "/r/b.png"))
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
-    # each ref image gets its own --ref-image flag
     idxs = [i for i, t in enumerate(cmd) if t == "--ref-image"]
     assert len(idxs) == 2
     assert [cmd[i + 1] for i in idxs] == ["/r/a.png", "/r/b.png"]
 
 
 def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
-    # img2img/inpaint/edit with dims unset must NOT force --width/--height, so sd.cpp derives the size from the input image.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     cmd = build_sd_cpp_command(
         "/bin/sd-cli",
@@ -621,7 +622,6 @@ def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
         output_path = "/o.png",
     )
     assert "--width" not in cmd and "--height" not in cmd
-    # an edit (ref-image) run derives its size too
     cmd2 = build_sd_cpp_command(
         "/bin/sd-cli",
         files,
@@ -643,7 +643,6 @@ def test_img2img_explicit_dims_are_emitted():
 
 
 def test_txt2img_unset_dims_keep_1024_default():
-    # A plain txt2img run with no dims keeps the prior 1024x1024 default.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     cmd = build_sd_cpp_command(
         "/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png"
@@ -661,7 +660,6 @@ def test_build_lora_dir_and_apply_mode():
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--lora-model-dir") == "/loras"
     assert _pair(cmd, "--lora-apply-mode") == "at_runtime"
-    # the <lora:...> tag rides in the prompt unchanged
     assert _pair(cmd, "--prompt") == "a portrait <lora:mystyle:0.8>"
 
 
@@ -674,9 +672,6 @@ def test_txt2img_omits_image_conditioning_flags():
         assert flag not in cmd
 
 
-# ── upscale mode ────────────────────────────────────────────────────────────
-
-
 def test_build_upscale_command():
     params = SdCppUpscaleParams(
         input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2
@@ -687,12 +682,10 @@ def test_build_upscale_command():
     assert _pair(cmd, "--upscale-model") == "/m/esrgan.pth"
     assert _pair(cmd, "--upscale-repeats") == "2"
     assert _pair(cmd, "--output") == "/out/big.png"
-    # no prompt / text-encoder flags in upscale mode
     assert "--prompt" not in cmd and "--llm" not in cmd
 
 
 def test_build_upscale_rejects_non_positive_repeats():
-    # repeats=0 must not be silently swallowed into sd-cli's default of one pass.
     with pytest.raises(ValueError, match = "repeats"):
         build_sd_cpp_upscale_command(
             "/bin/sd-cli",
@@ -704,7 +697,7 @@ def test_build_upscale_rejects_non_positive_repeats():
 def test_build_upscale_default_repeats_omits_flag():
     cmd = build_sd_cpp_upscale_command(
         "/bin/sd-cli",
-        SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),  # repeats=1
+        SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
         output_path = "/o.png",
     )
     assert "--upscale-repeats" not in cmd
@@ -725,9 +718,6 @@ def test_build_upscale_requires_input_and_model():
         )
 
 
-# ── sd-server spawn command ──────────────────────────────────────────────────
-
-
 def test_server_command_has_model_and_listen_but_no_request_params():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
     cmd = build_sd_cpp_server_command(
@@ -739,7 +729,6 @@ def test_server_command_has_model_and_listen_but_no_request_params():
     assert _pair(cmd, "--vae-format") == "flux2"
     assert _pair(cmd, "--listen-ip") == "127.0.0.1"
     assert _pair(cmd, "--listen-port") == "5678"
-    # Per-request parameters must NOT be baked into the spawn command.
     for flag in (
         "--prompt",
         "--seed",
@@ -761,11 +750,11 @@ def test_server_command_maps_offload_and_speed_and_dedupes():
         host = "127.0.0.1",
         port = 1,
         offload = ["--offload-to-cpu", "--diffusion-fa"],
-        native_speed = "default",  # would add --diffusion-fa again
+        native_speed = "default",
         threads = 8,
     )
     assert _pair(cmd, "--threads") == "8"
-    assert cmd.count("--diffusion-fa") == 1  # de-duped against offload
+    assert cmd.count("--diffusion-fa") == 1
     assert "--offload-to-cpu" in cmd
 
 
@@ -777,7 +766,6 @@ def test_server_command_scratch_dir_expands_to_lora_upscaler_embd():
     assert _pair(cmd, "--lora-model-dir") == "/tmp/scratch"
     assert _pair(cmd, "--hires-upscalers-dir") == "/tmp/scratch"
     assert _pair(cmd, "--embd-dir") == "/tmp/scratch"
-    # Absent when not requested.
     bare = build_sd_cpp_server_command("/bin/sd-server", files, host = "127.0.0.1", port = 1)
     assert "--lora-model-dir" not in bare and "--hires-upscalers-dir" not in bare
 
@@ -787,9 +775,6 @@ def test_server_command_requires_diffusion_model():
         build_sd_cpp_server_command(
             "/bin/sd-server", SdCppModelFiles(diffusion_model = ""), host = "127.0.0.1", port = 1
         )
-
-
-# ── img_gen request body ─────────────────────────────────────────────────────
 
 
 def test_img_gen_request_maps_core_fields():
@@ -827,7 +812,6 @@ def test_img_gen_request_requires_prompt():
 
 
 def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
-    # The CPU-backend rescue fires only for the deterministic "this backend cannot run this graph" abort: an OOM kill or a plain crash surfaces as itself.
     abort = (
         "sd-server connection lost during img_gen poll (process exited, code -6)\n"
         "Last output:\n"
@@ -835,11 +819,9 @@ def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
         "1   sd-server   0x00000001044f8df4 ggml_abort + 156"
     )
     assert is_ggml_unsupported_op_abort(abort) is True
-    # The RMS_NORM shape of the same abort (text encoder) counts too.
     assert (
         is_ggml_unsupported_op_abort("error: unsupported op 'RMS_NORM'\nggml_abort + 156") is True
     )
-    # Neither marker alone is enough, and an unrelated death is never a match.
     assert is_ggml_unsupported_op_abort("unsupported op 'MUL_MAT'") is False
     assert is_ggml_unsupported_op_abort("ggml_abort + 156") is False
     assert is_ggml_unsupported_op_abort("process exited, code -9") is False
@@ -847,7 +829,7 @@ def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
 
 
 def test_server_command_appends_extra_args_last():
-    # --backend cpu is passed as extra_args by the abort rescue and sd.cpp is last-wins, so it must land after every normal flag.
+    # The abort rescue passes --backend cpu as extra_args and sd.cpp is last-wins.
     cmd = build_sd_cpp_server_command(
         "/x/sd-server",
         SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.sft"),
@@ -893,12 +875,7 @@ def test_minimax_h3_video_command_has_all_joint_av_components():
 
 
 def test_video_build_appends_extra_args_verbatim_and_last():
-    """The video mirror of the image builder's last-wins contract.
-
-    Token-wise de-duplication cannot express an override: the builder already sets --rng cpu, so
-    extra_args ["--rng", "cuda"] dropped the --rng it matched and appended a bare "cuda" for the
-    parser to choke on. Every sibling builder in this module appends the list verbatim.
-    """
+    """Video build appends extra_args verbatim and last, so --rng cuda overrides the builder's default."""
     files = SdCppModelFiles(
         diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
         vae = "/m/video.safetensors",
@@ -921,7 +898,6 @@ def test_video_build_appends_extra_args_verbatim_and_last():
     )
     assert cmd[-2:] == ["--rng", "cuda"]
     assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
-    # Unsloth's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
     assert cmd.count("--rng") == 2
 
 
@@ -952,7 +928,6 @@ def test_minimax_h3_video_command_omits_keyframe_flags_for_text_only():
 
 
 def test_minimax_h3_video_command_carries_each_keyframe():
-    # Each keyframe combination maps to its sd.cpp flags.
     assert _pair(_h3_video_cmd(init_img = "/k/first.png"), "--init-img") == "/k/first.png"
     assert "--end-img" not in _h3_video_cmd(init_img = "/k/first.png")
 
@@ -966,7 +941,6 @@ def test_minimax_h3_video_command_carries_each_keyframe():
 
 
 def test_minimax_h3_video_command_packs_references_in_reading_order():
-    # Preserve the model's reference order.
     cmd = _h3_video_cmd(
         ref_images = ("/r/cat.png", "/r/style.png"),
         ref_videos = ("/r/motion", "/r/orbit"),
@@ -987,7 +961,6 @@ def test_minimax_h3_video_command_packs_references_in_reading_order():
 
 
 def test_minimax_h3_video_command_refuses_keyframes_with_references():
-    # sd.cpp refuses the pair itself, but only once the model is resident.
     with pytest.raises(ValueError, match = "different denoiser partitions"):
         _h3_video_cmd(init_img = "/k/first.png", ref_images = ("/r/cat.png",))
     with pytest.raises(ValueError, match = "different denoiser partitions"):
@@ -995,7 +968,6 @@ def test_minimax_h3_video_command_refuses_keyframes_with_references():
 
 
 def test_minimax_h3_video_command_refuses_an_unpairable_soundtrack():
-    # Reject soundtrack flags without a video at the same position.
     with pytest.raises(ValueError, match = "reference video to pair with"):
         _h3_video_cmd(ref_videos = ("/r/motion",), ref_video_audios = ("/r/a.wav", "/r/b.wav"))
 
@@ -1010,7 +982,6 @@ def test_minimax_h3_video_command_carries_the_video_flow_shift():
 def test_device_backend_flags_pin_all_three_graphs():
     # sd.cpp defaults to ordinal 0 unless told otherwise, so a selection only takes effect through --backend.
     assert device_backend_flags("CUDA1") == ["--backend", "diffusion=CUDA1,te=CUDA1,vae=CUDA1"]
-    # No selection keeps sd.cpp's own choice rather than pinning ordinal 0 explicitly.
     assert device_backend_flags(None) == []
     assert device_backend_flags("") == []
 
@@ -1023,7 +994,6 @@ def test_device_backend_flags_leave_the_offloaded_modules_on_the_cpu():
         "--backend",
         "diffusion=CUDA1,te=cpu,vae=cpu",
     ]
-    # The group policy offloads parameters but runs both on the device, so both are pinned.
     assert device_backend_flags("CUDA1", offload_flags(OFFLOAD_GROUP)) == [
         "--backend",
         "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
@@ -1031,9 +1001,214 @@ def test_device_backend_flags_leave_the_offloaded_modules_on_the_cpu():
 
 
 def test_device_backend_flags_are_appended_not_folded_into_the_policy():
-    # The pin is built per binary at the point the flags are handed over, so the policy list it
-    # reads must stay unchanged: a deferred install can replace the build after this is computed.
+    # The policy list must stay unchanged: a deferred install can replace the build later.
     policy = offload_flags(OFFLOAD_GROUP)
     before = list(policy)
     device_backend_flags("CUDA1", policy)
     assert policy == before
+
+
+def test_conv_direct_force_on_reaches_apple_metal(monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    monkeypatch.setenv(
+        "UNSLOTH_SD_CPP_CONV_DIRECT", "1"
+    )  # an explicit force beats the Metal default
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+
+
+# ── Metal mmap (leejet/stable-diffusion.cpp#2037) ───────────────────────────
+
+
+def _managed_install(tmp_path, tag):
+    import json
+
+    root = tmp_path / "stable-diffusion.cpp"
+    (root / "bin").mkdir(parents = True)
+    binary = root / "bin" / "sd-cli"
+    binary.write_text("")
+    (root / ".unsloth-sd-cpp-install.json").write_text(
+        json.dumps({"tag": tag, "accelerator": "cpu"})
+    )
+    _sd_cpp_args_module._installed_sd_cpp_tag.cache_clear()
+    return str(binary)
+
+
+def _all_builders(binary, extra_args = None):
+    files = SdCppModelFiles(
+        diffusion_model = "/m/model.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf"
+    )
+    yield build_sd_cpp_command(
+        binary, files, SdCppGenParams(prompt = "a cat"), output_path = "/o.png", extra_args = extra_args
+    )
+    yield build_sd_cpp_video_command(
+        binary,
+        files,
+        SdCppVideoGenParams(prompt = "a cat", width = 256, height = 256, num_frames = 5),
+        output_path = "/o.webm",
+        extra_args = extra_args,
+    )
+    yield build_sd_cpp_server_command(
+        binary, files, host = "127.0.0.1", port = 1, extra_args = extra_args
+    )
+
+
+@pytest.mark.parametrize(
+    "tag, expected",
+    [
+        ("master-982-0518b34-ud331c66", True),  # the pinned bundle
+        ("master-968-8cd731e-ubdb47d1", True),  # the previous pin
+        ("master-951-f89d9b1-uafac7a7", True),  # the pin before it
+        ("master-907-500ef5f", True),  # the build that merged #2037
+        ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
+        ("master-813-bfbef5b-u6321a69", False),
+        ("b1234", False),  # undatable: fail closed
+    ],
+)
+def test_mmap_rides_every_macos_builder_from_the_metal_mmap_build(
+    monkeypatch, tmp_path, tag, expected
+):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    binary = _managed_install(tmp_path, tag)
+    for cmd in _all_builders(binary):
+        assert ("--mmap" in cmd) is expected
+        assert cmd.count("--mmap") <= 1
+
+
+def test_mmap_is_macos_only_and_never_on_an_unrecorded_binary(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    binary = _managed_install(tmp_path, "master-951-f89d9b1-uafac7a7")
+    for other in ("linux", "win32"):
+        monkeypatch.setattr("sys.platform", other)
+        assert all("--mmap" not in cmd for cmd in _all_builders(binary))
+    monkeypatch.setattr("sys.platform", "darwin")
+    stray = tmp_path / "elsewhere" / "sd-cli"
+    stray.parent.mkdir()
+    stray.write_text("")
+    assert all("--mmap" not in cmd for cmd in _all_builders(str(stray)))
+
+
+def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.platform", "darwin")
+    new = _managed_install(tmp_path, "master-951-f89d9b1-uafac7a7")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "0")
+    assert all("--mmap" not in cmd for cmd in _all_builders(new))
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "1")
+    assert all("--mmap" in cmd for cmd in _all_builders("/usr/local/bin/sd-cli"))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP")
+    for cmd in _all_builders(new, extra_args = ["--mmap"]):
+        assert cmd.count("--mmap") == 1
+
+
+@pytest.mark.parametrize(
+    "ccs,expected",
+    [
+        ([(8, 0)], "1024"),  # A100
+        ([(9, 0)], "1024"),  # H100
+        ([(10, 0)], "1024"),  # B200
+        ([(10, 3)], "1024"),
+        ([(12, 0)], "4096"),  # RTX PRO 6000 / RTX 50
+        ([(8, 9)], None),  # L4 / RTX 40: MMQ stays faster
+        ([(8, 6)], None),
+        ([(8, 7)], None),
+        ([(7, 5)], None),
+        ([(11, 0)], None),
+        ([(8, 0), (10, 0)], "1024"),
+        ([(8, 0), (8, 9)], None),  # sd.cpp may land on either card
+        ([(10, 0), (12, 0)], None),
+        ([], None),
+    ],
+)
+def test_quant_cublas_env_follows_the_measured_architectures(ccs, expected):
+    env = _sd_cpp_args_module.quant_cublas_env(ccs, environ = {}, weight_types = frozenset({"Q8_0"}))
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+@pytest.mark.parametrize("user_value", ["0", "512"])
+def test_quant_cublas_env_never_overrides_the_user(user_value):
+    environ = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": user_value}
+    assert (
+        _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = environ, weight_types = frozenset({"Q8_0"})
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    "weight_types,expected",
+    [
+        (frozenset({"Q8_0"}), "1024"),
+        (frozenset({"Q4_K"}), None),  # k-quants keep MMQ
+        (frozenset({"Q4_K", "Q5_K"}), None),
+        (frozenset({"Q8_0", "Q4_K"}), None),  # a mixed file would route its k-quants too
+        (frozenset({"Q4_0"}), None),
+        (frozenset(), None),  # unquantized: nothing to route
+        (None, None),  # unknown (safetensors, unreadable)
+    ],
+)
+def test_quant_cublas_env_only_for_q8_0_diffusion_ggufs(weight_types, expected):
+    env = _sd_cpp_args_module.quant_cublas_env([(10, 0)], environ = {}, weight_types = weight_types)
+    assert env == ({} if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected})
+
+
+def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    def write(name, tensors):
+        path = tmp_path / name
+        w = gguf.GGUFWriter(str(path), "test")
+        for tname, arr, qtype in tensors:
+            if qtype is None:
+                w.add_tensor(tname, arr)
+            elif arr is None:  # gguf-py cannot quantize k-quants: write zeroed blocks of that type
+                blocks = np.zeros((4, gguf.GGML_QUANT_SIZES[qtype][1]), dtype = np.uint8)
+                w.add_tensor(tname, blocks, raw_dtype = qtype)
+            else:
+                w.add_tensor(tname, gguf.quants.quantize(arr, qtype), raw_dtype = qtype)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+        return str(path)
+
+    x = np.ones((4, 256), dtype = np.float32)
+    q8 = write(
+        "q8.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("n", np.ones(4, dtype = np.float32), None)],
+    )
+    mixed = write(
+        "mixed.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("b", x, gguf.GGMLQuantizationType.Q4_0)],
+    )
+    types_of = _sd_cpp_args_module.gguf_quantized_weight_types
+    assert types_of(q8) == frozenset({"Q8_0"})
+    assert types_of(mixed) == frozenset({"Q8_0", "Q4_0"})
+    assert types_of(str(tmp_path / "missing.gguf")) is None
+    assert types_of(str(tmp_path / "model.safetensors")) is None
+    assert types_of(None) is None
+
+    k_quant = write("te_q4k.gguf", [("w", None, gguf.GGMLQuantizationType.Q4_K)])
+    dense = write("vae_f16.gguf", [("w", x.astype(np.float16), None)])
+    all_types = _sd_cpp_args_module.model_files_quantized_weight_types
+
+    def route(files):
+        return _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = {}, weight_types = all_types(files)
+        )
+
+    with_k_te = SdCppModelFiles(diffusion_model = q8, llm = k_quant)
+    assert all_types(with_k_te) == frozenset({"Q8_0", "Q4_K"})
+    assert route(with_k_te) == {}
+    assert route(SdCppModelFiles(diffusion_model = q8, t5xxl = k_quant, vae = dense)) == {}
+    q8_only = SdCppModelFiles(
+        diffusion_model = q8, llm = q8, vae = dense, clip_l = str(tmp_path / "c.safetensors")
+    )
+    assert all_types(q8_only) == frozenset({"Q8_0"})
+    assert route(q8_only) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert all_types(SdCppModelFiles(diffusion_model = q8, llm = str(tmp_path / "x.gguf"))) is None
+    assert all_types(SdCppModelFiles(diffusion_model = str(tmp_path / "m.safetensors"))) is None

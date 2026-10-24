@@ -117,7 +117,7 @@ def test_non_plain_arguments_bypass():
 
 
 def test_lru_is_bounded_by_bytes(monkeypatch):
-    # Entry = 1024 B float32 embeds + 256 B bool mask = 1280 B.
+    # entry = 1024 B float32 embeds + 256 B bool mask = 1280 B
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE_MB", str(3000 / 1024 / 1024))
     pipe = _EncodePipe(width = 256)
     prompt_cache.install(pipe)
@@ -125,7 +125,7 @@ def test_lru_is_bounded_by_bytes(monkeypatch):
     pipe.encode_prompt("a")
     pipe.encode_prompt("b")
     assert len(cache) == 2 and cache.bytes == 2560
-    pipe.encode_prompt("a")  # refresh a, so b is the eviction victim
+    pipe.encode_prompt("a")
     pipe.encode_prompt("c")
     assert len(cache) == 2 and cache.bytes <= cache.budget
     assert cache.describe()["evictions"] == 1
@@ -224,7 +224,7 @@ def test_composes_with_the_disk_cache(tmp_path, monkeypatch):
     pipe.encode_prompt("a cat")
     assert pipe.calls == 1
     assert pipe._unsloth_cond_cache_stats["misses"] == 1
-    assert pipe._unsloth_cond_cache_stats["hits"] == 0  # the memory hit never reached the disk
+    assert pipe._unsloth_cond_cache_stats["hits"] == 0
     fresh = _EncodePipe()
     cond_cache.install(fresh, family = "fam", repo_id = "r", dtype = torch.float32)
     prompt_cache.install(fresh)
@@ -337,7 +337,7 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
 
 
 def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
-    # Entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit, not the host.
+    # entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit
     from core.inference import diffusion_memory
 
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB, raising = False)
@@ -345,7 +345,7 @@ def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
     assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "100")
     assert prompt_cache.budget_bytes() == 100 * 1024 * 1024
-    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "lots")  # malformed: default, still capped
+    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "lots")
     assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB)
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
@@ -389,3 +389,106 @@ def test_controlnet_pipe_gets_the_prompt_cache(monkeypatch):
     first = pipe.encode_prompt("a sloth", device = "cpu")
     again = pipe.encode_prompt("a sloth", device = "cpu")
     assert calls == ["a sloth"] and torch.equal(first, again)
+
+
+def _image(
+    color,
+    size = (8, 6),
+    mode = "RGB",
+):
+    Image = pytest.importorskip("PIL.Image")
+    return Image.new(mode, size, color)
+
+
+def test_edit_reference_image_is_cached_by_pixel_content():
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    first = pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    again = pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    as_list = pipe.encode_prompt("a cat", image = [_image((10, 20, 30))])
+    assert pipe.calls == 2
+    assert torch.equal(first[0], again[0])
+    assert torch.equal(first[0], as_list[0])
+    stats = pipe._unsloth_prompt_cache.describe()
+    assert stats["bypassed"] == 0 and stats["hits"] == 1
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        lambda: _image((10, 20, 31)),
+        lambda: _image((10, 20, 30), size = (6, 8)),
+        lambda: _image((10, 20, 30, 255), mode = "RGBA"),
+    ],
+)
+def test_a_different_reference_image_misses(other):
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", image = _image((10, 20, 30)))
+    pipe.encode_prompt("a cat", image = other())
+    assert pipe.calls == 2
+    assert pipe._unsloth_prompt_cache.describe()["hits"] == 0
+
+
+def test_an_edited_image_object_misses_after_in_place_change():
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    image = _image((10, 20, 30))
+    pipe.encode_prompt("a cat", image = image)
+    image.putpixel((0, 0), (255, 0, 0))
+    pipe.encode_prompt("a cat", image = image)
+    assert pipe.calls == 2
+
+
+def test_bypassed_encoder_error_is_not_chained_onto_the_key_error():
+    class Boom(_EncodePipe):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
+            raise RuntimeError("encoder failed")
+
+    pipe = Boom()
+    assert prompt_cache.install(pipe)
+    with pytest.raises(RuntimeError) as info:
+        pipe.encode_prompt("a cat", image = object())
+    assert info.value.__context__ is None
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 1
+
+
+def test_numpy_like_object_with_tobytes_still_bypasses():
+    class FakeImage:
+        mode = "RGB"
+        size = (1, 1)
+
+        def tobytes(self):
+            return b"\0\0\0"
+
+    pipe = _EncodePipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", image = FakeImage())
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 1
+
+
+def test_failed_lookup_encoder_error_is_not_chained(monkeypatch):
+    class Boom(_EncodePipe):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
+            raise RuntimeError("encoder failed")
+
+    pipe = Boom()
+    assert prompt_cache.install(pipe)
+
+    def broken_get(*_args, **_kwargs):
+        raise OSError("lookup failed")
+
+    monkeypatch.setattr(pipe._unsloth_prompt_cache, "get", broken_get)
+    with pytest.raises(RuntimeError) as info:
+        pipe.encode_prompt("a cat")
+    assert info.value.__context__ is None

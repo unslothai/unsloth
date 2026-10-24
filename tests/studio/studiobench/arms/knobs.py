@@ -1,58 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The seven runtime-injected knobs, as a decision table: which knob removes the slope names the fix.
-
-Every arm here runs on the SHIPPED PRODUCTION BUILD through `add_init_script`. Nothing is
-compiled, nothing is patched on disk, and an external tester with a laptop and an Unsloth install
-can run the whole ablation plane. That constraint is not a convenience. An ablation that requires
-a custom build is an ablation that will be run once, by the person who wrote it, on the machine
-where the problem does not reproduce.
-
-THE DECISION TABLE. These are not seven ways of saying "it got faster". Each knob removes a
-different layer of the pipeline, and the FIRST one that removes the slope names the layer the
-cost lives in:
-
-  A  visibility:hidden on completed messages
-     removes paint and raster, keeps layout, DOM and React
-     -> if the slope goes: the cost is painting retained messages
-  B  content-visibility:auto + contain-intrinsic-size (undoing the shipped
-     `.aui-thread-root [data-streamdown="code-block"]` override in index.css, which forces
-     `content-visibility: visible !important`)
-     removes off-screen style, layout and paint
-     -> if the slope goes: the cost is off-screen style and layout. Note what the shipped comment
-        above that rule now says: the "thread length is bounded" justification has already been
-        disproved by #8977, the rule is kept for a height flicker and a WebKit find-in-page
-        hazard, and containment on the message roots was measured as no help, with the claim that
-        what grows with thread length is inherited-property style recalc rather than layout. That
-        last sentence is arm E's hypothesis, already asserted upstream. This ladder is what
-        confirms or refutes it, and a positive B is not permission to delete the rule
-  C  display:none on completed messages
-     also removes layout geometry and the sibling from the layout sequence
-     -> if the slope goes here but not at A or B: the cost is layout geometry, and the fix is to
-        virtualise the list
-  D  detach the autoscroll subtree observer
-     removes forced synchronous layout per mutation
-     -> if the slope goes: the cost is the observer reading scrollHeight on every streamed
-        character, at a price proportional to the whole thread
-  E  neutralise --aui-scroll-stabilizer
-     removes inherited-custom-property subtree style invalidation
-     -> if the slope goes: writing one inherited custom property on the scroll container is
-        invalidating style for every descendant, per mutation
-  F  freeze React but keep the DOM
-     removes React subscriptions and reconciliation
-     -> if the slope goes: the cost is fibre bookkeeping, not DOM. Note this arm is DOM-CHANGING
-        (the stream stops rendering while frozen) so it is only ever an upper bound
-  G  CONTROL: identical DOM, thread scrolled so prior turns are IN the viewport
-     -> if the slope is the SAME as the unscrolled case, off-screen occupancy is not the
-        mechanism, and A, B and C should all have read null. If G disagrees with them, one of
-        them did not fire
-
-G is the arm that catches the harness rather than the app, which is why it is in the list rather
-than in a comment. A, B and C all rest on the assumption that the retained messages are OFF
-screen; if the thread is not actually scrolled where the harness thinks it is, all three read
-null for a reason that has nothing to do with rendering.
-"""
+"""Seven runtime knobs on the shipped build; the first one that removes the slope names the layer."""
 
 from __future__ import annotations
 
@@ -65,12 +14,9 @@ from .manifest import Arm, DeclaredDiff, Invariance, PotencyCounter
 
 KNOBS_JS_PATH = Path(__file__).with_name("knobs.js")
 
-#: Knobs that must be installed BEFORE the app boots, because they patch a prototype the app is
-#: about to use. Installing one of these after boot measures nothing: React has already captured
-#: its scheduler port and the autoscroll hook has already called observe().
+# Must be installed before boot: React captures its scheduler port and autoscroll calls observe() early.
 PREBOOT_ARM_IDS: frozenset[str] = frozenset({"D", "E", "F"})
 
-#: Knobs applied at the start of a measured window, over the messages that exist then.
 RUNTIME_ARM_IDS: frozenset[str] = frozenset({"A", "B", "C", "G"})
 
 
@@ -281,13 +227,7 @@ def config_init_script(
     debug: bool = False,
     control_visible_target: int = 3,
 ) -> str:
-    """The config script that must be injected BEFORE knobs.js.
-
-    Only the pre-boot arms named here get their prototype patches installed. An installed but
-    inactive patch is not free: it adds a call frame to `observe`, to `setProperty` and to every
-    scheduler delivery, and it would sit in the control cell too, which is precisely the kind of
-    quiet, treatment-correlated overhead this whole design exists to keep out.
-    """
+    """Only named pre-boot arms get prototype patches; an inactive patch still adds cost to every call."""
 
     requested = sorted(set(arm_ids))
     unknown = [arm_id for arm_id in requested if arm_id not in ARM_BY_ID]
@@ -310,11 +250,7 @@ def init_scripts_for(
     control_visible_target: int = 3,
     extra_scripts: Sequence[str] = (),
 ) -> list[str]:
-    """The ordered list of init scripts for one cell. Order is load-bearing.
-
-    The config must exist before knobs.js reads it, and knobs.js must be installed before the app
-    bundle runs. `add_init_script` preserves insertion order, so this list is handed over as-is.
-    """
+    """Order is load-bearing: config, then knobs.js, then the app bundle, in insertion order."""
 
     return [
         config_init_script(arm_ids, debug = debug, control_visible_target = control_visible_target),

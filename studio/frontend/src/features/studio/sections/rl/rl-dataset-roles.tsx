@@ -10,21 +10,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getAuthSessionEpoch } from "@/features/auth";
 import { getHfToken } from "@/features/hub";
 import {
   checkDatasetFormat,
   previewCell,
   useRlWorkspaceStore,
   useTrainingConfigStore,
-} from "@/features/training";
-import {
+  useTrainingRuntimeStore,
+  RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
   type RlObjective,
   type RlRole,
   missingRlRoles,
-  resolveRlMapping,
-} from "@/features/training/lib/rl-roles";
+  syncRlMapping,
+} from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -112,6 +113,8 @@ export function RlDatasetRoles({
       uploadedFile: s.uploadedFile,
       datasetSubset: s.datasetSubset,
       datasetSplit: s.datasetSplit,
+      datasetKnownCached: s.datasetKnownCached,
+      datasetLocalPath: s.datasetLocalPath,
       mapping: s.rlRoleMapping,
       setMapping: s.setRlRoleMapping,
     })),
@@ -122,7 +125,11 @@ export function RlDatasetRoles({
       setPreviewRow: s.setPreviewRow,
     })),
   );
-  const [columns, setColumns] = useState<string[] | null>(null);
+  // Columns are kept with the dataset they came from: a switch must not map the new
+  // dataset's roles from the previous one's columns while its own are loading.
+  const [loaded, setLoaded] = useState<{ key: string; columns: string[] } | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const latestRequest = useRef(0);
@@ -134,14 +141,29 @@ export function RlDatasetRoles({
         ? config.uploadedFile
         : null;
 
-  const { datasetSubset, datasetSplit, mapping, setMapping } = config;
+  const { datasetSubset, datasetSplit, mapping } = config;
+  // Same cache choice as the store's dataset check, so a cached snapshot shows its own columns.
+  const preferLocalCache =
+    config.datasetSource === "huggingface" && config.datasetKnownCached;
+  const localPath = preferLocalCache ? config.datasetLocalPath : null;
+  const datasetKey = JSON.stringify([
+    datasetName,
+    datasetSubset,
+    datasetSplit,
+    localPath,
+  ]);
+  const columns = loaded?.key === datasetKey ? loaded.columns : null;
   const loadColumns = useCallback(async () => {
+    // The row is the reward tester's reference: never show one dataset's under another.
+    setPreviewRow(null);
     if (!datasetName) {
       return;
     }
-    // Picking a dataset changes the split a moment later; a reply for the old split
-    // ("Bad split: train") must not land on top of the newer one.
+    // The split changes just after the dataset: a reply for the old one must not land last.
     const request = ++latestRequest.current;
+    const epoch = getAuthSessionEpoch();
+    const current = () =>
+      request === latestRequest.current && epoch === getAuthSessionEpoch();
     setLoading(true);
     setError(null);
     try {
@@ -151,44 +173,67 @@ export function RlDatasetRoles({
         subset: datasetSubset,
         split: datasetSplit,
         isVlm: false,
+        preferLocalCache,
+        localPath,
       });
-      if (request === latestRequest.current) {
-        setColumns(res.columns);
+      if (current()) {
+        setLoaded({ key: datasetKey, columns: res.columns });
         setPreviewRow(res.preview_samples?.[0] ?? null);
       }
     } catch (err) {
-      if (request === latestRequest.current) {
-        setColumns(null);
+      if (current()) {
+        setLoaded(null);
         setPreviewRow(null);
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
-      if (request === latestRequest.current) {
+      if (current()) {
         setLoading(false);
       }
     }
-  }, [datasetName, datasetSubset, datasetSplit, setPreviewRow]);
+  }, [
+    datasetName,
+    datasetSubset,
+    datasetSplit,
+    preferLocalCache,
+    localPath,
+    datasetKey,
+    setPreviewRow,
+  ]);
 
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
-    loadColumns();
+    // Deferred so loadColumns' state resets run in a callback, not the effect body.
+    let live = true;
+    void Promise.resolve().then(() => {
+      if (live) void loadColumns();
+    });
+    // The preview row is shared: a reply landing after unmount must not overwrite it.
+    return () => {
+      live = false;
+      latestRequest.current += 1;
+    };
   }, [loadColumns]);
 
-  // Drop roles from another objective and fill the rest from column names.
+  const starting = useTrainingRuntimeStore((s) => s.isStarting);
   useEffect(() => {
-    if (!columns) {
+    // A Start in flight compares its whole request: filling roles now would cancel it. The
+    // backend resolves unmapped roles the same way, so the write can wait until it settles.
+    if (!columns || starting) {
       return;
     }
-    const next = resolveRlMapping(objective, columns, mapping);
+    const next = syncRlMapping(objective, columns, mapping);
     if (JSON.stringify(next) !== JSON.stringify(mapping)) {
-      setMapping(next);
+      // Derived, not a user edit.
+      useTrainingConfigStore.setState({ rlRoleMapping: next });
     }
-  }, [columns, objective, mapping, setMapping]);
+  }, [columns, objective, mapping, starting]);
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
-    delete next[column];
-    if (role !== IGNORE) {
+    if (role === IGNORE) {
+      next[column] = RL_IGNORE;
+    } else {
       for (const [col, r] of Object.entries(next)) {
         if (r === role) {
           delete next[col];
@@ -246,10 +291,16 @@ export function RlDatasetRoles({
           </Button>
         </div>
       </div>
-      {!datasetName && (
-        <p className="text-ui-11p5 text-muted-foreground">
-          {t("rl.dataset.noDataset")}
+      {config.datasetSource === "s3" ? (
+        <p className="text-ui-11p5 text-destructive">
+          {t("rl.dataset.s3Unsupported")}
         </p>
+      ) : (
+        !datasetName && (
+          <p className="text-ui-11p5 text-muted-foreground">
+            {t("rl.dataset.noDataset")}
+          </p>
+        )
       )}
       {error && (
         <p className="text-ui-11p5 text-destructive">
@@ -269,7 +320,9 @@ export function RlDatasetRoles({
             <span>{t("rl.dataset.roleHeader")}</span>
           </div>
           {columns.map((column) => {
-            const role = config.mapping[column] as RlRole | undefined;
+            // A role kept for another objective shows as ignored here.
+            const mapped = config.mapping[column] as RlRole | undefined;
+            const role = mapped && roles.includes(mapped) ? mapped : undefined;
             const sample = previewCell(previewRow?.[column]);
             return (
               <div
