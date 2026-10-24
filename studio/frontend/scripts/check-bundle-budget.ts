@@ -409,6 +409,9 @@ export const BUDGET = {
   // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
   // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
   // that plus about 300 B raw / 100 B transfer, as for #14568.
+  // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
+  // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
+  // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -433,8 +436,10 @@ export const BUDGET = {
   // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
   // Merged with main at fb104d2b57: measured 6,774.6 KB raw / 2,041.2 KB transfer (Node 24, 99 chunks), set to that plus
   // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
-  transferBytes: 2_090_340,
-  rawBytes: 6_937_540,
+  // Merged with main at 74b699513c: measured 6,777.4 KB raw / 2,042.0 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  transferBytes: 2_091_160,
+  rawBytes: 6_940_410,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -248,12 +248,14 @@ def cfg_batch_decline(
 
 
 def _usable_free_mib(device: Any) -> Optional[int]:
-    """Driver free plus this process's reserved-but-unallocated cache on ``device``."""
+    """Driver free plus this process's reserved-but-unallocated cache on ``device``, less what the user's VRAM Budget keeps free (0 at the default)."""
     torch = _torch()
     try:
-        free, _total = torch.cuda.mem_get_info(device)
+        from .diffusion_memory import _user_budget_reserve_mib
+
+        free, total = torch.cuda.mem_get_info(device)
         idle = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return int(free + max(0, idle)) >> 20
+        return (int(free + max(0, idle)) >> 20) - _user_budget_reserve_mib(int(total) >> 20)
     except Exception:  # noqa: BLE001 - unreadable: the out-of-memory backstop decides
         return None
 
@@ -633,7 +635,9 @@ class CfgBatchRouter:
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
             return False
-        _torch().cuda.synchronize(latent.device)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(latent.device)
         return True
 
     def _measured_plain(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
