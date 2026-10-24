@@ -821,9 +821,10 @@ def _resident_cuda_ordinal() -> Optional[int]:
 
 def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB on CUDA card ``ordinal``: driver free plus this process's reusable allocator cache, the same
-    credit the render's memory check gives (diffusion_memory.cuda_reclaimable_bytes). Parking leaves SAM's emptied
-    weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a warm card
-    (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
+    credit the render's memory check gives (diffusion_memory.cuda_reclaimable_bytes), less the user's VRAM Budget
+    reserve (raw at the default), so the segmenter neither lands on nor stays resident in that reserve. Parking leaves
+    SAM's emptied weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a
+    warm card (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
     try:
         import torch
         free, total = torch.cuda.mem_get_info(ordinal)
@@ -835,6 +836,12 @@ def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     except Exception:  # noqa: BLE001 -- no allocator reading: driver free still stands
         reclaimable = 0
     free = min(int(free) + max(0, int(reclaimable)), int(total))
+    try:
+        from core.inference.diffusion_memory import user_budget_reserve_bytes
+        reserve = int(user_budget_reserve_bytes("cuda", total) or 0)
+    except Exception:  # noqa: BLE001 -- no Budget reading: the raw figure stands
+        reserve = 0
+    free = max(0, free - reserve)
     return int(free // (1024 * 1024)), int(total // (1024 * 1024))
 
 

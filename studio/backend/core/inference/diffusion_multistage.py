@@ -45,12 +45,15 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
         param = next(dits[0].parameters()) if dits else None
         if param is None or param.device.type != "cuda":
             return False
-        free, _total = torch.cuda.mem_get_info(param.device)
+        free, total = torch.cuda.mem_get_info(param.device)
         idle = torch.cuda.memory_reserved(param.device) - torch.cuda.memory_allocated(param.device)
+        from .diffusion_memory import _user_budget_reserve_mib
+
+        reserve = _user_budget_reserve_mib(int(total) >> 20) << 20
     except Exception:  # noqa: BLE001 -- no CUDA / no denoiser: keep the stock offload
         return False
     need = sum(module_bytes(m) for m in companions if m is not None) + HOLD_MARGIN_BYTES
-    return free + max(0, idle) >= need
+    return free + max(0, idle) - reserve >= need
 
 
 @contextlib.contextmanager

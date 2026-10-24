@@ -51443,7 +51443,9 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
+    from core.inference.diffusion_memory import snapshot_upcoming_load_budget
 
+    snapshot_upcoming_load_budget()
     if not gpu_ids:
         if not allow_ranking:
             return None
@@ -51537,6 +51539,16 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
             detail = "Separate text-encoder / VAE files load on the diffusers engine (a CUDA / ROCm GPU); "
             "this host routes the pick to the native engine. Omit text_encoder_file / vae_file.",
         )
+
+
+def _mlx_load_blocker(request: DiffusionLoadRequest) -> Optional[str]:
+    from core.inference.diffusion_engine_router import mlx_load_blocker
+    return mlx_load_blocker(
+        loras = request.loras,
+        component_files = _component_file_kwargs(request),
+        transformer_quant = request.transformer_quant,
+        text_encoder_quant = request.text_encoder_quant,
+    )
 
 
 def _has_active_loras(loras: Any) -> bool:
@@ -51656,6 +51668,7 @@ async def diffusion_download_plan(
                 gguf_filename = request.gguf_filename,
                 engine = request.engine,
                 with_loras = _has_active_loras(request.loras),
+                mlx_blocker = _mlx_load_blocker(request),
             )
             if fam is not None
             else None
@@ -51665,7 +51678,6 @@ async def diffusion_download_plan(
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         elif predicted == ENGINE_MLX:
-            # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
             _refuse_native_component_files(request)
             _refuse_mlx_loras(request)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
@@ -51780,6 +51792,9 @@ def _assert_native_precision_unset(
     )
 
 
+_DIFFUSION_LOAD_CANCELLED = "Diffusion load was cancelled."
+
+
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
 async def load_diffusion_model(
@@ -51795,8 +51810,11 @@ async def load_diffusion_model(
         redact_host_paths,
         restore_inventory_handles,
     )
+    from core.inference.chat_swap_kv import preparing_load
+
     try:
-        loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+        with preparing_load("image"):
+            loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers, and the inner loader redacted native paths
         # only, which do not know inventory handles.
@@ -51986,6 +52004,7 @@ async def load_diffusion_model_gated(
                     gguf_filename = request.gguf_filename,
                     engine = request.engine,
                     with_loras = _has_active_loras(request.loras),
+                    mlx_blocker = _mlx_load_blocker(request),
                 )
                 if fam is not None
                 else None
@@ -52104,6 +52123,9 @@ async def load_diffusion_model_gated(
         note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
+        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
+
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
             await asyncio.to_thread(
                 _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
@@ -52131,6 +52153,8 @@ async def load_diffusion_model_gated(
                 # The load's own engine pick (auto when absent); refused there rather than swapped.
                 engine = request.engine,
                 with_loras = _has_active_loras(request.loras),
+                # A load option the MLX engine cannot honour keeps an auto-routed Apple Silicon load on diffusers.
+                mlx_blocker = _mlx_load_blocker(request),
             ),
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -52251,14 +52275,24 @@ async def load_diffusion_model_gated(
             note_engine_pick(request.engine, engine, prior_state)
             return started
 
+        preflight = preparing_load_token()
+
         def _begin_load():
             # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
-            return begin_load_on(
-                engine,
-                lambda: account_access.admit_media_load(
-                    "diffusion", _start_engine_load, request.model_path
-                ),
-            )
+            def _register():
+                return begin_load_on(
+                    engine,
+                    lambda: account_access.admit_media_load(
+                        "diffusion", _start_engine_load, request.model_path
+                    ),
+                )
+
+            if preflight is None:
+                return _register()
+            # A cancel lands before this check or after registration, where the engine unload stops it.
+            with preflight.lock:
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+                return _register()
 
         if needs_gpu:
             from core.inference.gpu_residency import media_fit_kwargs
@@ -52270,6 +52304,16 @@ async def load_diffusion_model_gated(
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+                admitted = []
+
+                def _admit():
+                    if preflight is None:
+                        return
+                    preflight.lock.acquire()
+                    admitted.append(True)
+                    raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+
                 sink_token = eviction_sink.set(evicted_slots)
                 try:
                     with _diffusion_training_admission():
@@ -52278,14 +52322,22 @@ async def load_diffusion_model_gated(
                             guarded_media_begin(
                                 DIFFUSION, multi_model_mode, media_names, _begin_load
                             ),
+                            admit = _admit,
                             **fit_kwargs,
                         )
                 finally:
+                    if admitted:
+                        preflight.lock.release()
                     eviction_sink.reset(sink_token)
 
             from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
 
             swap = await save_chat_kv_before_swap(DIFFUSION, "image", **fit_kwargs)
+            try:
+                raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+            except BaseException:
+                swap.close()
+                raise
             status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
@@ -52799,6 +52851,7 @@ async def _generate_diffusion_image_run(
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
         ImageActivationShortfallError,
+        unified_memory_refusal_code,
     )
 
     backend = get_active_diffusion_engine()
@@ -52936,6 +52989,13 @@ async def _generate_diffusion_image_run(
             msg = str(exc)
             if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
+            refusal = unified_memory_refusal_code(exc)
+            if refusal is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = msg,
+                    headers = {IMAGE_REFUSAL_HEADER: refusal},
+                )
             logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
         except Exception as exc:
@@ -52998,6 +53058,7 @@ async def _generate_diffusion_image_run(
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
+                        **({"engine": result["engine"]} if result.get("engine") else {}),
                         # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
                         # quantised, and a bake is not the same build as the adapter-less one. Absent on records written before this existed.
                         "model_kind": result.get("model_kind"),
@@ -53861,6 +53922,17 @@ async def unload_diffusion_model(
         account_access.require_resident_control(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
+    if not expected_load_id:
+        # Load POSTs still in preflight for this account (all, when the unload is not account scoped).
+        # A token unload ends only the load it names, and refuses that one if it has not started.
+        from core.inference.chat_swap_kv import cancel_preparing_loads
+
+        await asyncio.to_thread(
+            cancel_preparing_loads,
+            "image",
+            current_account_id(),
+            any_account = account_access.account_scope() is None,
+        )
     active = get_active_diffusion_engine()
     unload = active.unload
     if account_access.account_scope() is not None:
@@ -53967,6 +54039,20 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
     return DiffusionInferenceInfoResponse(families = family_inference_infos())
 
 
+def _image_load_preparing_progress() -> Optional[DiffusionLoadProgressResponse]:
+    """A load POST of the caller's still in preflight reads as starting: the engine's "ready",
+    "error" or null then describes the previous load. Once the engine runs this one, its phase wins."""
+    from core.inference.chat_swap_kv import load_preparing
+
+    if not load_preparing("image"):
+        return None
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    if get_active_diffusion_engine().load_progress().get("phase") in ("downloading", "finalizing"):
+        return None
+    return DiffusionLoadProgressResponse(phase = "downloading")
+
+
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(
     current_subject: str = Depends(get_current_subject),
@@ -53977,6 +54063,9 @@ async def diffusion_load_progress(
     saving = saving_progress("image")
     if saving is not None:
         return DiffusionLoadProgressResponse(**saving)
+    preparing = _image_load_preparing_progress()
+    if preparing is not None:
+        return preparing
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -54798,6 +54887,7 @@ async def _generate_openai_images(
     want_b64 = body.response_format == "b64_json"
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
     recipe = {
+        **({"engine": result["engine"]} if result.get("engine") else {}),
         "prompt": body.prompt,
         "negative_prompt": result.get("negative_prompt"),
         "width": width,
