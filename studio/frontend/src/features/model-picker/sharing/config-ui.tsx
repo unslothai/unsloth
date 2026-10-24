@@ -70,7 +70,7 @@ export function SharedRunConfigActions({
         <HugeiconsIcon
           icon={Share01Icon}
           strokeWidth={1.75}
-          className="size-4"
+          className="size-[calc(1rem*var(--ui-space-scale,1))]"
         />
       </Button>
       {sharing && (
