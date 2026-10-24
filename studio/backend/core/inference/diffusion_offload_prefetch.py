@@ -1186,6 +1186,8 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
     beside = isinstance(comps, dict) and any(
         "controlnet" in str(name).lower() and value is not None for name, value in comps.items()
     )
+    # a second denoiser whose routing cannot be read (not diffusers' Wan loop): the next forward's module is unknown
+    beside = beside or _experts(pipe) is _UNKNOWN
     pfs = _pipe_prefetchers(pipe) if enabled and not beside and cross_forward_enabled() else []
     if pfs:
         _LAST_BEGUN.pf = None  # interleaving counts within this render only
@@ -1202,13 +1204,78 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 pass
 
 
+_UNKNOWN = object()
+
+
+def _experts(pipe: Any) -> Any:
+    """``(transformer, transformer_2)`` of a two-expert pipeline whose routing is diffusers' Wan loop, None for a
+    single denoiser, ``_UNKNOWN`` for a second denoiser under any other loop."""
+    second = getattr(pipe, "transformer_2", None)
+    first = getattr(pipe, "transformer", None)
+    if second is None or second is first:
+        return None
+    if first is None:
+        return _UNKNOWN
+    # the routing read below is the denoise loop of diffusers' Wan pipelines: whoever defines ``__call__`` must be one
+    caller = next((c for c in type(pipe).__mro__ if "__call__" in vars(c)), None)
+    if caller is None or not str(caller.__module__).startswith("diffusers.pipelines.wan."):
+        return _UNKNOWN
+    return first, second
+
+
+def _expert_router(pipe: Any, step_index: int, timestep: Any, total: int) -> Any:
+    """Which denoiser runs step ``j`` of a two-expert pipeline (Wan2.2-A14B: ``transformer`` at timesteps >= the
+    boundary, ``transformer_2`` below it). None for a single denoiser; ``_UNKNOWN`` when the routing cannot be read
+    back exactly (another loop, a schedule that is not the one running)."""
+    experts = _experts(pipe)
+    if experts is None or experts is _UNKNOWN:
+        return experts
+    first, second = experts
+    try:
+        ratio = getattr(getattr(pipe, "config", None), "boundary_ratio", None)
+        if ratio is None:
+            return lambda j: first  # no boundary: the loop runs ``transformer`` throughout
+        boundary = ratio * pipe.scheduler.config.num_train_timesteps
+        timesteps = pipe.scheduler.timesteps
+        if timesteps is None or len(timesteps) != total:
+            return _UNKNOWN
+        # the loop's ``t`` is a view of this schedule's element (no device read): another schedule is unreadable
+        if timestep is not None and (
+            not hasattr(timestep, "data_ptr")
+            or timestep.data_ptr() != timesteps[step_index].data_ptr()
+        ):
+            return _UNKNOWN
+        high = _high_noise_steps(timesteps, boundary)
+        return lambda j: first if high[j] else second
+    except Exception:  # noqa: BLE001 - unreadable: carry nothing
+        return _UNKNOWN
+
+
+# schedule -> per-step "runs ``transformer``": one host read of a device schedule per render, not one per step
+_ROUTES: dict = {}
+
+
+def _high_noise_steps(timesteps: Any, boundary: float) -> list:
+    key = (id(timesteps), timesteps.data_ptr(), len(timesteps), float(boundary))
+    hit = _ROUTES.get(key)
+    if hit is not None and hit[0]() is timesteps:
+        return hit[1]
+    # the pipeline's own comparison (``t >= boundary_timestep``, a tensor against a Python float), on a host copy
+    high = [bool(v) for v in (timesteps.detach().to("cpu") >= boundary)]
+    _ROUTES.clear()
+    _ROUTES[key] = (weakref.ref(timesteps), high)
+    return high
+
+
 def cross_forward_step(
     pipe: Any,
     step_index: int,
     total: Optional[int] = None,
+    timestep: Any = None,
 ) -> None:
     """From ``callback_on_step_end``: the final step drops carried copies so nothing is on the card at decode (also
-    interrupted or unknown-length renders)."""
+    interrupted or unknown-length renders). A two-expert pipeline carries only into a forward of the same expert:
+    the last step before the switch carries nothing, and an expert that does not run next holds no carried copy."""
     pfs = [
         pf
         for pf in _pipe_prefetchers(pipe)
@@ -1222,9 +1289,30 @@ def cross_forward_step(
         total = int(total) if total is not None else None
     except (TypeError, ValueError):
         total = None
+    step_index = int(step_index)
     stop = total is None or bool(getattr(pipe, "_interrupt", False))
+    router = (
+        None
+        if stop or step_index + 1 >= total
+        else _expert_router(pipe, step_index, timestep, total)
+    )
+    if router is _UNKNOWN:
+        stop = True
+    nxt = nxt2 = None
+    if router is not None and not stop:
+        nxt = module_prefetcher(router(step_index + 1))
+        if step_index + 2 < total:
+            nxt2 = module_prefetcher(router(step_index + 2))
     for pf in pfs:
-        if stop or int(step_index) + 1 >= total:
+        if stop or step_index + 1 >= total:
             _disarm(pf)
-        elif int(step_index) + 2 >= total:
+        elif step_index + 2 >= total:
             pf.armed = False  # the last step reads what this one carried, and carries nothing on
+            if router is not None and pf is not nxt and not getattr(pf, "active", False):
+                pf.drop_carried()  # the last step runs another expert
+        elif router is not None:
+            if pf is not nxt:
+                if not getattr(pf, "active", False):
+                    pf.drop_carried()  # the next step runs another expert: these copies would not be read
+            elif nxt2 is not pf:
+                pf.armed = False  # the expert switches after the next step: carry nothing past it
