@@ -32,6 +32,11 @@ reads the same batch, dp replicas read different ones:
     apply_tensor_parallel(model, mesh["tp"])
     shard_model(model, FSDP2Config(mesh = mesh["dp"]))  # frozen tp shards replicated over dp, LoRA sharded
     ... tp_clip_grad_norm_(params, 1.0) (or native_clip_grad_norm_); save_tp_adapter(model, "out")
+
+The HF / TRL Trainer trains a tensor parallel model (tp only, or dp x tp after shard_model above): no DDP over
+the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. save_strategy = "no" (no
+Trainer checkpoints / resume), no evaluation, torch optimizers (no bitsandbytes 8-bit); trainer.save_model()
+writes the 1-GPU adapter.
 """
 
 from __future__ import annotations
@@ -60,6 +65,7 @@ __all__ = [
     "shard_slice",
     "tp_clip_grad_norm_",
     "tp_full_state_dict",
+    "tp_trainer_setup",
     "save_tp_adapter",
 ]
 
@@ -1872,3 +1878,200 @@ def load_tensor_parallel(model_name, tp_mesh = None, loader = None, plan = None,
             "loaded sharded."
         )
     return out
+
+
+# Trainer (v2): the HF / TRL Trainer trains a tensor parallel model. accelerate must not wrap the tp ranks in
+# DDP, every tp rank of a dp replica must read the same batches (the dataloader is sharded over dp only), and
+# gradients are clipped with tp_clip_grad_norm_. Data parallel comes from shard_model over mesh["dp"] (native
+# FSDP2, which then wraps the model itself). The loss needs no change: the Trainer's token count gathered over
+# the world counts each dp replica's tokens tp times and its loss scale multiplies by dp * tp, so per rank the
+# loss is (sum over its tokens) * dp / (dp replicas' tokens), which FSDP2's mean over dp (or nothing, dp = 1)
+# turns into the token mean over the dp replicas, as for DDP on dp GPUs.
+
+_TP_DATA = "_unsloth_tp_data"
+_UNSUPPORTED_OPTIMIZERS = ("8bit", "bnb", "paged", "lomo", "galore", "apollo", "torchao", "q_galore")
+
+
+def _tp_meshes(model):
+    chain = _tp_chain(model)
+    tp = next((m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None)
+    dp = next((m.__dict__["_unsloth_tp_dp_mesh"] for m in chain if "_unsloth_tp_dp_mesh" in m.__dict__), None)
+    return tp, dp
+
+
+def _strategy(value):
+    value = getattr(value, "value", value)
+    return str(value or "no").lower()
+
+
+def _refuse_tp_trainer_args(args):
+    problems = []
+    if getattr(args, "deepspeed", None):
+        problems.append("DeepSpeed")
+    if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
+        problems.append("accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)")
+    if _strategy(getattr(args, "save_strategy", "no")) != "no":
+        problems.append(
+            "Trainer checkpoints (set save_strategy = 'no'; trainer.save_model() writes the 1-GPU adapter)"
+        )
+    if _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no"))) != "no":
+        problems.append("evaluation during training (set eval_strategy = 'no')")
+    for flag in ("load_best_model_at_end", "push_to_hub"):
+        if getattr(args, flag, False):
+            problems.append(flag)
+    optim = str(getattr(getattr(args, "optim", ""), "value", getattr(args, "optim", ""))).lower()
+    if any(key in optim for key in _UNSUPPORTED_OPTIMIZERS):
+        problems.append(f"optim = '{optim}' (use 'adamw_torch')")
+    config = getattr(args, "accelerator_config", None)
+    if getattr(config, "dispatch_batches", None):
+        problems.append("accelerator_config.dispatch_batches")
+    if problems:
+        raise RuntimeError(
+            "Unsloth: the Trainer on a tensor parallel model does not support " + "; ".join(problems) + "."
+        )
+
+
+def tp_trainer_setup(model = None, phase = "pre", trainer = None):
+    """Called around Trainer.__init__ (models/_utils.py) for a tensor parallel model. Returns True if it is one."""
+    import torch.distributed as dist
+
+    if phase == "pre":
+        if model is None or not is_tensor_parallel(model):
+            return False
+        tp_mesh, dp_mesh = _tp_meshes(model)
+        if tp_mesh is None:
+            raise RuntimeError(
+                "Unsloth: pass the Trainer the outermost model (the one apply_tensor_parallel was given, or a "
+                "wrapper of it)."
+            )
+        ranks = tp_mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1)
+        if dist.is_initialized() and ranks != dist.get_world_size():
+            raise RuntimeError(
+                f"Unsloth: the Trainer on a tensor parallel model needs every rank in the tp mesh, or in the (dp, "
+                f"tp) mesh after shard_model(model, FSDP2Config(mesh = mesh['dp'])); the tp mesh covers "
+                f"{ranks} of {dist.get_world_size()} ranks."
+            )
+        _install_tp_accelerate_hooks()
+        return True
+    model = trainer.model
+    _refuse_tp_trainer_args(trainer.args)
+    tp_mesh, dp_mesh = _tp_meshes(model)
+    dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
+    trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    trainer.__dict__["_unsloth_tensor_parallel"] = True  # the generated TRL trainers skip for_inference()
+    _tp_scaler(trainer, dp_size)
+    trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
+    for name in ("evaluate", "predict"):
+        trainer.__dict__[name] = _refuse_tp_trainer_call(name)
+    train = trainer.train
+
+    def train_tp(*args, **kwargs):
+        resume = kwargs.get("resume_from_checkpoint", args[0] if args else None)
+        if resume:
+            raise RuntimeError(
+                "Unsloth: resuming a tensor parallel model from a Trainer checkpoint is not supported."
+            )
+        return train(*args, **kwargs)
+
+    trainer.__dict__["train"] = train_tp
+    return True
+
+
+def _refuse_tp_trainer_call(name):
+    def refuse(*args, **kwargs):
+        raise RuntimeError(
+            f"Unsloth: Trainer.{name} is not supported on a tensor parallel model (its gather would count every "
+            "tp rank); run the forward in your own loop, or save the adapter and evaluate on one GPU."
+        )
+
+    return refuse
+
+
+def _tp_trainer_save_model(self, output_dir = None, _internal_call = False):
+    """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter (collective, rank 0 writes)."""
+    output_dir = output_dir if output_dir is not None else self.args.output_dir
+    save_tp_adapter(self.model, output_dir)
+    processing = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
+    if processing is not None and self.args.should_save:
+        processing.save_pretrained(output_dir)
+
+
+def _tp_scaler(trainer, dp):
+    """float16: one GradScaler inf decision for all ranks (each tp rank sees other gradient shards)."""
+    from .fsdp2_native import _scaler_for_native
+
+    accelerator = trainer.accelerator
+    if not _scaler_for_native(trainer):
+        return
+    handler = getattr(accelerator, "scaler_handler", None)
+    user = handler.to_kwargs() if handler is not None and hasattr(handler, "to_kwargs") else {}
+    if "init_scale" not in user:
+        # The loss scale grows with dp (the Trainer's token-count scaling), never with tp.
+        accelerator.scaler._init_scale = 2.0**16 / dp
+
+
+def _install_tp_accelerate_hooks():
+    from accelerate import Accelerator
+
+    if getattr(Accelerator, "_unsloth_tp_hooks", False):
+        return
+    original_prepare_model = Accelerator.prepare_model
+    original_data_loader = Accelerator.prepare_data_loader
+    original_clip = Accelerator.clip_grad_norm_
+
+    def _tp_model(self, model):
+        if self.__dict__.get(_TP_DATA) is None or not is_tensor_parallel(model):
+            return False
+        try:
+            from .fsdp2_native import is_native_fsdp2
+        except Exception:
+            return True
+        return not is_native_fsdp2(model)  # native FSDP2 (dp > 1) prepares it itself
+
+    def prepare_model(self, model, device_placement = None, evaluation_mode = False):
+        if not _tp_model(self, model):
+            return original_prepare_model(
+                self, model, device_placement = device_placement, evaluation_mode = evaluation_mode
+            )
+        # No DDP over the tp ranks and no device move; evaluation_mode keeps only the autocast wrap.
+        if getattr(model, "_is_accelerate_prepared", False):
+            if model not in self._models:
+                self._models.append(model)
+            return model
+        return original_prepare_model(self, model, device_placement = False, evaluation_mode = True)
+
+    def prepare_data_loader(self, data_loader, *args, **kwargs):
+        layout = self.__dict__.get(_TP_DATA)
+        if layout is None:
+            return original_data_loader(self, data_loader, *args, **kwargs)
+        if isinstance(getattr(data_loader, "dataset", None), torch.utils.data.IterableDataset):
+            raise RuntimeError(
+                "Unsloth: the Trainer on a tensor parallel model needs a map-style dataset (accelerate "
+                "dispatches iterable datasets over every rank)."
+            )
+        dp_size, dp_rank = layout
+        cls = type(self)
+        # accelerate shards the batches by num_processes / process_index: give it the dp layout, so the tp
+        # ranks of a replica read the same batches.
+        self.__class__ = type(
+            "UnslothTensorParallelDataAccelerator",
+            (cls,),
+            {"num_processes": property(lambda s: dp_size), "process_index": property(lambda s: dp_rank)},
+        )
+        try:
+            return original_data_loader(self, data_loader, *args, **kwargs)
+        finally:
+            self.__class__ = cls
+
+    def clip_grad_norm_(self, parameters, max_norm, norm_type = 2):
+        if self.__dict__.get(_TP_DATA) is None:
+            return original_clip(self, parameters, max_norm, norm_type = norm_type)
+        if float(norm_type) != 2.0:
+            raise RuntimeError("Unsloth: tensor parallel gradient clipping supports the 2-norm only.")
+        self.unscale_gradients()
+        return tp_clip_grad_norm_(list(parameters), max_norm)
+
+    Accelerator.prepare_model = prepare_model
+    Accelerator.prepare_data_loader = prepare_data_loader
+    Accelerator.clip_grad_norm_ = clip_grad_norm_
+    Accelerator._unsloth_tp_hooks = True

@@ -686,3 +686,29 @@ def test_stub_packages_keep_valid_specs():
     for name in ("unsloth", "unsloth.models"):
         assert sys.modules[name].__spec__ is not None, name
     importlib.util.find_spec("unsloth.models")
+
+
+def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
+    """The generated TRL trainers end __init__ with model.for_inference(); a tensor parallel trainer
+    (tp_native.tp_trainer_setup sets _unsloth_tensor_parallel) must skip it, every other trainer keeps it."""
+    import re
+    import textwrap
+
+    source = open(os.path.join(REPO, "unsloth", "models", "rl.py")).read()
+    match = re.search(
+        r"super\(\)\.__init__\(\{RLTrainer_call_args\}\{RLTrainer_kwargs\}\)\n(.*?)\n\{RLTrainer_post\}",
+        source,
+        re.S,
+    )
+    assert match, "generated trainer __init__ tail not found"
+    tail = textwrap.dedent(match.group(1))
+    calls = []
+
+    class Model:
+        def for_inference(self):
+            calls.append(type(self).__name__)
+
+    for tensor_parallel in (False, True):
+        trainer = types.SimpleNamespace(**({"_unsloth_tensor_parallel": True} if tensor_parallel else {}))
+        exec(tail, {}, {"self": trainer, "model": Model()})
+    assert calls == ["Model"], calls

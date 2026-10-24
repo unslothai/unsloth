@@ -576,6 +576,120 @@ def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
     }
 
 
+class _Rows(torch.utils.data.Dataset):
+    def __init__(self, ids):
+        self.ids = ids
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, i):
+        return {"input_ids": self.ids[i], "labels": self.ids[i]}
+
+
+def _trainer_args(tmp, bs, **overrides):
+    import transformers
+
+    kwargs = dict(
+        output_dir = tmp,
+        per_device_train_batch_size = bs,
+        gradient_accumulation_steps = 2,
+        max_steps = 3,
+        learning_rate = 1e-2,
+        optim = "adamw_torch",
+        lr_scheduler_type = "constant",
+        warmup_steps = 0,
+        weight_decay = 0.0,
+        max_grad_norm = 1.0,
+        logging_steps = 1,
+        save_strategy = "no",
+        report_to = [],
+        use_cpu = True,
+        seed = 0,
+        dataloader_drop_last = True,
+        remove_unused_columns = False,
+        disable_tqdm = True,
+    )
+    kwargs.update(overrides)
+    return transformers.TrainingArguments(**kwargs)
+
+
+def _case_trainer(rank, world, tmp, dp, tp):
+    """The HF Trainer on a tp (dp = 1) or dp x tp (shard_model over mesh['dp']) model; tp = 1: the 1-process
+    reference with a dp times larger batch. Sequential batches, so both read the same rows per step."""
+    import torch.distributed as dist
+    import transformers
+    from safetensors.torch import load_file
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    seen = []
+
+    class SequentialTrainer(transformers.Trainer):
+        def _get_train_sampler(self, *args, **kwargs):
+            return torch.utils.data.SequentialSampler(self.train_dataset)
+
+        def compute_loss(self, model, inputs, *args, **kwargs):
+            seen.append(inputs["input_ids"].clone())
+            return super().compute_loss(model, inputs, *args, **kwargs)
+
+    model = build(LLAMA)
+    data = _Rows(list(_batch(model, bsz = 12 * dp, seq = 9)))
+    refusals = {}
+    if tp > 1:
+        mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+        tp_native.apply_tensor_parallel(model, mesh["tp"])
+        if dp > 1:
+            refusals["no_shard_model"] = _raised(
+                lambda: SequentialTrainer(model = model, args = _trainer_args(tmp, 2), train_dataset = data)
+            )
+            fsdp2_native.shard_model(
+                model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        for key, overrides in {
+            "checkpoints": {"save_strategy": "steps", "save_steps": 1},
+            "eval": {"eval_strategy": "steps", "eval_steps": 1},
+            "optim_8bit": {"optim": "adamw_bnb_8bit"},
+        }.items():
+            refusals[key] = _raised(
+                lambda: SequentialTrainer(
+                    model = model,
+                    args = _trainer_args(tmp, 2, **overrides),
+                    train_dataset = data,
+                    eval_dataset = data,
+                )
+            )
+    trainer = SequentialTrainer(model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data)
+    trainer.train()
+    refusals["evaluate"] = _raised(lambda: trainer.evaluate(data)) if tp > 1 else None
+    logs = [h for h in trainer.state.log_history if "loss" in h]
+    out_dir = os.path.join(tmp, f"adapter_{world}_{rank}")
+    trainer.save_model(out_dir)
+    if dist.is_initialized():
+        dist.barrier()
+    state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True) if tp > 1 else {
+        k: v.detach().clone() for k, v in trainer.model.state_dict().items() if "lora_" in k
+    }
+    wrapped = type(trainer.model_wrapped).__name__
+    return {
+        "losses": [h["loss"] for h in logs],
+        "grad_norms": [h.get("grad_norm") for h in logs],
+        "seen": [x.sum().item() for x in seen],
+        "state": {k: v for k, v in state.items() if "lora_" in k},
+        "saved": load_file(os.path.join(out_dir, "adapter_model.safetensors"))
+        if rank == 0 or tp == 1
+        else None,
+        "wrapped": wrapped,
+        "refusals": refusals,
+    }
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -586,6 +700,7 @@ CASES = {
     "sharded_load": _case_sharded_load,
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
+    "trainer": _case_trainer,
 }
 
 
@@ -792,12 +907,15 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                     )
                 elif key.startswith("generate:"):
                     assert value and "generation is not supported" in value, (applied, key, value)
-                elif key.startswith(("trainer:", "model_init:")):
+                elif key.startswith("model_init:"):
                     assert value and "cannot be trained by the Trainer" in value, (
                         applied,
                         key,
                         value,
                     )
+                elif key.startswith("trainer:"):
+                    # The Trainer trains a tensor parallel model, but not with checkpoints (default args).
+                    assert value and "does not support Trainer checkpoints" in value, (applied, key, value)
                 elif key.startswith("cached:"):
                     assert value and "cached decoding" in value, (applied, key, value)
 
@@ -884,3 +1002,38 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
 def test_tp_x_fsdp2_refuses_trainable_head_norms():
     for res in _spawn("tp_fsdp2_trainable_norms", 4):
         assert res["error"] and "trainable per-head norms" in res["error"], res
+
+
+@pytest.mark.parametrize("dp,tp", [(1, 2), (2, 2)])
+def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
+    ref = _spawn("trainer", 1, dp = dp, tp = 1)[0]
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    results = _spawn("trainer", dp * tp, dp = dp, tp = tp)
+    if "torch < 2.7" in str(results[0]["refusals"].get("no_shard_model", "")):
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
+    assert len(ref["losses"]) == 3
+    for rank, res in enumerate(results):
+        assert "DistributedDataParallel" not in res["wrapped"], res["wrapped"]
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (rank, res["losses"], ref["losses"])
+        assert res["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-5), (res["grad_norms"], ref["grad_norms"])
+        assert set(res["state"]) == set(ref["state"]) and ref["state"]
+        for key, value in ref["state"].items():
+            torch.testing.assert_close(res["state"][key], value, rtol = 1e-4, atol = 1e-6, msg = key)
+        refusals = res["refusals"]
+        assert "does not support Trainer checkpoints" in (refusals["checkpoints"] or ""), refusals
+        assert "evaluation during training" in (refusals["eval"] or ""), refusals
+        assert "optim = 'adamw_bnb_8bit'" in (refusals["optim_8bit"] or ""), refusals
+        assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
+        if dp > 1:
+            assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
+    # The tp ranks of a replica read the same batches; dp replicas read different ones.
+    for rank, res in enumerate(results):
+        peer = results[rank ^ 1]  # same dp replica (tp is the inner mesh dimension)
+        assert res["seen"] == peer["seen"]
+        if dp > 1:
+            assert res["seen"] != results[(rank + tp) % (dp * tp)]["seen"]
+    saved, saved_ref = results[0]["saved"], ref["saved"]
+    assert set(saved) == set(saved_ref)
+    for key in saved_ref:
+        torch.testing.assert_close(saved[key], saved_ref[key], rtol = 1e-4, atol = 1e-6, msg = key)
