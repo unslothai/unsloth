@@ -86,8 +86,6 @@ def pins(monkeypatch):
     return calls
 
 
-
-
 @pytest.mark.parametrize("integrated", [True, False])
 def test_the_predicate_reads_the_driver_flag(gpu, integrated):
     from core.inference import host_pinning
@@ -145,8 +143,6 @@ def test_the_answer_is_cached_per_device(monkeypatch, gpu):
     for _ in range(3):
         host_pinning.host_pinning_allowed("cuda:0")
     assert asked == [0]
-
-
 
 
 def _host_of(module):
@@ -250,8 +246,6 @@ def test_the_controlnet_offload_streams_without_pinning_on_an_integrated_gpu(
     seen = _record_group_offload(monkeypatch)
     assert diffusion._offload_controlnet_module(torch.nn.Linear(4, 4), "cuda", None) is True
     assert seen[0]["use_stream"] is (not integrated)
-
-
 
 
 @pytest.mark.parametrize("integrated", [True, False])
@@ -428,7 +422,6 @@ def test_the_h3_pin_gate_refuses_an_integrated_gpu_even_when_forced(monkeypatch,
     gpu(integrated)
     monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
     assert te.h3_te_pin_allowed(1 << 20) is (not integrated)
-
 
 
 # Sites with no gate of their own, each reached only through one that asks host_pinning_allowed.
