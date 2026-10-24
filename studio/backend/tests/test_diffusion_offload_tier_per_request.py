@@ -153,17 +153,21 @@ def _request(state, steps = 8):
     )
 
 
+# the compiled profile swapped the attention backend; the load's identity follows the speed tier, not the backend
+LIVE = ("flux.2-klein", "dense:bfloat16|attn:_native_cudnn", "default")
+LOADED = ("flux.2-klein", "dense:bfloat16|attn:native", "default")
+RECORDED = ("dense:bfloat16|attn:native", "off")  # the eager renders' key
+
+
 @pytest.fixture
 def _learned(monkeypatch):
     seen = []
 
     def fake_peak(family, speed, **kw):
-        seen.append((speed, kw.get("phase")))
-        return 2560 if speed == "off" else None
+        seen.append((kw.get("quant"), speed, kw.get("phase")))
+        return 2560 if (kw.get("quant"), speed) == RECORDED else None
 
-    monkeypatch.setattr(
-        dif, "_live_peak_identity", lambda state: ("flux.2-klein", "label", "default")
-    )
+    monkeypatch.setattr(dif, "_live_peak_identity", lambda state: LIVE)
     monkeypatch.setattr(dif, "measured_image_runtime_mib", fake_peak)
     monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: 0)
     monkeypatch.setattr(dif, "_peak_device_index", lambda state: 0)
@@ -171,11 +175,27 @@ def _learned(monkeypatch):
 
 
 def test_request_gate_prices_and_reads_the_eager_peak(_learned):
-    """A compiled deferred tier records no peak: the eager tier's pre-decode peak sizes the pinned call."""
-    whole, streamed, activation = _request(_state())
+    """A deferred compile tier records no peak (and its profile may swap the attention backend): the pre-decode peak
+    the load's own key recorded on the eager renders sizes the pinned call."""
+    state = _state()
+    state.pipe._unsloth_peak_identity = LOADED
+    whole, streamed, activation = _request(state)
     assert whole < streamed and activation == 2560
-    assert _learned == [("default", "pre_decode"), ("off", "pre_decode")]
-    assert _request(_state(), steps = 4) is None
+    assert _learned == [
+        (LIVE[1], "default", "pre_decode"),
+        (LIVE[1], "off", "pre_decode"),
+        (LOADED[1], "default", "pre_decode"),
+        (LOADED[1], "off", "pre_decode"),
+    ]
+    assert _request(state, steps = 4) is None
+
+
+def test_request_gate_reads_the_live_key_first(_learned, monkeypatch):
+    monkeypatch.setattr(dif, "_live_peak_identity", lambda state: ("flux.2-klein", *RECORDED))
+    state = _state()
+    state.pipe._unsloth_peak_identity = LOADED
+    assert _request(state)[2] == 2560
+    assert _learned == [(*RECORDED, "pre_decode")]
 
 
 @pytest.mark.parametrize(
@@ -193,10 +213,15 @@ def test_request_gate_keeps_the_load_plan(_learned, kw):
 
 
 def test_request_gate_after_graphs_settle(_learned, monkeypatch):
-    assert _request(_state(bg_compile = _Bg(False), graphs = (_Graph(declined = True),))) is not None
-    assert _request(_state(graphs = (_Graph(declined = False, poisoned = True),))) is not None
+    def state(**kw):
+        out = _state(**kw)
+        out.pipe._unsloth_peak_identity = LOADED
+        return out
+
+    assert _request(state(bg_compile = _Bg(False), graphs = (_Graph(declined = True),))) is not None
+    assert _request(state(graphs = (_Graph(declined = False, poisoned = True),))) is not None
     monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: 1)
-    assert _request(_state(graphs = (_Graph(declined = True),))) is None
+    assert _request(state(graphs = (_Graph(declined = True),))) is None
 
 
 def test_request_gate_without_a_learned_peak_streams(_learned, monkeypatch):

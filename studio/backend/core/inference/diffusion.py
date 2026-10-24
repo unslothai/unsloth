@@ -3161,17 +3161,25 @@ def _whole_tier_for_request(
         return None
     if speed is None:
         return None
+    # A deferred compile tier records nothing: its first renders ran eager (speed ``off``) under the load's label,
+    # with the attention backend the profile may swap since. That tier's pre-decode peak, which a compiled forward of
+    # the same graph does not exceed, stands in.
+    keys = [(label, speed), (label, SPEED_OFF)]
+    loaded = getattr(pipe, "_unsloth_peak_identity", None)
+    if isinstance(loaded, tuple) and len(loaded) == 3:
+        loaded_label = str(loaded[1])
+        if CFG_OFF_PART in str(label).split("|"):
+            loaded_label = f"{without_cfg_off(loaded_label)}|{CFG_OFF_PART}"
+        keys += [(loaded_label, tier) for tier in (loaded[2], SPEED_OFF) if tier is not None]
     activation = None
-    # A deferred compile tier records nothing (its key names the eager tier): the eager tier's pre-decode peak, which
-    # a compiled forward of the same graph does not exceed, stands in.
-    for tier in dict.fromkeys((speed, SPEED_OFF)):
+    for key_label, tier in dict.fromkeys(keys):
         activation = measured_image_runtime_mib(
             family,
             tier,
             width = width,
             height = height,
             batch_size = batch_size,
-            quant = label,
+            quant = key_label,
             static_seed = False,
             phase = "pre_decode",
         )
