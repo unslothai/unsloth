@@ -215,6 +215,8 @@ class RunState:
     prefetched: int = 0
     # (slot, repo) of a load started ahead and not finished yet.
     prefetch_load: Optional[tuple[str, str]] = None
+    # (slot, lower-cased repo) -> the step that loaded it: what "unload when the run ends" may free.
+    loaded: dict[tuple[str, str], str] = field(default_factory = dict)
     gpu_ops: int = 0
     # A Run Flow child counts its GPU steps against the run that called it.
     gpu_parent: Optional["RunState"] = field(default = None, repr = False)
@@ -596,6 +598,12 @@ class NodeContextImpl:
     @property
     def caller(self) -> Any:
         return self._rs.caller
+
+    def note_loaded(self, slot: str, repo: str) -> None:
+        rs = self._rs
+        while rs.gpu_parent is not None:
+            rs = rs.gpu_parent
+        rs.loaded.setdefault((slot, repo.lower()), self.node_id)
 
     def count_gpu_op(self) -> None:
         rs = self._rs
@@ -1267,6 +1275,7 @@ class FlowEngine:
             raise
         except Exception:
             # The step loads its model itself when it starts; a failed early load only costs that wait.
+            rs.prefetch_load = None
             logger.debug("flows: loading ahead for %s failed", nid, exc_info = True)
 
     async def _stop_prefetch(self, rs: RunState) -> None:
@@ -1299,15 +1308,8 @@ class FlowEngine:
         """The flow's "Unload models when the run ends": free what this run loaded, never what was loaded before."""
         if not (rs.doc.get("meta") or {}).get("unload_after_run") or rs.caller is None:
             return
-        # Repo -> the first step that uses it, whose log says the model was let go.
-        wanted: dict[str, str] = {}
-        for n in rs.plan.gpu_nodes():
-            wanted.setdefault(self._model_of(rs.plan, n)[1], n)
-            # An Agent given an image loads its vision model instead.
-            vision = (rs.plan.nodes[n].get("params") or {}).get("vision_model")
-            if isinstance(vision, dict) and vision.get("repo"):
-                wanted.setdefault(str(vision["repo"]).lower(), n)
-        wanted.pop("", None)
+        # Only models this run (or a flow it called) loaded itself; repo -> the step whose log says it was let go.
+        wanted = {repo: nid for (_slot, repo), nid in rs.loaded.items()}
         if not wanted:
             return
         try:

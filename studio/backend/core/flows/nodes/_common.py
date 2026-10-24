@@ -395,6 +395,9 @@ async def _ensure_model(
     # Another slot's model may have been evicted; read them again next time.
     ctx.resident.clear()
     ctx.resident[slot] = repo
+    note = getattr(ctx, "note_loaded", None)
+    if callable(note):
+        note(slot, repo)
     _LOADED_VARIANT[slot] = wanted
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)

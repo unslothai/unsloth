@@ -41,6 +41,7 @@ def studio(monkeypatch):
             state["loads"].append((repo, time.monotonic()))
             # "keep": Keep multiple models loaded, so a load adds to what is resident instead of replacing it.
             state["slots"]["llm"] = [*held, repo] if state.get("keep") else [repo]
+            ctx.note_loaded("llm", repo)
         ctx.resident["llm"] = repo
         return {"repo": repo}
 
@@ -449,3 +450,53 @@ async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_ste
     await eng.cancel(rs.id)
     await asyncio.wait_for(asyncio.gather(rs.task, other), timeout = 30)
     assert inside["seen"] == [False]
+
+
+@run_async
+async def test_unload_after_the_run_leaves_a_model_another_run_loaded(studio, monkeypatch):
+    # The slot was empty at the start, then another run loaded m1, which this run's step just used.
+    reads = []
+
+    async def resident_slots(caller):
+        reads.append(1)
+        return {"llm": []} if len(reads) == 1 else {k: list(v) for k, v in studio["slots"].items()}
+
+    monkeypatch.setattr(loading, "resident_slots", resident_slots)
+    studio["slots"]["llm"] = ["m1"]
+    eng = _engine({"input.text": _text, "llm.generate": _gen})
+    d = doc(
+        [node("g", "llm.generate", prompt = "hi", model = {"repo": "m1"})],
+        meta = {"unload_after_run": True},
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed" and studio["loads"] == [] and studio["unloads"] == []
+
+
+@run_async
+async def test_a_failed_early_load_leaves_the_steps_own_load_in_place(studio, monkeypatch):
+    calls = []
+
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        repo = choice["repo"]
+        calls.append(repo)
+        if repo == "m2" and calls.count("m2") == 1:
+            raise RuntimeError("the early load failed")
+        studio["slots"]["llm"] = [repo]
+        ctx.resident["llm"] = repo
+        return {"repo": repo}
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    parsed, errors = parse_document(_chain("failed-early-load"))
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
+    rs.caller = rs.caller or object()
+    await asyncio.wait_for(rs.task, timeout = 30)
+    assert rs.status == "completed" and calls.count("m2") == 2
+    # The step's own load of m2 succeeded: nothing unloads it.
+    assert studio["unloads"] == [] and studio["slots"]["llm"] == ["m2"]
