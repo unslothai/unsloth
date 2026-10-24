@@ -2827,8 +2827,7 @@ def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
-def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
-    """A repo with no complete quant keeps the pre-existing fallback listing."""
+def test_hf_cache_entry_offers_no_quant_from_a_partial_only_repo(tmp_path):
     repo = tmp_path / "models--org--Repo"
     snapshot = repo / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
@@ -2839,8 +2838,7 @@ def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
         SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
     )
 
-    assert entry is not None
-    assert entry.variants == ("Q4_K_M",)
+    assert entry is None
 
 
 def test_selected_snapshot_preserves_local_variant_labels(tmp_path):

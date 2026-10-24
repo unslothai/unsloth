@@ -9,6 +9,7 @@ import {
   resolveResidentInitialConfig,
   savedContextPin,
 } from "@/features/model-picker";
+import { loadedPlacementFrom } from "./partial-offload";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
@@ -502,6 +503,7 @@ export function applyActiveModelStatusToStore(
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
+    loadedPlacement: loadedPlacementFrom(status),
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
