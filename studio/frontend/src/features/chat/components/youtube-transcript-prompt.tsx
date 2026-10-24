@@ -154,7 +154,7 @@ export function YoutubeTranscriptPrompt({
             <Button
               type="button"
               size="sm"
-              className="h-7 px-2 text-xs"
+              className="text-xs"
               onClick={() => void attach()}
             >
               Attach transcript

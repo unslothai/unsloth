@@ -807,7 +807,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         >
           <Button
             variant="outline"
-            className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
               // Already on All, the view would keep its search and filters.
@@ -857,7 +856,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 data-settings-label={t(`settings.data.${label}`)}
                 aria-label={t(`settings.data.${label}`)}
                 onClick={() => setSubpage(page)}
-                className="btn-fill flex min-w-0 items-center justify-between gap-2 rounded-full px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="btn-fill flex min-w-0 items-center justify-between gap-2 rounded-full px-3 py-2 text-sm transition-colors [&_svg]:-my-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <HugeiconsIcon

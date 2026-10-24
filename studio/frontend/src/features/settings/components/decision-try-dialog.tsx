@@ -1223,7 +1223,7 @@ export function DecisionTryDialog({
                 type="button"
                 onClick={() => void run()}
                 aria-busy={running}
-                className="gap-2 pl-3.5 pr-2"
+                className="gap-2"
               >
                 {running ? (
                   <Spinner className="size-4 text-background" />

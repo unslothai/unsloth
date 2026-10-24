@@ -248,7 +248,6 @@ export function CacheStorageRows() {
           <Button
             variant="destructive"
             size="sm"
-            className="h-8"
             disabled={
               loading || clearing || loadError !== null || bulkKeys.length === 0
             }

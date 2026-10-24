@@ -51,6 +51,24 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
+    // Filled buttons share one shape at every size: 12px sides, 8px above and below the label's line
+    // (border included); icons take no height. Ghost and link stay compact.
+    compoundVariants: [
+      {
+        variant: [
+          "default",
+          "dark",
+          "primary",
+          "outline",
+          "secondary",
+          "muted",
+          "destructive",
+        ],
+        size: ["default", "sm", "lg", "hero"],
+        class:
+          "h-auto gap-1.5 px-[calc(11px*var(--ui-space-scale,1))] py-[calc(7px*var(--ui-space-scale,1))] has-data-[icon=inline-end]:pr-[calc(11px*var(--ui-space-scale,1))] has-data-[icon=inline-start]:pl-[calc(11px*var(--ui-space-scale,1))] [&_svg]:-my-2",
+      },
+    ],
     defaultVariants: {
       variant: "default",
       size: "default",
