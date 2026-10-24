@@ -280,14 +280,25 @@ def test_exclusion_follows_normalize_then_sum(monkeypatch):
     assert _kept_groups(trainer, flat, monkeypatch) == [False]
 
 
-def test_group_with_one_scored_completion_is_kept(monkeypatch):
+@pytest.mark.parametrize("trl_version", [None, "1.5.1", "1.6.0"])
+def test_group_with_one_scored_completion_is_kept(monkeypatch, trl_version):
+    # Pinned versions straddle the 1.6.0 switch in _unsloth_trl_masks_unscorable.
+    trl = pytest.importorskip("trl")
+    from packaging.version import Version
+
+    if trl_version is not None:
+        monkeypatch.setattr(trl, "__version__", trl_version)
+    masks_unscorable = Version(trl.__version__) >= Version("1.6.0")
     rpf = torch.full((2 * G, 2), torch.nan)
     rpf[0] = torch.tensor([1.0, 0.0])
     rpf[G:] = torch.tensor([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [0.0, 0.0]])
-    for aggregation in ("sum_then_normalize", "normalize_then_sum"):
-        trainer = _trainer("dapo", None)
-        trainer.multi_objective_aggregation = aggregation
-        assert _kept_groups(trainer, rpf, monkeypatch) == [True, True]
+    trainer = _trainer("dapo", None)
+    # Older TRL scores unscored completions 0: normalize_then_sum then gives every reward 0
+    # (one scored value per function, nan z-score), so the group is excluded.
+    trainer.multi_objective_aggregation = "sum_then_normalize"
+    assert _kept_groups(trainer, rpf, monkeypatch) == [True, True]
+    trainer.multi_objective_aggregation = "normalize_then_sum"
+    assert _kept_groups(trainer, rpf, monkeypatch) == [masks_unscorable, True]
 
 
 def test_unscored_completion_counts_as_zero_on_trl_before_1_6(monkeypatch):
