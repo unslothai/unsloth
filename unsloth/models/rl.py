@@ -643,6 +643,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
+        if "model" in locals():
+            try:
+                from unsloth.models._gc_config_default import honour_gradient_checkpointing_off
+                honour_gradient_checkpointing_off(args, model)
+            except Exception:
+                pass
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
@@ -4028,6 +4034,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
     _patched_config = getattr(created_module, f"Unsloth{RLConfig_name}", None)
     _patch_config_pickle_identity(RLConfig, _patched_config)
+    if _patched_config is not None:
+        try:
+            from ._gc_config_default import track_explicit_gradient_checkpointing
+            track_explicit_gradient_checkpointing(_patched_config)
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not track explicit gradient_checkpointing on {RLConfig_name}: {e}"
+            )
     if _patched_config is not None:
         _register_config_pickle_fallback(_displaced_config, _patched_config)
 
