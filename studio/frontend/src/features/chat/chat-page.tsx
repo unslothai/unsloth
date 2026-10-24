@@ -376,6 +376,36 @@ function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): v
   }, [pendingFixPrompt, aui, active]);
 }
 
+/** Lets this chat host the browser panel: links, Browser use, Request edits and Attach.
+ *  Project landing never mounts SingleContent, so it has to call this itself (#15046). */
+function useBrowserChatHost(active: boolean): void {
+  const isMobile = useIsMobile();
+  const aui = useAui();
+  useEffect(() => {
+    if (!active || isMobile) return;
+    setBrowserPanelAvailable(true);
+    setInAppLinkHandler(openUrlInBrowser);
+    useBrowserStore.setState({
+      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
+      attachToChat: (file) =>
+        aui
+          .composer()
+          .addAttachment(file)
+          .then(() => {
+            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
+            return true;
+          })
+          .catch(() => false),
+    });
+    return () => {
+      setBrowserPanelAvailable(false);
+      setInAppLinkHandler(null);
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
+    };
+  }, [active, isMobile, aui]);
+}
+
 // Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
 const BrowserOverlaidContext = createContext(false);
 
@@ -582,7 +612,6 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
-  const aui = useAui();
   // Compare keeps this view mounted but hidden, so the backgrounded copy leaves the prompt to SharedComposer.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
@@ -590,29 +619,7 @@ const SingleContent = memo(function SingleContent({
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
   const closeBrowser = useBrowserStore((state) => state.closePanel);
-  useEffect(() => {
-    if (!chatActive || isMobile) return;
-    setBrowserPanelAvailable(true);
-    setInAppLinkHandler(openUrlInBrowser);
-    useBrowserStore.setState({
-      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
-      attachToChat: (file) =>
-        aui
-          .composer()
-          .addAttachment(file)
-          .then(() => {
-            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
-            return true;
-          })
-          .catch(() => false),
-    });
-    return () => {
-      setBrowserPanelAvailable(false);
-      setInAppLinkHandler(null);
-      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
-    };
-  }, [chatActive, isMobile, aui]);
+  useBrowserChatHost(chatActive);
   useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
@@ -1869,6 +1876,7 @@ function ProjectLanding({
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
   // The browser shows over a project, so its Request edits lands in this composer.
+  useBrowserChatHost(active);
   useStagedFixPrompt(
     useChatArtifactsStore((state) => state.pendingFixPrompt),
     active,
@@ -4935,7 +4943,12 @@ export function ChatPage({
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
-            {view.mode === "single" && !isMobile ? <BrowserToggleButton active={active} /> : null}
+            {(view.mode === "single" || view.mode === "project") && !isMobile ? (
+              <BrowserToggleButton
+                active={active}
+                hideWhenOpen={view.mode === "single" || showBrowserOverlay}
+              />
+            ) : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (
