@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -37,6 +38,94 @@ def _message_without_unpriced_media(message: dict) -> dict:
     copy = dict(message)
     copy["content"] = countable or ""
     return copy
+
+
+_IMAGE_PART_TYPES = frozenset(("image_url", "input_image"))
+# One token on the tokenizers Studio serves, so a stand-in of N repeats renders as N tokens through
+# `/apply-template` and `/tokenize` (#14968).
+_IMAGE_STAND_IN_TOKEN = " the"
+
+
+def _image_stand_in(tokens: int) -> dict:
+    return {"type": "text", "text": _IMAGE_STAND_IN_TOKEN * max(0, int(tokens))}
+
+
+def _message_with_priced_images(message: dict, price_image: Callable[[dict], int]) -> dict:
+    """The counting copy: each image becomes a text stand-in of what it will cost, and the media
+    that stays unpriced (audio, video) is dropped as before. The request still sends the image."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    countable = []
+    changed = False
+    for part in content:
+        kind = part.get("type") if isinstance(part, dict) else None
+        if kind in _IMAGE_PART_TYPES:
+            countable.append(_image_stand_in(price_image(part)))
+            changed = True
+        elif kind in _UNPRICED_MEDIA_TYPES:
+            changed = True
+        else:
+            countable.append(part)
+    if not changed:
+        return message
+    copy = dict(message)
+    copy["content"] = countable or ""
+    return copy
+
+
+def messages_with_priced_images(
+    messages: list[dict], price_image: Callable[[dict], int]
+) -> list[dict]:
+    """``messages_without_unpriced_media`` with images charged instead of dropped. Images can outgrow
+    the reply reserve that absorbed them (ten screenshots are ~20k tokens), and a count that leaves
+    them out lets the fitter keep a chat llama-server then refuses."""
+    priced = [_message_with_priced_images(message, price_image) for message in messages]
+    return messages if all(before is after for before, after in zip(messages, priced)) else priced
+
+
+def estimate_message_tokens_with_priced_images(
+    message: dict, price_image: Callable[[dict], int]
+) -> int:
+    """Added rather than rendered, so the estimate never serialises a long stand-in."""
+    content = message.get("content")
+    images = (
+        sum(
+            price_image(part)
+            for part in content
+            if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+        )
+        if isinstance(content, list)
+        else 0
+    )
+    return estimate_message_tokens_without_unpriced_media(message) + images
+
+
+def image_dimensions(part: dict) -> Optional[tuple[int, int]]:
+    """(width, height) of an inline image part, or None when it cannot be read cheaply."""
+    # Chat Completions nests {"url": ...}; Responses' input_image carries the string directly.
+    image = part.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else image
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    return _data_url_dimensions(url)
+
+
+@functools.lru_cache(maxsize = 256)
+def _data_url_dimensions(url: str) -> Optional[tuple[int, int]]:
+    """Cached on the URL: the same image is priced on every count of a tool loop."""
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+
+        _, _, payload = url.partition(",")
+        with Image.open(io.BytesIO(base64.b64decode(payload))) as img:
+            width, height = img.size
+    except Exception:
+        return None
+    return (int(width), int(height)) if width > 0 and height > 0 else None
 
 
 def estimate_message_tokens(message: dict) -> int:
