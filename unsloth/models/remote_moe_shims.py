@@ -134,17 +134,29 @@ def is_remote_deepseek_moe(module) -> bool:
     )
 
 
+def _copy_saved(tensor):
+    return tensor.clone()
+
+
+def _identity(tensor):
+    return tensor
+
+
 def _gate_forward_without_training_assert(original):
     @functools.wraps(original)
     def forward(self, hidden_states):
-        if not self.training:
-            return original(self, hidden_states)
-        # Gate has no children: flipping `training` only bypasses the assert.
-        self.training = False
-        try:
-            return original(self, hidden_states)
-        finally:
-            self.training = True
+        # Kimi-Linear adds the score bias in place to the sigmoid output its backward saved; saving
+        # copies keeps that backward valid without changing the routing (no-op without grad). The
+        # block shim calls the gate with training already off, so this covers both paths.
+        with torch.autograd.graph.saved_tensors_hooks(_copy_saved, _identity):
+            if not self.training:
+                return original(self, hidden_states)
+            # Gate has no children: flipping `training` only bypasses the assert.
+            self.training = False
+            try:
+                return original(self, hidden_states)
+            finally:
+                self.training = True
 
     forward._unsloth_remote_moe_shim = True
     return forward
@@ -171,10 +183,17 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     order = torch.argsort(flat_idx, stable = True)
     sorted_tokens = x[order // top_k]
     counts = torch.bincount(flat_idx, minlength = len(experts)).tolist()
+    # Under context parallelism each rank routes a different shard, so an expert unused here may be
+    # used on a peer: run it on no tokens to give it a zero gradient instead of None, or DDP stalls.
+    from ..context_parallel import get_cp_manager
+
+    every_expert = get_cp_manager() is not None
     outputs = []
     start = 0
     for expert_index, count in enumerate(counts):
         if count == 0:
+            if every_expert:
+                outputs.append(experts[expert_index](sorted_tokens[:0]))
             continue
         expert = experts[expert_index]
         outputs.append(expert(sorted_tokens[start : start + count]))
@@ -257,7 +276,8 @@ def prepare_remote_moe_for_training(model, verbose = True):
             shimmed_classes.add(cls)
             _rebind_accelerate_hook(module)
             continue
-        if is_remote_deepseek_gate(module) and cls in shimmable_gates:
+        # Renamed ports (Kimi-Linear's KimiMoEGate) are matched through their inference-only block.
+        if cls in shimmable_gates and _is_remote_code(cls):
             cls.forward = _gate_forward_without_training_assert(cls.forward)
             patched.append(cls.__name__)
             shimmed_classes.add(cls)

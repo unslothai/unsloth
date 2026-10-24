@@ -132,7 +132,8 @@ class DeepseekV3MoE(nn.Module):
     linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
     exec(compile(src, filename, "exec"), mod.__dict__)
     sys.modules[name] = mod
-    for cls in (mod.MoEGate, getattr(mod, "DeepseekV3MoE", None) or mod.SarvamMLAMoE, mod.MLP):
+    gate_cls = getattr(mod, "MoEGate", None) or mod.KimiMoEGate
+    for cls in (gate_cls, getattr(mod, "DeepseekV3MoE", None) or mod.SarvamMLAMoE, mod.MLP):
         cls.__module__ = name
     return mod
 
@@ -190,6 +191,34 @@ def test_training_forward_matches_eval_and_backpropagates():
     assert expert_grads and any(g.abs().sum() > 0 for g in expert_grads)
     assert block.shared_experts.down_proj.weight.grad is not None
     assert block.gate.training and block.training
+
+
+def test_a_gate_adding_its_bias_in_place_still_backpropagates():
+    """Kimi-Linear's gate (renamed KimiMoEGate) adds e_score_correction_bias in place to the sigmoid
+    output that the sigmoid's backward saved; training through the shim must not trip autograd's
+    version check."""
+    inplace = (
+        ("class MoEGate(nn.Module):", "class KimiMoEGate(nn.Module):"),
+        ("self.gate = MoEGate(config)", "self.gate = KimiMoEGate(config)"),
+        (
+            "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
+            "scores_for_choice = scores.view(bsz * seq_len, -1)\n"
+            "        scores_for_choice += self.e_score_correction_bias.unsqueeze(0)",
+        ),
+    )
+    grads = []
+    for name, edits in (("tiny_kimi_c", ()), ("tiny_kimi_inplace", inplace)):
+        mod = _remote_module(f"transformers_modules.{name}.modeling_deepseek", edits)
+        torch.manual_seed(0)
+        block = mod.DeepseekV3MoE(mod.Cfg())
+        assert len(prepare_remote_moe_for_training(block, verbose = False)) == 2
+        block.train()
+        x = torch.randn(2, 5, 16, requires_grad = True)
+        block(x).float().pow(2).sum().backward()
+        grads.append((x.grad, block.gate.weight.grad))
+    # The bias is zero, so the in-place port routes and weighs exactly like the reference one.
+    for got, expected in zip(grads[1], grads[0]):
+        torch.testing.assert_close(got, expected)
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
@@ -597,7 +626,11 @@ def test_a_latent_moe_trains_through_its_own_projections():
     block.train()
     with pytest.raises((AssertionError, NotImplementedError)):
         block(x)
-    assert prepare_remote_moe_for_training(block, verbose = False) == ["KimiSparseMoeBlock"]
+    # The renamed gate is shimmed through its inference-only block (in-place-safe backward).
+    assert sorted(prepare_remote_moe_for_training(block, verbose = False)) == [
+        "KimiMoEGate",
+        "KimiSparseMoeBlock",
+    ]
     block.eval()
     with torch.no_grad():
         reference = block(x)

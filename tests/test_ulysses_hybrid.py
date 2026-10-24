@@ -186,7 +186,7 @@ def test_hybrid_gates():
             self.conv1d = torch.nn.Conv1d(2, 2, 4, groups = 2)
 
     model.model.layers[0].mixer = FakeMamba2()
-    with pytest.raises(NotImplementedError, match = "Gated DeltaNet linear attention only"):
+    with pytest.raises(NotImplementedError, match = "linear attention only"):
         cp._check_stateful_mixers(model, "ulysses", 2)
 
 

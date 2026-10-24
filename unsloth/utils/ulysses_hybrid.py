@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for hybrid models: Gated DeltaNet layers and Hugging Face attention.
+"""Ulysses context parallelism for hybrid models: Gated DeltaNet and Kimi delta attention layers,
+and Hugging Face attention.
 
 Linear attention scans run sequentially over the whole sequence, so a sequence shard cannot run its
 scan alone. Ulysses exchanges the projected q / k / v / beta / gate inputs from sequence shards to
@@ -20,10 +21,17 @@ from .ulysses import _AllToAll, ulysses_attention
 
 __all__ = [
     "GATED_DELTA_ATTENTION_CLASSES",
+    "KIMI_DELTA_ATTENTION_CLASSES",
+    "HYBRID_ATTENTION_CLASSES",
     "is_ulysses_gated_delta",
+    "is_ulysses_kimi_delta",
+    "is_ulysses_mixer",
     "check_gated_delta_heads",
+    "check_ulysses_mixer_heads",
     "ulysses_gated_delta_forward",
+    "ulysses_kimi_delta_forward",
     "wrap_gated_delta_forward",
+    "wrap_ulysses_mixer_forward",
     "install_hf_attention_wrapper",
 ]
 
@@ -33,6 +41,9 @@ GATED_DELTA_ATTENTION_CLASSES = (
     "Qwen3_5Attention",
     "Qwen3_5MoeAttention",
 )
+# Kimi-Linear's full attention layers are MLA; value heads are narrower than query / key heads.
+KIMI_DELTA_ATTENTION_CLASSES = ("KimiMLAAttention",)
+HYBRID_ATTENTION_CLASSES = GATED_DELTA_ATTENTION_CLASSES + KIMI_DELTA_ATTENTION_CLASSES
 
 
 def is_ulysses_gated_delta(module) -> bool:
@@ -43,6 +54,19 @@ def is_ulysses_gated_delta(module) -> bool:
     return all(hasattr(module, n) for n in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"))
 
 
+def is_ulysses_kimi_delta(module) -> bool:
+    if type(module).__name__ != "KimiDeltaAttention":
+        return False
+    needed = ("q_proj", "k_proj", "v_proj", "q_conv1d", "k_conv1d", "v_conv1d", "A_log", "dt_bias")
+    if not all(hasattr(module, n) for n in needed + ("b_proj", "o_norm", "o_proj")):
+        return False
+    return hasattr(module, "f_a_proj") or hasattr(module, "f_proj")
+
+
+def is_ulysses_mixer(module) -> bool:
+    return is_ulysses_gated_delta(module) or is_ulysses_kimi_delta(module)
+
+
 def check_gated_delta_heads(module, cp_size) -> None:
     for name in ("num_k_heads", "num_v_heads"):
         heads = getattr(module, name)
@@ -51,6 +75,16 @@ def check_gated_delta_heads(module, cp_size) -> None:
                 f"Unsloth: Ulysses context parallelism needs linear attention {name} ({heads}) "
                 f"to be divisible by context_parallel_size ({cp_size})."
             )
+
+
+def check_ulysses_mixer_heads(module, cp_size) -> None:
+    if not is_ulysses_kimi_delta(module):
+        return check_gated_delta_heads(module, cp_size)
+    if module.num_heads % cp_size != 0:
+        raise ValueError(
+            f"Unsloth: Ulysses context parallelism needs Kimi delta attention num_heads "
+            f"({module.num_heads}) to be divisible by context_parallel_size ({cp_size})."
+        )
 
 
 def _kernel_params(fn):
@@ -212,7 +246,167 @@ def ulysses_gated_delta_forward(
     return module.out_proj(out.reshape(bsz, local_len, -1))
 
 
-def wrap_gated_delta_forward(module, get_cp_manager) -> None:
+@functools.lru_cache(maxsize = 1)
+def _fla_causal_conv1d():
+    # fla moved the functional conv between releases.
+    try:
+        from fla.modules.conv.causal_conv1d import causal_conv1d
+        return causal_conv1d
+    except ImportError:
+        pass
+    try:
+        from fla.modules.convolution import causal_conv1d
+        return causal_conv1d
+    except ImportError:
+        return None
+
+
+def _kda_short_conv(conv, x, rows):
+    """Causal depthwise conv (+ SiLU) of a fla ShortConvolution on this rank's channels. x [B, T, C]."""
+    weight = conv.weight.squeeze(1).index_select(0, rows)
+    bias = None if conv.bias is None else conv.bias.index_select(0, rows)
+    activation = getattr(conv, "activation", "silu")
+    causal_conv1d = _fla_causal_conv1d() if x.is_cuda else None
+    if causal_conv1d is not None:
+        try:
+            out = causal_conv1d(
+                x = x.contiguous(),
+                weight = weight.contiguous(),
+                bias = bias,
+                initial_state = None,
+                output_final_state = False,
+                activation = activation,
+            )
+            return out[0] if isinstance(out, tuple) else out
+        except TypeError:
+            pass  # another fla signature: the torch conv below is exact, only slower
+    out = F.conv1d(
+        x.transpose(1, 2).to(weight.dtype),
+        weight.unsqueeze(1),
+        bias,
+        padding = weight.shape[-1] - 1,
+        groups = weight.shape[0],
+    )[..., : x.shape[1]].transpose(1, 2)
+    return F.silu(out) if activation in ("silu", "swish") else out
+
+
+def _kda_gate(f, A_log, dt_bias, lower_bound):
+    """KDA per-channel log decay [B, T, H, K] in fp32 (fla naive_kda_gate / naive_kda_lowerbound_gate)."""
+    heads, dim = f.shape[-2:]
+    a = A_log.reshape(1, 1, heads, 1).float().exp()
+    g = f.float() + dt_bias.reshape(1, 1, heads, dim).float()
+    if lower_bound is not None:
+        # Kimi K3 bounds the decay: lower_bound * sigmoid(exp(A_log) * (f + dt_bias)).
+        return lower_bound * torch.sigmoid(a * g)
+    return -a * F.softplus(g)
+
+
+def _torch_kda(q, k, v, g, beta):
+    """Exact token-by-token KDA delta rule (CPU reference).
+
+    q, k, g [B, T, H, K]; v [B, T, H, V]; beta [B, T, H].
+    """
+    q = F.normalize(q.float(), dim = -1) * q.shape[-1] ** -0.5
+    k = F.normalize(k.float(), dim = -1)
+    v, g, beta = v.float(), g.float(), beta.float()
+    state = q.new_zeros(q.shape[0], q.shape[2], q.shape[3], v.shape[3])
+    outs = []
+    for t in range(q.shape[1]):
+        state = state * g[:, t].exp().unsqueeze(-1)
+        delta = beta[:, t, :, None] * (v[:, t] - torch.einsum("bhk,bhkv->bhv", k[:, t], state))
+        state = state + torch.einsum("bhk,bhv->bhkv", k[:, t], delta)
+        outs.append(torch.einsum("bhk,bhkv->bhv", q[:, t], state))
+    return torch.stack(outs, dim = 1)
+
+
+def _kda_scan(q, k, v, g, beta):
+    if q.is_cuda:
+        try:
+            from fla.ops.kda import chunk_kda
+        except ImportError:
+            chunk_kda = None
+        if chunk_kda is not None:
+            # g is the finished log decay, so the kernel's own gate is left off.
+            out, _ = chunk_kda(
+                q = q.contiguous(),
+                k = k.contiguous(),
+                v = v.contiguous(),
+                g = g.contiguous(),
+                beta = beta.contiguous(),
+                initial_state = None,
+                output_final_state = False,
+                use_qk_l2norm_in_kernel = True,
+            )
+            return out
+    return _torch_kda(q, k, v, g, beta).to(v.dtype)
+
+
+def ulysses_kimi_delta_forward(
+    module,
+    hidden_states,
+    attention_mask = None,
+    cache_params = None,
+    *,
+    group,
+    **kwargs,
+):
+    """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard."""
+    if cache_params is not None:
+        raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
+    if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism does not support packing for Kimi delta "
+            "attention."
+        )
+    if isinstance(attention_mask, torch.Tensor) and attention_mask.ndim == 2:
+        mask = attention_mask[:, -hidden_states.shape[1] :, None]
+        hidden_states = (hidden_states * mask).to(hidden_states.dtype)
+
+    size = dist.get_world_size(group)
+    rank = dist.get_rank(group)
+    check_ulysses_mixer_heads(module, size)
+    bsz, local_len, _ = hidden_states.shape
+    total = local_len * size
+    heads, dim = module.num_heads // size, module.head_dim
+
+    q = module.q_proj(hidden_states)
+    k = module.k_proj(hidden_states)
+    v = module.v_proj(hidden_states)
+    if hasattr(module, "f_a_proj"):
+        f = module.f_b_proj(module.f_a_proj(hidden_states))
+    else:
+        f = module.f_proj(hidden_states)
+    b = module.b_proj(hidden_states)
+    # Kimi-Linear projects the output gate through a low rank; K3 (use_full_rank_gate) does not.
+    if hasattr(module, "g_a_proj"):
+        gate = module.g_b_proj(module.g_a_proj(hidden_states))
+    else:
+        gate = module.g_proj(hidden_states)
+
+    pieces = [x.reshape(bsz, local_len, size, -1) for x in (q, k, v, f, b)]
+    widths = [p.shape[-1] for p in pieces]
+    mixed = _AllToAll.apply(torch.cat(pieces, dim = -1), 2, 1, group).squeeze(2)
+    q, k, v, f, b = torch.split(mixed, widths, dim = -1)
+
+    rows = torch.arange(rank * heads * dim, (rank + 1) * heads * dim, device = q.device)
+    q = _kda_short_conv(module.q_conv1d, q, rows).reshape(bsz, total, heads, dim)
+    k = _kda_short_conv(module.k_conv1d, k, rows).reshape(bsz, total, heads, dim)
+    v = _kda_short_conv(module.v_conv1d, v, rows).reshape(bsz, total, heads, dim)
+
+    g = _kda_gate(
+        f.reshape(bsz, total, heads, dim),
+        module.A_log.reshape(-1)[rank * heads : (rank + 1) * heads],
+        module.dt_bias.reshape(-1).index_select(0, rows),
+        getattr(module, "gate_lower_bound", None),
+    )
+    out = _kda_scan(q, k, v, g, b.float().sigmoid())
+    out = _AllToAll.apply(out.reshape(bsz, total, heads, dim), 1, 2, group)
+
+    out = module.o_norm(out, gate.reshape(bsz, local_len, -1, dim))
+    return module.o_proj(out.reshape(bsz, local_len, -1))
+
+
+def _wrap_ulysses_forward(module, get_cp_manager, name) -> None:
     if getattr(module, "_unsloth_cp_orig_forward", None) is not None:
         return
     forward = module.forward
@@ -226,10 +420,21 @@ def wrap_gated_delta_forward(module, get_cp_manager) -> None:
             packed = getattr(manager, "packed_seq_lengths", None)
             if packed is not None:
                 kwargs["packed_seq_lengths"] = packed
-        return ulysses_gated_delta_forward(module, *args, group = manager.group, **kwargs)
+        # Looked up per call so tests can substitute the exchange.
+        return globals()[name](module, *args, group = manager.group, **kwargs)
 
     module._unsloth_cp_orig_forward = forward
     module.forward = wrapped
+
+
+def wrap_gated_delta_forward(module, get_cp_manager) -> None:
+    _wrap_ulysses_forward(module, get_cp_manager, "ulysses_gated_delta_forward")
+
+
+def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
+    if is_ulysses_kimi_delta(module):
+        return _wrap_ulysses_forward(module, get_cp_manager, "ulysses_kimi_delta_forward")
+    return wrap_gated_delta_forward(module, get_cp_manager)
 
 
 def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, **kwargs):
@@ -252,6 +457,14 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
             "Unsloth: Ulysses context parallelism does not support attention dropout."
         )
     seq_info = get_packed_info_from_kwargs(kwargs, query.device)
+    v_dim = value.shape[-1]
+    if v_dim > head_dim:
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism needs value heads no wider than query heads."
+        )
+    if v_dim < head_dim:
+        # MLA (Kimi-Linear): pad value heads to the query width like HF's flash path, slice after.
+        value = F.pad(value, (0, head_dim - v_dim))
     n_kv_heads = key.shape[1]
     config = AttentionConfig(
         backend = select_attention_backend(use_varlen = seq_info is not None),
@@ -271,7 +484,8 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
         attention_mask = None,
         causal_mask = None,
     )
-    return ulysses_attention(_run_attention, config, context, query, key, value, group), None
+    out = ulysses_attention(_run_attention, config, context, query, key, value, group)
+    return (out if v_dim == head_dim else out[..., :v_dim]), None
 
 
 def install_hf_attention_wrapper(module, implementation, get_cp_manager) -> None:

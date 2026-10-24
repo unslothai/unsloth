@@ -155,11 +155,11 @@ def _unregister_cp_sharding_rules() -> None:
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
-    GATED_DELTA_ATTENTION_CLASSES,
-    check_gated_delta_heads,
+    HYBRID_ATTENTION_CLASSES,
+    check_ulysses_mixer_heads,
     install_hf_attention_wrapper,
-    is_ulysses_gated_delta,
-    wrap_gated_delta_forward,
+    is_ulysses_mixer,
+    wrap_ulysses_mixer_forward,
 )
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
@@ -201,11 +201,19 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
-    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+    if any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and not _runs_every_expert(m)
+        for m in model.modules()
+    ):
         # Per-expert modules run only for experts the local shard routes to, so with DDP's
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
+
+
+def _runs_every_expert(block) -> bool:
+    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP.
+    return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
 
 
 def _supports_context_parallel(model, backend = "ring") -> bool:
@@ -219,8 +227,11 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
     return (
         backend == "ulysses"
         and bool(mixers)
-        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
-        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and all(is_ulysses_mixer(m) for m, _ in mixers)
+        # Kimi-Linear names its delta attention layers self_attn too.
+        and all(
+            type(m).__name__ in HYBRID_ATTENTION_CLASSES for m in modules if not is_ulysses_mixer(m)
+        )
         and _hybrid_config_blocker(model) is None
     )
 
@@ -235,14 +246,14 @@ def _check_stateful_mixers(model, backend, size) -> None:
             f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
             "use context_parallel_backend = 'ulysses'."
         )
-    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
-            f"not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet and Kimi delta "
+            f"linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
-        check_gated_delta_heads(module, size)
+        check_ulysses_mixer_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -285,13 +296,10 @@ class ContextParallelManager:
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
-                if is_ulysses_gated_delta(module):
-                    wrap_gated_delta_forward(module, get_cp_manager)
+                if is_ulysses_mixer(module):
+                    wrap_ulysses_mixer_forward(module, get_cp_manager)
             for name, module in model.named_modules():
-                if (
-                    name.endswith("self_attn")
-                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
-                ):
+                if name.endswith("self_attn") and type(module).__name__ in HYBRID_ATTENTION_CLASSES:
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
@@ -759,12 +767,14 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
         if blocker is not None:
             raise NotImplementedError(
-                f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+                "Unsloth: context parallelism on linear attention hybrids does not support "
+                f"{blocker}."
             )
         if not _supports_context_parallel(self.model, backend):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention "
-                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
+                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet and Kimi-Linear "
+                "hybrids with Ulysses."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
