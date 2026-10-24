@@ -5213,6 +5213,18 @@ def test_a_fully_resident_raise_that_pushes_experts_off_is_skipped(
     assert backend._moe_spill_batch_restore is None
 
 
+def test_a_user_fit_off_keeps_the_default_micro_batch(tmp_path, _moe_cache_host, monkeypatch):
+    """The full_resident_small_loss_raised cell with a trailing user --fit off: no fitter
+    spills experts for the larger buffer, so the raise is not taken."""
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    backend, cmd = _cache_launch(
+        tmp_path, memory = [(0, 23_000, 48_000)], extra_args = ["--fit", "off"]
+    )
+
+    assert _ubatch_values(cmd) == [], cmd
+    assert backend._moe_spill_batch_restore is None
+
+
 @pytest.mark.parametrize(
     "cache_switch, cached",
     # ~51% resident, and the raise costs ~5% of those experts (under the 10% rule): the
@@ -5670,7 +5682,7 @@ def test_the_cache_admission_counts_the_experts_once(
 
 @pytest.mark.parametrize("ram_gib, cached", [(45, False), (60, True)])
 def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
-    tmp_path, _moe_cache_host, monkeypatch, ram_gib, cached
+    tmp_path, _moe_cache_host, ram_gib, cached
 ):
     """Qwen3.8-Flash-Next IQ1_S on one 16 GiB card, end to end with the real host-RAM
     preflight. The fit leaves the 26.82 GiB lazy table out and picks "none"; the

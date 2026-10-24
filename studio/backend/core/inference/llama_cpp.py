@@ -29257,7 +29257,16 @@ class LlamaCppBackend:
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
                         and not _device_selection_is_cpu(extra_args, os.environ)
-                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
+                        and (
+                            # A trailing user --fit off wins: no fitter spills for the larger buffer.
+                            (
+                                use_fit
+                                and fit_is_effectively_on(
+                                    ["--fit", "on", *(extra_args or ())], os.environ
+                                )
+                            )
+                            or _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        )
                     )
                     _moe_spill_discrete_gpu = bool(
                         _moe_experts_on_host
