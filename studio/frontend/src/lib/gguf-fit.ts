@@ -148,8 +148,7 @@ export function classifyGgufFit(
 export interface GgufVariantSizes {
   size_bytes: number;
   download_size_bytes?: number;
-  /** Lookup-only tables inside `size_bytes` that llama.cpp reads lazily from disk (its default
-   *  `--lazy-mode auto` for a flagged table over 4 GiB). Absent or 0 on older backends. */
+  /** Lookup tables inside `size_bytes` llama.cpp reads lazily from disk; 0 on older backends. */
   lookup_table_bytes?: number;
 }
 
@@ -176,7 +175,6 @@ export function ggufVariantLookupTableBytes(variant: GgufVariantSizes): number {
   return Math.min(table, ggufVariantFitSizeBytes(variant));
 }
 
-/** Lookup tables are mmapped from disk by default: a load that fits only without them is `streamed`. */
 export function classifyGgufFitWithLookupTables(
   fitOf: (sizeBytes: number) => GgufFitClass,
   variant: GgufVariantSizes,

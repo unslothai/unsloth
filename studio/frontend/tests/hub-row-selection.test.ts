@@ -47,8 +47,6 @@ test("the picker reads one fit per variant, companions included", () => {
   assert.doesNotMatch(PICKERS, /getGgufFit\(v\.size_bytes\)/);
   const at = PICKERS.indexOf("const getVariantFit = useCallback(");
   assert.notEqual(at, -1, "getVariantFit is missing");
-  // Directly, or through the lookup-table classifier, which sizes the same footprint
-  // (ggufVariantFitSizeBytes) before pricing streamed tables apart.
   assert.match(
     PICKERS.slice(at, at + 400),
     /ggufVariantFitSizeBytes\(variant\)|classifyGgufFitWithLookupTables\(getGgufFit, variant\)/,

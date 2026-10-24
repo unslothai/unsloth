@@ -1353,9 +1353,6 @@ async def _mlx_precision_variants_answer(
     return VariantsAnswer(response, None, cache_authorized = False)
 
 
-# Lookup-only tables llama.cpp streams from disk, priced per variant so the fit badge does not
-# charge them as resident: local copies from their headers, Hub-only lazy quants by bounded Range
-# reads that fill a cache. Off with UNSLOTH_LOOKUP_TABLE_REMOTE=0; 0 bytes on any failure.
 _LOOKUP_REMOTE_ENV = "UNSLOTH_LOOKUP_TABLE_REMOTE"
 _LOOKUP_DEADLINE_S = 2.0
 _LOOKUP_CONCURRENCY = 4
@@ -1364,7 +1361,6 @@ _LOOKUP_ARCH_FAIL_TTL_S = 600.0
 _lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
 _lookup_arch_lock = threading.Lock()
 _lookup_inflight: set = set()
-# Its own pool (size = concurrency cap): Hub reads never queue a listing or a load behind them.
 _LOOKUP_POOL = ThreadPoolExecutor(
     max_workers = _LOOKUP_CONCURRENCY, thread_name_prefix = "gguf-lookup-tables"
 )
@@ -1377,17 +1373,14 @@ async def _lookup_thread(fn, /, *args):
 
 
 def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
-    """Done callback: a read the pool refused, or whose wrapper was cancelled before the
-    pool ran it, never reaches its own ``finally``, so its in-flight key is released here.
-    A started read still owns the key: a closing loop cancels the wrapper, not the thread."""
+    """Release the inflight key of a read that never ran."""
     if not started and (task.cancelled() or task.exception() is not None):
         with _lookup_arch_lock:
             _lookup_inflight.discard(key)
 
 
 async def _lookup_await_once(key, deadline: float, fn, /, *args):
-    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time); None when
-    late or already in flight. A late call keeps running once started."""
+    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time)."""
     with _lookup_arch_lock:
         if key in _lookup_inflight:
             return None
@@ -1410,7 +1403,6 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
     loop = asyncio.get_running_loop()
     done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
     if task not in done:
-        # Unstarted: dropped and its key released. Started: runs on and lands in the cache.
         expired.set()
         task.cancel()
         return None
@@ -1451,8 +1443,7 @@ def _host_streams_lookup_tables() -> bool:
 
 
 def _listing_lazy_mode() -> str:
-    """The lazy mode a default launch here runs under: a server-wide ``on`` streams every
-    flagged table, not only those over the auto threshold."""
+    """The lazy mode a default launch here runs under."""
     try:
         from core.inference.llama_cpp import _effective_lazy_mode
         from routes.inference import get_llama_cpp_backend
@@ -1503,8 +1494,7 @@ def _local_variant_gguf(
     variant,
     local_path: Optional[str] = None,
 ) -> Optional[str]:
-    """The on-disk main GGUF behind a listed row, or None. Searches the copy *local_path* names
-    (its snapshot, or its cache root) the way the listing did."""
+    """The on-disk main GGUF behind a listed row, or None."""
     filename = str(variant.filename or "")
     sources = answer.variant_context_sources or {}
     candidates = [sources.get(str(variant.quant or "").lower())]
@@ -1558,8 +1548,7 @@ async def _with_lookup_tables(
     prefer_local_cache: bool,
     local_path: Optional[str] = None,
 ) -> "VariantsAnswer":
-    """``answer`` with ``lookup_table_bytes`` filled per variant. Never raises; a row it
-    cannot size keeps 0, which prices the whole file the way the listing always did."""
+    """``answer`` with ``lookup_table_bytes`` filled per variant."""
     try:
         from core.inference.lookup_tables import LAZY_READ_AUTO_MIN_BYTES
         from hub.utils.gguf_lookup_tables import (
@@ -1655,8 +1644,6 @@ async def _with_lookup_tables(
                         )
                         tasks[task] = index
                     if tasks:
-                        # One deadline for the listing; unstarted reads are dropped so a stalled Hub
-                        # leaves no queue.
                         done, pending = await asyncio.wait(
                             tasks,
                             timeout = max(0.0, deadline - asyncio.get_running_loop().time()),

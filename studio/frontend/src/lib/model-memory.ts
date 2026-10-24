@@ -130,12 +130,7 @@ const EMPTY: ModelMemorySegments = {
   pressure: "normal",
 };
 
-/**
- * The weights segment of the VRAM bar. Lookup tables (per-layer embeddings / Engram) never reach the
- * card: the estimate already leaves a streamed table out of `weightsBytes`, and keeps a host-resident
- * one in, so only the resident one comes off here. Before the estimate arrives, the listing's
- * (streamed) table comes off its file size instead.
- */
+/** VRAM weights segment: only a host-resident lookup table comes off (a streamed one is already out). */
 export function memoryBarWeightsBytes(
   estimate:
     | {

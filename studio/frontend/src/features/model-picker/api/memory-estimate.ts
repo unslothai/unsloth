@@ -63,11 +63,8 @@ export interface MemoryEstimate {
   gpuLayers: number | null;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
-  /** Lookup-only tables (per-layer embeddings / Engram) in the model file, never on the GPU.
-   *  Absent or 0 on an older backend. */
   lookupTableBytes?: number;
-  /** Those tables are streamed from disk (llama.cpp's default), so they are not in
-   *  `weightsBytes` or `totalBytes`. */
+  /** Tables streamed from disk, so excluded from `weightsBytes` and `totalBytes`. */
   lookupTableOnDisk?: boolean;
   /** MLX: share of the PLE tables / routed experts read from disk, priced in `weightsBytes`. */
   mlxPleOffload: number | null;

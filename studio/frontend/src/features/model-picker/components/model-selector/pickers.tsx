@@ -837,7 +837,6 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
   },
-  // Runs only with its lookup tables left on disk (llama.cpp's default); the resident weights fit.
   streamed: {
     label: "Fits (lookup tables streamed from disk)",
     tone: AMBER,
@@ -6704,8 +6703,6 @@ export function HubModelPicker({
                 : {
                     repoId: entry.repoId,
                     quant: entry.quant,
-                    // Same listing figures as the sole-quant row, so a streamed table is off the
-                    // weights segment here too.
                     sizeBytes,
                     lookupTableBytes: pinnedQuantValidation.lookupTables.get(
                       pinKey(entry.repoId, entry.quant),

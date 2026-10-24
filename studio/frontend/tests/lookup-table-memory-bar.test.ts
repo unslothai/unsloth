@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Lookup tables (per-layer embeddings / Engram) never sit in VRAM, so the bar's weights segment
-// leaves them out. Sizes are real GGUF header figures: Qwen3.8-Flash-Next UD-Q2_K_XL (73.45 GiB,
-// streamed PLE 26.82 GiB) and gemma-3n-E4B Q4_K_M (4.23 GiB, host-resident PLE 1.64 GiB).
+// Lookup tables never sit in VRAM. Sizes are real GGUF header figures.
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -56,7 +56,6 @@ export interface ModelMemorySource {
   quant: string;
   /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
-  /** The listing's lookup-table bytes (never VRAM), taken off ``sizeBytes`` for that first draw. */
   lookupTableBytes?: number | null;
   /**
      * The concrete thing this row loads, when the listing resolved one.

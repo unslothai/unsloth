@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lookup-only tables (per-layer embeddings / Engram) priced apart in the listing and the panel.
-
-llama.cpp reads a TENSOR_READ_LAZY table over 4 GiB lazily under its default ``--lazy-mode
-auto``: it stays mmap'd from disk and only the rows a token touches page in. The model listing
-reports those bytes per variant (``lookup_table_bytes``) and the Load Model estimate keeps them
-out of the GPU share, and out of the resident total while they stream.
-
-The headers are hand-built with the real tensor shapes and quant types read off the published
-GGUFs: DeepSeek-V4.1-Flash UD-IQ1_S (``per_layer_token_embd`` IQ4_NL [256, 768022850], 103.00
-GiB), Qwen3.8-Flash-Next UD-Q2_K_XL (arch qwen4exp, IQ4_NL [160, 320001536], 26.82 GiB) and
-gemma-3n-E4B Q4_K_M (Q5_1 [8960, 262144], 1.64 GiB, not lazily read upstream). Only the header
-is written, so a 103 GiB table costs a few hundred bytes on disk.
-"""
+"""Lookup-only tables (per-layer embeddings / Engram) priced apart in the listing and the panel."""
 
 from __future__ import annotations
 
@@ -34,7 +22,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Installs the process-wide loggers/structlog/httpx stubs the route module needs.
 import test_kv_cache_estimation  # noqa: E402,F401
 
 GIB = 1024**3
@@ -131,9 +118,6 @@ def _gemma3n(tmp_path: Path) -> str:
     )
 
 
-# A. The header scan
-
-
 def test_split_names_keep_the_extension_as_written():
     from hub.utils.gguf_lookup_tables import shard_names
     assert shard_names("d/M-00001-of-00002.GGUF") == [
@@ -143,8 +127,7 @@ def test_split_names_keep_the_extension_as_written():
 
 
 def test_a_posix_class_pattern_is_not_proof_the_table_stays_on_the_host():
-    """std::regex reads [[:alpha:]] as a class; Python reads a literal set, so its match is
-    unknown here: a device target may place the table, a host one settles nothing."""
+    """std::regex reads [[:alpha:]] as a class."""
     from core.inference.llama_cpp import _override_places_tensor_on_device
 
     name = "per_layer_token_embd.weight"
@@ -165,8 +148,6 @@ class TestHeaderScan:
         assert FLASH_NEXT_TABLE / GIB == pytest.approx(26.82, abs = 0.01)
 
     def test_gemma3n_is_not_lazily_read(self, tmp_path):
-        # Same tensor name, but gemma3n does not flag it TENSOR_READ_LAZY (and it is under
-        # 4 GiB anyway): it is priced as weights, as before.
         from hub.utils.gguf_lookup_tables import local_lookup_info
         assert local_lookup_info(_gemma3n(tmp_path)) == ("gemma3n", 0)
 
@@ -237,13 +218,11 @@ class TestHeaderScan:
         )
         assert got == ("qwen4exp", FLASH_NEXT_TABLE)
         assert calls and all(start == 0 for _name, start, _end in calls)
-        # Cached: no second read for the same file identity.
         calls.clear()
         assert glt.remote_lookup_info(
             "unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", identity = 1, fetcher_fn = fetcher
         ) == ("qwen4exp", FLASH_NEXT_TABLE)
         assert not calls
-        # The listed size is not content identity: an expired answer is read again.
         glt._REMOTE_CACHE.clear()
         glt._REMOTE_TTL_S, ttl = -1.0, glt._REMOTE_TTL_S
         try:
@@ -274,9 +253,6 @@ class TestHeaderScan:
             0,
         )
         assert glt.remote_cached("o/r", "f.gguf", None, 7) is None
-
-
-# B. The listing
 
 
 def _answer(variants, sources = None):
@@ -331,7 +307,6 @@ class TestListing:
         from hub.services.models import gguf_variants as gv
 
         path = _dsv41(tmp_path)
-        # A local answer never asks the Hub.
         monkeypatch.setattr(
             gv, "_hub_repo_architecture", lambda *a, **k: pytest.fail("no Hub call")
         )
@@ -356,7 +331,6 @@ class TestListing:
             )
         )
         assert out.response.variants[0].lookup_table_bytes == DSV41_TABLE
-        # The shared answer is not mutated in place.
         assert answer.response.variants[0].lookup_table_bytes == 0
 
     def test_hub_only_quants_of_a_lazy_arch_are_range_read(self, monkeypatch):
@@ -364,7 +338,6 @@ class TestListing:
         from hub.services.models import gguf_variants as gv
         from hub.utils import gguf_lookup_tables as glt
 
-        # The repo's architecture is already known (an earlier listing fetched it).
         monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
         monkeypatch.setattr(
             glt,
@@ -603,7 +576,6 @@ class TestListing:
                 _answer(rows), "o/many", hf_token = None, offline = False, prefer_local_cache = False
             )
         )
-        # The pool caps concurrency, not the rows a listing asks for.
         assert sorted(calls) == sorted(r.filename for r in rows)
         assert all(v.lookup_table_bytes for v in out.response.variants)
 
@@ -664,7 +636,6 @@ class TestListing:
                 _answer(rows), "o/small", hf_token = None, offline = False, prefer_local_cache = False
             )
         )
-        # Every flagged table streams under "on", so even a 3 GiB file is worth the lookup.
         assert out.response.variants[0].lookup_table_bytes == 2 * GIB
 
     def test_a_remote_answer_is_cached_per_lazy_mode(self):
@@ -694,7 +665,6 @@ class TestListing:
         def arch(repo, token):
             asked.append(token)
             if token == "hf_first":
-                # Still running when the other credential's listing asks.
                 second.wait(1.5)
             else:
                 second.set()
@@ -750,7 +720,6 @@ class TestListing:
         ):
             readers.append(token)
             if token == "hf_first":
-                # Still reading when the other credential's listing reaches the row.
                 second.wait(1.5)
             else:
                 second.set()
@@ -783,8 +752,7 @@ class TestListing:
     def test_an_empty_inventory_beside_a_gpu_node_prices_the_table_resident(
         self, monkeypatch, node, streams
     ):
-        """Without the torch fallback a ROCm APU can read as no rows; the launch's own probe
-        finds it and keeps the table resident, so the listing must not discount it."""
+        """Without the torch fallback a ROCm APU can read as no rows."""
         from core.inference import llama_cpp as lc
 
         backend = lc.LlamaCppBackend.__new__(lc.LlamaCppBackend)
@@ -832,7 +800,6 @@ class TestListing:
         ]
 
         async def listing_then_release():
-            # One long-lived loop, as the server's: closing it would cancel the queue anyway.
             await gv._with_lookup_tables(
                 _answer(rows),
                 "o/stalled",
@@ -848,7 +815,6 @@ class TestListing:
             asyncio.run(listing_then_release())
         finally:
             release.set()
-        # Only the pool's running reads ever started; the queued rest were dropped.
         assert len(started) <= gv._LOOKUP_CONCURRENCY, started
         with gv._lookup_arch_lock:
             assert not [k for k in gv._lookup_inflight if k[:2] == ("table", "o/stalled")]
@@ -868,7 +834,6 @@ class TestListing:
 
         async def main():
             loop = asyncio.get_running_loop()
-            # Fill the pool, then ask for one more past its deadline.
             busy = [
                 asyncio.ensure_future(gv._lookup_thread(slow, f"busy{i}"))
                 for i in range(gv._LOOKUP_CONCURRENCY)
@@ -892,8 +857,7 @@ class TestListing:
             assert ("arch", "o/late", "fp") not in gv._lookup_inflight
 
     def test_work_the_deadline_drops_never_runs_if_a_worker_reaches_it_late(self, monkeypatch):
-        """A worker can pick up queued work before the cancel reaches the executor; run the
-        captured calls after the deadline, as that worker would, and nothing reads the Hub."""
+        """A worker can pick up queued work before the cancel reaches the executor."""
         from hub.schemas.inventory import GgufVariantDetail
         from hub.services.models import gguf_variants as gv
         from hub.utils import gguf_lookup_tables as glt
@@ -1000,9 +964,6 @@ class TestListing:
         )
 
 
-# C. The Load Model estimate
-
-
 class TestEstimate:
     WEIGHTS = 73.45 * GIB
 
@@ -1017,7 +978,6 @@ class TestEstimate:
             "_get_gguf_size_bytes",
             staticmethod(lambda p: int(self.WEIGHTS)),
         )
-        # A build with the lazy mode, as the Studio prebuilt is, on one discrete card.
         monkeypatch.setattr(
             ri.LlamaCppBackend,
             "probe_server_capabilities",
@@ -1034,14 +994,12 @@ class TestEstimate:
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
         )
-        # A discrete Linux host on every runner: a macOS runner would take the Apple path.
         import utils.hardware as hw
 
         monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
         )
-        # 16 GiB of free RAM cannot hold the 26.82 GiB table: it streams.
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 16 * 1024)
         )
@@ -1071,7 +1029,6 @@ class TestEstimate:
         assert b.lookup_table_on_disk is True
         assert b.weights_bytes == int(round(self.WEIGHTS)) - FLASH_NEXT_TABLE
         assert b.total_bytes == b.weights_bytes + b.kv_bytes + b.compute_bytes
-        # Auto puts everything else on the GPU; the table is not part of it.
         assert b.gpu_bytes == b.total_bytes
 
     def test_lazy_mode_off_keeps_it_resident_but_still_off_the_gpu(self, breakdown, monkeypatch):
@@ -1100,9 +1057,7 @@ class TestEstimate:
     def test_a_cpu_pinned_projector_is_charged_to_ram_in_the_residency_proof(
         self, breakdown, monkeypatch
     ):
-        """A 96 GB card holds everything but the table, so 34 GiB of RAM keeps the table
-        resident; --no-mmproj-offload puts the 6 GiB projector and its buffers beside it in
-        RAM, which then no longer holds both (the launch streams it)."""
+        """A 96 GB card holds everything but the table, so 34 GiB of RAM keeps the table resident."""
         import routes.inference as ri
 
         MM = 6 * GIB
@@ -1125,9 +1080,7 @@ class TestEstimate:
     def test_ram_the_spilled_weights_crowd_out_keeps_the_table_streamed(
         self, breakdown, monkeypatch
     ):
-        """24 GiB card + 58 GiB free RAM: Auto spills ~25 GiB of weights to RAM, and with the
-        8 GiB prompt cache the 26.8 GiB table no longer fits beside them (the launch streams
-        it). The request's every-layer offload alone would have read it resident."""
+        """24 GiB card + 58 GiB free RAM."""
         import routes.inference as ri
 
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
@@ -1147,7 +1100,6 @@ class TestEstimate:
             ),
         )
         assert breakdown().lookup_table_on_disk is True
-        # A card that holds every weight leaves RAM to the table.
         monkeypatch.setattr(
             ri.LlamaCppBackend,
             "_get_gpu_memory",
@@ -1159,8 +1111,7 @@ class TestEstimate:
     def test_apple_prices_the_whole_load_against_unified_memory(
         self, breakdown, monkeypatch, budget_gib, ram_gib, resident
     ):
-        """A 64 GB Mac holds the 27 GiB table only beside nothing else; the launch's Apple
-        discount checks the whole load, so the panel does too."""
+        """A 64 GB Mac holds the 27 GiB table only beside nothing else."""
         import routes.inference as ri
         import utils.hardware as hw
 
@@ -1206,8 +1157,7 @@ class TestEstimate:
     def test_a_device_override_charges_a_resident_table_wholly_to_the_gpu(
         self, breakdown, tmp_path, monkeypatch
     ):
-        """A layer fraction does not apply to a tensor an -ot pins: --gpu-layers 0 with the
-        table on CUDA0 still has the whole table on the card."""
+        """A layer fraction does not apply to a tensor an -ot pins."""
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
         monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
         table = 8960 * 262144 // 32 * 24
@@ -1279,7 +1229,6 @@ class TestEstimate:
         assert breakdown().lookup_table_on_disk is True
         assert breakdown(selected_gpu_ids = [0]).lookup_table_on_disk is False
         assert breakdown(selected_gpu_ids = [1]).lookup_table_on_disk is True
-        # The pin owns placement: a stale --device naming the discrete card is stripped.
         stale = breakdown(selected_gpu_ids = [0], llama_extra_args = ["--device", "Vulkan1"])
         assert stale.lookup_table_on_disk is False
 

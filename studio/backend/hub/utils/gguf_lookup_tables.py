@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bytes of the lookup-only tables (per-layer embeddings / Engram) llama.cpp streams from disk.
-
-Read off GGUF headers only, local or over HTTP Range, never the tensor data. The size is
-what the model listing and the Load Model panel price separately: under llama.cpp's
-default ``--lazy-mode auto`` a flagged table over 4 GiB stays mmap'd from disk and pages
-in only the rows a token touches, so it is neither VRAM nor resident RAM.
-
-Nothing here raises: an unreadable or unreachable header answers 0, which is the
-behaviour before this existed (the whole file priced as weights).
-"""
+"""Bytes of the lookup-only tables (per-layer embeddings / Engram) llama.cpp streams from disk."""
 
 from __future__ import annotations
 
@@ -28,7 +19,6 @@ _SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _STRING, _ARRAY, _UINT32 = 8, 9, 4
 _FIRST_READ = 8 << 20
-# A tokenizer-heavy header is a few tens of MB at most; past this the answer is 0.
 MAX_HEADER_BYTES = 64 << 20
 
 _WANTED = {name.encode() for names in LAZY_READ_TENSORS.values() for name in names}
@@ -44,9 +34,7 @@ def lazy_architecture(arch: Optional[str]) -> bool:
 
 
 def parse_header(buf: bytes) -> tuple[Optional[str], dict[str, int]]:
-    """(architecture, {lazy-candidate tensor name: bytes}) from a GGUF v2/v3 header held in
-    ``buf``. Raises ``_NeedMore`` when ``buf`` ends inside the header, ``ValueError`` when it
-    is not a GGUF this can read. A tensor of a quant type ``gguf`` does not know is skipped."""
+    """(architecture, {lazy-candidate tensor name: bytes}) from a GGUF v2/v3 header."""
     from gguf.constants import GGML_QUANT_SIZES
 
     pos = 0
@@ -161,7 +149,6 @@ def shard_names(filename: str) -> list[str]:
 
 
 _LOCAL_CACHE: "OrderedDict[tuple, tuple[Optional[str], int]]" = OrderedDict()
-# Remote answers with an expiry: the listed size is not content identity.
 _REMOTE_CACHE: "OrderedDict[tuple, tuple[tuple[Optional[str], int], float]]" = OrderedDict()
 _REMOTE_TTL_S = 6 * 3600.0
 _CACHE_LIMIT = 512
@@ -184,9 +171,7 @@ def _scan_shards(
     names: list[str],
     mode: str = "auto",
 ):
-    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first
-    shard that carries the table: llama.cpp's split keeps file order and the table sits near
-    the front."""
+    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first shard that carries the table."""
     arch: Optional[str] = None
     for name in names[:MAX_SHARDS_READ]:
         part_arch, named = read_header(name)
@@ -200,9 +185,7 @@ def _scan_shards(
 
 
 def local_lookup_info(path: Optional[str], mode: str = "auto") -> tuple[Optional[str], int]:
-    """(architecture, table bytes llama.cpp reads lazily under ``mode``: ``on`` drops the
-    size threshold) for a local GGUF and its sibling shards. ``(None, 0)`` when unreadable
-    or a shard is missing."""
+    """(architecture, table bytes llama.cpp reads lazily under ``mode``) for a local GGUF."""
     if not path:
         return None, 0
     try:
@@ -236,8 +219,7 @@ def remote_cached(
     *,
     mode: str = "auto",
 ):
-    """The cached remote answer under lazy ``mode``, keyed on the file's identity (its
-    listed size by default), so a re-upload under the same name is read again."""
+    """The cached remote answer under lazy ``mode``, keyed on the file's identity (its listed size by default), so a re-upload under the same name is read again."""
     with _lock:
         hit = _REMOTE_CACHE.get((repo_id, filename, revision or "", identity, mode))
     if hit is None or hit[1] <= time.monotonic():
@@ -255,9 +237,7 @@ def remote_lookup_info(
     fetcher_fn: Optional[Callable] = None,
     mode: str = "auto",
 ) -> tuple[Optional[str], int]:
-    """(architecture, lazily read table bytes) from Range reads of a Hub GGUF's header(s).
-    Blocking; call off the event loop. Failures answer ``(None, 0)`` and are not cached,
-    so a transient error is retried on the next listing."""
+    """(architecture, lazily read table bytes) from Range reads of a Hub GGUF's header(s)."""
     key = (repo_id, filename, revision or "", identity, mode)
     hit = remote_cached(repo_id, filename, revision, identity, mode = mode)
     if hit is not None:

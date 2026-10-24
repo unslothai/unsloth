@@ -14676,8 +14676,6 @@ class _GgufMemoryBreakdown(NamedTuple):
     gpu_layers: Optional[int]
     # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
     kv_checkpoint_bytes: int = 0
-    # Lookup-only tables (per-layer embeddings / Engram): host-pinned, and out of weights_bytes and
-    # total_bytes when lazy reading engages.
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
 
@@ -15554,7 +15552,6 @@ def _gguf_memory_breakdown(
     # the more specific instruction. Without that, a stale "--device none" in the box
     # made a pinned load read as CPU-only and reported no GPU footprint at all.
     device_pin_governs: bool = False,
-    # The physical cards a pin selects: lazy auto resolves off when one lacks mmap support.
     selected_gpu_ids: Optional[list[int]] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
@@ -15849,8 +15846,6 @@ def _gguf_memory_breakdown(
     # --gpu-layers 0 report zero GPU bytes while both sat in VRAM.
     main_bytes = min(gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
     companion_bytes = max(0, gpu_files_bytes - main_bytes)
-    # A lazily read table (TENSOR_READ_LAZY, over 4 GiB, --lazy-mode auto) stays mmap'd and inputs
-    # are host-pinned: it leaves the GPU share always, the total when lazy reading engages.
     from core.inference.llama_cpp import (
         _effective_lazy_mode,
         _is_per_layer_embedding,
@@ -15867,14 +15862,12 @@ def _gguf_memory_breakdown(
         )
     except Exception:  # noqa: BLE001 -- unknown build: the default spelling
         _lt_flag = "--lazy-mode"
-    # An explicit "on" streams every flagged table, not only those over the threshold.
     _lt_arch, _lt_bytes = local_lookup_info(
         gguf_path,
         "on" if _effective_lazy_mode(extras, os.environ, flag = _lt_flag) == "on" else "auto",
     )
     lookup_table_bytes = min(main_bytes, _lt_bytes)
     lookup_table_on_disk = False
-    # A pin strips the device flags and their env twins at launch, so it does here too.
     _lt_extras, _lt_env = extras, dict(os.environ)
     if selected_gpu_ids or device_pin_governs:
         _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
@@ -15911,7 +15904,6 @@ def _gguf_memory_breakdown(
             for name in names or ["per_layer_token_embd.weight"]
         )
 
-    # A device override places a resident table wholly on that card (deepseek41 still forces host).
     _lt_device_bytes = 0
     if lookup_table_bytes:
         if (
@@ -15921,8 +15913,6 @@ def _gguf_memory_breakdown(
         ):
             _lt_device_bytes, lookup_table_bytes = lookup_table_bytes, 0
     if lookup_table_on_disk:
-        # The launch reads the table resident where RAM holds it with a margin, unless the user set
-        # a lazy mode (_managed_lazy_mode_flags); priced the same way.
         from core.inference.llama_cpp import (
             _HOST_RAM_HEADROOM_MIB,
             _LAZY_MODE_SPELLINGS,

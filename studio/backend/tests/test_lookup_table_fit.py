@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lookup-only embedding tables (per-layer embeddings, the DeepSeek-V4.1 Engram table)
-in the launch fit, the offload layout and the planner.
-
-Sizes are the real GGUF headers:
-  DeepSeek-V4.1-Flash UD-IQ1_S   deepseek41  216.98 GiB, per_layer_token_embd 103.00 GiB
-  Qwen3.8-Flash-Next UD-Q2_K_XL  qwen4exp     73.45 GiB, per_layer_token_embd  26.82 GiB
-  gemma-3n-E4B-it Q4_K_M         gemma3n       4.23 GiB, per_layer_token_embd   1.64 GiB,
-                                               token_embd 0.28 GiB, tied (no output.weight)
-"""
+"""Lookup-only embedding tables (per-layer embeddings, the DeepSeek-V4.1 Engram table) in the launch fit, the offload layout and the planner."""
 
 from __future__ import annotations
 
@@ -24,7 +16,6 @@ for _d in (_BACKEND_DIR, _TESTS_DIR):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 
-# First: these install the dependency stubs the backend imports need on a bare runner.
 from test_llama_cpp_placement import (  # noqa: F401, I001 -- fixtures by name
     _cache_launch,
     _discrete_linux_host,
@@ -76,17 +67,12 @@ def _scan_backend(arch, named):
     return backend
 
 
-# ---------------------------------------------------------------- item 1: deepseek41 is lazy
-
-
 @pytest.mark.parametrize(
     "extra_args, auto_off, expected",
     [
         ([], False, DSV41_ENGRAM),
-        # An iGPU / APU child: llama.cpp turns auto into off, the table loads resident.
         ([], True, 0),
         (["-lzm", "off"], False, 0),
-        # An explicit "on" is read lazily on any device.
         (["-lzm", "on"], True, DSV41_ENGRAM),
     ],
     ids = ["auto", "igpu_auto", "off", "on_igpu"],
@@ -100,10 +86,7 @@ def test_the_deepseek41_engram_table_is_read_lazily(extra_args, auto_off, expect
 
 
 def test_the_dsv41_host_preflight_no_longer_charges_the_engram_table(monkeypatch):
-    """DSV4.1 UD-IQ1_S on a 24 GiB card with 64 GiB of RAM. The host side the warning
-    prices was ~194 GiB with the 103 GiB Engram table charged as resident weights (a
-    ~132 GiB shortfall); with it on disk ~91 GiB remain, still short of 64 GiB, so the
-    warning still fires, ~29 GiB short."""
+    """DSV4.1 UD-IQ1_S on a 24 GiB card with 64 GiB of RAM."""
     backend = _scan_backend("deepseek41", {PLE: DSV41_ENGRAM})
     backend._get_gguf_size_bytes = lambda _path: DSV41_TOTAL
     backend.probe_server_capabilities = lambda _binary = None: dict(_CAPS)
@@ -129,9 +112,6 @@ def test_the_dsv41_host_preflight_no_longer_charges_the_engram_table(monkeypatch
     assert 90 * GIB < seen["offload"] < 91 * GIB
 
 
-# ------------------------------------------- item 2: the per-layer table is its own bucket
-
-
 def _gemma3n_layout(with_output = False):
     tensors = _shard_tensors(range(4)) + [
         _StubTensor("token_embd.weight", GEMMA3N_TOKEN_EMBD),
@@ -151,8 +131,7 @@ def test_the_per_layer_table_is_not_token_embd():
 
 
 def test_a_tied_file_duplicates_token_embd_but_not_the_per_layer_table():
-    """gemma-3n is tied: only the 0.28 GiB token_embd is copied onto the GPU as the
-    output head. The 1.64 GiB PLE table was charged to VRAM with it."""
+    """gemma-3n is tied."""
     layout = _gemma3n_layout()
     assert layout.other_resident_bytes == GEMMA3N_TOKEN_EMBD + 4096
     untied = _gemma3n_layout(with_output = True)
@@ -160,11 +139,7 @@ def test_a_tied_file_duplicates_token_embd_but_not_the_per_layer_table():
     assert untied.lm_head_bytes == GEMMA3N_TOKEN_EMBD
 
 
-# --------------------------------------- item 3: lazy bytes are not host RAM in the planner
-
-
 def _flash_next_layout():
-    # 40 MoE blocks of 1.0 GiB experts and 0.14 GiB attention/shared: 73.45 GiB in all.
     blocks = tuple(
         BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = int(0.14 * GIB)) for i in range(40)
     )
@@ -188,9 +163,7 @@ def _flash_next_layout():
 
 
 def test_a_lazy_table_does_not_deny_load_mode_none_to_spilled_experts():
-    """Flash-Next on 24 GiB + a 64 GB box with 48 GiB available: 25 spilled expert blocks
-    and token_embd fit pinned; adding the 26.82 GiB table that stays mmap'd anyway
-    pushed the host side past the RAM and left the experts on the slow mmap path."""
+    """Flash-Next on 24 GiB + a 64 GB box with 48 GiB available."""
     layout = _flash_next_layout()
     chosen = list(layout.blocks[:25])
     lazy = _finish(
@@ -198,17 +171,12 @@ def test_a_lazy_table_does_not_deny_load_mode_none_to_spilled_experts():
     )
     assert lazy.load_mode_none
     assert lazy.host_bytes == FLASH_NEXT_TOKEN_EMBD + 25 * GIB
-    # Resident table (-lzm off, or auto resolved off on an iGPU): charged in full.
     resident = _finish(layout, PlanOptions(), 8192, chosen, False, 48 * GIB)
     assert not resident.load_mode_none
     assert resident.host_bytes == FLASH_NEXT_TOKEN_EMBD + FLASH_NEXT_PLE + 25 * GIB
 
 
-# ----------------------------------- item 5: host-pinned inputs are not charged to VRAM
-
-
 def test_host_pinned_inputs_for_the_three_families():
-    # gemma-3n is tied: token_embd is duplicated onto the GPU, the PLE table is not.
     assert (
         _host_pinned_input_bytes(
             ("gemma3n", {PLE: GEMMA3N_PLE, "token_embd.weight": GEMMA3N_TOKEN_EMBD}, 0)
@@ -250,12 +218,10 @@ def test_an_override_onto_a_device_keeps_the_table_charged_except_on_deepseek41(
     ot = ["-ot", "per_layer_token_embd=CUDA0"]
     assert _override_places_tensor_on_device(PLE, ot)
     assert not _override_places_tensor_on_device(PLE, ["-ot", "per_layer=CPU"])
-    # First match wins, as in llama.cpp.
     assert not _override_places_tensor_on_device(PLE, ["-ot", "per_layer=CPU,embd=CUDA0"])
     assert not _override_places_tensor_on_device(PLE, ["-ot", "exps=CPU"])
     assert _override_places_tensor_on_device(PLE, [], {"LLAMA_ARG_OVERRIDE_TENSOR": "embd=CUDA0"})
     assert _host_pinned_input_bytes(("qwen4exp", {PLE: FLASH_NEXT_PLE}, 0), ot, {}) == 0
-    # The deepseek41 loader forces the Engram table back onto a host buffer.
     assert _host_pinned_input_bytes(("deepseek41", {PLE: DSV41_ENGRAM}, 0), ot, {}) == DSV41_ENGRAM
 
 
@@ -269,11 +235,7 @@ def _fit_flags(cmd):
 
 
 def test_gemma3n_fits_a_small_card_once_its_tables_leave_the_vram_charge(tmp_path, _moe_cache_host):
-    """gemma-3n-E4B Q4_K_M (4.23 GiB). The weights the GPU really holds are ~2.6 GiB:
-    the 1.64 GiB PLE table is host-pinned, and the tied token_embd copy is the only
-    embedding on the card. On a card whose free VRAM sits between the two charges
-    (this harness prices ~9.8 GiB with the whole file, ~8.2 GiB without the table) the
-    fit pins the layers; the whole file charged to VRAM sent it to the --fit on fallback."""
+    """gemma-3n-E4B Q4_K_M (4.23 GiB)."""
     _backend, cmd = _cache_launch(
         tmp_path,
         moe = False,
@@ -285,7 +247,6 @@ def test_gemma3n_fits_a_small_card_once_its_tables_leave_the_vram_charge(tmp_pat
     )
     assert _fit_flags(cmd) == "off", cmd
     assert cmd[cmd.index("-ngl") + 1] == "-1", cmd
-    # The table is not lazy on gemma3n, so no lazy mode is ever emitted.
     assert "--lazy-mode" not in cmd and "-lzm" not in cmd, cmd
 
 
@@ -307,8 +268,7 @@ def test_an_override_moving_the_table_to_the_gpu_keeps_it_charged(tmp_path, _moe
 def test_resident_input_tables_are_host_ram_in_the_load_mode_fit(
     tmp_path, _moe_cache_host, ram_gib, none_ok
 ):
-    """gemma3n's table is resident (never lazily read) and host-pinned: free VRAM cannot pay
-    for it, so a host whose RAM cannot hold it keeps llama.cpp's mmap fallback."""
+    """gemma3n's table is resident (never lazily read) and host-pinned."""
     _backend, cmd = _cache_launch(
         tmp_path,
         moe = False,
@@ -319,9 +279,6 @@ def test_resident_input_tables_are_host_ram_in_the_load_mode_fit(
         ram_gib = ram_gib,
     )
     assert ("--load-mode" in cmd and cmd[cmd.index("--load-mode") + 1] == "none") is none_ok, cmd
-
-
-# ------------------------------------------------- item 8: lazy mode as a managed choice
 
 
 def _lazy_values(cmd):
@@ -348,8 +305,7 @@ def _flash_next_launch(tmp_path, *, ram_gib, **kwargs):
 def test_a_stale_spelling_from_another_build_is_not_the_users_choice(
     tmp_path, _moe_cache_host, monkeypatch
 ):
-    """llama.cpp reads only its own spelling, so an older build's env twin left set does
-    not stop the managed resident choice."""
+    """llama.cpp reads only its own spelling, so an older build's env twin left set does not stop the managed resident choice."""
     monkeypatch.setenv("LLAMA_ARG_TENSOR_READ_LAZY", "off")
     backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
     assert _lazy_values(cmd) == ["off"], cmd
@@ -362,9 +318,7 @@ def test_flash_next_keeps_its_table_resident_where_ram_holds_it(tmp_path, _moe_c
 
 
 def test_the_resident_table_is_charged_once_in_the_load_mode_fit(tmp_path, _moe_cache_host):
-    """After the resident verdict the table moves from the pooled weights to host-only
-    RAM. Charging it in both left a host that just proved the fit without --load-mode
-    none. 72 GiB holds ~47 GiB of host weights plus the table once, not twice."""
+    """After the resident verdict the table moves from the pooled weights to host-only RAM."""
     _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 72)
     assert _lazy_values(cmd) == ["off"], cmd
     assert cmd[cmd.index("--load-mode") + 1] == "none", cmd
@@ -381,14 +335,12 @@ def test_a_retry_hands_the_table_back_to_llama_cpp():
         "-c",
         "4096",
     ]
-    # A user's own pair is never in the record, so it is left alone.
     backend._lazy_mode_flags = []
     assert backend._drop_managed_lazy_mode(argv, "CPU fallback") == argv
 
 
 def test_a_device_override_keeps_the_table_streamed(tmp_path, _moe_cache_host):
-    """Read lazily, the table sits on a CPU buffer whatever -ot says; resident, the
-    override would apply and move 26.8 GiB onto a 24 GiB card."""
+    """Read lazily, the table sits on a CPU buffer whatever -ot says."""
     backend, cmd = _flash_next_launch(
         tmp_path, ram_gib = 128, extra_args = ["-ot", "per_layer_token_embd=CUDA0"]
     )
@@ -397,8 +349,7 @@ def test_a_device_override_keeps_the_table_streamed(tmp_path, _moe_cache_host):
 
 
 def test_the_in_place_fit_on_retry_hands_the_table_back(tmp_path, _moe_cache_host, monkeypatch):
-    """A full offload launches with --fit off; when that crashes, the --fit on retry can
-    spill weights to RAM beside the table, so the resident verdict does not carry over."""
+    """A full offload launches with --fit off."""
     import subprocess
     import test_llama_cpp_placement as placement
 
@@ -413,7 +364,6 @@ def test_the_in_place_fit_on_retry_hands_the_table_back(tmp_path, _moe_cache_hos
         def fake_popen(cmd, **kw):
             if not cmd or str(cmd[0]) != "/fake/llama-server":
                 return placement._REAL_POPEN(cmd, **kw)
-            # A device probe (--list-devices on Windows) is not a server spawn: it exits 0.
             spawn = "-m" in cmd
             if spawn:
                 cmds.append(list(cmd))
@@ -455,15 +405,13 @@ def test_the_in_place_fit_on_retry_hands_the_table_back(tmp_path, _moe_cache_hos
         },
         arch = "qwen4exp",
     )
-    # Whatever in-place retry the platform takes after the crash, it re-places the model.
     assert len(cmds) == 2, cmds
     assert _lazy_values(cmds[0]) == ["off"], cmds[0]
     assert _lazy_values(cmds[1]) == [], cmds[1]
 
 
 def test_flash_next_streams_its_table_on_a_64gb_box(tmp_path, _moe_cache_host):
-    """24 GiB card + 64 GB RAM: ~47 GiB of weights, the 8 GiB prompt cache and the
-    26.8 GiB table do not fit together, so llama.cpp's lazy auto stays."""
+    """24 GiB card + 64 GB RAM."""
     backend, cmd = _flash_next_launch(tmp_path, ram_gib = 58)
     assert _lazy_values(cmd) == [], cmd
     assert backend._lazy_mode_flags == []
@@ -542,14 +490,10 @@ def test_an_unpriced_fit_keeps_llama_cpp_default():
             )
             == []
         )
-    # The pre-rename spelling is what that build reads.
     old = {"supports_lazy_mode": True, "lazy_mode_flag": "--tensor-read-lazy"}
     assert backend._managed_lazy_mode_flags(
         "/m.gguf", caps = old, extra_args = [], env = {}, resident_fits = lambda _t: True
     ) == ["--tensor-read-lazy", "off"]
-
-
-# -------------------------------------- item 4: Metal falls back to the static discount
 
 
 def _apple_backend(arch, named, avail_gib):
@@ -581,9 +525,7 @@ def _apple_discount(
 
 
 def test_a_failed_metal_probe_still_leaves_the_engram_table_out():
-    """DSV4.1 UD-IQ1_S on a 128 GB Mac. The probe failing used to charge all 216.98 GiB to
-    unified memory; the Engram table is lazily read on a CPU buffer whatever the probe
-    says, so 113.98 GiB is charged."""
+    """DSV4.1 UD-IQ1_S on a 128 GB Mac."""
     backend = _apple_backend("deepseek41", {PLE: DSV41_ENGRAM}, avail_gib = 119)
     got = _apple_discount(backend, probe = 0, model_size_fit = DSV41_TOTAL, budget_gib = 96)
     assert got == DSV41_ENGRAM
@@ -668,8 +610,7 @@ def test_module_table_names_deepseek41():
 
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
 def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
-    """The projector the env names is unpriced in the Metal footprint, so the 128 GB Mac
-    that would read Flash-Next's table resident leaves it to lazy auto instead."""
+    """The projector the env names is unpriced in the Metal footprint, so the 128 GB Mac that would read Flash-Next's table resident leaves it to lazy auto instead."""
     backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 119)
     got = backend._apple_lookup_table_discount(
         0,
@@ -692,14 +633,12 @@ def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
         (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0,RPC0"], {}, True),
         (["--rpc", "10.0.0.2:50052"], {}, True),
         ([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}, True),
-        # A list that leaves the RPC server out keeps the local rule.
         (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0"], {}, False),
         ([], {}, False),
     ],
 )
 def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):
-    """RPC devices have no mmap, so upstream's auto reads the table resident with one in
-    the model devices (ggml-org/llama.cpp#29932)."""
+    """RPC devices have no mmap, so upstream's auto reads the table resident with one in the model devices (ggml-org/llama.cpp#29932)."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend()

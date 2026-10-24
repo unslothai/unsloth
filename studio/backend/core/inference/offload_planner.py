@@ -119,7 +119,6 @@ class PlanOptions:
     # move out of the VRAM footprint and into the host one; charging them to VRAM anyway would spill FFN blocks for a
     # deficit the child never has.
     kv_on_host: bool = False
-    # Bytes of the lazily read per-layer table: mmap'd, not pinned RAM (0 when resolved off).
     lazy_read_bytes: int = 0
 
 

@@ -7617,7 +7617,6 @@ _MOE_CACHE_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# TENSOR_READ_LAZY tables over 4 GiB stay mmap'd under --lazy-mode auto (see lookup_tables.py).
 _LAZY_READ_TENSORS = _LOOKUP_LAZY_READ_TENSORS
 _LAZY_READ_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 _LAZY_RESIDENT_MARGIN_FRAC = 0.10
@@ -7670,15 +7669,13 @@ def _argv_loads_pinned(argv: Iterable[str], env: Optional[Mapping[str, str]] = N
     return bool(reserves_ram and not mlock and not direct_io)
 
 
-# Set by advisory capability reads: the torch fallback would pin a CUDA context in the web app.
 _GPU_MEMORY_SKIP_TORCH: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
     "_GPU_MEMORY_SKIP_TORCH", default = False
 )
 
 
 def _gpu_device_node_present() -> bool:
-    """Whether this host exposes a GPU device node (ROCm, NVIDIA, WSL); Windows cannot
-    tell, so it answers True there."""
+    """Whether this host exposes a GPU device node (ROCm, NVIDIA, WSL)."""
     if sys.platform == "darwin":
         return False
     if os.name == "nt":
@@ -7731,8 +7728,7 @@ _HOST_INPUT_HEAD_NAMES = frozenset({"token_embd.weight", "output.weight"})
 
 
 def _is_host_input_or_head_tensor(name: str) -> bool:
-    """token_embd, output.weight and any per-layer lookup table: the tensors that
-    decide how much of the file the input layer pins to the host."""
+    """token_embd, output.weight and any per-layer lookup table: the host-pinned input tensors."""
     return name in _HOST_INPUT_HEAD_NAMES or _is_per_layer_embedding(name)
 
 
@@ -7741,12 +7737,7 @@ def _override_places_tensor_on_device(
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Whether an ``--override-tensor`` (argv or env) may put ``name`` on a device.
-
-    llama.cpp takes the FIRST matching pattern (llama-model-loader.cpp walks the list in
-    order), so the first ``-ot`` whose regex searches ``name`` decides; a host target
-    keeps it on the host. A pattern that does not compile answers True: unknown is not
-    proof the table stays on the host."""
+    """Whether an ``--override-tensor`` (argv or env) may put ``name`` on a device."""
     source_env = os.environ if env is None else env
     values: list[str] = []
     env_value = str(source_env.get("LLAMA_ARG_OVERRIDE_TENSOR") or "").strip()
@@ -7767,7 +7758,6 @@ def _override_places_tensor_on_device(
             on_host = _override_targets_host(f"{pattern}={target}")
             if "[:" in pattern:
                 # A POSIX class is std::regex syntax Python reads literally: unknown, so a host
-                # target proves nothing.
                 if not on_host:
                     return True
                 continue
@@ -7785,15 +7775,7 @@ def _host_pinned_input_bytes(
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> int:
-    """Bytes of the file llama.cpp keeps on the host however many layers it offloads.
-
-    Input-layer tensors (token_embd and the per-layer lookup tables: gemma3n / gemma4
-    PLE, qwen4exp, the deepseek41 Engram table) are LLM_TENSOR_LAYER_INPUT, and
-    dev_input is the CPU (llama-arch.cpp, llama-model.cpp), so none of them is charged
-    to a GPU. A tied file (no output.weight) duplicates token_embd onto the device as
-    the output head, so token_embd only counts when the file has its own head. An
-    ``-ot`` that may move a table onto a device keeps it charged, except where the
-    loader forces it back to the host (deepseek41). 0 when the header is unread."""
+    """Bytes of the file llama.cpp keeps on the host however many layers it offloads."""
     if not scan:
         return 0
     architecture, named, _experts = scan
@@ -11749,25 +11731,7 @@ class LlamaCppBackend:
         tensor_parallel: Optional[bool] = None,
         integrated_gpu_ids: Optional[Iterable[int]] = None,
     ) -> bool:
-        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: ANY
-        model device without mmap support (ggml-org/llama.cpp#28160; integrated Vulkan and
-        CUDA devices report none).
-
-        Which devices are model devices follows llama_prepare_model_devices. A real
-        ``--device`` list (argv, then ``LLAMA_ARG_DEVICE``) is used as given, so it is
-        checked device by device. Otherwise llama.cpp enumerates the visible devices and
-        keeps iGPUs only when no discrete GPU is seen, so every visible device must be
-        integrated; a CUDA/HIP visibility mask only narrows that visible set.
-        ``device_list`` says whether ``gpu_indices`` reaches the child as ``--device``:
-        by default only on Vulkan, where Studio pins with ``--device Vulkan<i>``; the
-        host preflight passes False, its ``gpu_indices`` being the inventory.
-        Tensor mode with no list builds one Meta device from EVERY visible GPU, iGPUs
-        included, and the Meta device has mmap support only if all members do, so there
-        the visible set is checked device by device too. ``tensor_parallel`` None reads
-        the split mode from ``extra_args`` / ``env``.
-        ``integrated_gpu_ids``: Vulkan iGPUs the automatic placement filtered out of
-        ``shared_gpu_ids``, which a ``--device`` list can still name.
-        ``probe_integrated_cuda`` False uses only a cached SoC answer (no new context)."""
+        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child."""
         tensor = (
             _effective_tensor_parallel(extra_args, False, env)
             if tensor_parallel is None
@@ -11775,7 +11739,6 @@ class LlamaCppBackend:
         )
         selected = None
         override = self._effective_device_ids(extra_args, env)
-        # RPC devices have no mmap: those named in the list, else every --rpc server.
         _src_env = os.environ if env is None else env
         if (
             any(str(d).strip().lower().startswith("rpc") for d in override)
@@ -11790,7 +11753,6 @@ class LlamaCppBackend:
             gpu_names = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
             ordinals = [self._device_ordinal(d) for d in gpu_names]
             if all(o is not None for o in ordinals):
-                # --device names the child's compact ids; residency is keyed physical.
                 selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
         elif tensor or (device_list if device_list is not None else is_vulkan_backend):
             try:
@@ -11845,10 +11807,7 @@ class LlamaCppBackend:
         gpu_ids: Optional[Iterable[int]] = None,
         tensor_parallel: Optional[bool] = None,
     ) -> bool:
-        """Whether a launch on this host leaves lazily read lookup tables on disk: a build
-        with a lazy mode that is not off, and (under auto) model devices that support mmap.
-        ``gpu_ids``: the physical cards an explicit pick launches on. False when it cannot
-        tell, which prices the tables as resident."""
+        """Whether a launch on this host leaves lazily read lookup tables on disk."""
         _env = os.environ if env is None else env
         try:
             binary = self._find_llama_server_binary()
@@ -11863,7 +11822,6 @@ class LlamaCppBackend:
             vulkan = self._is_vulkan_backend(binary)
             with _without_torch_gpu_probe():
                 rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
-            # No torch rows is not "no GPU" where a device node exists (a ROCm APU stays resident).
             if not rows and not vulkan and _gpu_device_node_present():
                 return False
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
@@ -11876,7 +11834,6 @@ class LlamaCppBackend:
                 probe_integrated_cuda = False,
                 extra_args = extra_args,
                 env = _env,
-                # A pick reaches the child as a --device list on Vulkan, a mask elsewhere.
                 device_list = None if picked else False,
                 tensor_parallel = tensor_parallel,
                 integrated_gpu_ids = shared,
@@ -11894,19 +11851,7 @@ class LlamaCppBackend:
         auto_resolves_off: bool = False,
         resident_fits: Callable[[int], Optional[bool]],
     ) -> list[str]:
-        """``[<lazy flag>, "off"]`` to keep a lazily read lookup table resident, else ``[]``.
-
-        llama.cpp's default (``auto``) streams a flagged table over 4 GiB from disk. That
-        is the only way a table bigger than free RAM loads, but where RAM holds it the
-        resident table is the fast mode: measured on Qwen3.8-Flash-Next, prefill stable
-        at ~3150 t/s against 140 to 3158 t/s streamed, and 1.6 to 2x the server
-        throughput. So the table goes resident only when ``resident_fits(table_bytes)``
-        answers True (RAM covers it after the weights, KV and a margin); unknown keeps
-        llama.cpp's default. Never a device: the table stays on the CPU either way.
-
-        Stands aside when the user already chose (extras or the env twin, either
-        spelling), the build has no lazy mode, llama.cpp already reads it resident
-        (iGPU/APU ``auto``), or nothing in the file is read lazily."""
+        """``[<lazy flag>, "off"]`` to keep a lazily read lookup table resident, else ``[]``."""
         caps = caps or {}
         if not model_path or not caps.get("supports_lazy_mode"):
             return []
@@ -11924,8 +11869,6 @@ class LlamaCppBackend:
         )
         if table <= 0:
             return []
-        # A lazy table sits on a CPU buffer whatever -ot says; read resident, a device override
-        # could move it onto an unpriced card. Only deepseek41's loader forces it back to the host.
         scan = self._gguf_tensor_scan(model_path)
         if scan is None or (
             scan[0] not in _HOST_FORCED_TABLE_ARCHS
@@ -11973,25 +11916,13 @@ class LlamaCppBackend:
         cache_ram: Optional[int],
         env: Optional[Mapping[str, str]] = None,
     ) -> int:
-        """The Metal embedding discount with the lazily read lookup table settled.
-
-        Sets ``self._apple_lazy_flags`` to the managed lazy mode for this launch.
-        Resident (``off``) only when unified memory holds the whole load with the table:
-        the Metal budget and free RAM both cover the weights, the cache at the launch
-        context, the prompt cache and a margin. The table then stays charged.
-
-        Otherwise a lazily read table is out of the Metal working set whatever the
-        ``llama-fit-params`` probe could tell: it sits on a CPU buffer type, mmap'd
-        under every load mode and never page-locked (llama-model-loader.cpp), and Metal
-        keeps ``auto`` on. So when the probe failed (or could not answer for this
-        launch) the table still leaves the charge instead of costing the context."""
+        """The Metal embedding discount with the lazily read lookup table settled."""
         source_env = os.environ if env is None else env
         self._apple_lazy_flags = []
         table = self._lazy_read_host_bytes(
             model_path, caps = caps, extra_args = extra_args, env = source_env
         )
         if table <= 0:
-            # A user's "off" reads the table resident, but the probe ran under auto: take it out.
             auto_table = self._lazy_read_host_bytes(model_path, caps = caps, extra_args = (), env = {})
             if (
                 auto_table > 0
@@ -12004,7 +11935,6 @@ class LlamaCppBackend:
             ):
                 return max(0, int(probe_discount) - auto_table)
             return probe_discount
-        # As the measured discount: a pass-through adapter is unpriced, so no cache budget for it.
         if _sidecar_adapter_paths(extra_args):
             return probe_discount
         scan = self._gguf_tensor_scan(model_path)
@@ -12020,7 +11950,6 @@ class LlamaCppBackend:
             return probe_discount
 
         def _resident_fits(table_bytes: int) -> Optional[bool]:
-            # An inherited projector is unpriced here (the discrete fit abstains on it too).
             if any(
                 str(source_env.get(name) or "").strip()
                 for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
@@ -27753,8 +27682,6 @@ class LlamaCppBackend:
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
                 _fit_load_mode: Optional[str] = None
-                # ["--lazy-mode", "off"] once RAM provably holds the lazy table, [] for auto, None
-                # while undecided.
                 _managed_lazy_flags: Optional[list[str]] = None
                 _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -28760,9 +28687,6 @@ class LlamaCppBackend:
                         )
 
                     def _host_input_bytes_now(weights: int) -> int:
-                        # Input-layer tensors (token_embd, per-layer tables) stay on the CPU, so a
-                        # discrete card's fit leaves them out; shared pools (iGPU, APU) keep them,
-                        # Apple prices its own discount below.
                         if not (
                             gpus
                             and not _integrated_gpus
@@ -30014,8 +29938,6 @@ class LlamaCppBackend:
                             caps = server_caps,
                             extra_args = extra_args,
                             model_size_fit = model_size_fit,
-                            # The drafter's reserve and a CPU-pinned drafter too, as
-                            # _apple_footprint_mib charges them (None when unpriceable: abstain).
                             need_at_ctx = (
                                 (
                                     _kv_bytes(effective_ctx)
@@ -31222,8 +31144,6 @@ class LlamaCppBackend:
                             1, _fit_load_mode_kwargs["model_size"] - _resident_inputs
                         )
                         _fit_load_mode_kwargs["host_only_bytes"] += _resident_inputs
-                    # Resident only when the whole load fits with the table charged to RAM too (plus
-                    # prompt cache and a margin). Apple decided above.
                     if _managed_lazy_flags is None:
                         _lazy_prompt_cache = _prompt_cache_host_bytes(
                             cache_ram,
@@ -35081,7 +35001,6 @@ class LlamaCppBackend:
                         _host_ram_msg = None
                         _apu_avail_mib = None
                         # Read before the kill frees the crashed child's memory; priced against the
-                        # retry's own selection.
                         _retry_apu_avail_mib = (
                             self._available_system_memory_mib()
                             if model_size is not None and _retry_wants_unified
@@ -35235,11 +35154,7 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
-                        # Before either pricing: the resident-table verdict was for the crashed
-                        # device set.
                         cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
-                        # Priced after the mask and device rewrites: a dGPU crash retried on the APU
-                        # is a first load into system RAM. Advisory only.
                         _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
                             _apu_avail_mib = _retry_apu_avail_mib
@@ -35994,7 +35909,6 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
-                            # Direct spawn, so the retry safeguards do not drop it for us.
                             cmd = self._drop_managed_lazy_mode(cmd, "text-only retry")
                             cmd = self._per_device_fit_target_argv(
                                 cmd, env, _fit_target_margins_by_idx
@@ -38776,7 +38690,6 @@ class LlamaCppBackend:
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
                 # larger.
                 kv_on_host = not _kv_offload_from_args(extra_args, env = source_env),
-                # The lazy table stays mmap'd under --load-mode none: not host RAM to cover.
                 lazy_read_bytes = int(inputs.get("lazy_read_bytes") or 0),
                 # GPU-resident allocations the layout cannot see, since it is built
                 # from the target GGUF alone: the vision projector and the MTP draft
@@ -38844,14 +38757,7 @@ class LlamaCppBackend:
         return ["-ngl", "-1", "--fit", "off", *tokens]
 
     def _drop_managed_lazy_mode(self, run_cmd: "list[str]", why: str) -> "list[str]":
-        """Take Unsloth's ``--lazy-mode off`` back out of an argv for a retry.
-
-        The resident-table verdict was a proof about THIS launch's placement and
-        footprint; every retry re-places the model (more weights on the host, a CPU
-        replay, a bigger cache), so it hands the table back to llama.cpp's auto, which
-        streams it and can never make the host side larger. A user's own lazy mode is
-        never in the record. The record is kept, like the spill plan's, so a later
-        respawn from an argv that still carries the tokens can strip them."""
+        """Take Unsloth's ``--lazy-mode off`` back out of an argv for a retry."""
         if not getattr(self, "_lazy_mode_flags", None):
             return run_cmd
         stripped = _without_subsequence(run_cmd, self._lazy_mode_flags)
