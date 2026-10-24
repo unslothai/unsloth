@@ -175,7 +175,11 @@ def _case_fused(rank, world, tmp):
     return out
 
 
-def _quantize_layers(model, nested, blocksize = 64):
+def _quantize_layers(
+    model,
+    nested,
+    blocksize = 64,
+):
     """Every Linear in the decoder layers -> a bitsandbytes NF4 Linear4bit (the same bytes in every process)."""
     import bitsandbytes as bnb
 
@@ -219,7 +223,11 @@ QLORA_SIZES = {
 }
 
 
-def _qlora_model(nested, seed = 0, blocksize = 64):
+def _qlora_model(
+    nested,
+    seed = 0,
+    blocksize = 64,
+):
     from peft import LoraConfig, get_peft_model
 
     model = _quantize_layers(build(LLAMA, QLORA_SIZES, lora = False, seed = seed), nested, blocksize)

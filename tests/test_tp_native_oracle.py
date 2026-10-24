@@ -47,9 +47,9 @@ tpn = _load_tp()
 def skip_unsupported(arch):
     """transformers 4.x StableLmAttention reshapes with hidden_size (the global width): apply refuses it."""
     import transformers
-
     if arch == "stablelm" and int(transformers.__version__.split(".")[0]) < 5:
         pytest.skip("transformers 4.x StableLM attention is refused (test_stablelm_4x_is_refused)")
+
 
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
