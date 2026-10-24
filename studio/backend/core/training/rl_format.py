@@ -114,6 +114,13 @@ def build_warmup_dataset(
     return Dataset.from_dict({"text": texts})
 
 
+def warmup_steps_to_run(rl_settings: Optional[dict], objective: str, resuming: bool) -> int:
+    """SFT warm-up steps before GRPO; none on a resume, whose checkpoint already has them."""
+    if objective != "grpo" or resuming:
+        return 0
+    return int((rl_settings or {}).get("format_warmup_steps") or 0)
+
+
 def run_format_warmup(
     model,
     tokenizer,

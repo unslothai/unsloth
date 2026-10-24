@@ -5127,9 +5127,12 @@ class UnslothTrainer:
                     and getattr(rl_tokenizer, "chat_template", None)
                 ):
                     self.tokenizer.chat_template = rl_tokenizer.chat_template
-                warmup_steps = int(rl_settings.get("format_warmup_steps") or 0)
-                if objective == "grpo" and warmup_steps > 0:
-                    from core.training.rl_format import run_format_warmup
+                from core.training.rl_format import run_format_warmup, warmup_steps_to_run
+
+                warmup_steps = warmup_steps_to_run(
+                    rl_settings, objective, bool(training_args.get("resume_from_checkpoint"))
+                )
+                if warmup_steps > 0:
 
                     self._update_progress(
                         status_message = f"Format warm-up ({warmup_steps} SFT steps)..."

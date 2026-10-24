@@ -129,6 +129,13 @@ def test_warmup_steps_are_bounded():
         _request(grpo_format_warmup_steps = 5000, grpo_reasoning_format = True)
 
 
+def test_a_resumed_run_skips_the_warmup():
+    settings = {"format_warmup_steps": 50}
+    assert rl_format.warmup_steps_to_run(settings, "grpo", resuming = False) == 50
+    assert rl_format.warmup_steps_to_run(settings, "grpo", resuming = True) == 0
+    assert rl_format.warmup_steps_to_run(settings, "dpo", resuming = False) == 0
+
+
 def test_resume_payload_keeps_the_reasoning_format_and_warmup():
     stored = {"reasoning_format": True, "format_warmup_steps": 50}
     req = _request(rl_settings = stored, max_seq_length = 2048)
