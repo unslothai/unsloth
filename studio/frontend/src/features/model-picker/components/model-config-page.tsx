@@ -4292,7 +4292,6 @@ export function ModelConfigPage({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
