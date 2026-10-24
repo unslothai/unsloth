@@ -184,3 +184,32 @@ def test_a_background_replay_takes_the_planned_step_on_fresh_statics(monkeypatch
             assert seen == []
     finally:
         graphed.free()
+
+
+def test_nested_state_objects_charge_each_tensor_once(monkeypatch):
+    monkeypatch.delenv(bg.OBJECTS_ENV, raising = False)
+    cache = _KVCache(2)
+    for layer in cache.layer_caches:
+        layer.k = torch.zeros(4, dtype = torch.float32)
+        layer.v = torch.zeros(4, dtype = torch.float32)
+    total = 2 * 2 * 4 * 4
+    monkeypatch.setattr(bg, "_OBJECT_MAX_BYTES", total)
+    out: list = []
+    budget = [0, set()]
+    bg._flatten_sample(((), {"cache": cache}), out, 0, budget)
+    assert budget[0] == total and len(out) == 4
+    monkeypatch.setattr(bg, "_OBJECT_MAX_BYTES", total - 1)
+    with pytest.raises(TypeError, match = "above"):
+        bg._flatten_sample(((), {"cache": cache}), [], 0, [0, set()])
+
+
+def test_the_background_kick_waits_for_the_resident_restore():
+    """An offloaded denoiser's groups go back on the card before its background compile can start."""
+    import inspect
+
+    from core.inference import diffusion as D
+
+    src = inspect.getsource(D)
+    assert "bg.kick()" not in src.split("kick_bg = True")[0].split("kick_bg = False")[-1]
+    tail = src.split("restore_resident()", 2)[-1]
+    assert tail.index("if kick_bg and bg is not None:") < tail.index("bg.kick()")

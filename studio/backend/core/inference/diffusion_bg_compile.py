@@ -226,7 +226,9 @@ def _flatten_sample(
     held = budget[1] if len(budget) > 1 else None
     if held is not None:
         held.update(range(first, len(out)))
-    budget[0] += sum(t.numel() * t.element_size() for t in out[first:])
+    if depth == 0:
+        # The outermost object's slice holds every nested one's: charging each level would count a tensor twice.
+        budget[0] += sum(t.numel() * t.element_size() for t in out[first:])
     if budget[0] > _OBJECT_MAX_BYTES:
         raise TypeError(
             f"{type(obj).__name__} holds {budget[0] >> 20} MiB, above the {_OBJECT_MAX_BYTES >> 20} MiB a sample copies"
