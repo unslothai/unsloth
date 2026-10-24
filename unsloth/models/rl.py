@@ -92,14 +92,12 @@ except Exception:
 
 
 def _persistent_tma_matmul_ok():
-    # Same gate as unsloth_zoo's get_torch_compile_options (unslothai/unsloth-zoo#2043): torch 2.12+
-    # guards every GEMM size once Inductor considers its TMA templates (pytorch/pytorch#172925),
-    # so a compiled matmul would recompile per token count. A zoo without the helper falls back
-    # to the same torch < 2.12 check.
+    # zoo's gate: torch 2.12+ guards every GEMM size once Inductor considers TMA templates
+    # (pytorch/pytorch#172925), so a compiled matmul recompiles per token count.
     try:
         from unsloth_zoo.temporary_patches.common import _persistent_tma_matmul_ok as zoo_gate
     except Exception:
-        return torch_version < Version("2.12.0")
+        return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
     return bool(zoo_gate())
 
 try:
