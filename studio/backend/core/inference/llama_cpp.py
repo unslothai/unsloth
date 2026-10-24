@@ -12045,7 +12045,8 @@ class LlamaCppBackend:
             vulkan = self._is_vulkan_backend(binary)
             with _without_torch_gpu_probe():
                 rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
-            if not rows and not vulkan and _gpu_device_node_present():
+            # An empty Vulkan inventory is a failed probe: it may be an iGPU, where auto is off.
+            if not rows and (vulkan or _gpu_device_node_present()):
                 return False
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
             picked = [int(i) for i in gpu_ids] if gpu_ids else None

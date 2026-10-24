@@ -783,11 +783,15 @@ class TestListing:
         assert sorted(readers) == ["hf_first", "hf_second"]
         assert other.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
 
-    @pytest.mark.parametrize("node, streams", [(True, False), (False, True)])
+    @pytest.mark.parametrize(
+        "vulkan, node, streams",
+        [(False, True, False), (False, False, True), (True, False, False), (True, True, False)],
+    )
     def test_an_empty_inventory_beside_a_gpu_node_prices_the_table_resident(
-        self, monkeypatch, node, streams
+        self, monkeypatch, vulkan, node, streams
     ):
-        """Without the torch fallback a ROCm APU can read as no rows."""
+        """Without the torch fallback a ROCm APU can read as no rows; an empty Vulkan
+        inventory is a failed probe that may hide an iGPU, where auto resolves off."""
         from core.inference import llama_cpp as lc
 
         backend = lc.LlamaCppBackend.__new__(lc.LlamaCppBackend)
@@ -797,7 +801,7 @@ class TestListing:
             "probe_server_capabilities",
             lambda binary = None: {"supports_lazy_mode": True, "lazy_mode_flag": "--lazy-mode"},
         )
-        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda binary = None: False)
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda binary = None: vulkan)
         monkeypatch.setattr(backend, "_get_gpu_memory", lambda *a, **k: [])
         monkeypatch.setattr(backend, "_lazy_auto_resolves_off", lambda **k: False)
         monkeypatch.setattr(lc, "_gpu_device_node_present", lambda: node)
