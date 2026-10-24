@@ -213,7 +213,6 @@ class RunState:
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
-    # (slot, repo) of a load started ahead and not finished yet.
     prefetch_load: Optional[tuple[str, str]] = None
     # (slot, lower-cased repo) -> the step that loaded it: what "unload when the run ends" may free.
     loaded: dict[tuple[str, str], str] = field(default_factory = dict)
@@ -1207,8 +1206,7 @@ class FlowEngine:
         plan = rs.plan
         running_ids = set(running.values())
         owners = {o for o in plan.owner.values() if o is not None}
-        # A pending step on "use the loaded model" runs on whatever is loaded, and a load into any slot may evict
-        # it: load nothing early until it has run.
+        # A pending "use the loaded model" step: any early load (any slot) could evict what it runs on.
         if any(plan.specs[n]["lane"] == "gpu" and self._uses_loaded(plan, n) for n in pending):
             return
         for nid in plan.order:
@@ -1233,8 +1231,7 @@ class FlowEngine:
                 for src in plan.waits.get(nid, ())
                 if src in plan.executable and not env.has(src)
             }
-            # Only one hop away: everything it still waits on is a CPU step already running, never a branch or a
-            # For Each / group whose body may run GPU steps on the loaded model.
+            # One hop away: it waits only on running CPU steps, never a branch or a For Each (its body may use the GPU).
             if not unmet or not all(
                 src in running_ids
                 and plan.specs[src]["lane"] != "gpu"
@@ -1296,7 +1293,7 @@ class FlowEngine:
 
         slot, repo = load
         try:
-            # Under the GPU lock, like the load was: a flow waiting for the GPU must not start on this slot first.
+            # Under the GPU lock, like the load itself.
             async with self.gpu_lock():
                 if slot == "llm":
                     await asyncio.wait_for(

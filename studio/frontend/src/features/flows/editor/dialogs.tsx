@@ -273,7 +273,6 @@ export function PlanDialog({
                 )}
               </div>
             ))}
-            {/* A flow that only calls other flows loads their models too, and frees them with this setting. */}
             {(plan.models.length > 0 || callsFlows) && <UnloadAfterRunToggle />}
           </div>
         )}
