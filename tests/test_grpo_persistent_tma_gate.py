@@ -34,7 +34,9 @@ VERSIONS = [
 def _load_gate(torch_version):
     tree = ast.parse(SOURCE)
     (node,) = [
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_persistent_tma_matmul_ok"
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_persistent_tma_matmul_ok"
     ]
     ns = {"Version": Version, "torch_version": torch_version}
     exec(compile(ast.Module(body = [node], type_ignores = []), str(RL_PY), "exec"), ns)

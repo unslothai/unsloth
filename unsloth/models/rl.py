@@ -100,6 +100,7 @@ def _persistent_tma_matmul_ok():
         return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
     return bool(zoo_gate())
 
+
 try:
     from transformers import __version__ as _transformers_version_raw
     transformers_version = Version(_transformers_version_raw)
