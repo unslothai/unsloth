@@ -457,6 +457,20 @@ def test_a_misspelled_rule_field_is_refused():
         rewards.validate_rule(numeric)
 
 
+@pytest.mark.parametrize(
+    "extract",
+    [
+        {"between": ["<a>", "</a>"], "regex": "([0-9]+)"},
+        {"between": ["<a>", "</a>"], "strip": True},
+        {"regx": "([0-9]+)"},
+    ],
+)
+def test_an_extract_takes_exactly_one_known_step(extract):
+    rule = {"type": "exact_match", "extract": extract, "score": {"match": 1.0}}
+    with pytest.raises(rewards.RewardError, match = "extract takes exactly one of"):
+        rewards.validate_rule(rule)
+
+
 def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
     from core.training.rewards import score_rule, validate_rule
 

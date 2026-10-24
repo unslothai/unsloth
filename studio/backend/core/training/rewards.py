@@ -119,6 +119,9 @@ def _validate_extract(extract: Any) -> Optional[dict]:
         return None
     if not isinstance(extract, dict):
         raise RewardError("extract must be a mapping.")
+    # Two steps (or a misspelled one) would score a different text than the rule says.
+    if len(extract) != 1 or not ("between" in extract or "regex" in extract):
+        raise RewardError("extract takes exactly one of 'between' or 'regex'.")
     if "between" in extract:
         pair = extract["between"]
         if not (
@@ -128,10 +131,8 @@ def _validate_extract(extract: Any) -> Optional[dict]:
         ):
             raise RewardError("extract.between takes two non-empty strings.")
         return {"between": pair}
-    if "regex" in extract:
-        _compile(extract["regex"])
-        return {"regex": extract["regex"]}
-    raise RewardError("extract needs 'between' or 'regex'.")
+    _compile(extract["regex"])
+    return {"regex": extract["regex"]}
 
 
 # Names GRPOTrainer passes to reward functions itself (or never passes); a column cannot use them.
