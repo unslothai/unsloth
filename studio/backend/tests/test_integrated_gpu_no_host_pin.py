@@ -86,7 +86,6 @@ def pins(monkeypatch):
     return calls
 
 
-# -- the predicate -------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("integrated", [True, False])
@@ -148,7 +147,6 @@ def test_the_answer_is_cached_per_device(monkeypatch, gpu):
     assert asked == [0]
 
 
-# -- diffusion_memory --------------------------------------------------------------------------------------------
 
 
 def _host_of(module):
@@ -254,7 +252,6 @@ def test_the_controlnet_offload_streams_without_pinning_on_an_integrated_gpu(
     assert seen[0]["use_stream"] is (not integrated)
 
 
-# -- the other diffusion / video sites --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("integrated", [True, False])
@@ -433,7 +430,6 @@ def test_the_h3_pin_gate_refuses_an_integrated_gpu_even_when_forced(monkeypatch,
     assert te.h3_te_pin_allowed(1 << 20) is (not integrated)
 
 
-# -- every pinning call site is gated ---------------------------------------------------------------------------
 
 # Sites with no gate of their own, each reached only through one that asks host_pinning_allowed.
 _REACHED_THROUGH_A_GATE = {
@@ -475,8 +471,6 @@ _REACHED_THROUGH_A_GATE = {
         "core/inference/video_minimax_h3_te.py",
         "pin_module_in_place",
     ): "h3_te_pin_allowed / stream_h3_text_encoder",
-    # A few MB of preview slots, not a host copy of weights: pageable would make the denoise thread wait on the GPU
-    # at every snapshot, which the previewer's "never blocks" contract rules out.
     ("core/inference/diffusion_preview.py", "_device_map"): "exempt: tiny, async preview",
     (
         "core/inference/diffusion_preview.py",

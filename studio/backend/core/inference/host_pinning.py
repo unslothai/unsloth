@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether page-locked host memory is worth taking for host-to-device copies on a device.
-
-An integrated GPU (AMD APU such as gfx1151 Strix Halo, Jetson, DGX Spark) has no PCIe link: its "VRAM" is the same
-system RAM, so a pinned staging copy buys no faster transfer and only takes RAM the GPU itself allocates from. ComfyUI
-turns pinned memory off for such devices (``comfy/model_management.py``, ``is_integrated_gpu()`` sets
-``DISABLE_PINNED_MEMORY``); every diffusion / video pinning site here asks ``host_pinning_allowed`` and keeps plain
-pageable host tensors when it answers False. A discrete GPU, or a device that cannot be classified, answers True, so
-those keep exactly the path they had.
-
-The classifier is the one Studio's memory policy already uses: ``_cuda_props_are_integrated`` for CUDA (the driver's
-``integrated`` flag), ``_rocm_props_unified_status`` for ROCm (the driver flag, else the known APU arches).
-"""
+"""Integrated GPUs skip pinned host memory: their VRAM is system RAM, so a pinned copy only takes RAM from the GPU
+(ComfyUI does the same). An unclassifiable device answers discrete (pinning allowed)."""
 
 from __future__ import annotations
 
@@ -47,8 +37,7 @@ def _classify(torch: Any, index: int) -> bool:
 
 
 def device_is_integrated(device: Any = None) -> bool:
-    """True when ``device`` (default: the current CUDA / HIP device) is an integrated GPU sharing system RAM.
-    Never raises: no GPU, a non-CUDA device or an unreadable property answers False (the discrete behaviour)."""
+    """Never raises: no GPU, a non-CUDA device or an unreadable property answers False (discrete)."""
     try:
         import torch
 
@@ -70,11 +59,9 @@ def device_is_integrated(device: Any = None) -> bool:
 
 
 def host_pinning_allowed(device: Any = None) -> bool:
-    """False on an integrated GPU (pinning only doubles host RAM pressure there); True otherwise."""
     return not device_is_integrated(device)
 
 
 def reset_cache() -> None:
-    """Forget the per-device answers (tests stub the device properties)."""
     with _LOCK:
         _CACHE.clear()
