@@ -548,9 +548,31 @@ def _local(t):
     return t.to_local()
 
 
-def _localize(params):
-    """get_lora_parameters(_bias) result with every DTensor turned into its local view."""
-    return tuple(_local(t) for t in params)
+def _tp_lora_parameters(proj, bias = False):
+    """get_lora_parameters(_bias) for a tensor parallel projection: (W, W quant state, A, B, scale[, bias]) as
+    local shards. The row bias is None: the region adds it once, after the all-reduce."""
+    weight, base = _weight(proj)
+    W = _local(weight)
+    W_quant = getattr(W, "quant_state", None)
+    b = None
+    if bias and proj.__dict__.get("_unsloth_tp_style") == COLWISE and base.bias is not None:
+        b = _local(base.bias)
+    lora_A = proj._modules.get("lora_A")
+    if lora_A is None or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        out = (W, W_quant, None, None, None)
+    else:
+        adapter = _active_adapter(proj)
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
+        out = (
+            W,
+            W_quant,
+            _local(lora_A[adapter].weight),
+            _local(proj.lora_B[adapter].weight),
+            proj.scaling[adapter],
+        )
+    return out + (b,) if bias else out
 
 
 def _replicate_grad(grad):
@@ -984,7 +1006,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
                 _set_dtensor(A, "weight", A.weight, mesh, "shard", in_parts, 1, rank, tp)
                 _set_dtensor(B, "weight", B.weight, mesh, "replicate")
     module._unsloth_tp_style = proj.style
-    module._unsloth_tp_local = _localize  # read by kernels/utils.py get_lora_parameters(_bias)
+    module._unsloth_tp_local = _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 

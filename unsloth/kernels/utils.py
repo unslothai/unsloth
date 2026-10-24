@@ -449,11 +449,7 @@ def get_lora_parameters(proj):
     """
     localize = proj.__dict__.get("_unsloth_tp_local")
     if localize is not None:
-        return localize(_get_lora_parameters(proj))
-    return _get_lora_parameters(proj)
-
-
-def _get_lora_parameters(proj):
+        return localize(proj)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
@@ -523,11 +519,7 @@ def _get_lora_parameters(proj):
 def get_lora_parameters_bias(proj):
     localize = proj.__dict__.get("_unsloth_tp_local")
     if localize is not None:
-        return localize(_get_lora_parameters_bias(proj))
-    return _get_lora_parameters_bias(proj)
-
-
-def _get_lora_parameters_bias(proj):
+        return localize(proj, bias = True)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
