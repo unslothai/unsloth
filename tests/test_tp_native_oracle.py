@@ -456,6 +456,15 @@ def test_refusals_plan(repo, overrides, tp, match):
         tpn.derive_tp_plan(model, tp)
 
 
+def test_refuses_attention_and_layer_dropout():
+    with pytest.raises(ValueError, match = "attention dropout"):
+        tpn.derive_tp_plan(build(LLAMA, {"attention_dropout": 0.1}), 2)
+    model = build(LLAMA)
+    model.get_base_model().model.layers[0].mlp.add_module("drop", torch.nn.Dropout(0.1))
+    with pytest.raises(ValueError, match = "dropout inside decoder layers"):
+        tpn.derive_tp_plan(model, 2)
+
+
 def test_refuses_dora_and_lora_bias():
     for kwargs, match in (
         ({"use_dora": True}, "DoRA"),

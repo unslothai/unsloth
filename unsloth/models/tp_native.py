@@ -237,6 +237,29 @@ def _decoder_layers(model):
     )
 
 
+_ATTENTION_DROPOUT_KEYS = ("attention_dropout", "attn_pdrop")
+
+
+def _refuse_dropout(model, layers):
+    """Dropout inside a tensor parallel region needs masks distinct per head / feature shard and equal for
+    replicated tensors; v1 has no TP-aware RNG, so nonzero dropout is refused (LoRA dropout: _refuse_adapter)."""
+    text = _text_config(model)
+    for key in _ATTENTION_DROPOUT_KEYS:
+        value = getattr(text, key, None)
+        if isinstance(value, (int, float)) and value > 0:
+            raise ValueError(
+                f"Unsloth: tensor parallelism v1 does not support attention dropout ({key} = {value}); set it to 0."
+            )
+    for name, module in layers.named_modules():
+        if "lora_dropout" in name or not isinstance(module, nn.modules.dropout._DropoutNd):
+            continue
+        if module.p > 0:
+            raise ValueError(
+                f"Unsloth: tensor parallelism v1 does not support dropout inside decoder layers ({name}: p = "
+                f"{module.p}); set it to 0."
+            )
+
+
 def _refuse_moe_mla(model, layers):
     text = _text_config(model)
     for key in _MOE_CONFIG_KEYS:
@@ -355,6 +378,7 @@ def derive_tp_plan(
     layers_path, layers = _decoder_layers(model)
     # Config / module MoE and MLA first: older transformers plans name expert styles v1 does not know.
     _refuse_moe_mla(model, layers)
+    _refuse_dropout(model, layers)
     for key, _, style in compiled:
         if style in _MOE_STYLES:
             raise ValueError(
