@@ -28,6 +28,16 @@ __all__ = [
 
 
 @triton.jit
+def _row_dot(
+    acc, w, X, xk, xmask, a, BLOCK_N: tl.constexpr, NB: tl.constexpr, BLOCKSIZE: tl.constexpr
+):
+    # One activation row against a dequantized tile: the batch-1 sums, so rows stay bit-identical.
+    x = tl.load(X + xk, mask = xmask, other = 0.0).to(tl.float32)
+    part = tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
+    return acc + tl.sum(part * a, axis = 1)
+
+
+@triton.jit
 def _gemv_nf4_kernel(
     X,
     W,
@@ -39,7 +49,7 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,
+    M_GROUPS,
     OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,
     BLOCKSIZE2: tl.constexpr,
@@ -49,14 +59,15 @@ def _gemv_nf4_kernel(
     BLOCK_K: tl.constexpr,
     EVEN_K: tl.constexpr,
     LUT_MODE: tl.constexpr,
+    M_ROWS: tl.constexpr,
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
-    # A tile's M rows run adjacently so the weight is read once.
+    # A tile is dequantized once for M_ROWS rows; its M_GROUPS row groups run adjacently.
     pid = tl.program_id(0)
-    X += (pid % M) * K
-    OUT += (pid % M) * OUT_STRIDE
-    pid = pid // M
+    X += (pid % M_GROUPS) * M_ROWS * K
+    OUT += (pid % M_GROUPS) * M_ROWS * OUT_STRIDE
+    pid = pid // M_GROUPS
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     rmask = rows < N
     rows64 = rows.to(tl.int64)
@@ -67,6 +78,12 @@ def _gemv_nf4_kernel(
     nbs = tl.arange(0, NB)
     blocks_per_row = K // BLOCKSIZE
     acc = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 2:
+        acc1 = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 3:
+        acc2 = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 4:
+        acc3 = tl.zeros([BLOCK_N], dtype = tl.float32)
     if NESTED:
         offset = tl.load(OFFSET)
     for k0 in range(0, K, BLOCK_K):
@@ -78,9 +95,6 @@ def _gemv_nf4_kernel(
         hi = _nf4_lut(LUT, b >> 4, LUT_MODE)
         lo = _nf4_lut(LUT, b & 15, LUT_MODE)
         w = tl.reshape(tl.join(hi, lo), (BLOCK_N, BLOCK_K))
-        xk = k0 + ks
-        x = tl.load(X + xk, mask = (xk < K) | EVEN_K, other = 0.0).to(tl.float32)
-        part = tl.sum(tl.reshape(w * x[None, :], (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
         bmask = rmask[:, None] & (((k0 + nbs * BLOCKSIZE) < K) | EVEN_K)[None, :]
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
@@ -92,8 +106,22 @@ def _gemv_nf4_kernel(
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
-        acc += tl.sum(part * a, axis = 1)
+        xk = k0 + ks
+        xmask = (xk < K) | EVEN_K
+        acc = _row_dot(acc, w, X, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 2:
+            acc1 = _row_dot(acc1, w, X + K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 3:
+            acc2 = _row_dot(acc2, w, X + 2 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 4:
+            acc3 = _row_dot(acc3, w, X + 3 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 2:
+        tl.store(OUT + OUT_STRIDE + rows, acc1.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 3:
+        tl.store(OUT + 2 * OUT_STRIDE + rows, acc2.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 4:
+        tl.store(OUT + 3 * OUT_STRIDE + rows, acc3.to(OUT.dtype.element_ty), mask = rmask)
 
 
 @triton.jit
@@ -108,7 +136,7 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,
+    M_GROUPS,
     OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,
     BLOCKSIZE2: tl.constexpr,
@@ -116,14 +144,15 @@ def _gemv_nf4_words_kernel(
     USE_MUL_RN: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    M_ROWS: tl.constexpr,
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
-    # A tile's M rows run adjacently so the weight is read once.
+    # A tile is dequantized once for M_ROWS rows; its M_GROUPS row groups run adjacently.
     pid = tl.program_id(0)
-    X += (pid % M) * K
-    OUT += (pid % M) * OUT_STRIDE
-    pid = pid // M
+    X += (pid % M_GROUPS) * M_ROWS * K
+    OUT += (pid % M_GROUPS) * M_ROWS * OUT_STRIDE
+    pid = pid // M_GROUPS
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     rmask = rows < N
     rows64 = rows.to(tl.int64)
@@ -137,6 +166,12 @@ def _gemv_nf4_words_kernel(
     words_per_row = K // 8
     blocks_per_row = K // BLOCKSIZE
     acc = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 2:
+        acc1 = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 3:
+        acc2 = tl.zeros([BLOCK_N], dtype = tl.float32)
+    if M_ROWS >= 4:
+        acc3 = tl.zeros([BLOCK_N], dtype = tl.float32)
     if NESTED:
         offset = tl.load(OFFSET)
     for k0 in range(0, K, BLOCK_K):
@@ -144,9 +179,6 @@ def _gemv_nf4_words_kernel(
         m = rmask[:, None] & (kw < words_per_row)[None, :]
         w = tl.load(W + rows64[:, None] * words_per_row + kw[None, :], mask = m, other = 0)
         v = tl.load(LUT + ((w[:, :, None] >> shifts[None, None, :]) & 15))
-        xk = k0 + wk[:, None] * 8 + j[None, :]
-        x = tl.load(X + xk, mask = xk < K, other = 0.0).to(tl.float32)
-        part = tl.sum(tl.reshape(v * x[None, :, :], (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
         bmask = rmask[:, None] & ((k0 + nbs * BLOCKSIZE) < K)[None, :]
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
@@ -157,8 +189,22 @@ def _gemv_nf4_words_kernel(
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
-        acc += tl.sum(part * a, axis = 1)
+        xk = k0 + wk[:, None] * 8 + j[None, :]
+        xmask = xk < K
+        acc = _row_dot(acc, v, X, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 2:
+            acc1 = _row_dot(acc1, v, X + K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 3:
+            acc2 = _row_dot(acc2, v, X + 2 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
+        if M_ROWS >= 4:
+            acc3 = _row_dot(acc3, v, X + 3 * K, xk, xmask, a, BLOCK_N, NB, BLOCKSIZE)
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 2:
+        tl.store(OUT + OUT_STRIDE + rows, acc1.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 3:
+        tl.store(OUT + 2 * OUT_STRIDE + rows, acc2.to(OUT.dtype.element_ty), mask = rmask)
+    if M_ROWS >= 4:
+        tl.store(OUT + 3 * OUT_STRIDE + rows, acc3.to(OUT.dtype.element_ty), mask = rmask)
 
 
 _TRITON_VERSION = tuple(int(x) for x in triton.__version__.split(".")[:2])
@@ -250,6 +296,9 @@ def _launch(
         N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )
     kernel = kernels[1] if use_words else kernels[0]
+    # Up to 4 rows per program; above 4 (UNSLOTH_GEMV_MAX_ROWS) the largest of 4, 3, 2 dividing M.
+    m_rows = max(M, 1) if M <= 4 else next(r for r in (4, 3, 2, 1) if M % r == 0)
+    m_groups = M // m_rows
     args = (
         X,
         W,
@@ -261,10 +310,10 @@ def _launch(
         out,
         N,
         K,
-        M,
+        m_groups,
         out.stride(0) if M > 1 else 0,
     )
-    grid = (grid[0] * M,)
+    grid = (grid[0] * m_groups,)
     constexprs = dict(
         BLOCKSIZE = blocksize,
         BLOCKSIZE2 = blocksize2 if nested else 1,
@@ -272,6 +321,7 @@ def _launch(
         USE_MUL_RN = _HAS_MUL_RN,
         BLOCK_N = block_n,
         BLOCK_K = block_k,
+        M_ROWS = m_rows,
     )
     if not use_words:
         # Even K skips K masks; register gather replaces LUT loads: 16-23% faster (A100/L4/T4, Triton 3.7).

@@ -180,7 +180,8 @@ def _linear4bit(
 
 
 @pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
-@pytest.mark.parametrize("bsz", [2, 3, 8])
+# 2 to 4 rows share one program per tile; 5, 6, 8 and 10 run groups of 1, 3, 4 and 2 rows.
+@pytest.mark.parametrize("bsz", [2, 3, 4, 5, 6, 8, 10])
 @pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192)], ids = str)
 def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
     """Strided out, as fast_swiglu_inference passes up[:, :, :hd]."""
