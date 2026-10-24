@@ -258,7 +258,6 @@ def test_sequential_offload_replacement_parameters_return_to_the_load_dtype(rout
 
 
 def _fail_fp32_cast_after(monkeypatch, n):
-    """The (n+1)-th fp32 tensor cast raises, as an OOM partway through the upcast would."""
     stock = torch.Tensor.to
     seen = {"n": 0}
 
@@ -290,7 +289,6 @@ def test_a_failed_upcast_leaves_every_tensor_in_the_load_dtype(monkeypatch, rout
     assert {p.dtype for p in vae.parameters()} == {torch.float16}
     assert {b.dtype for b in vae.buffers() if b.is_floating_point()} <= {torch.float16}
     assert _storage(vae) == before
-    # And the next upcast still works.
     with vu.fp32_keeping_storage(vae):
         assert {p.dtype for p in vae.parameters()} == {torch.float32}
     assert _storage(vae) == before
@@ -322,8 +320,7 @@ def test_device_upcast_frees_each_16bit_tensor_as_it_goes_cuda():
     peak, token = _peak_upcast_bytes(lambda: vu.upcast_keeping_storage(vae))
     try:
         assert {p.dtype for p in vae.parameters()} == {torch.float32}
-        # The 16-bit weights were already allocated: the fp32 copies replace them, so above them only the extra
-        # fp32 half plus one 16-bit tensor in flight (and 512 B allocator rounding per tensor), not 2x.
+        # Above the existing 16-bit weights: the extra fp32 half plus one tensor in flight, not 2x.
         assert peak <= half + largest + _slack(vae), (peak, half)
         out = vae.decode(z).sample
     finally:
@@ -333,8 +330,7 @@ def test_device_upcast_frees_each_16bit_tensor_as_it_goes_cuda():
 
 
 def test_offloaded_upcast_frees_the_pinned_onload_and_stays_pinned_cuda(monkeypatch):
-    """Behind the kept hook the onload is one device chunk; it is freed before the fp32 copies land, and the offload
-    still re-points every weight at its pinned fp16 host tensor."""
+    """The kept hook's onload chunk is freed before the fp32 copies land; offload still re-points to pinned fp16."""
     from core.inference import diffusion_memory as dm
 
     _cuda_or_skip()

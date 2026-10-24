@@ -64,7 +64,6 @@ def _kept_state(owner: Any) -> Optional[dict]:
 
 
 def _names(owner: Any) -> dict:
-    """``id(module) -> qualified prefix`` under ``owner``, the keys the kept hook's state uses."""
     try:
         return {id(m): (prefix + "." if prefix else "") for prefix, m in owner.named_modules()}
     except Exception:  # noqa: BLE001 - duck-typed owner: no hook state to keep in step
@@ -112,8 +111,7 @@ def _version(t: Any) -> Optional[int]:
 def _mark_onloaded(
     state: Optional[dict], kind: str, full: Optional[str], m: Any, name: str
 ) -> None:
-    """Record the cast-back device tensor as the hook's untouched onload, so its offload re-points it at the pinned
-    host tensor again instead of copying it to a new pageable one. Only while the onload is still live."""
+    """Mark the cast-back tensor as the hook's untouched onload, so offload re-points it at the pinned host tensor."""
     if state is None or full is None:
         return
     table = state.get("version" if kind == "p" else "buffer_version")
@@ -147,11 +145,8 @@ def upcast_keeping_storage(
     parts: Optional[list] = None,
     dtype: Any = None,
 ) -> list:
-    """Cast ``parts`` to ``dtype`` one tensor at a time, freeing each device 16-bit tensor as its copy lands (as the
-    stock ``Module.to`` does), so the device never holds both copies. Host tensors (the stored, pinned weights) are
-    kept and put back by ``restore_storage``. A device weight that is the kept offload hook's untouched onload of a
-    pinned host tensor is first pointed back at that host tensor, which frees the onload's shared chunk before any
-    fp32 copy exists; it is cast from the host. Raises with every tensor back in its original dtype."""
+    """Cast ``parts`` to ``dtype`` one tensor at a time (never both copies on device); host tensors are kept for
+    ``restore_storage``. Kept-hook onloads are re-pointed at their pinned host tensor first, freeing the shared chunk."""
     import torch
 
     dtype = torch.float32 if dtype is None else dtype
@@ -252,9 +247,8 @@ def _restore_one(rec: list) -> None:
 
 
 def restore_storage(token: list) -> None:
-    """Put back the original dtype on the current registrations: a kept host tensor itself, a device tensor by a cast
-    back (exact for 16-bit -> fp32 -> 16-bit). One that has since moved or been changed is cast back to its load dtype,
-    as the stock cast does."""
+    """Put back the original dtype: a kept host tensor itself, a device tensor by an exact cast back; one since moved
+    or changed is cast back to its load dtype, as the stock cast does."""
     for rec in token:
         try:
             _restore_one(rec)
