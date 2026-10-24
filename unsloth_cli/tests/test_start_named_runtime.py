@@ -89,6 +89,7 @@ def test_named_resident_explicit_automatic_context_wins(monkeypatch):
         start,
         "_model_status",
         lambda *a: {
+            "active_model": MODEL,
             "requested_context_length": 4096,
             "requested_n_batch": 128,
         },
@@ -107,6 +108,7 @@ def test_named_resident_explicit_automatic_context_wins(monkeypatch):
 
 
 def _named_reload_payload(monkeypatch, status, options):
+    status = {"active_model": MODEL, **status}
     monkeypatch.setattr(start, "_loaded_models", lambda *a: [{"id": MODEL, "loaded": True}])
     monkeypatch.setattr(start, "_model_status", lambda *a: status)
     payloads = []
@@ -176,6 +178,7 @@ def test_named_local_checkpoint_inherits_only_from_itself(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "foo").mkdir()
     status = {
+        "active_model": "foo",
         "model_identifier": resident or str(tmp_path / "foo"),
         "load_in_4bit": False,
         "requested_gpu_ids": [1],
@@ -192,3 +195,9 @@ def test_named_local_checkpoint_inherits_only_from_itself(
     start._resolve_model(BASE, "key", "foo", start.LoadOptions(max_seq_length = 8192))
     carried = {"load_in_4bit": False, "gpu_ids": [1]} if inherits else {}
     assert payloads == [{"model_path": "foo", "max_seq_length": 8192, **carried}]
+
+
+def test_named_resident_status_for_another_model_is_not_inherited(monkeypatch):
+    status = {"active_model": "owner/other-GGUF", "load_in_4bit": False, "requested_gpu_ids": [1]}
+    payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(max_seq_length = 8192))
+    assert payload == {"model_path": MODEL, "max_seq_length": 8192}

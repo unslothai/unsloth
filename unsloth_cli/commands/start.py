@@ -2289,10 +2289,19 @@ def _resolve_model(
             status_snapshot = _inference_status(base, key, loaded_match["id"])
             # The listing shows a local checkpoint by basename, so ./foo matches a resident old/foo: inherit only from the checkpoint this load resolves to.
             wanted_path = os.path.abspath(os.path.expanduser(requested))
-            same_checkpoint = _is_hub_model_id(requested) or any(
-                os.path.abspath(os.path.expanduser(str(status_snapshot.get(field)))) == wanted_path
-                for field in ("model_identifier", "gguf_path", "model_path")
-                if status_snapshot.get(field)
+            # A snapshot naming another model (replaced since the listing, or a server ignoring ?model=) describes nothing of this one.
+            same_checkpoint = _model_id_matches(
+                status_snapshot.get("active_model"),
+                loaded_match["id"],
+                allow_casefold = allow_casefold,
+            ) and (
+                _is_hub_model_id(requested)
+                or any(
+                    os.path.abspath(os.path.expanduser(str(status_snapshot.get(field))))
+                    == wanted_path
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status_snapshot.get(field)
+                )
             )
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
