@@ -45,6 +45,7 @@ import {
   extraArgsAddResidentFiles,
   extraArgsOwnPlacement,
   extraArgsShapeKvCache,
+  memoryBarWeightsBytes,
 } from "@/lib/model-memory";
 import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -535,9 +536,7 @@ export function useModelMemory(
     // automatic launch preserves that pin. budgetIsMeaningful sees only browser-side pins and saved
     // config, so this is the one placement override it cannot reach.
     if (estimate?.inheritedDevicePin) return computeModelMemory({});
-    const hostTable = source?.lookupTableBytes ?? 0;
-    const rawWeights = estimate?.weightsBytes ?? source?.sizeBytes;
-    const weights = rawWeights == null ? rawWeights : Math.max(0, rawWeights - hostTable);
+    const weights = memoryBarWeightsBytes(estimate, source);
     return computeModelMemory({
       // The projector is resident alongside the weights, so it belongs in that
       // segment rather than as a fourth sliver the eye cannot resolve.

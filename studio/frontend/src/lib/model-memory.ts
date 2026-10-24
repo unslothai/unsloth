@@ -130,6 +130,30 @@ const EMPTY: ModelMemorySegments = {
   pressure: "normal",
 };
 
+/**
+ * The weights segment of the VRAM bar. Lookup tables (per-layer embeddings / Engram) never reach the
+ * card: the estimate already leaves a streamed table out of `weightsBytes`, and keeps a host-resident
+ * one in, so only the resident one comes off here. Before the estimate arrives, the listing's
+ * (streamed) table comes off its file size instead.
+ */
+export function memoryBarWeightsBytes(
+  estimate:
+    | {
+        weightsBytes?: number | null;
+        lookupTableBytes?: number | null;
+        lookupTableOnDisk?: boolean | null;
+      }
+    | undefined,
+  source: { sizeBytes?: number | null; lookupTableBytes?: number | null } | undefined,
+): number | null | undefined {
+  if (estimate?.weightsBytes != null) {
+    const resident = estimate.lookupTableOnDisk ? 0 : (estimate.lookupTableBytes ?? 0);
+    return Math.max(0, estimate.weightsBytes - resident);
+  }
+  const size = source?.sizeBytes;
+  return size == null ? size : Math.max(0, size - (source?.lookupTableBytes ?? 0));
+}
+
 function toGb(bytes?: number | null): number {
   return bytes && bytes > 0 ? bytes / BYTES_PER_GB : 0;
 }

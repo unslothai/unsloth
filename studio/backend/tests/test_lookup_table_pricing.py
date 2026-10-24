@@ -487,6 +487,38 @@ class TestListing:
         ):
             assert gv._local_variant_gguf(answer, repo, row) == str(model)
 
+    def test_a_requested_cache_copy_is_found_where_the_listing_found_it(self, tmp_path):
+        """local_path naming a second cache root, or a snapshot other than refs/main, is searched."""
+        from types import SimpleNamespace
+
+        from hub.services.models import gguf_variants as gv
+
+        repo_dir = tmp_path / "second_cache" / "models--o--lookup-cache-test"
+        main_snap = repo_dir / "snapshots" / "aaaa"
+        pinned_snap = repo_dir / "snapshots" / "bbbb"
+        for snap in (main_snap, pinned_snap):
+            snap.mkdir(parents = True)
+        (repo_dir / "refs").mkdir()
+        (repo_dir / "refs" / "main").write_text("aaaa")
+        name = "m-Q4.gguf"
+        (main_snap / name).write_bytes(b"GGUF")
+        only_pinned = "p-Q8.gguf"
+        (pinned_snap / only_pinned).write_bytes(b"GGUF")
+        answer = SimpleNamespace(
+            variant_context_sources = None, context_source = None, cache_authorized = True
+        )
+        repo = "o/lookup-cache-test"
+
+        def row(filename):
+            return SimpleNamespace(filename = filename, quant = "Q", downloaded = True)
+
+        assert gv._local_variant_gguf(answer, repo, row(name), str(repo_dir)) == str(
+            main_snap / name
+        )
+        assert gv._local_variant_gguf(answer, repo, row(only_pinned), str(pinned_snap)) == str(
+            pinned_snap / only_pinned
+        )
+
     def test_a_read_the_pool_refuses_after_the_deadline_releases_its_key(self, monkeypatch):
         """Late refusals (the pool shut down at exit) never reach the read's own finally."""
         from hub.services.models import gguf_variants as gv
@@ -604,7 +636,7 @@ class TestListing:
         on_disk = tmp_path / "local.gguf"
         on_disk.write_bytes(b"x")
         monkeypatch.setattr(
-            gv, "_local_variant_gguf", lambda a, r, v: str(on_disk) if v.quant == "L" else None
+            gv, "_local_variant_gguf", lambda a, r, v, *_: str(on_disk) if v.quant == "L" else None
         )
         rows = [
             GgufVariantDetail(filename = "l.gguf", quant = "L", size_bytes = 1, downloaded = True),

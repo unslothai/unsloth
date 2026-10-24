@@ -1497,14 +1497,23 @@ def _hub_repo_architecture(repo_id: str, hf_token: Optional[str]) -> Optional[st
     return arch
 
 
-def _local_variant_gguf(answer: "VariantsAnswer", repo_id: str, variant) -> Optional[str]:
-    """The on-disk main GGUF behind a listed row, or None."""
+def _local_variant_gguf(
+    answer: "VariantsAnswer",
+    repo_id: str,
+    variant,
+    local_path: Optional[str] = None,
+) -> Optional[str]:
+    """The on-disk main GGUF behind a listed row, or None. Searches the copy *local_path* names
+    (its snapshot, or its cache root) the way the listing did."""
     filename = str(variant.filename or "")
     sources = answer.variant_context_sources or {}
     candidates = [sources.get(str(variant.quant or "").lower())]
     roots = [repo_id] if is_local_path(repo_id) else []
     if answer.context_source:
         roots.append(answer.context_source)
+    pinned = _snapshot_scope_for_request(repo_id, local_path)
+    if pinned is not None:
+        roots.append(str(pinned))
     for root in roots:
         path = Path(root).expanduser()
         candidates.append(str((path.parent if path.is_file() else path) / filename))
@@ -1520,7 +1529,7 @@ def _local_variant_gguf(answer: "VariantsAnswer", repo_id: str, variant) -> Opti
         try:
             from huggingface_hub import try_to_load_from_cache
 
-            repo_dir = _repo_cache_dir_for_request(repo_id, None)
+            repo_dir = _repo_cache_dir_for_request(repo_id, local_path)
             found = try_to_load_from_cache(repo_id, filename, cache_dir = str(repo_dir.parent))
             if isinstance(found, str) and os.path.isfile(found):
                 return found
@@ -1547,6 +1556,7 @@ async def _with_lookup_tables(
     hf_token: Optional[str],
     offline: bool,
     prefer_local_cache: bool,
+    local_path: Optional[str] = None,
 ) -> "VariantsAnswer":
     """``answer`` with ``lookup_table_bytes`` filled per variant. Never raises; a row it
     cannot size keeps 0, which prices the whole file the way the listing always did."""
@@ -1566,7 +1576,7 @@ async def _with_lookup_tables(
         for index, v in enumerate(variants):
             if not str(v.filename or "").lower().endswith(".gguf"):
                 continue
-            path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v)
+            path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v, local_path)
             if path:
                 local_arch, table = await listing_thread(True, local_lookup_info, path, mode)
                 # Only a lazy one speaks for the repo: a repo can hold several families.
@@ -2909,6 +2919,7 @@ async def get_gguf_variants_answer(
             hf_token = hf_token,
             offline = bool(offline),
             prefer_local_cache = bool(prefer_local_cache),
+            local_path = local_path,
         )
     except HTTPException as exc:
         # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.

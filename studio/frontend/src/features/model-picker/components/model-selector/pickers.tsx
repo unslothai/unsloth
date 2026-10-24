@@ -5259,11 +5259,13 @@ export function HubModelPicker({
     downloaded: ReadonlyMap<string, string | null>;
     visionByRepo: ReadonlyMap<string, boolean>;
     sizes: ReadonlyMap<string, number>;
+    lookupTables: ReadonlyMap<string, number>;
   }>({
     validated: false,
     downloaded: new Map(),
     visionByRepo: new Map(),
     sizes: new Map(),
+    lookupTables: new Map(),
   });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
@@ -5312,11 +5314,24 @@ export function HubModelPicker({
               (variant) =>
                 [pinKey(repoId, variant.quant), variant.size_bytes] as const,
             ),
+            lookupTables: downloaded.map(
+              (variant) =>
+                [
+                  pinKey(repoId, variant.quant),
+                  ggufVariantLookupTableBytes(variant),
+                ] as const,
+            ),
           };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
           // missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
+          return {
+            repoId,
+            hasVision: undefined,
+            downloaded: [],
+            sizes: [],
+            lookupTables: [],
+          };
         }
       }),
     ).then((groups) => {
@@ -5332,6 +5347,9 @@ export function HubModelPicker({
             ),
           ),
           sizes: new Map(groups.flatMap((group) => group.sizes)),
+          lookupTables: new Map(
+            groups.flatMap((group) => group.lookupTables),
+          ),
         });
       }
     });
@@ -6683,7 +6701,16 @@ export function HubModelPicker({
                 diffusionTaskById.get(entry.repoId.toLowerCase()),
               )
                 ? undefined
-                : { repoId: entry.repoId, quant: entry.quant }
+                : {
+                    repoId: entry.repoId,
+                    quant: entry.quant,
+                    // Same listing figures as the sole-quant row, so a streamed table is off the
+                    // weights segment here too.
+                    sizeBytes,
+                    lookupTableBytes: pinnedQuantValidation.lookupTables.get(
+                      pinKey(entry.repoId, entry.quant),
+                    ),
+                  }
             }
             gpuGb={expanderGpuGb}
             alignMeta="device"
