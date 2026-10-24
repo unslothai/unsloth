@@ -34,6 +34,8 @@ from typing import Any, Iterator, Optional
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
+# Groups carried while the forward's last streamed block still runs (see GroupPrefetcher._carry).
+TAIL_CARRY_GROUPS = 1
 DEFAULT_PREFETCH_DEPTH = 2
 MAX_PREFETCH_DEPTH = 8
 PREFETCHER_ATTR = "_unsloth_group_prefetcher"
@@ -602,7 +604,7 @@ class GroupPrefetcher:
             else:
                 self._issue(group)
             ahead += 1
-        if ahead < self.depth and self.may_carry():
+        if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
 
     def carry_usable(self) -> bool:
@@ -623,11 +625,19 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """Past the end of the order: copy the next forward's first groups, under the same depth and window."""
+        """Past the last onload of the order: copy the next forward's first groups, under the same depth and window.
+
+        While the last block still runs, at most ``TAIL_CARRY_GROUPS``: its activations are allocated, and a carried
+        group beside them can lift the step's peak above the forward's (FLUX: a double block beside the larger
+        single-block activations at 32k tokens). Once it is offloaded the forward's activations are freed (host
+        order, which is what the allocator's peak follows), so the rest of the depth adds no peak; the copies still
+        overlap the tail on the GPU."""
         carried = self.__dict__.setdefault("carried", set())
+        running = any(gid not in carried for gid in self.ready)
+        limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth
         due = set(self.order[self.pos :])
         for gid in self.order:
-            if ahead >= self.depth or gid in due:
+            if ahead >= limit or gid in due:
                 return  # a short order wraps onto groups this forward still runs: no carry past them
             group = self.by_id.get(gid)
             if group is None or not self.owns(group):

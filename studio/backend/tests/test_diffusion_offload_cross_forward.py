@@ -156,6 +156,25 @@ def test_carry_wraps_onto_the_next_forwards_first_groups():
     assert pf.stats["missed"] == 0 and pf.stats["carried_hits"] == 2
 
 
+def test_while_the_last_block_runs_only_one_group_is_carried():
+    pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
+    _forward(pf, groups)
+    pf.armed = True
+    pf.begin()
+    for g in groups[:-1]:
+        pf.onload(g)
+        pf.offload(g)
+        assert not pf.carried  # a block of this forward is still due: nothing carried
+    pf.onload(groups[-1])
+    # its activations are live: one group beside them, never the full depth
+    assert pf.carried == {id(groups[0])} and op.TAIL_CARRY_GROUPS == 1
+    pf.offload(groups[-1])
+    # the forward's activations are freed: the rest of the depth follows
+    assert pf.carried == {id(groups[0]), id(groups[1])}
+    pf.end()
+    assert set(pf.ready) == pf.carried and pf.peak_inflight_bytes <= pf.window
+
+
 def test_unarmed_prefetcher_is_unchanged():
     pf, groups, log = _cpu_prefetcher("abcdef", depth = 2)
     ref, ref_groups, ref_log = _cpu_prefetcher("abcdef", depth = 2)
