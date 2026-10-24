@@ -4182,8 +4182,8 @@ export function ModelConfigPage({
             {saveStatus}
           </p>
         </div>
-        {/* Preset Save/Delete sizing, right-aligned under the settings. */}
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             variant="dark"
             type="button"
