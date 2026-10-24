@@ -1171,6 +1171,15 @@ def _declares_no_sdpa(model_class):
     return False
 
 
+def _native_class_refuses_sdpa(model_class):
+    # A transformers-shipped class whose _supports_sdpa resolves False (Mamba, FalconMamba inherit PreTrainedModel's
+    # default): transformers raises on sdpa for it, so the zoo's registry-based "sdpa" guess must not win. Remote code keeps the guess.
+    module = getattr(model_class, "__module__", None) or ""
+    if not (module == "transformers" or module.startswith("transformers.")):
+        return False
+    return getattr(model_class, "_supports_sdpa", None) is False
+
+
 def _model_class_supports_flash_attention(model_class):
     """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
@@ -2649,7 +2658,11 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
+    if (
+        _is_sdpa_excluded(model_type)
+        or _declares_no_sdpa(model_class)
+        or _native_class_refuses_sdpa(model_class)
+    ):
         supports_sdpa = False
     if not supports_sdpa:
         _remember_no_sdpa_config(config)
