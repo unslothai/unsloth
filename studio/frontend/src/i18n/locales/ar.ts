@@ -50,8 +50,15 @@ export const ar = {
     removeFromMessage: "إزالة من الرسالة",
   },
   browser: {
+    drafts: {
+      title: "إلغاء تحميل صفحة تحتوي على نص مُدخل؟",
+      description: "للحفاظ على سرعة استجابة الدردشة، يستمر تشغيل ثلاث صفحات مخفية فقط تحتوي على نص مُدخل. ستؤدي المتابعة إلى إلغاء تحميل {pages}، وقد يُفقد النص غير المحفوظ. يعيدك الإلغاء إلى علامة التبويب السابقة.",
+      confirm: "إلغاء التحميل والمتابعة",
+    },
     agentSettings: {
       title: "استخدام المتصفح",
+      docs: "التوثيق",
+      docsLabel: "فتح توثيق استخدام المتصفح",
       enable: "السماح للنماذج باستخدام المتصفح",
       enableDescription: "تفتح النماذج الصفحات في علامة تبويب متصفح خاصة بها وتقرؤها وتنقر وتكتب نيابةً عنك. متاح أيضًا في قائمة + في مربع الكتابة.",
       history: "سجل التصفح",
@@ -100,6 +107,24 @@ export const ar = {
         script: "هل تسمح لـ Unsloth بتشغيل هذا البرنامج النصي على {host}؟",
         pointer: "هل تسمح لـ Unsloth بالنقر على أجزاء بلا تسمية في {host}، مثل لوحة الرسم؟",
       },
+      step: {
+        open: "يفتح {detail}",
+        back: "يعود للخلف",
+        forward: "ينتقل للأمام",
+        reload: "يعيد تحميل الصفحة",
+        read: "يقرأ الصفحة",
+        find: "يبحث عن «{detail}»",
+        click: "ينقر على «{detail}»",
+        type: "يكتب في «{detail}»",
+        select: "يختار «{detail}»",
+        press: "يضغط {detail}",
+        scroll: "يمرّر الصفحة",
+        screenshot: "يلتقط لقطة شاشة",
+        evaluate: "يشغّل سكربتًا على الصفحة",
+        history: "يقرأ سجل التصفح الخاص بك",
+        move: "يحرّك الماوس",
+        drag: "يسحب",
+      },
     },
     title: "المتصفح",
     tabs: "علامات تبويب المتصفح",
@@ -113,6 +138,7 @@ export const ar = {
     reload: "إعادة التحميل",
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
+    local: "محلي",
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -210,7 +236,7 @@ export const ar = {
     importBookmarksDoneOne: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksDoneMany: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksNone: "لا توجد إشارات مرجعية جديدة في هذا الملف.",
-    importBookmarksPartial: "تم استيراد {count}، لكن لم يتسع لـ {leftOut} أخرى: يحتفظ Studio بما يصل إلى {max} إشارة مرجعية.",
+    importBookmarksPartial: "تم استيراد {count}، لكن لم يتسع لـ {leftOut} أخرى: يحتفظ Unsloth بما يصل إلى {max} إشارة مرجعية.",
     importBookmarksFailed: "تعذّرت قراءة الملف. اختر ملف HTML للإشارات المرجعية مُصدَّرًا من متصفح.",
     downloadsTitle: "التنزيلات",
     askWhereToSaveSetting: "السؤال عن مكان حفظ كل ملف",
@@ -261,7 +287,7 @@ export const ar = {
     annotationScreenshotsAlways: "التضمين دائمًا",
     annotationScreenshotsNever: "عدم التضمين أبدًا",
     clearDataSetting: "مسح بيانات التصفح",
-    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. تحتفظ الصفحات بملفات تعريف الارتباط وبيانات المواقع فقط حتى إعادة تحميل Studio.",
+    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. تحتفظ الصفحات بملفات تعريف الارتباط وبيانات المواقع فقط حتى إعادة تحميل Unsloth.",
     manage: "إدارة",
     fullView: {
       enter: "عرض كامل",
@@ -463,6 +489,8 @@ export const ar = {
       downloadFailed: "تعذّر تنزيل {name}",
       notMarked: "تم حفظ {name} لكن تعذّر وسمه كملف منزّل من الإنترنت، لذا لن يحذّرك نظامك قبل فتحه.",
       blocked: "لا يمكن فتح هذا العنوان في لوحة المتصفح. تفتح اللوحة المواقع العامة فقط.",
+      blockedLocal: "لا يمكن فتح هذا العنوان المحلي هنا. اكتبه في شريط العناوين لفتحه.",
+      studioAddress: "هذا عنوان Unsloth نفسه، لذا لا يمكن فتحه في لوحة المتصفح.",
       clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا وملفات تعريف الارتباط وبيانات المواقع، مما يسجّل خروجك من المواقع.",
       clearDataDescription: "يمسح هذا سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا وملفات تعريف الارتباط وبيانات المواقع، مما يسجّل خروجك من المواقع. تبقى الملفات المنزّلة على جهازك.",
       clearDataFailed: "تعذّر مسح بيانات المواقع. حاول مرة أخرى.",
@@ -617,6 +645,8 @@ export const ar = {
     temporaryChatDescription: "لن تظهر هذه الدردشة في سجلك ولن تُحفظ. ستختفي عند مغادرتك.",
   },
   picker: {
+    unifiedTightFit: "ملاءمة محدودة",
+    unifiedTightFitHint: "قد يُحمَّل بسياق أقصر أو يعمل بشكل أبطأ على جهاز Mac هذا.",
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",
@@ -722,6 +752,8 @@ export const ar = {
       returnToChat: "العودة إلى المحادثة",
       returnToChats: "العودة إلى المحادثات قيد التشغيل ({count})",
       chatGenerating: "جارٍ الإنشاء",
+      chatAwaitingApproval: "بانتظار الموافقة",
+      chatUnread: "غير مقروءة",
       compare: "مقارنة",
       search: "بحث",
       hub: "مركز النماذج",
@@ -839,6 +871,7 @@ export const ar = {
       byProject: "حسب المشروع",
       inOneList: "في قائمة واحدة",
       sortChatsBy: "ترتيب المحادثات حسب",
+      projectsHome: "صفحة المشاريع",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
@@ -1060,6 +1093,7 @@ export const ar = {
     },
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
+      intro: "لتغيير اختصار، اختر تركيبة المفاتيح ثم اكتب المفاتيح الجديدة",
       searchPlaceholder: "بحث في الاختصارات…",
       keystrokePlaceholder: "اضغط اختصارًا للبحث",
       searchByKeystrokes: "البحث بضغط المفاتيح",
@@ -1067,18 +1101,23 @@ export const ar = {
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
-      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
       needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
       conflict: "مستخدم أيضاً في اختصار آخر",
       conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
       edit: "تغيير الاختصار",
-      clear: "إزالة الاختصار",
       reset: "استعادة الافتراضي",
       resetAll: "إعادة تعيين الكل إلى الافتراضي",
-      primarySlot: "الاختصار",
-      alternateSlot: "اختصار بديل",
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
+      metaUnsupported: "لا يمكن استخدام مفتاح Windows في الاختصارات.",
+      altGraphUnsupported: "لا يمكن استخدام تركيبات AltGr كاختصارات.",
+      desktopOnly: "تطبيق سطح المكتب فقط",
+      groups: {
+        composer: "محرر الرسائل",
+        chat: "الدردشة",
+        navigation: "التنقل",
+        app: "التطبيق",
+      },
       actions: {
         findInPage: {
           label: "البحث في الصفحة",
@@ -1268,6 +1307,10 @@ export const ar = {
           label: "إرفاق صور وملفات",
           description: "إضافة مرفق إلى مربع الكتابة",
         },
+        openComposerMenu: {
+          label: "فتح قائمة +",
+          description: "فتح قائمة + للأدوات والمرفقات في محرر الرسائل",
+        },
         sendMessage: {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
@@ -1280,6 +1323,10 @@ export const ar = {
           label: "توجيه الرد",
           description: "إيقاف الرد الحالي وإرسال المسودة بعده",
         },
+        stopGeneration: {
+          label: "إيقاف التوليد",
+          description: "إيقاف الرد الجاري",
+        },
         cycleReasoningEffort: {
           label: "تدوير مستوى التفكير",
           description: "التنقل بين مستويات جهد التفكير",
@@ -1291,10 +1338,6 @@ export const ar = {
         decreaseReasoningEffort: {
           label: "خفض جهد التفكير",
           description: "خفض جهد التفكير مستوى واحدًا",
-        },
-        toggleFastMode: {
-          label: "تبديل وضع Fast",
-          description: "تشغيل وضع Fast أو إيقافه",
         },
         renameChat: {
           label: "إعادة تسمية المحادثة",
@@ -1404,7 +1447,8 @@ export const ar = {
       lineCount: "{count} سطر",
       filteredLineCount: "{shown} من {total} سطر",
       wrapLines: "التفاف الأسطر",
-      jumpToLatest: "الانتقال إلى الأحدث",
+      jumpToLatest: "الأحدث",
+      resizeLog: "اسحب لتغيير حجم السجل",
       noMatches: "لا توجد أسطر تطابق عامل التصفية.",
       mode: "الوضع",
       modeLive: "مباشر",
@@ -1441,15 +1485,15 @@ export const ar = {
       dictation: {
         audioUploadTitle: "الإملاء باستخدام تسجيل",
         audioUploadDescription:
-          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Studio. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Studio الصوت ويضيف النص إلى رسالتك.",
+          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Unsloth. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Unsloth الصوت ويضيف النص إلى رسالتك.",
         audioUploadChooseFile: "اختيار تسجيل",
         audioUploadRecord: "تسجيل الصوت",
         audioUploadIphoneHint:
           "على iPhone، احفظ تسجيلاً من Voice Memos أو من تطبيق تسجيل آخر، ثم اختره هنا.",
         audioUploadServerModelNote:
-          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Studio، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
+          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Unsloth، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
         audioUploadAutomatic: "تلقائي",
-        audioUploadModelReady: "جاهز على خادم Studio هذا",
+        audioUploadModelReady: "جاهز على خادم Unsloth هذا",
         audioUploadRetryTitle: "تعذّر نسخ {file}",
         audioUploadRetry: "إعادة محاولة النسخ",
         audioUploadChooseModel:
@@ -1609,9 +1653,9 @@ export const ar = {
         autoDescription: "قراءة كل رد بصوت عالٍ فور اكتماله",
         engineLabel: "محرك TTS",
         engineSystemDescription: "الأصوات المدمجة في الجهاز",
-        engineStudioDescription: "يستخدم النموذج الصوتي المُحمَّل في قسم الصوت",
+        engineStudioDescription: "يتحدث بنموذج محمّل في الصوت › تحويل النص إلى كلام",
         engineSystem: "أصوات النظام",
-        engineStudio: "تحميل نموذج TTS",
+        engineStudio: "نموذج Unsloth",
         engineCustom: "نقطة نهاية مخصصة",
         engineCustomDescription:
           "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",
@@ -1623,8 +1667,11 @@ export const ar = {
         customVoiceDescription:
           "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
-        modelDescription:
-          "حمّل نموذجًا صوتيًا في قسم الصوت. سيحلّ محل نموذج الدردشة.",
+        modelDescription: "لا يوجد نموذج محمّل. حمّل واحدًا في الصوت › تحويل النص إلى كلام.",
+        modelLoaded: "{model} محمّل",
+        keepBothLabel: "إبقاء نموذج الدردشة محمّلًا",
+        keepBothDescription: "خيار «إبقاء عدة نماذج محمّلة» على «إيقاف»، لذا يؤدي تحميل نموذج صوتي إلى تفريغ نموذج الدردشة.",
+        keepBothAction: "إبقاء الاثنين محمّلين",
         openAudioAction: "فتح الصوت",
         voiceLabel: "الصوت",
         voiceDescription: "أفضل الأصوات على هذا الجهاز",
@@ -1701,6 +1748,23 @@ export const ar = {
         loadError: "فشل تحميل إعدادات نموذج LLM المساعد.",
         saveError: "فشل حفظ إعدادات نموذج LLM المساعد.",
       },
+      developerMode: {
+        sectionTitle: "وضع المطوّر",
+        videoCpu: "السماح بتوليد الفيديو على CPU (تجريبي)",
+        videoCpuDescription: "يتيح تشغيل صفحة الفيديو على جهاز لا يحتوي على GPU مدعوم. مُعطّل افتراضيًا؛ غير مدعوم وبطيء جدًا.",
+        notApplicable: "ليس له تأثير على هذا الجهاز: إما أن الفيديو يعمل بالفعل على GPU الخاص به، أو أنه محظور بسبب أمر لا يستطيع CPU تجاوزه.",
+        forcedOnByEnv: "مُفعّل بواسطة UNSLOTH_VIDEO_ALLOW_CPU في بيئة الخادم الخلفي.",
+        forcedOffByEnv: "مُعطّل بواسطة UNSLOTH_VIDEO_ALLOW_CPU في بيئة الخادم الخلفي.",
+        confirmTitle: "تفعيل توليد الفيديو على CPU؟",
+        confirmWarning: "قد يستغرق توليد الفيديو على CPU ساعات، ويستهلك كميات كبيرة من RAM، وقد يتسبب في تجميد نظامك. تابع على مسؤوليتك الخاصة.",
+        ramBelowMinimum: "يحتوي هذا الجهاز على {host} GB من RAM، وهو أقل من {min} GB التي يحتاجها أصغر نموذج فيديو على CPU. من المرجح أن يفشل التحميل أو يتجمد النظام.",
+        ramOk: "يحتوي هذا الجهاز على {host} GB من RAM. يحتاج أصغر نموذج فيديو إلى حوالي {min} GB على CPU؛ وتحتاج النماذج الأكبر إلى أكثر من ذلك بكثير.",
+        ramUnknown: "يحتاج أصغر نموذج فيديو إلى حوالي {min} GB من RAM على CPU؛ وتحتاج النماذج الأكبر إلى أكثر من ذلك بكثير.",
+        performanceEstimate: "توقّع دقائق لكل خطوة إزالة ضوضاء: استغرق مقطع من 5 إطارات بدقة 832x480 من Wan2.1 1.3B بثلاث خطوات حوالي 4 دقائق على 16 خيط CPU، وقد يستغرق مقطع كامل الطول بالإعدادات الافتراضية ساعات.",
+        confirmAction: "تفعيل على أي حال",
+        loadError: "تعذّر تحميل إعدادات وضع المطوّر.",
+        saveError: "تعذّر حفظ إعدادات وضع المطوّر.",
+      },
       modelAutoSwitch: {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
@@ -1730,9 +1794,10 @@ export const ar = {
         autoDownload: "تنزيل النماذج غير المنزَّلة",
         autoDownloadDescription:
           "يجلب ملف GGUF المذكور في طلب واجهة API إذا لم يكن منزَّلًا بعد. عندئذٍ يمكن لأي شخص لديه مفتاح API استهلاك مساحة القرص وعرض النطاق.",
-        keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
+        keepKv: "الاحتفاظ بسياق المحادثة عبر عمليات التفريغ",
         keepKvDescription:
-          "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+          "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، أو قبل أن يشغل نموذج صور أو فيديو كرت الرسوميات، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+        keepKvKeywords: "kv ذاكرة مؤقتة سياق تبديل استئناف صور فيديو",
         apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
         apiOnlyDescription:
           "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
@@ -1781,23 +1846,14 @@ export const ar = {
       },
       notifications: {
         sectionTitle: "الإشعارات",
-        showLlamaUpdates: "إشعارات تحديث llama.cpp",
-        showLlamaUpdatesDescription:
-          "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
-        showLoadedModels: "مؤشر النماذج المحمّلة",
-        showLoadedModelsDescription:
-          "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
-        showWhisperUpdates: "إشعارات تحديث whisper.cpp",
-        showWhisperUpdatesDescription:
-          "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
-        showAudioCppUpdates: "إشعارات تحديث audio.cpp",
-        showAudioCppUpdatesDescription:
-          "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
-        showUnslothUpdates: "إشعارات تحديث Unsloth",
-        showUnslothUpdatesDescription:
-          "الإشعار عند توفر إصدار أحدث من Unsloth للتثبيت.",
+        showLoadedModels: "بطاقة النماذج المحمّلة",
+        showLoadedModelsDescription: "بطاقة في الزاوية بكل نموذج محمّل، لإخراجه بنقرة.",
+        updateReminders: "تذكيرات التحديث",
+        updateRemindersDescription: "عدد مرات عرض إصدار جديد عندما يكون جاهزًا.",
+        llamaHint: "نماذج المحادثة وGGUF",
+        audioHint: "الكلام والموسيقى والنسخ",
         frequency: {
-          always: "دائمًا",
+          always: "عند توفره",
           daily: "مرة يوميًا",
           weekly: "مرة أسبوعيًا",
           biweekly: "كل أسبوعين",
@@ -1815,6 +1871,11 @@ export const ar = {
         closeToTrayDescription:
           "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
+
+        menuBarIcon: "الإظهار في شريط القوائم",
+        menuBarIconDescription:
+          "إظهار أيقونة Unsloth في شريط القوائم في macOS. عند إخفائها، يبقى Unsloth في الـ Dock، حتى عند بدء التشغيل عند تسجيل الدخول.",
+        menuBarIconSaveError: "تعذّر تحديث إعداد أيقونة شريط القوائم.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
@@ -1914,8 +1975,8 @@ export const ar = {
         downloadFailed: "تعذّر بدء التنزيل",
         downloadConflict: "استأنف هذا التنزيل من Hub",
         downloadBusy: "التنزيل قيد التقدم بالفعل",
-        pin: "تثبيت في قائمة RAG",
-        unpin: "إلغاء التثبيت من قائمة RAG",
+        pin: "تثبيت في قائمة Files",
+        unpin: "إلغاء التثبيت من قائمة Files",
         menuChip: "النموذج",
         moreModels: "المزيد من النماذج",
         pinMoreModels: "ثبّت نماذج أخرى",
@@ -1931,7 +1992,7 @@ export const ar = {
         menuSubtitle: "يشغّل البحث في الملفات",
         device: "جهاز التضمين",
         deviceDescription:
-          "مكان تشغيل نموذج التضمين، لكل النماذج. تفهرس GPU مجموعات المستندات الكبيرة أسرع، لكنها تُبقي جزءًا من VRAM مستخدمًا حتى إعادة تشغيل Studio.",
+          "مكان تشغيل نموذج التضمين، لكل النماذج. تفهرس GPU مجموعات المستندات الكبيرة أسرع، لكنها تُبقي جزءًا من VRAM مستخدمًا حتى إعادة تشغيل Unsloth.",
         deviceAuto: "تلقائي",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -1948,6 +2009,18 @@ export const ar = {
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
       },
+      fullInstall: {
+        label: "نوع التثبيت",
+        description:
+          "دردشة فقط (GGUF). يضيف التثبيت الكامل التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور.",
+        action: "الترقية إلى التثبيت الكامل",
+        confirmTitle: "هل تريد الترقية إلى التثبيت الكامل؟",
+        confirmDescription:
+          "يشغّل تثبيت الدردشة فقط هذا نماذج GGUF. يضيف التثبيت الكامل PyTorch لوحدة معالجة الرسومات في هذا الجهاز، ما يتيح التدريب والتصدير والفيديو ونماذج safetensors وميزات إضافية لتوليد الصور. ينزّل عدة غيغابايت (5 غيغابايت على الأقل من مساحة القرص) ثم يعيد تشغيل الخادم. تُحفظ المحادثات والنماذج والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "ترقية",
+        keywords:
+          "full install upgrade نوع التثبيت التثبيت الكامل ترقية دردشة فقط chat only gguf add training تدريب train fine-tune pytorch torch تصدير فيديو توليد الصور safetensors",
+      },
       repairInstall: {
         label: "إصلاح التثبيت",
         description:
@@ -1956,6 +2029,8 @@ export const ar = {
         confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
         confirmDescription:
           "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmDescriptionChatOnly:
+          "يوقف الخادم ويعيد تشغيل المثبّت. هذا تثبيت للدردشة فقط، لذا يرقّيه المثبّت أيضًا إلى التثبيت الكامل مع PyTorch، بحجم عدة غيغابايت إجمالًا. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "إصلاح الآن",
       },
       resetPreferences: {
@@ -2023,6 +2098,8 @@ export const ar = {
         subtitle:
           "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
         retry: "إعادة المحاولة",
+        exportCsv: "تصدير CSV",
+        exportError: "تعذر تصدير استخدام التوكنات",
         privacyNote:
           "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة Unsloth لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى Unsloth أو أي طرف ثالث.",
         emptyChats:
@@ -2034,9 +2111,9 @@ export const ar = {
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
         activityDescription: {
-          daily: "{total} خلال آخر {weeks}",
-          weekly: "أسبوع الذروة {total} · آخر {weeks}",
-          cumulative: "{total} متراكمة خلال آخر {weeks}",
+          daily: "{total} منذ {since}",
+          weekly: "أكثر أسبوع نشاطا {total} · منذ {since}",
+          cumulative: "{total} إجمالا منذ {since}",
         },
         mode: {
           daily: "يومي",
@@ -2045,8 +2122,9 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
-        chartToggle: "مخطط",
-        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
+        emptyDayTooltip: "{date} · لا نشاط",
+        apiRequests: "{count} عبر API",
+        cumulativeTooltip: "حتى أسبوع {date} · {tokens} إجمالا",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",
@@ -2353,8 +2431,20 @@ export const ar = {
         noRamReserveDescription: "يقلل ذاكرة النظام المحجوزة لأوزان النموذج.",
         noRamReserveHint: "يتخطى التحميل المعتمد على تعيين الذاكرة في إصدارات ويندوز المدعومة عندما يكون النموذج محمّلاً بالكامل على كرت الرسوميات، فلا تبقى صفحاته مقيمة. وإلا يُبقي التحميل المعتمد على تعيين الذاكرة. قد تستهلك مخازن المعالج المطلوبة ذاكرة النظام. ويحذف ‎--no-mmap‎ و‎--mlock‎.",
         multiModel: "إبقاء عدة نماذج محمّلة",
-        multiModelDescription: "عند تحميل نموذج تبقى النماذج الأخرى في الذاكرة.",
-        multiModelHint: "يجيب كل نموذج محمّل عن الطلبات التي تذكره بالاسم. مع عدة كروت رسوميات، يوضع النموذج الجديد على كرت لا يستخدمه نموذج آخر إن كان فيه متسع. وإن لم يتسع بجانب النماذج الأخرى، تُزال أولًا النماذج غير المستخدمة، ثم يحل محل النموذج النشط. ويزيل التدريب النماذج الإضافية قبل النموذج النشط.",
+        multiModelOff: "إيقاف",
+        multiModelFit: "عندما تتسع",
+        multiModelAlways: "دائمًا",
+        multiModelDescription: "عند تحميل نموذج محادثة أو صوت أو صور أو فيديو تُفرَّغ النماذج الأخرى.",
+        multiModelDescriptionFit:
+          "عند تحميل نموذج تبقى النماذج الأخرى إن اتسعت لها الذاكرة. وإن لم تتسع، تُفرَّغ أولًا النماذج غير المستخدمة، ثم النموذج النشط.",
+        multiModelDescriptionAlways:
+          "لا يفرّغ تحميل نموذج أي نموذج آخر أبدًا. النموذج الذي لا يتسع لا يُحمَّل. ولا يزال التفريغ التلقائي عند الخمول والتدريب يحرّران الذاكرة.",
+        multiModelHint: "يشمل نماذج المحادثة والصوت والصور والفيديو. يجيب كل نموذج محادثة محمّل عن الطلبات التي تذكره بالاسم. مع عدة كروت رسوميات، يحاول Unsloth وضع النموذج الجديد على كرت لا يستخدمه نموذج آخر. يترك خيار «عندما تتسع» نحو 1 جيجابايت فارغة. ولا يفرّغ الخياران «عندما تتسع» و«دائمًا» أبدًا نموذجًا على كرت آخر.",
+        allowOversizedLoad: "السماح بتحميل النماذج الكبيرة جدًا",
+        allowOversizedLoadDescription: "تحميل نماذج الصور والفيديو حتى عندما يشير فحص الذاكرة إلى أنها لن تتسع.",
+        allowOversizedLoadHint: "ينطبق عندما يتشارك المعالج ووحدة GPU ذاكرة واحدة (Apple Silicon ووحدات GPU المدمجة). يرفض Unsloth التحميل عندما يكون تقديره لأوزان النموذج أكبر من الذاكرة المتبقية بعد حجز مساحة لنظام التشغيل. عند تفعيل هذا الخيار تتم محاولة التحميل على أي حال. قد يخطئ التقدير في أي اتجاه: قد يفشل التحميل الكبير جدًا أو يستهلك كل الذاكرة أو يسبب تبديلًا كثيفًا للذاكرة أو توقف الكمبيوتر عن الاستجابة أو إيقاف Unsloth. معطل افتراضيًا.",
+        mediaIdleUnloadDescription:
+          "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
         mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
         mlockNotApplicable: "بالكامل على وحدة GPU: لا شيء في ذاكرة النظام لقفله. يبقى التفريغ التلقائي عند الخمول معطَّلاً.",
         memlockCapped: "يحدّ هذا النظام الذاكرة المقفلة عند {limit}. لن يُثبَّت نموذج أكبر بالكامل؛ ارفع الحد باستخدام ulimit -l.",
@@ -2364,6 +2454,10 @@ export const ar = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
+        multiModelKeywords:
+          "عدة نماذج متعددة معًا تبديل تتسع تفريغ إخلاء vram gpu صور فيديو محادثة دائمًا خامل كلام صوت نطق قراءة بصوت عال tts",
+        mediaIdleUnloadKeywords:
+          "صور فيديو انتشار خامل تفريغ ttl مهلة ثواني تحرير vram gpu ذاكرة",
       },
       storage: {
         title: "التخزين",
@@ -2657,6 +2751,10 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      showReplyTimes: "أوقات الردود",
+      showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
+      showReplyTimesKeywords:
+        "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
@@ -2673,6 +2771,13 @@ export const ar = {
         "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      keepRunningWhenTabClosed: "مواصلة التشغيل بعد إغلاق علامة التبويب",
+      keepRunningWhenTabClosedDescription:
+        "تستمر الردود والبحث على الويب وDeep Research على الخادم بعد إغلاق علامة التبويب. أوقف هذا الخيار لإيقافها بدلًا من ذلك.",
+      keepRunningWhenTabClosedHint:
+        "أعد فتح المحادثة على أي جهاز لمتابعة تشغيل استمر. عند إيقاف هذا الخيار، يتوقف التشغيل خلال دقيقة تقريبًا من إغلاق آخر علامة تبويب له، لذا لا توقفه إعادة التحميل. ينطبق على عمليات التشغيل التي تبدأ بعد التغيير. المحادثات المؤقتة، والردود من نماذج API أو على المرفقات، والأدوار التي تستخدم لوحة المتصفح تتوقف دائمًا مع علامة التبويب الخاصة بها.",
+      keepRunningWhenTabClosedKeywords:
+        "خلفية علامة تبويب إغلاق مغلقة مغادرة مواصلة التشغيل استمرار إيقاف إلغاء بحث الويب جهاز هاتف background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "حد انتظار أول رمز",
       firstTokenDescription: "المدة التي يمكن لنماذج GGUF المحلية انتظارها دون تقدم في معالجة الطلب قبل أول رمز. يسري على فترات الانتظار الجديدة لجميع الحسابات. مع «غير محدود» يستمر الانتظار حتى توقفه بنفسك.",
       firstTokenDefault: "20 دقيقة (افتراضي)",
@@ -2705,6 +2810,22 @@ export const ar = {
         visibility: "التفكير",
         visibilityDescription:
           "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
+      },
+      memory: {
+        title: "الذاكرة",
+        description: "ملاحظات تقرؤها كل محادثة، مع أي نموذج، محليًا أو سحابيًا. تقرأ محادثات المشروع أيضًا ملف AGENTS.md الخاص به.",
+        enable: "استخدام الذاكرة في المحادثات",
+        enableDescription: "إرسال هذه الملاحظات مع كل محادثة.",
+        locked: "معطّلة في هذا التثبيت بواسطة UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "ملاحظات الذاكرة",
+        placeholder: "مثال:\n- أكتب بلغة Python وأستخدم uv.\n- اجعل الإجابات قصيرة.",
+        hint: "تُحفظ في {path}. يمكنك أيضًا تعديل هذا الملف في أي محرر نصوص.",
+        size: "{used} / {max} كيلوبايت",
+        save: "حفظ",
+        saved: "تم حفظ الذاكرة",
+        loadError: "تعذّر تحميل الذاكرة.",
+        saveError: "تعذّر حفظ الذاكرة.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md الذاكرة تذكر تخصيص ملف شخصي ملاحظات",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -2785,7 +2906,7 @@ export const ar = {
       importFailed: "فشل الاستيراد.",
       importFromSource: "الاستيراد من {source}",
       importFromSourceDescription:
-        "انسخ محادثاتك في {source} إلى Studio، مجمّعة حسب المشروع.",
+        "انسخ محادثاتك في {source} إلى Unsloth، مجمّعة حسب المشروع.",
       importingAction: "جارٍ الاستيراد...",
       importedSourceOneChat: "تم استيراد محادثة واحدة من {source}.",
       importedSourceChatCount:
@@ -3016,12 +3137,13 @@ export const ar = {
       copyNow: "انسخه الآن - لن يُعرض مرة أخرى.",
       usageExamples: "أمثلة الاستخدام",
       usageTools: "الأدوات",
-      exampleCurlTools: "curl + أدوات",
-      examplePythonTools: "Python + أدوات",
-      exampleJavaScriptTools: "JavaScript + أدوات",
-      exampleCurlAdvanced: "curl + متقدم",
-      examplePythonAdvanced: "Python + متقدم",
-      exampleJavaScriptAdvanced: "JavaScript + متقدم",
+      exampleLanguage: "اللغة",
+      exampleRequest: "الطلب",
+      examplePlatform: "المنصة",
+      requestPlain: "أساسي",
+      requestTools: "مع الأدوات",
+      requestAdvanced: "أخذ عينات متقدم",
+      exampleKind: "المثال",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
@@ -3031,16 +3153,15 @@ export const ar = {
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
       copied: "تم النسخ",
-      setupDocs: "وثائق الإعداد:",
       codingAgents: "وكلاء البرمجة",
       codingAgentsHint:
         "شغّل وكيل برمجة متصلًا بهذا الخادم. يستخدم الوكيل النموذج المُحمَّل؛ وينشئ الخادم المحلي مفتاح API تلقائيًا، بينما يضمّنه الخادم البعيد في الأمر.",
+      openAgentsTab: "فتح في الوكلاء",
       codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes.",
-      codingAgentDetected: "مثبّت على هذا الجهاز",
-      codingAgentsDetectedHint: "وكلاء البرمجة المكتشفون على هذا الجهاز: {agents}.",
       relativeNever: "لا يوجد",
       relativeJustNow: "للتوّ",
       expired: "منتهي الصلاحية",
+      expiredStatus: "منتهي الصلاحية",
       today: "اليوم",
       created: "أُنشئ {value}",
       used: "آخر استخدام: {value}",
@@ -3069,6 +3190,14 @@ export const ar = {
         autoSwitchOff:
           "يُحمَّل النموذج باسمه فقط عند تفعيل التبديل التلقائي للنموذج. فعّله، أو حمّل النموذج من صفحة الصوت الخاصة به أولًا.",
         useViaApi: "الاستخدام عبر API",
+      },
+      mediaApi: {
+        title: "واجهة API للصور والفيديو",
+        description: "أنشئ الصور ومقاطع الفيديو من شيفرتك عبر نقاط النهاية المتوافقة مع OpenAI.",
+        images: "الصور",
+        video: "الفيديو",
+        placeholderModel: "النموذج المعروض مثال. حمّل نموذجًا في صفحة الصور أو الفيديو وافتح هذا من زر API فيها لملئه.",
+        autoSwitchOff: "التبديل التلقائي للوسائط متوقف، لذا تعمل الطلبات على النموذج المحمّل في الصفحة أيًّا كان الاسم المرسل.",
       },
       decisionApi: {
         title: "واجهة القرارات البرمجية",
@@ -3126,14 +3255,14 @@ export const ar = {
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
-        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP. يسجّل الوكلاء الدخول بتوكن وصول من هذه الصفحة.",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP. يسجّل الوكلاء الدخول بمفتاح API لـ Unsloth من هذه الصفحة.",
         enable: "السماح باتصالات الوكلاء",
-        enableDescription: "يخدم /mcp/ للطلبات التي تحمل توكن وصول من Unsloth.",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل مفتاح API لـ Unsloth.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
         saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
         agent: "الوكيل",
-        exportKeyHint: "اضبط {name} على توكن وصول من هذه الصفحة قبل تشغيل الوكيل.",
+        exportKeyHint: "اضبط {name} على مفتاح API لـ Unsloth من هذه الصفحة قبل تشغيل الوكيل.",
         configFileHint: "أضف هذا إلى {path}.",
         keywords: "mcp model context protocol agents claude codex tools وكلاء وكيل أدوات بروتوكول سياق النموذج",
       },
@@ -3149,8 +3278,27 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      whisperCppVersion: "إصدار whisper.cpp",
+      engines: {
+        title: "المحركات",
+        description: "بيئات التشغيل التي يستخدمها Unsloth لتشغيل النماذج. تُثبَّت التحديثات في الخلفية دون إعادة تشغيل.",
+        updatesLabel: "تحديثات المحركات",
+        notInstalled: "غير مثبّت",
+        available: "{version} متاح",
+        upToDate: "محدّث",
+        updatesAvailable: "توجد تحديثات",
+        checking: "جارٍ البحث عن تحديثات...",
+        checkFailed: "تعذّر البحث عن تحديثات. حاول مرة أخرى لاحقًا.",
+        unsupported: "تُدار محركات هذا التثبيت خارج Unsloth.",
+        checkForUpdates: "البحث عن تحديثات",
+        update: "تحديث",
+        updating: "جارٍ التحديث...",
+        updated: "تم تحديث المحركات.",
+        updateFailed: "فشل التحديث: {error}",
+      },
       hardware: "الأجهزة",
       gpu: "GPU",
+      gpuIntegrated: "مدمجة",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3209,7 +3357,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "اتصل التطبيق بخادم Studio يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
+          "اتصل التطبيق بخادم Unsloth يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -3231,6 +3379,9 @@ export const ar = {
         docsUpdating: "التحديث",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3808,7 +3959,7 @@ export const ar = {
           "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
         decisionColumnsMissing:
           "تحتاج نماذج القرارات إلى الأعمدة state وquestions وgold (أو answers). الأعمدة الناقصة: {columns}.",
-        decisionOwnerOnly: "يمكن لمالك Studio فقط ضبط نماذج القرارات.",
+        decisionOwnerOnly: "يمكن لمالك Unsloth فقط ضبط نماذج القرارات.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
         hfDatasetSplitRequired: "اختر قسم التدريب أو أدخله أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
@@ -4048,6 +4199,7 @@ export const ar = {
     disable: "تعطيل {name}",
     updateError: "تعذّر تحديث المهارة",
     newSkill: "مهارة جديدة",
+    import: "استيراد",
     delete: "حذف {name}",
     createDescription: "تُحفظ كملف SKILL.md في مجلد جديد ضمن ‎~/.agents/skills وتُفعَّل فور إنشائها.",
     nameLabel: "الاسم",
@@ -4065,9 +4217,14 @@ export const ar = {
     created: "تم إنشاء {name}",
     saved: "تم حفظ {name}",
     deleted: "تم حذف {name}",
+    importedOne: "تمت إضافة {count} مهارة",
+    importedMany: "تمت إضافة {count} مهارات",
+    importPartial: "تمت إضافة {added} من أصل {total} من المهارات",
     saveError: "تعذّر حفظ المهارة",
     openError: "تعذّر فتح المهارة",
     deleteError: "تعذّر حذف المهارة",
+    importError: "تعذّر استيراد المهارة",
+    exportError: "تعذّر تصدير المهارة",
     deleteTitle: "حذف المهارة",
     deleteDescription: 'هل تريد حذف "{name}" وكل ما في مجلدها ضمن ‎~/.agents/skills؟ لا يمكن التراجع عن هذا الإجراء.',
     search: "ابحث عن المهارات بالاسم أو الوصف…",
@@ -4284,6 +4441,7 @@ export const ar = {
       moreActions: "إجراءات أخرى",
       chatAboutThis: "الدردشة حول هذا",
       chatWithModel: "الدردشة مع هذا النموذج",
+      editImage: "تعديل الصورة",
       addToFavorites: "إضافة إلى المفضلة",
       regenerateTitle: "إعادة إنشاء العنوان",
       removeFromFavorites: "إزالة من المفضلة",
@@ -4479,6 +4637,7 @@ export const ar = {
       skippedOverLimit: "ملفات إضافية تتجاوز حد {limit} ملفات: {count}.",
       chatFilesWaiting: "ستُرفق عند تحميل نموذج يمكنه قراءتها: {count}.",
       openFilesFailed: "تعذّر فتح الملفات",
+      editImageFailed: "تعذّر فتح الصورة لتعديلها",
       speechModel: "{name} نموذج كلام",
       speechModelDescription: "اختره من قائمة النماذج في صفحة الصوت.",
       noMediaLink: "لم يُرجع الخادم أي رابط لتشغيل هذا الملف.",
@@ -4735,5 +4894,42 @@ export const ar = {
     cantRun: "تعذّر التشغيل",
     failed: "خطأ {status}",
     invalidJson: "نص الطلب ليس JSON صالحًا.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "النماذج المحمّلة",
+      countOne: "تم تحميل {count} نموذج",
+      countMany: "تم تحميل {count} نماذج",
+      pillLabel: "{count}. اعرض التفاصيل أو اسحب للنقل",
+      dragToMove: "اسحب للنقل",
+      dragHandleLabel: "انقل النماذج المحمّلة. مفاتيح الأسهم تحركها قليلًا.",
+      collapse: "طي",
+      collapseLabel: "طي النماذج المحمّلة",
+      close: "إغلاق",
+      closeLabel: "إغلاق النماذج المحمّلة",
+      backOnNextLoad: "تعود عند تحميل النموذج التالي",
+      ejectToFree: "أخرج لتحرير الذاكرة",
+      ejectLabel: "إخراج {model}",
+      openTarget: "فتح {target}",
+      rowLabel: "{model}. فتح {target}",
+      loading: "جارٍ التحميل",
+      ejecting: "جارٍ الإخراج",
+      stillInMemory: "لا يزال في الذاكرة",
+      alsoServing: "يخدم أيضًا",
+      noneLoaded: "لا توجد نماذج محمّلة",
+      noneLoadedDetail: "ستظهر هنا النماذج التي تحمّلها.",
+      otherAccount: "قيد الاستخدام من حساب آخر",
+      otherAccountDetail: "الذاكرة محجوزة بواسطة نموذج لا يمكنك رؤيته",
+      toastStillResident: "تم تحميل «{model}» أثناء الإخراج، لذا لا يزال يستخدم الذاكرة. أخرجه مرة أخرى لتحريرها.",
+      toastUnverified: "طُلب إلغاء تحميل {model} لكن بيئة التشغيل لم تؤكد ذلك. تحقق من البطاقة بعد قليل.",
+      toastAlreadyFree: "{model} لم يعد محمّلًا.",
+      toastReplaced: "{model} لم يعد محمّلًا. حلّ «{resident}» محله وتُرك كما هو.",
+      toastEjected: "تم إخراج {model}",
+      toastFailed: "تعذّر إخراج {model}",
+    },
+    monitor: {
+      dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
+      reconnecting: "جارٍ إعادة الاتصال...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

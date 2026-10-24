@@ -225,7 +225,7 @@ def load_mentioned_skills(
                         "Complete SKILL.md exceeds this request's skill context budget; shorten the skill or increase context."
                     )
                 block = (
-                    f"\n\n[Studio loaded Agent Skill @{name} · SKILL.md]\n"
+                    f"\n\n[Unsloth loaded Agent Skill @{name} · SKILL.md]\n"
                     f"{gate}\n"
                     f"{content}\n[End Agent Skill @{name}]"
                 )

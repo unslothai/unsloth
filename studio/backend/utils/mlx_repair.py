@@ -30,11 +30,11 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.4 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.8 under the installer's transformers override, 0.6.4 under the plain cap. mlx-lm is a range too: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
+# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.4 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.9 under the installer's transformers override, 0.6.4 under the plain cap. mlx-lm is a range too: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.4",
     "mlx-lm": ">=0.31.3,<=0.32.2",
-    "mlx-vlm": ">=0.4.4,<=0.7.8",
+    "mlx-vlm": ">=0.4.4,<=0.7.9",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 
@@ -262,14 +262,17 @@ def mlx_repair_started() -> bool:
         return _attempted
 
 
+_UV_NAME = "uv.exe" if os.name == "nt" else "uv"
+
+
 def _uv_executable() -> str | None:
     """Find uv even when macOS GUI launchers start with a minimal PATH."""
     found = shutil.which("uv")
     if found:
         return found
     for candidate in (
-        Path.home() / ".local" / "bin" / "uv",
-        Path.home() / ".cargo" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / _UV_NAME,
+        Path.home() / ".cargo" / "bin" / _UV_NAME,
         Path("/opt/homebrew/bin/uv"),
         Path("/usr/local/bin/uv"),
     ):

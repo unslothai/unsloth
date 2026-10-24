@@ -362,6 +362,9 @@ export function curatedAudioInventoryMatches({
   catalogTask: "tts" | "stt" | null | undefined;
   pickerTask: string | readonly string[] | null | undefined;
 }): boolean {
+  // An active id with no seed artifact is a fetched catalog row the page already scoped (a
+  // downloaded TF-GridNet reports audio-to-audio, which the Separate picker's tasks leave out).
+  if (isActiveCatalogArtifact && catalogScope == null && pickerTask?.length) return true;
   if (
     !isActiveCatalogArtifact ||
     catalogScope !== "audio" ||

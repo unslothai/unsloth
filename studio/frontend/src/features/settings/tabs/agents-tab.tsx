@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Command,
@@ -50,7 +51,14 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
   buildAgentShellCommands,
@@ -80,6 +88,7 @@ import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { LineBox } from "@/components/ui/line-box";
 
 const DOCS_URL = UNSLOTH_START_DOCS_URL;
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
@@ -363,19 +372,20 @@ function CopyableCode({
 
   return (
     <div className="relative min-w-0">
-      <code
+      <LineBox
+        as="code"
         className={cn(
-          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
+          "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
       >
         {value}
-      </code>
+      </LineBox>
       <button
         type="button"
         onClick={onCopy}
         aria-label={copyLabel}
-        className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
@@ -453,6 +463,7 @@ function SubagentSection({
 
 export function AgentsTab() {
   const t = useT();
+  const pillId = useId();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
   const hfAccessToken = hfApiToken(hfToken);
@@ -1103,7 +1114,7 @@ export function AgentsTab() {
             target="_blank"
             rel="noopener noreferrer"
             title={t("settings.agents.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.agents.docs")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -1128,7 +1139,7 @@ export function AgentsTab() {
           target="_blank"
           rel="noopener noreferrer"
           title={t("settings.agents.readDocs")}
-          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+          className="rounded-full bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
         >
           unsloth start
         </a>{" "}
@@ -1151,12 +1162,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "unix"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "unix"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "unix" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osUnix")}
           </button>
           <button
@@ -1168,12 +1182,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "windows"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "windows"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "windows" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osWindows")}
           </button>
         </div>
@@ -1205,7 +1222,7 @@ export function AgentsTab() {
                   aria-label={t("settings.agents.agentDocs", {
                     agent: selectedAgentDetails.name,
                   })}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {t("settings.agents.docs")}
                   <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -1222,7 +1239,7 @@ export function AgentsTab() {
               >
                 <SelectTrigger
                   aria-label={t("settings.agents.agent")}
-                  className="w-full rounded-lg"
+                  className="w-full rounded-full"
                 >
                   <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
@@ -1298,7 +1315,7 @@ export function AgentsTab() {
                     aria-label={t("settings.agents.model")}
                     aria-expanded={modelPickerOpen}
                     title={selectedModel}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-full border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                   >
                     <span className="min-w-0 truncate font-mono text-xs">
                       {labelFor(selectedModel)}
@@ -1402,7 +1419,7 @@ export function AgentsTab() {
               >
                 <SelectTrigger
                   aria-label={t("settings.agents.quantization")}
-                  className="w-full rounded-lg font-mono text-xs"
+                  className="w-full rounded-full font-mono text-xs"
                 >
                   <SelectValue
                     placeholder={
@@ -1485,7 +1502,7 @@ export function AgentsTab() {
               href={FLAGS_DOCS_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="rounded text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="rounded-full text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {t("settings.agents.configurationDocs")}
             </a>{" "}

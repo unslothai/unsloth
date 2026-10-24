@@ -15,7 +15,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { refreshSession, refreshSessionOutcome } from "../api";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -271,9 +271,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         let accessToken = getAuthToken();
 
         if (hasRefreshToken()) {
-          const refreshed = await refreshSession();
+          const outcome = await refreshSessionOutcome();
+          if (outcome === "unavailable") {
+            throw new Error("Unsloth is busy. Try again in a moment.");
+          }
           accessToken = getAuthToken();
-          if (!refreshed) {
+          if (outcome === "rejected") {
             clearAuthTokens();
             accessToken = null;
           }
@@ -362,7 +365,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
       {deadlineAt !== null && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
+        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
           {hasExpired(deadlineAt - nowMs) ? (
             <>
               This instance is shutting down: it was reachable on the network
@@ -551,6 +554,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
+          variant="dark"
           type="submit"
           className="mx-auto flex w-fit px-4"
           disabled={

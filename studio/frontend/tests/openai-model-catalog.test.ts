@@ -7,6 +7,7 @@ import test, { mock } from "node:test";
 import {
   audioModelsFromCatalog,
   chatModelsFromCatalog,
+  loadedSpeechModelId,
   watchAudioModels,
 } from "../src/features/settings/api/openai-model-catalog.ts";
 
@@ -168,4 +169,45 @@ test("the audio catalog is relisted until a model is resident, then more slowly"
   } finally {
     mock.timers.reset();
   }
+});
+
+test("read aloud picks a loaded model that can speak text", () => {
+  const speak = (id: string, loaded: boolean, workflows: string[]) => ({
+    id,
+    loaded,
+    task: "text-to-speech" as const,
+    workflows,
+  });
+  assert.equal(loadedSpeechModelId([]), null);
+  // Music, convert-only, transcription and unloaded models cannot read a reply.
+  assert.equal(
+    loadedSpeechModelId([
+      speak("music", true, ["music"]),
+      speak("rvc", true, ["convert"]),
+      speak("kokoro", false, ["speak"]),
+      { id: "whisper", loaded: true, task: "automatic-speech-recognition" },
+    ]),
+    null,
+  );
+  const both = [
+    speak("kokoro", true, ["speak"]),
+    speak("pocket", true, ["speak", "clone"]),
+  ];
+  assert.equal(loadedSpeechModelId(both), "kokoro");
+  // A saved voice needs a model that can clone, when one is loaded.
+  assert.equal(loadedSpeechModelId(both, true), "pocket");
+  assert.equal(loadedSpeechModelId([both[0]], true), "kokoro");
+});
+
+test("a saved voice also counts a loaded clone-only model", () => {
+  const cloneOnly = {
+    id: "qwen3-tts-base",
+    loaded: true,
+    task: "text-to-speech" as const,
+    workflows: ["clone"],
+  };
+  // The server runs a saved voice as a clone, so a clone-only model can read it.
+  assert.equal(loadedSpeechModelId([cloneOnly], true), "qwen3-tts-base");
+  // Without a saved voice it cannot speak plain text.
+  assert.equal(loadedSpeechModelId([cloneOnly], false), null);
 });

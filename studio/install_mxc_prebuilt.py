@@ -46,12 +46,11 @@ def _download(destination: Path) -> None:
 
 
 def _approved_members() -> dict[str, tuple[str, int]]:
+    exec_member, exec_size, _ = mxc_runtime.artifact("exec")
+    prep_member, prep_size, _ = mxc_runtime.artifact("prep")
     return {
-        mxc_runtime.RELEASE_MEMBER: ("wxc-exec.exe", mxc_runtime.WXC_EXEC_SIZE),
-        mxc_runtime.RELEASE_HOST_PREP_MEMBER: (
-            "wxc-host-prep.exe",
-            mxc_runtime.WXC_HOST_PREP_SIZE,
-        ),
+        exec_member: ("wxc-exec.exe", exec_size),
+        prep_member: ("wxc-host-prep.exe", prep_size),
     }
 
 
@@ -105,8 +104,7 @@ def install_mxc_release(install_dir: Path) -> bool:
     """Install the approved WXC binary; return ``True`` only when files changed."""
     if sys.platform != "win32":
         raise MxcInstallError("the MXC runtime installer is Windows-only")
-    if mxc_runtime._expected_architecture() != "x86_64":
-        raise MxcInstallError("the Microsoft MXC release supports Windows x86-64 only")
+    mxc_runtime._expected_architecture()
 
     install_dir = install_dir.expanduser().resolve()
     install_dir.parent.mkdir(parents = True, exist_ok = True)
@@ -265,7 +263,7 @@ def _host_prep_script(executable: Path, arguments: list[str]) -> str:
         "  try { $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) } "
         "finally { $stream.Dispose() }",
         "  $hash = [BitConverter]::ToString($digest).Replace('-', '')",
-        f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
+        f"  if ($hash -ne '{mxc_runtime.artifact('prep')[2].upper()}') {{ exit 91 }}",
         f"  & $exe {' '.join(quote(value) for value in arguments)}",
         "  exit $LASTEXITCODE",
         "} finally {",

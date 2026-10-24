@@ -22,6 +22,7 @@ import math
 import os
 import re
 import struct
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -248,6 +249,14 @@ def _archive_is_degraded() -> bool:
         return False
 
 
+def _archive_write_failed() -> bool:
+    try:
+        from core.rag import conversation_archive
+        return bool(conversation_archive.degraded())
+    except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
+        return False
+
+
 def _compaction_fit_kwargs(
     context_policy: Optional[str] = None, compaction_headroom_ratio: Optional[float] = None
 ) -> dict:
@@ -298,6 +307,9 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    replay_only = bool(kwargs.pop("replay_only", False))
+    if replay_only and int(kwargs.get("sticky_dropped") or 0) <= 0:
+        return messages, None
     if kwargs.get("count_tokens") is not None:
         try:
             messages = fit_oversized_attachments(
@@ -308,6 +320,23 @@ def _fit_context(messages, **kwargs):
             )
         except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
             logger.debug("attachment fit failed", exc_info = True)
+    if replay_only:
+        if sticky_is_checkpoint:
+            from core.inference import checkpoint
+
+            # Generation's wording: unsearchable without a reset, else the last write's verdict
+            # (not the live probe, which runs an embedding forward per count).
+            return checkpoint.fit_checkpoint_context(
+                messages,
+                can_reset = False,
+                searchable = (lambda: recall_offered and not _archive_write_failed())
+                if can_reset
+                else False,
+                sticky_manual = sticky_manual,
+                replay_only = True,
+                **kwargs,
+            )
+        return fit_rolling_context(messages, replay_only = True, **kwargs)
     try:
         from core.inference import checkpoint
 
@@ -449,7 +478,8 @@ def _fit_with_instruction_pins(
     # prompt WITH the standing instruction for one without, the very thing this seam
     # prevents. `dropped_messages` separates them.
     if (
-        pins
+        not kwargs.get("replay_only")
+        and pins
         and truncation
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
@@ -523,6 +553,7 @@ from core.inference.mcp_images import (
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
+    REPEATABLE_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -584,17 +615,28 @@ def _gpu_short_message(
     )
     if capped_only:
         return message + f"It fits with a {fitting_ctx} context."
+    try:
+        from utils.multi_model_settings import get_multi_model_mode
+        always = get_multi_model_mode() == "always"
+    except Exception:  # noqa: BLE001 - the copy must never fail the load
+        always = False
+    if always:
+        return message + (
+            "Unload one of them or lower the context length. Keep multiple models loaded "
+            "is set to Always, so nothing is unloaded to make room."
+        )
     return message + (
-        "Unload one of them, lower the context length, or turn off "
-        '"Keep other models loaded" to replace the current model.'
+        "Unload one of them, lower the context length, or set Keep multiple models loaded "
+        "to Off to replace the current model."
     )
 
 
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
-    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on."""
+    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on.
+    ``discrete``: none of them shares host RAM, so a server off them or on the CPU frees nothing there."""
 
-    __slots__ = ("capped", "short_mib", "gpu_indices")
+    __slots__ = ("capped", "short_mib", "gpu_indices", "discrete")
 
     def __init__(
         self,
@@ -602,11 +644,45 @@ class GpuMemoryShortError(RuntimeError):
         capped: bool = False,
         short_mib: int = 0,
         gpu_indices = None,
+        discrete: bool = False,
     ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
         self.gpu_indices = gpu_indices
+        self.discrete = discrete
+
+
+def _apple_wired_headroom_bytes() -> Optional[int]:
+    """Wired GPU memory a Metal load may still take, system-wide; None if unknown."""
+    from utils.hardware import is_apple_silicon
+
+    if not is_apple_silicon():
+        return None
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "iogpu.wired_limit_mb"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+        cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
+    except Exception:
+        return None
+    # 0 means the kernel default, Metal's recommended working set.
+    if cap_bytes <= 0:
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+        cap_bytes = _metal_recommended_working_set_bytes()
+    if cap_bytes <= 0:
+        return None
+    from utils.hardware.hardware import _read_apple_gpu_stats
+
+    in_use = _read_apple_gpu_stats().get("vram_used_bytes")
+    if in_use is None:
+        return None
+    return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
 
 def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
@@ -626,6 +702,23 @@ def _net_of_held_vram(gpu_mem, held: dict[int, int]):
         (idx, min(free, max(0, total - held.get(idx, 0))) if total > 0 else free, total)
         for idx, free, total in gpu_mem
     ]
+
+
+def _net_of_unallocated_vram(gpu_mem, unallocated: dict[int, int]):
+    """Take from each GPU's live free MiB what a resident image or video model has not allocated yet (its generation
+    headroom): the total cap misses it once another process uses the card. Totals of 0 are left as is."""
+    if not unallocated:
+        return gpu_mem
+    return [
+        (idx, max(0, free - unallocated.get(idx, 0)) if total > 0 else free, total)
+        for idx, free, total in gpu_mem
+    ]
+
+
+def _net_of_other_models_vram(gpu_mem, held: dict[int, int], unallocated: dict[int, int]):
+    """Live free less unallocated media VRAM, then capped at total less ``held``. The other order charges the
+    headroom twice whenever the total cap binds (nothing else on the card)."""
+    return _net_of_held_vram(_net_of_unallocated_vram(gpu_mem, unallocated), held)
 
 
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
@@ -906,6 +999,10 @@ _LOG_LEVEL_TOKEN_RE = re.compile(rf"^{_ANSI}(?:\d+\.\d+\.\d+\.\d+{_ANSI} )?{_ANS
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
 _STDOUT_HEAD_MAX = 5000
+# Bind addresses whose listener accepts the health probe's 127.0.0.1 connection.
+_LOOPBACK_REACHABLE_BIND_IPS = frozenset(
+    {"127.0.0.1", "0.0.0.0", "::", "::ffff:127.0.0.1", "::ffff:0.0.0.0"}
+)
 
 
 def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
@@ -2193,6 +2290,8 @@ def _archive_and_recall(
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    background: bool = False,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -2217,19 +2316,26 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
+        if background:
+            # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
+            conversation_archive.note_branch(thread_id, before, cancel_check)
         # `conversation` is the fitted prompt, so it says which repeats of a turn the model
         # can still read. Without it a twice-said turn is archived twice and spends two
         # recall slots on text already in the prompt.
         archived = (
             conversation_archive.archive_turns(
-                thread_id, gone, live = conversation, branch = branch_messages or conversation
+                thread_id,
+                gone,
+                live = conversation,
+                branch = branch_messages or conversation,
+                cancel_check = cancel_check,
             )
             if gone
             else 0
         )
         counts = {"archived_messages": archived}
 
-        if recall_done:
+        if recall_done or (cancel_check is not None and cancel_check()):
             result["counts"] = counts
             return result
         if not force_recall:
@@ -3339,6 +3445,10 @@ def _drafter_path_kind(path: str) -> Optional[str]:
 
 
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
+_IMATRIX_WEIGHTED_RE = re.compile(
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
+)
 
 
 def _is_companion_gguf_path(path: str) -> bool:
@@ -3359,7 +3469,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
-    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+    stem = Path(p).stem
+    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
         return True
     if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
@@ -3953,7 +4064,12 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     return mtp_drafter_loads_standalone(path)
 
 
-def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+def _pick_mmproj(
+    candidates: list[str],
+    *,
+    order: Optional[tuple] = None,
+    weight: Optional[str] = None,
+) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
@@ -3963,7 +4079,27 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     )
     if not mmproj_files:
         return None
+    if order:
+        from utils.models.model_config import mmproj_order_rank, mmproj_weight_match
+
+        # Pair with the weight first, so a repo of several checkpoints never hands over another one's projector.
+        return max(
+            mmproj_files,
+            key = lambda f: (mmproj_weight_match(weight, f), mmproj_order_rank(f, order)),
+        )
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _mmproj_picker(
+    model: Optional[str], weight_path: Optional[str] = None
+) -> Callable[[list[str]], Optional[str]]:
+    from utils.models.model_config import mmproj_order
+
+    order = mmproj_order(model, weight_path)
+    if not order:
+        return _pick_mmproj
+    weight = Path(weight_path).name if weight_path else None
+    return functools.partial(_pick_mmproj, order = order, weight = weight)
 
 
 def _hub_download_in_flight(hf_repo: str) -> bool:
@@ -5968,21 +6104,41 @@ _MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
 # Gemma 4 expects video at up to 1 fps; llama-server defaults to 4.
 _LLAMA_VIDEO_FPS = "1"
 _VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
+_LLAMA_SERVER_DEFAULT_VIDEO_FPS = 4.0
+_VIDEO_TIMESTAMP_ENV_VAR = "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"
 
 
 def _video_fps_flags(
-    server_caps: Mapping[str, object], env: Optional[Mapping[str, str]] = None
+    server_caps: Mapping[str, object],
+    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Sequence[str]] = None,
 ) -> list[str]:
-    """Return the default FPS flag unless unsupported or set in the environment.
+    """Return the default FPS and timestamp flags unless unsupported or set by the user.
 
     User extras are appended later and retain their last-wins override.
     """
-    if not server_caps.get("supports_video_fps"):
-        return []
     source = os.environ if env is None else env
-    if source.get(_VIDEO_FPS_ENV_VAR) is not None:
-        return []
-    return ["--video-fps", _LLAMA_VIDEO_FPS]
+    flags: list[str] = []
+    if server_caps.get("supports_video_fps") and source.get(_VIDEO_FPS_ENV_VAR) is None:
+        flags += ["--video-fps", _LLAMA_VIDEO_FPS]
+    if (
+        server_caps.get("supports_video_timestamp_interval")
+        and source.get(_VIDEO_TIMESTAMP_ENV_VAR) is None
+        and not _extra_args_set_any_flag(extra_args, {"--video-timestamp-interval"})
+    ):
+        # llama-server writes a timestamp only every 5000 ms by default, so the model snaps
+        # every event to a multiple of 5 s. One label per 2 sampled frames: Qwen-VL merges
+        # frame pairs and a label between them splits the pair (about 1.7x the prompt), and
+        # Gemma 4 placed events best at this spacing. Floor, so drift never skips a label.
+        fps = requested_video_fps(extra_args, source)
+        if fps is None:
+            fps = (
+                float(_LLAMA_VIDEO_FPS)
+                if server_caps.get("supports_video_fps")
+                else _LLAMA_SERVER_DEFAULT_VIDEO_FPS
+            )
+        flags += ["--video-timestamp-interval", str(max(1, int(2000 / fps)))]
+    return flags
 
 
 def requested_video_fps(
@@ -6614,6 +6770,16 @@ def _extra_args_draft_offloaded_to_cpu(
         if devs and all(d in ("cpu", "none") for d in devs):
             return True
     return False
+
+
+def _margin_mib_for(margin: Union[float, Mapping[int, float], None], idx: int) -> float:
+    """The ``--fit-target`` margin one card keeps: a single broadcast value, or that
+    card's entry in a per-device mapping (the largest entry for a card it omits)."""
+    if isinstance(margin, Mapping):
+        if not margin:
+            return 0.0
+        return max(0.0, float(margin.get(int(idx), max(margin.values()))))
+    return max(0.0, float(margin or 0.0))
 
 
 def _extra_args_device(
@@ -8041,6 +8207,11 @@ def _load_probe_memo_scope():
 # "Probed, no usable answer", kept apart from None = "not probed yet".
 _MISSING = object()
 
+# Display reads only (/api/system would spawn the probe per poll); a GPU memory event or fresh_reads() skips it.
+_VULKAN_INVENTORY_TTL_S = 30.0
+_vulkan_inventory_lock = threading.Lock()
+_vulkan_inventory_cache: dict = {}
+
 # Discrete by construction: `_weights_in_host_memory` classifies them upstream. Vulkan
 # gets the shared-memory probe; SYCL/OpenCL/MUSA/CANN may be integrated, so they decline.
 _SELF_EVIDENTLY_DISCRETE = frozenset({"cuda"})
@@ -8694,6 +8865,8 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
+        # Mixed-pin --tensor-split tokens; the --fit on retry strips them (fit.cpp aborts on a set split).
+        self._mixed_split_flags: list[str] = []
         # The pair a launch in flight is committed to, None when none is. ONE attribute:
         # a separate marker and snapshot read out of step answered a save with
         # reload_required=false about a child already committed to the pre-save flags.
@@ -8753,6 +8926,22 @@ class LlamaCppBackend:
         """True if a llama-server process exists (loading or loaded)."""
         return self._process is not None
 
+    def resident_memory_mib(self) -> Optional[int]:
+        """Best-effort MiB the loaded model holds: its GPU model buffers when known, else the
+        child's RSS (CPU, and Apple unified memory where RSS covers the Metal buffers). Never raises."""
+        process = self._process
+        if process is None or process.poll() is not None:
+            return None
+        try:
+            gpu = self.reclaimable_gpu_memory_gb()
+            if gpu:
+                return int(round(sum(gpu.values()) * 1024))
+            import psutil
+
+            return int(psutil.Process(process.pid).memory_info().rss // (1024 * 1024)) or None
+        except Exception:  # noqa: BLE001 - a size is decoration, never a failed status read
+            return None
+
     def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
         """Stable GPU model buffers the disposable llama-server will release.
 
@@ -8767,18 +8956,28 @@ class LlamaCppBackend:
         physical_ids = list(getattr(self, "_child_gpu_physical_ids", None) or ())
         if not physical_ids:
             return None
-        reported: dict[int, float] = {}
+        # The buffer lines are startup output, so once healthy the answer is fixed per process; the status poll
+        # would otherwise rescan up to _STDOUT_TRIM_AT lines on the event loop every few seconds.
+        ids = tuple(physical_ids)
+        cached = getattr(self, "_reclaimable_gpu_cache", None)
+        if cached is not None and cached[0] is process and cached[1] == ids:
+            return dict(cached[2]) if cached[2] else None
+        healthy = bool(getattr(self, "_healthy", False))
+        reported: Optional[dict[int, float]] = {}
         for line in list(self._stdout_lines):
             match = _GPU_MODEL_BUFFER_RE.search(line)
             if match is None:
                 continue
             ordinal = int(match.group(1))
             if ordinal >= len(physical_ids):
-                return None
+                reported = None
+                break
             physical = int(physical_ids[ordinal])
             reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
         if self._process is not process or process.poll() is not None:
             return None
+        if healthy:
+            self._reclaimable_gpu_cache = (process, ids, dict(reported) if reported else None)
         return reported or None
 
     @property
@@ -9991,6 +10190,189 @@ class LlamaCppBackend:
         return ",".join(rendered)
 
     @staticmethod
+    def _discrete_first_split(
+        gpu_indices: List[int],
+        usable_mib: dict[int, float],
+        shared_gpu_ids: Iterable[int],
+        layer_mib: List[float],
+        per_device_mib: float = 0.0,
+        main_reserve_mib: float = 0.0,
+        pipeline_mib: float = 0.0,
+    ) -> Optional[List[float]]:
+        """Layer-count ``--tensor-split`` shares over ``gpu_indices``: discrete cards first,
+        iGPUs (whose "free" is the host pool) take the overflow. llama.cpp cuts contiguous runs
+        by COUNT (get_layer_buft_list). None unless the pin mixes both kinds and every run fits."""
+        shared = set(shared_gpu_ids)
+        discrete = [i for i in gpu_indices if i not in shared]
+        igpus = [i for i in gpu_indices if i in shared]
+        n = len(layer_mib)
+        if not discrete or not igpus or n == 0:
+            return None
+        room = {
+            i: usable_mib.get(i, 0.0)
+            - per_device_mib
+            - (main_reserve_mib if k == 0 else pipeline_mib)
+            for k, i in enumerate(gpu_indices)
+        }
+        prefix = [0.0]
+        for mib in layer_mib:
+            prefix.append(prefix[-1] + mib)
+
+        def most_layers(cap: float) -> int:
+            k = 0
+            while k < n and max(prefix[j + k + 1] - prefix[j] for j in range(n - k)) <= cap:
+                k += 1
+            return k
+
+        counts: dict[int, float] = {}
+        left = n
+        for i in sorted(discrete, key = lambda d: room[d], reverse = True):
+            counts[i] = min(most_layers(room[i]), left)
+            left -= counts[i]
+        if left == n:
+            return None
+        igpu_room = {i: max(0.0, room[i]) for i in igpus}
+        igpu_total = sum(igpu_room.values())
+        exact = {
+            i: (left * igpu_room[i] / igpu_total if igpu_total > 0 else left / len(igpus))
+            for i in igpus
+        }
+        for i in igpus:
+            counts[i] = int(exact[i])
+        for i in sorted(igpus, key = lambda d: exact[d] - counts[d], reverse = True)[
+            : left - sum(counts[i] for i in igpus)
+        ]:
+            counts[i] += 1
+        # The runs llama.cpp will really cut, in device order: each must fit its room.
+        start = 0
+        for i in gpu_indices:
+            end = start + int(counts[i])
+            if prefix[end] - prefix[start] > max(0.0, room[i]):
+                return None
+            start = end
+        shares = [float(counts[i]) for i in gpu_indices]
+        # Boundaries half a layer early: float rounding in upper_bound cannot add a layer.
+        first = next(k for k, v in enumerate(shares) if v > 0)
+        if first != len(shares) - 1:
+            shares[first] -= 0.5
+            shares[-1] += 0.5
+        return shares
+
+    def _mixed_pin_split(
+        self,
+        gpu_indices: List[int],
+        spill_inputs: Optional[dict],
+        shared_gpu_ids: Iterable[int],
+        extra_args: Optional[Iterable[str]],
+        env: Mapping[str, str],
+        *,
+        layer_min_gpus: int,
+        tensor_parallel: bool,
+        pin_owns_devices: bool = False,
+    ) -> Optional[List[float]]:
+        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
+        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
+        cannot be priced or someone else owns the placement."""
+        if (
+            not shared_gpu_ids
+            or spill_inputs is None
+            or tensor_parallel
+            # A downgraded tensor request keeps every device in use.
+            or layer_min_gpus > 1
+            # A GPU-resident separate drafter spreads over every device.
+            or spill_inputs["separate_draft_on_gpu"]
+            or spill_inputs.get("env_mmproj_unsized")
+            # A host-resident cache or projector draws on the pool the iGPU reports.
+            or spill_inputs.get("host_mmproj_bytes")
+            or not _kv_offload_from_args(extra_args, env)
+            or _extra_args_have_tensor_split(extra_args, env)
+            # argv only: a non-layer inherited LLAMA_ARG_SPLIT_MODE is popped before launch.
+            or _extra_args_split_mode(extra_args, {}) not in (None, "layer")
+            # Extras follow the generated --fit off; the fitter rejects a multi-device split.
+            or any(
+                str(a) in ("-fit", "--fit") or str(a).startswith(("-fit=", "--fit="))
+                for a in (extra_args or ())
+            )
+            # RPC devices go ahead of the local ones, so the shares would land on them.
+            or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+            or str(env.get("LLAMA_ARG_RPC", "")).strip()
+            # Tensor overrides move bytes after the split is priced.
+            or _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(env)
+            # A projector pinned to another device is charged to device 0 below.
+            or (_extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}) or "").strip()
+            or str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
+            # A surviving device list owns the share order; a gpu_ids pin strips it.
+            or (
+                not pin_owns_devices
+                and (
+                    _extra_args_main_device(extra_args) is not None
+                    or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                )
+            )
+        ):
+            return None
+        # Adapters may target only some layers, which a total cannot place.
+        if _sidecar_adapter_paths(extra_args):
+            return None
+        # A larger pass-through --parallel (last-wins) grows the cache priced here.
+        _np_override = _extra_args_n_parallel(extra_args, env)
+        if _np_override is not None and _np_override > int(spill_inputs.get("n_parallel") or 1):
+            return None
+        layout = self._tensor_spill_layout(spill_inputs.get("model_path"))
+        if layout is None or not layout.complete or not layout.blocks:
+            return None
+        n_blocks = len(layout.blocks)
+        kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
+        kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
+        if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
+            # MLA, hybrid recurrent and an unpriced sliding window are uneven (_kv_layer_weights).
+            if kv_total and (
+                self._kv_lora_rank is not None
+                or self._ssm_inner_size is not None
+                or self._sliding_window_pattern
+                or self._effective_sliding_window()
+            ):
+                return None
+            kv_weights = [1] * n_blocks
+        kv_scale = kv_total / sum(kv_weights)
+        layer_bytes = [
+            blk.spillable_bytes + blk.resident_bytes + w * kv_scale
+            for blk, w in zip(layout.blocks, kv_weights)
+        ]
+        # Trailing nextn rows count in llama.cpp's n_layer_all + 1; resident only with a draft.
+        n_mtp = int(self._nextn_predict_layers or 0) if layout.has_excluded_blocks else 0
+        if layout.has_excluded_blocks and n_mtp <= 0:
+            return None
+        mtp_row = (
+            layout.excluded_block_bytes / n_mtp
+            if n_mtp and spill_inputs.get("mtp_will_engage")
+            else 0.0
+        ) + max(kv_weights) * kv_scale  # archs walking n_layer_all cache these rows too
+        layer_bytes.extend([mtp_row] * n_mtp)
+        # The output layer rides the last row (the last device's run).
+        layer_bytes.append(layout.lm_head_bytes + layout.other_resident_bytes)
+        reserve = (
+            spill_inputs["compute_buffer_flat"]
+            + spill_inputs["extra_gpu_bytes"]
+            + int(spill_inputs.get("env_mmproj_bytes") or 0)
+        )
+        # As _planned_tensor_spill; a hybrid run may hold one attention layer over its share.
+        per_device = spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]
+        if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
+            per_device += kv_total / layout.n_attention_layers
+        mib = 1024 * 1024
+        return self._discrete_first_split(
+            list(gpu_indices),
+            spill_inputs["gpu_usable_mib"],
+            shared_gpu_ids,
+            [x / mib for x in layer_bytes],
+            per_device / mib,
+            reserve / mib,
+            self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
+        )
+
+    @staticmethod
     def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
         """What an auto-mode load ASKED for, as a comparable ratio.
 
@@ -10462,6 +10844,7 @@ class LlamaCppBackend:
                 "supports_no_mmproj_offload": False,
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
+                "supports_video_timestamp_interval": False,
                 "supports_load_mode": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
@@ -10521,6 +10904,7 @@ class LlamaCppBackend:
         supports_reasoning_flag = False
         supports_no_mmproj_offload = False
         supports_video_fps = False
+        supports_video_timestamp_interval = False
         supports_load_mode = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
@@ -10771,6 +11155,7 @@ class LlamaCppBackend:
             supports_reasoning_flag = _is_real("--reasoning")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
+            supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -10886,6 +11271,7 @@ class LlamaCppBackend:
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
+            "supports_video_timestamp_interval": supports_video_timestamp_interval,
             "supports_load_mode": supports_load_mode,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
@@ -11906,6 +12292,10 @@ class LlamaCppBackend:
         emit, so callers can treat non-None as "this changed something".
         """
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
+        if not inherited:
+            # A uuid mask the ordinal resolvers leave open (FASTEST_FIRST) still orders
+            # the cards the memory probe matched by uuid.
+            inherited = LlamaCppBackend._smi_uuid_mask_order()
         if not inherited:
             return None
         wanted = [int(i) for i in pinned_ids]
@@ -13208,6 +13598,9 @@ class LlamaCppBackend:
     _GPU_IDS_ARE_PCI_INDICES = None
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
     _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
+    _SMI_UUID_ROWS: list = []  # (index, uuid) from the last nvidia-smi memory probe
+    # MIG cards that same probe saw (None = discovery unknown), so pinning uses its snapshot.
+    _SMI_MIG_INDICES: Optional[frozenset] = None
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -14157,34 +14550,12 @@ class LlamaCppBackend:
     @staticmethod
     def _apple_metal_wired_ceiling_bytes() -> int:
         """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
-        from utils.hardware import is_apple_silicon
+        return _apple_wired_headroom_bytes() or 0
 
-        if not is_apple_silicon():
-            return 0
-        try:
-            probe = subprocess.run(
-                ["sysctl", "-n", "iogpu.wired_limit_mb"],
-                capture_output = True,
-                text = True,
-                timeout = 5,
-                encoding = "utf-8",
-                errors = "replace",
-            )
-            cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
-        except Exception:
-            return 0
-        # 0 means the kernel default, Metal's recommended working set.
-        if cap_bytes <= 0:
-            from utils.hardware.hardware import _metal_recommended_working_set_bytes
-            cap_bytes = _metal_recommended_working_set_bytes()
-        if cap_bytes <= 0:
-            return 0
-        from utils.hardware.hardware import _read_apple_gpu_stats
-
-        in_use = _read_apple_gpu_stats().get("vram_used_bytes")
-        if in_use is None:
-            return 0
-        return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
+    @staticmethod
+    def _apple_metal_wired_headroom_bytes() -> Optional[int]:
+        """The same headroom, but None when unknown, so 0 means used up."""
+        return _apple_wired_headroom_bytes()
 
     @staticmethod
     def _metal_fit_target_floor_mib() -> float:
@@ -14997,19 +15368,25 @@ class LlamaCppBackend:
             ]
             return min(slices, key = free_mib) if slices else r
 
-        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        tokens = [t.strip() for t in (raw or "").split(",")] if raw else []
         picked: list[dict] = []
         if raw is None:
             picked = [as_cuda_sees(r) for r in parents]
         seen: set[int] = set()
         for token in tokens:
+            if not token:
+                break  # an empty entry ends the mask, as CUDA reads it
             prefix = re.match(r"\+?\d+", token)
-            if token.startswith("GPU-"):
-                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
-            elif token.startswith("MIG-"):
+            # Case-insensitive, as the nvidia-smi uuid matcher reads the same mask.
+            low = token.lower()
+            if low.startswith("gpu-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).lower().startswith(low)]
+            elif low.startswith("mig-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
                 hits = [
-                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                    r
+                    for r in rows
+                    if r.get("mig") and str(r.get("uuid", "")).lower().startswith(low)
                 ]
             elif prefix:
                 # CUDA reads an index strtoul-style: "1gpu2" is GPU 1.
@@ -15072,8 +15449,58 @@ class LlamaCppBackend:
             and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
             and LlamaCppBackend._visibility_mask_is_unmappable()
         ):
+            # Physical rows the memory probe matched by uuid: hand the child those uuids.
+            uuids = LlamaCppBackend._smi_uuids_for(cvd, gpu_indices)
+            if uuids is not None:
+                return uuids
             return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
         return mask
+
+    @staticmethod
+    def _smi_uuid_mask_order() -> Optional[list[int]]:
+        """Physical ids of a whole-GPU uuid mask in mask order, from the last nvidia-smi
+        rows; None unless the probe's ids are physical and every token matched a row."""
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True or not (cvd or "").strip():
+            return None
+        from utils.hardware import nvidia
+
+        visible = nvidia._uuid_visible_ordinal_map(cvd, LlamaCppBackend._SMI_UUID_ROWS)
+        return sorted(visible, key = visible.__getitem__) if visible else None
+
+    @staticmethod
+    def _smi_uuids_for(cvd: str, gpu_indices) -> Optional[str]:
+        """The uuids of these physical ids when the current whole-GPU uuid mask names each
+        of them in the last nvidia-smi rows, else None. Never for a MIG card: CUDA hands a
+        GPU- entry on one a slice, which only the NVML rows name."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return None
+        from utils.hardware import nvidia
+
+        rows = LlamaCppBackend._SMI_UUID_ROWS
+        visible = nvidia._uuid_visible_ordinal_map(cvd, rows)
+        try:
+            ids = [int(i) for i in gpu_indices]
+        except (TypeError, ValueError):
+            return None
+        if not visible or not ids or len(set(ids)) != len(ids):
+            return None
+        if any(i not in visible for i in ids):
+            return None
+        # The probe that chose these rows classified them; a later recheck failing must
+        # not widen the child to the whole inherited mask.
+        mig = LlamaCppBackend._SMI_MIG_INDICES
+        if mig is None:
+            # Unknown then too: NVML rows from that probe still name MIG cards.
+            mig = {
+                int(r["index"])
+                for r in LlamaCppBackend._NVML_ROWS
+                if r.get("mig") and str(r.get("index", "")).isdigit()
+            }
+        if set(ids) & mig:
+            return None
+        by_index = dict(rows)
+        return ",".join(by_index[i] for i in ids)
 
     @staticmethod
     def _mig_tokens_for_ordinals(cvd: str, gpu_indices) -> Optional[str]:
@@ -15143,6 +15570,28 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _whole_gpu_mask_rows(
+        cvd: str, uuid_rows: list[tuple[int, str]], physical_ids: set[int]
+    ) -> Optional[set[int]]:
+        """Physical rows behind a whole-GPU uuid mask the ordinal resolvers left open.
+        A uuid names its card whatever CUDA_DEVICE_ORDER says, so only membership is
+        needed. None for a MIG mask or a token no row verifies, so the caller keeps
+        its conservative path."""
+        from utils.hardware import nvidia
+
+        tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+        if not tokens or any(not t.startswith("gpu-") for t in tokens):
+            return None
+        if uuid_rows:
+            visible = nvidia._uuid_visible_ordinal_map(cvd, uuid_rows)
+            return set(visible) if visible is not None else None
+        # No uuid column: verify with the separate uuid query, never assume. Only a
+        # one-card mask: these rows carry no uuids to order or pin a multi-card subset,
+        # while the inherited mask already pins a single card.
+        ids = nvidia.resolve_uuid_mask(cvd)
+        return set(ids) if ids and len(ids) == 1 and set(ids) <= physical_ids else None
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -15185,7 +15634,9 @@ class LlamaCppBackend:
             result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
-                    "--query-gpu=index,memory.free,memory.total",
+                    # uuid in the same call: a whole-GPU uuid mask resolves without
+                    # CUDA_DEVICE_ORDER or a second query.
+                    "--query-gpu=index,memory.free,memory.total,uuid",
                     "--format=csv,noheader,nounits",
                 ],
                 capture_output = True,
@@ -15197,16 +15648,19 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
+                from utils.hardware import nvidia
+
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
-                if allowed is None and (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
-                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
-                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
-                    allowed = set(_ids) if _ids is not None else None
-                gpus: list[tuple[int, int, int]] = []
+                _cvd = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+                rows: list[tuple[int, int, int]] = []
+                unsized_rows: list[int] = []
+                uuid_rows: list[tuple[int, str]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
+                    if len(parts) >= 4 and parts[0].isdigit() and parts[3]:
+                        uuid_rows.append((int(parts[0]), parts[3]))
                     # Index and free required; skip a bad line rather than abandon
                     # the probe to the torch fallback.
                     try:
@@ -15214,8 +15668,8 @@ class LlamaCppBackend:
                         free_mib = int(parts[1])
                     except ValueError:
                         # Jetson answers "[N/A]": no dedicated VRAM (#4862).
-                        if parts[0].isdigit() and (allowed is None or int(parts[0]) in allowed):
-                            unsized_ids.append(int(parts[0]))
+                        if parts[0].isdigit():
+                            unsized_rows.append(int(parts[0]))
                         continue
                     # Total parsed separately: a two-column line or a non-integer
                     # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -15226,20 +15680,45 @@ class LlamaCppBackend:
                             total_mib = int(parts[2])
                         except ValueError:
                             total_mib = 0
-                    if allowed is not None and idx not in allowed:
-                        continue
-                    gpus.append((idx, free_mib, total_mib))
+                    rows.append((idx, free_mib, total_mib))
+                LlamaCppBackend._SMI_UUID_ROWS = uuid_rows
+                LlamaCppBackend._SMI_MIG_INDICES = None
+                if allowed is None and _cvd:
+                    allowed = LlamaCppBackend._whole_gpu_mask_rows(
+                        _cvd, uuid_rows, {r[0] for r in rows} | set(unsized_rows)
+                    )
+                if allowed is None and _cvd:
+                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
+                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
+                    allowed = set(_ids) if _ids is not None else None
+                unsized_ids = [i for i in unsized_rows if allowed is None or i in allowed]
+                gpus = [r for r in rows if allowed is None or r[0] in allowed]
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
-                _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if allowed is None and _cvd is not None and _cvd.strip():
+                if allowed is None and _cvd:
                     # A MIG / unresolvable UUID mask names devices these rows cannot be
                     # matched to: listing every card sizes against GPUs the parent hid.
                     # The NVML branch names slices and uuids.
                     gpus = []
                 elif gpus:
-                    from utils.hardware import nvidia
-                    mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
+                    mig_known = nvidia.get_mig_gpu_indices_or_none()
+                    if mig_known is not None:
+                        LlamaCppBackend._SMI_MIG_INDICES = frozenset(mig_known)
+                    mig = (mig_known or set()) & {g[0] for g in gpus}
+                    if mig_known is None:
+                        # MIG discovery failed: a row may be a whole MIG card. NVML names
+                        # slices and whole cards alike, so its reading wins; without one
+                        # the CLI rows stand, as before MIG support (no CUDA context).
+                        nvml = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        if nvml:
+                            gpus = [nvml.get(g[0], g) for g in gpus]
+                        else:
+                            # No current NVML inventory: an older one must not name devices.
+                            LlamaCppBackend._NVML_ROWS = []
+                    elif not mig:
+                        # The CLI now answers for these cards: an earlier NVML inventory
+                        # (slices since removed) must not name the child's devices.
+                        LlamaCppBackend._NVML_ROWS = []
                     if mig:
                         # A MIG card's row is the whole card: swap in its NVML slice reading,
                         # keeping the whole cards. No reading at all: the later probes decide,
@@ -15505,12 +15984,16 @@ class LlamaCppBackend:
             if len(parts) not in (4, 5, 6):
                 continue
             try:
+                free_b, total_b = int(parts[1]), int(parts[3])
+                # Intel's Windows driver can report budget > heap size (ggml-org/llama.cpp#29277).
+                if 0 < total_b < free_b:
+                    free_b = total_b
                 rows.append(
                     {
                         "index": int(parts[0]),
-                        "free_mib": int(parts[1]) // (1024 * 1024),
+                        "free_mib": free_b // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
-                        "total_mib": int(parts[3]) // (1024 * 1024),
+                        "total_mib": total_b // (1024 * 1024),
                         "name": parts[4].strip() if len(parts) >= 5 else "",
                         # Absent on an older staged probe, so it reads unknown and declines.
                         "type_known": len(parts) >= 6 and parts[5].strip() == "1",
@@ -15529,10 +16012,38 @@ class LlamaCppBackend:
         caller labels it, unlike the fit which zeroes it). Same rows as
         ``_run_vulkan_probe``; names fall back to ``Vulkan<i>``.
         """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return []
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed() and not _load_probe_memo_armed()
+        key = ("vulkan", binary)
+        if use_cache:
+            with _vulkan_inventory_lock:
+                entry = _vulkan_inventory_cache.get(key)
+            if (
+                entry is not None
+                and time.monotonic() - entry[0] < _VULKAN_INVENTORY_TTL_S
+                and entry[1] == gpu_memory_events.generation()
+            ):
+                return [dict(row) for row in entry[2]]
+        generation = gpu_memory_events.generation()
         rows = LlamaCppBackend._run_vulkan_probe(binary)
         for row in rows:
             if not row["name"]:
                 row["name"] = f"Vulkan{row['index']}"
+        # An empty answer may be a failed probe: never served, like gpu_query's failures.
+        with _vulkan_inventory_lock:
+            if rows:
+                _vulkan_inventory_cache[key] = (
+                    time.monotonic(),
+                    generation,
+                    [dict(row) for row in rows],
+                )
+            else:
+                _vulkan_inventory_cache.pop(key, None)
         return rows
 
     @staticmethod
@@ -16576,7 +17087,7 @@ class LlamaCppBackend:
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
         host_only_bytes: int = 0,
-        vram_margin_mib: float = 0.0,
+        vram_margin_mib: Union[float, Mapping[int, float]] = 0.0,
         avail_mib: Optional[int] = None,
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[bool]:
@@ -16609,16 +17120,16 @@ class LlamaCppBackend:
         per device for --fit"; common/arg.cpp, common/common.h). Under ``--fit on``
         the child spills weights to host RAM rather than dip into it, so those bytes
         are not credit this launch may spend. Zero on the proved path, which emits
-        ``-ngl -1 --fit off`` and runs no fitter at all.
+        ``-ngl -1 --fit off`` and runs no fitter at all. A mapping gives each card the
+        margin of Studio's per-device list, keyed by physical GPU id.
         """
         if not footprint_bytes or footprint_bytes <= 0:
             return None
         host_only = max(0, int(host_only_bytes or 0))
         shared = set(shared_gpu_ids or ())
         pinned = None if gpu_indices is None else {int(idx) for idx in gpu_indices}
-        margin_mib = max(0.0, float(vram_margin_mib or 0.0))
         free_vram_mib = sum(
-            max(0, row[1] - margin_mib)
+            max(0, row[1] - _margin_mib_for(vram_margin_mib, row[0]))
             for row in (detected_gpus or ())
             if row[0] not in shared and (pinned is None or row[0] in pinned)
         )
@@ -16651,7 +17162,7 @@ class LlamaCppBackend:
         gpus: Optional[Iterable[tuple]] = None,
         gpu_indices: Optional[Iterable[int]] = None,
         shared_gpu_ids: Iterable[int] = (),
-        fit_margin_mib: float = 0.0,
+        fit_margin_mib: Union[float, Mapping[int, float]] = 0.0,
         is_vulkan_backend: bool = False,
         avail_mib: Optional[int] = None,
         extra_args: Optional[Iterable[str]] = None,
@@ -16957,7 +17468,7 @@ class LlamaCppBackend:
         free_gb = math.floor(max(0.0, free_budget_mib) / 1024)
         return (
             f"A context of {requested_ctx:,} tokens needs about {need_gb} GB of unified "
-            f"memory, more than the {free_gb} GB Studio budgets from the memory free right "
+            f"memory, more than the {free_gb} GB Unsloth budgets from the memory free right "
             "now. It fits under the GPU's wired memory limit, so it is loading anyway, but "
             "macOS may have to compress or swap other apps to make room and generation may "
             "slow down. Lower the context or free memory to avoid that."
@@ -17366,11 +17877,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _llama_server_env_for_binary(
-        binary: str, *, use_system_rocm: bool = True
+        binary: str,
+        *,
+        use_system_rocm: bool = True,
+        verify_system_rocm: bool = True,
     ) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs.
 
-        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend;
+        ``verify_system_rocm=False`` keeps it without the GPU visibility probe.
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
@@ -17424,9 +17939,15 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver (#7233).
+            # which can be incompatible with the host amdkfd driver (#7233). On other
+            # hosts the system copy is the mismatched one and hides the GPU (#14906).
             if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
-                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+                _system_rocm = _native_linux_system_rocm_lib_dirs(binary_dir)
+                if _system_rocm and not (
+                    verify_system_rocm
+                    and LlamaCppBackend._system_rocm_hides_gpu(binary, _system_rocm)
+                ):
+                    lib_dirs.extend(_system_rocm)
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -17505,6 +18026,19 @@ class LlamaCppBackend:
             env.pop(name, None)
 
     @staticmethod
+    def _discrete_tier(
+        gpus: list,
+        integrated: frozenset,
+        shared: frozenset = frozenset(),
+    ) -> Optional[list]:
+        """The discrete-first tier (#7624): unshared discrete cards in ``gpus`` order, or
+        None when ``gpus`` holds no integrated GPU (no tier; the base pick applies). Shared
+        dGPUs are left to the full-pool pick, whose shared preference spans every card."""
+        if not integrated or all(g[0] not in integrated for g in gpus):
+            return None
+        return [g for g in gpus if g[0] not in integrated and g[0] not in shared]
+
+    @staticmethod
     def _select_gpus(
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
@@ -17513,11 +18047,18 @@ class LlamaCppBackend:
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
         shared: frozenset = frozenset(),
+        integrated: frozenset = frozenset(),
+        discrete_size_bytes: Optional[int] = None,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
         ``shared``: GPUs another loaded model runs on. A model that fits one card alone
         takes a card outside it when one fits, so two models don't share compute.
+
+        ``integrated``: unified-memory GPUs; discrete GPUs win when they alone hold the model.
+        ``discrete_size_bytes`` prices that discrete attempt (default ``model_size_bytes``):
+        bytes that live in host RAM only on unified memory are not charged to a dGPU.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -17531,6 +18072,7 @@ class LlamaCppBackend:
         ``per_device_overhead_bytes`` is the fixed layer-split cost per GPU beyond
         the first; a k-GPU pin must hold ``model + (k-1) * overhead`` or it can OOM
         a device after -ngl -1 (no --fit fallback). Single-GPU adds none.
+        ``shared_gpu_ids`` (iGPUs whose "VRAM" is host RAM) rank after every discrete card.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -17541,6 +18083,19 @@ class LlamaCppBackend:
             return None, True
 
         min_gpus = max(1, min(min_gpus, len(gpus)))
+        # Discrete first (#7624): an APU's "free" is system RAM. Falls through if it can't meet min_gpus.
+        discrete = LlamaCppBackend._discrete_tier(gpus, integrated, shared)
+        if discrete is not None and min_gpus <= len(discrete):
+            picked, use_fit = LlamaCppBackend._select_gpus(
+                model_size_bytes if discrete_size_bytes is None else discrete_size_bytes,
+                discrete,
+                usable_fraction = usable_fraction,
+                total_by_idx = total_by_idx,
+                per_device_overhead_bytes = per_device_overhead_bytes,
+                min_gpus = min_gpus,
+            )
+            if not use_fit and picked and len(picked) >= min_gpus:
+                return picked, False
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
             usable_fraction = _active_vram_fraction()
@@ -17559,12 +18114,30 @@ class LlamaCppBackend:
 
         # Rank by usable budget (free - reserve), not raw free: a more-used large
         # card can have less usable room than a less-used small one.
-        ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
+        _shared = set(shared_gpu_ids or ())
+        ranked = sorted(
+            gpus,
+            key = lambda g: (
+                g[0] not in _shared and _usable(g[0], g[1]) > overhead_mib,
+                _usable(g[0], g[1]),
+            ),
+            reverse = True,
+        )
 
         # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
         # in a near-full card to hit min_gpus. No-op for the default min_gpus == 1.
         usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
         min_gpus = max(1, min(min_gpus, usable_count or 1))
+
+        # A busy card too small alone must not pull a card that fits into a shared pin.
+        if (
+            min_gpus <= 1
+            and ranked[0][0] in shared
+            and _usable(ranked[0][0], ranked[0][1]) < model_size_mib
+        ):
+            for idx, free_mib in ranked:
+                if idx not in shared and _usable(idx, free_mib) >= model_size_mib:
+                    return [idx], False
 
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
@@ -17604,6 +18177,9 @@ class LlamaCppBackend:
         min_gpus: int = 1,
         split_extra_bytes: int = 0,
         shared: frozenset = frozenset(),
+        integrated: frozenset = frozenset(),
+        discrete_size_bytes: Optional[int] = None,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -17615,7 +18191,25 @@ class LlamaCppBackend:
         count-independent. The bigger overhead can cut ``_select_gpus``'s usable-card
         count to one, and a lone card is not a split, so a retry landing below two
         devices is re-priced without the delta. Still no fit returns (None, True) ->
-        --fit on, i.e. CPU offload rather than a pin that OOMs at launch."""
+        --fit on, i.e. CPU offload rather than a pin that OOMs at launch.
+
+        ``integrated``: as in ``_select_gpus``, but the discrete tier must pass the whole
+        split-aware check (priced at ``discrete_size_bytes`` when given); otherwise the
+        full pool is priced exactly as without it."""
+        discrete = LlamaCppBackend._discrete_tier(gpus, integrated, shared)
+        if discrete is not None:
+            if max(1, min(min_gpus, len(gpus))) <= len(discrete):
+                picked, needs_fit = LlamaCppBackend._select_gpus_split_aware(
+                    model_size_bytes if discrete_size_bytes is None else discrete_size_bytes,
+                    discrete,
+                    usable_fraction = usable_fraction,
+                    total_by_idx = total_by_idx,
+                    per_device_overhead_bytes = per_device_overhead_bytes,
+                    min_gpus = min_gpus,
+                    split_extra_bytes = split_extra_bytes,
+                )
+                if not needs_fit and picked and len(picked) >= max(1, min(min_gpus, len(gpus))):
+                    return picked, False
         gpu_indices, use_fit = LlamaCppBackend._select_gpus(
             model_size_bytes,
             gpus,
@@ -17624,6 +18218,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
             shared = shared,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -17634,6 +18229,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -17645,6 +18241,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
             shared = shared,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -18643,6 +19240,13 @@ class LlamaCppBackend:
     # it auto-fit commits the full 1M train context, OOMs the reserve, and spills to CPU.
     _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
+    # DeepSeek-V4.1 (deepseek41): its own sparse-attention graph, far smaller than DSV4's but
+    # not linear in context. Measured CUDA0 compute buffer, UD-IQ1_S with experts + Engram on
+    # CPU, f16 cache: ub=512 2102 / 2198 / 3094 / 11197 MiB at 16k / 64k / 256k / 1M; ub=2048
+    # 9751 / 37143 MiB at 256k / 1M. Flat + linear (rate ub-scaled) is the chord to the 1M
+    # point, so it stays above every measurement (convex curve; 1M is the trained maximum).
+    _DSV41_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3
+    _DSV41_CTX_COMPUTE_BYTES_PER_TOK = 9600  # per token at ub=512 (~11.4 GiB at 1M)
 
     # Inkling (inkling): with the reserve fix in the bundled llama.cpp (full-cache
     # reserve context reports the whole cache as position-contiguous, so the
@@ -18827,6 +19431,15 @@ class LlamaCppBackend:
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
                 + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
             )
+        if getattr(self, "_architecture", None) == "deepseek41":
+            # DSV4.1 sparse-attention buffer (see constants): flat + linear, ub-scaled. Unlike
+            # deepseek4 the rate has little headroom at 1M (~4%), so a layer split adds the
+            # extra mask copies like every other arch.
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            return int(
+                self._DSV41_CTX_COMPUTE_FLAT_BYTES
+                + (self._DSV41_CTX_COMPUTE_BYTES_PER_TOK * ub_scale + split_extra) * n_ctx
+            )
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
             # The fused banded path requires an f32/f16/bf16 KV cache. A quantized
@@ -18886,6 +19499,9 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
+        integrated: frozenset = frozenset(),
+        discrete_host_only_bytes: int = 0,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -18901,6 +19517,9 @@ class LlamaCppBackend:
         ``n_parallel`` itself and would re-price every lower count just to discard it.
         ``ctx_checkpoints`` mirrors --ctx-checkpoints: N host-RAM snapshots per slot,
         passed only when the GPUs share that pool (unified memory), else 0.
+        ``integrated``: the discrete-tier attempt is priced without the checkpoints and
+        without ``discrete_host_only_bytes`` (e.g. a CPU-pinned projector on a shared pool);
+        ``gpus`` already narrowed to discrete cards of a mixed pool are priced that way outright.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -18921,21 +19540,35 @@ class LlamaCppBackend:
             )
             if cb <= 0:
                 cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
-            total = (
-                base_footprint_bytes
-                + cb
-                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
-                + self._estimate_kv_cache_bytes(
+
+            def _kv(ckpts: int) -> int:
+                return self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
                     n_parallel = slots,
                     swa_full = swa_full,
                     kv_unified = kv_unified,
                     n_ubatch = _ub,
-                    ctx_checkpoints = ctx_checkpoints,
+                    ctx_checkpoints = ckpts,
                     flash_attn = flash_attn,
                 )
+
+            kv = _kv(ctx_checkpoints)
+            total = (
+                base_footprint_bytes
+                + cb
+                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
+                + kv
             )
+            # Checkpoints and host-only bytes sit in host RAM, which a dGPU does not draw on.
+            discrete_total = None
+            if integrated and (ctx_checkpoints or discrete_host_only_bytes):
+                discrete_total = (
+                    total - discrete_host_only_bytes - (kv - _kv(0) if ctx_checkpoints else 0)
+                )
+                # Devices already narrowed to dGPUs of a mixed pool (the slot re-fit).
+                if all(g[0] not in integrated for g in gpus):
+                    total = discrete_total
             gpu_indices, use_fit = self._select_gpus_split_aware(
                 total,
                 gpus,
@@ -18946,6 +19579,9 @@ class LlamaCppBackend:
                 split_extra_bytes = (
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
                 ),
+                integrated = integrated,
+                discrete_size_bytes = discrete_total,
+                shared_gpu_ids = shared_gpu_ids,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -19158,6 +19794,83 @@ class LlamaCppBackend:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
+
+    def _health_listener_is_ours(self, process) -> bool:
+        """False when the port answering /health is demonstrably not held by our child's tree.
+
+        _find_free_port releases the port before llama-server binds it, so another local user could
+        answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
+        on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
+        ownership keeps today's behaviour."""
+        port = getattr(self, "_port", None)
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or not isinstance(port, int):
+            return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(process, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
+        try:
+            import psutil
+            from core.inference.sd_cpp_server import _has_ancestor
+        except Exception:  # noqa: BLE001 -- optional dependency
+            return True
+        try:
+            root = psutil.Process(pid)
+            tree = [root, *root.children(recursive = True)]
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:  # noqa: BLE001 -- access denied / platform quirk
+            return True
+
+        def _listens(conn) -> bool:
+            laddr = getattr(conn, "laddr", None)
+            return (
+                bool(laddr)
+                and getattr(laddr, "port", None) == port
+                and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
+                and conn.status == psutil.CONN_LISTEN
+            )
+
+        tree_readable = True
+        for member in tree:
+            try:
+                read = getattr(member, "net_connections", None) or member.connections
+                if any(_listens(c) for c in read(kind = "inet")):
+                    return True
+            except psutil.NoSuchProcess:
+                continue
+            except Exception:  # noqa: BLE001 -- access denied / platform quirk
+                tree_readable = False
+        tree_pids = {m.pid for m in tree}
+        foreign = None
+        try:
+            # Scan every listener: a foreign one listed before ours must not refuse our start.
+            for conn in psutil.net_connections(kind = "inet"):
+                if not _listens(conn) or conn.pid is None:
+                    continue
+                if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
+                    return True
+                foreign = conn.pid
+        except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
+            logger.debug("llama-server port ownership check unavailable: %s", exc)
+        if foreign is not None:
+            logger.error(
+                "llama-server port %s is held by pid %s, not our child %s; refusing to use it",
+                port,
+                foreign,
+                pid,
+            )
+            return False
+        if tree_readable:
+            logger.error(
+                "llama-server port %s answered /health but our child %s is not listening on it; "
+                "refusing to use it",
+                port,
+                pid,
+            )
+            return False
+        return True
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
@@ -20453,6 +21166,7 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
+        self._mixed_split_flags = []
         self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -21066,14 +21780,27 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_precision
+
+        names = (hf_repo, near_path)
+        pick = _mmproj_picker(hf_repo, near_path)
+        f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
+        if f16_unsafe and near_path:
+            # Only a cached MiMo-VL F16 projector is broken; a cached BF16 / F32 one is reused as usual.
+            cached = _companion_snapshot_sibling(near_path, pick)
+            with contextlib.suppress(OSError):
+                if cached and mmproj_precision(cached) != "f16" and Path(cached).stat().st_size > 0:
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            reuse_snapshot_sibling = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:
@@ -21750,6 +22477,8 @@ class LlamaCppBackend:
             "qwen_image",
             "qwen_image21",
             "flux",
+            # Krea 2 GGUFs from some converters (molbal/krea2-gguf), #14474.
+            "krea2",
         )
     )
     # Archs shared by more than one family, so the header alone does NOT say whether the
@@ -21843,11 +22572,19 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
-    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
+    def _image_arch_is_pickable(
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+        arch: Optional[str] = None,
+    ) -> bool:
         """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
         try:
-            from routes.models import _gguf_family_buildable
-            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
+            from routes.models import _diffusion_gguf_family_hints, _gguf_family_buildable
+            return _gguf_family_buildable(
+                _diffusion_gguf_family_hints(
+                    arch, (model_identifier, os.path.basename(gguf_path or ""))
+                )
+            )
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for image arch: %s", e)
             return True
@@ -21960,7 +22697,7 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
-                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier, arch):
                     return (
                         f"This is an image-generation GGUF (architecture '{arch}'), which "
                         "cannot run as a chat model. Open it from the Images page instead."
@@ -22780,7 +23517,7 @@ class LlamaCppBackend:
                 )
             if (
                 arch in LlamaCppBackend._IMAGE_ARCHES
-                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier, arch)
             ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
@@ -22853,12 +23590,16 @@ class LlamaCppBackend:
 
         # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
         # A truncated download fails later instead, as "data is not within the file bounds".
-        bad_type = re.search(r"tensor '([^']*)' has invalid ggml type (\d+)", scan_tail)
+        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 43-63 fail later as an empty block-size-0 slot (#13908).
+        bad_type = re.search(
+            r"tensor '([^']*)' (?:has invalid ggml type (\d+)|of type (\d+) .*?not a multiple of block size \(0\))",
+            scan_tail,
+        )
         bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
         if bad_type or bad_layout:
             detail = (
                 f"tensor '{_short(bad_type.group(1))}' uses quantization type "
-                f"{bad_type.group(2)}, which this build does not have"
+                f"{bad_type.group(2) or bad_type.group(3)}, which this build does not have"
                 if bad_type
                 else "its tensor layout does not match this build's quantization types"
             )
@@ -23753,6 +24494,67 @@ class LlamaCppBackend:
         with LlamaCppBackend._bundle_only_rocm_lock:
             return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
 
+    # Build dirs whose system ROCm prepend was already probed, keyed like the latch above.
+    _system_rocm_probed: dict[str, tuple] = {}
+    _system_rocm_probe_lock = threading.Lock()
+
+    @staticmethod
+    def _list_devices_under(binary: str, env: Mapping[str, str]) -> Optional[list[str]]:
+        try:
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(dict(env)),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            return None
+        return _parse_listed_devices(result.stdout)
+
+    @staticmethod
+    def _system_rocm_hides_gpu(binary: str, system_dirs: "list[str]") -> bool:
+        """True when llama-server lists no GPU with system ROCm first but does with its bundle.
+
+        The prepend crash-proofs hosts whose bundled ROCR mismatches amdkfd (#7208), but
+        where the system copy is the mismatched one HIP init fails silently and the server
+        runs on CPU (#14906). No crash means the load_model retry never fires, so this asks
+        the binary directly, once per build. Any other answer keeps the prepend.
+        """
+        resolved = _resolve_llama_binary(binary)
+        key = str(resolved.parent)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._system_rocm_probe_lock:
+            # A caller that waited out the first probe re-reads its verdict from the latch.
+            if LlamaCppBackend._system_rocm_probed.get(key) == revision:
+                return LlamaCppBackend._prefers_bundle_only_rocm(binary)
+            mixed = LlamaCppBackend._list_devices_under(
+                binary,
+                LlamaCppBackend._llama_server_env_for_binary(binary, verify_system_rocm = False),
+            )
+            bundled = None
+            if mixed == []:
+                bundled = LlamaCppBackend._list_devices_under(
+                    binary,
+                    LlamaCppBackend._llama_server_env_for_binary(binary, use_system_rocm = False),
+                )
+            LlamaCppBackend._system_rocm_probed[key] = revision
+            if not bundled:
+                return False
+            logger.warning(
+                "llama-server lists no GPU with the system ROCm libraries (%s) ahead of its "
+                "bundled runtime, but lists %s without them; using the bundled ROCm runtime.",
+                ":".join(system_dirs),
+                ", ".join(bundled),
+            )
+            LlamaCppBackend._remember_bundle_only_rocm(binary)
+            return True
+
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
         """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
@@ -24054,13 +24856,14 @@ class LlamaCppBackend:
     def _requires_symmetric_kv(kv_lora_rank, architecture) -> bool:
         """Whether llama.cpp rejects K != V for a model with this metadata.
 
-        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4``: kv_lora_rank stands in
-        for is_mla() (the MLA archs' converter writes it alongside the MLA head
-        dims), and deepseek4 is checked by name because it sets neither.
+        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41``:
+        kv_lora_rank stands in for is_mla() (the MLA archs' converter writes it
+        alongside the MLA head dims), and deepseek4 / deepseek41 are checked by name
+        because they set neither.
         """
         if kv_lora_rank is not None:
             return True
-        return (architecture or "").strip().lower() == "deepseek4"
+        return (architecture or "").strip().lower() in ("deepseek4", "deepseek41")
 
     def _target_kv_symmetry(self) -> bool:
         """Whether the TARGET model requires K == V."""
@@ -25145,6 +25948,7 @@ class LlamaCppBackend:
 
     @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
+    @holds_inference
     def load_model(
         self,
         intent: GgufLoadIntent,
@@ -25315,6 +26119,10 @@ class LlamaCppBackend:
             # devices are known. Signed: lowering holds more back, raising packs
             # closer to the card. Zero at the default.
             _fit_target_delta_mib = 0.0
+            # The same delta per physical GPU id, when the per-device list applies.
+            _fit_target_delta_by_idx: Optional[dict[int, float]] = None
+            # Studio's emitted margins per card, spelled into --fit-target at spawn.
+            _fit_target_margins_by_idx: Optional[dict[int, float]] = None
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -26309,6 +27117,7 @@ class LlamaCppBackend:
                     self._tensor_split = None
                     self._auto_tensor_split = None
                     self._auto_tensor_split_emitted = None
+                self._mixed_split_flags = []
                 self._requested_gpu_ids = [int(i) for i in gpu_ids] if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -26468,6 +27277,9 @@ class LlamaCppBackend:
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
                 _ctx_capped_for_vram = False
+                # Probed GPUs reporting total 0: a pool shared with host RAM (APU, iGPU, SoC).
+                _shared_pool_gpus: set[int] = set()
+                _metal_alongside_shortfall: Optional[tuple[int, int]] = None
                 # A path that never prices the launch must not commit the previous one's plan.
                 self._pending_plan_mib = {}
                 # Set by the expert-spill raise after the fit.
@@ -26475,6 +27287,9 @@ class LlamaCppBackend:
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
                 _shared_gpus = frozenset()
+                _integrated_gpus = frozenset()
+                # The discrete-first tier; accounting keeps _integrated_gpus.
+                _tier_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -26587,7 +27402,9 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
                     _held_by_others = self._other_planned_vram_mib()
                     _shared_gpus = frozenset(_held_by_others)
-                    _gpu_mem = _net_of_held_vram(_gpu_mem, _held_by_others)
+                    _gpu_mem = _net_of_other_models_vram(
+                        _gpu_mem, _held_by_others, self._media_unallocated_vram_mib()
+                    )
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -26657,6 +27474,7 @@ class LlamaCppBackend:
                         _sel_gpus = [g for g in gpus if g[0] in _wanted_ids]
                         gpus = _sel_gpus if _sel_gpus else gpus
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    _shared_pool_gpus = {idx for idx, total in total_by_idx.items() if total <= 0}
                     # GPU picker: restrict every mode to the chosen devices, so
                     # auto selection only considers them and manual mask to
                     # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
@@ -26669,6 +27487,35 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    # Auto placement only; Vulkan auto already dropped its iGPUs above.
+                    if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
+                        _unified = self._rocm_unified_memory_gpu_ids()
+                        # CUDA ids are ordinals; nvidia-smi rows are PCI indices. Join only
+                        # where they agree, as _widen_integrated_cuda_rows does.
+                        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False or (
+                            (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+                            == "PCI_BUS_ID"
+                            and not self._visibility_mask_is_unmappable()
+                        ):
+                            _unified |= set(
+                                LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                                )
+                            )
+                        _integrated_gpus = frozenset(idx for idx, _free in gpus if idx in _unified)
+                        # A user device flag names ordinals of the base pick's mask, and an
+                        # unmappable mask re-emits ordinals as physical ids: keep the base pick.
+                        # Host-only bytes still never land on a discrete-only subset.
+                        _tier_gpus = _integrated_gpus
+                        if _integrated_gpus and (
+                            _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
+                            or any(
+                                str(os.environ.get(_v, "")).strip()
+                                for _v in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")
+                            )
+                            or self._visibility_mask_is_unmappable()
+                        ):
+                            _tier_gpus = frozenset()
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -26699,19 +27546,36 @@ class LlamaCppBackend:
                         )
                         else 0
                     )
+
+                    def _subset_ckpts(subset) -> int:
+                        # A discrete-tier subset holds no unified-memory GPU, so no checkpoints.
+                        if _integrated_gpus and _integrated_gpus.isdisjoint(i for i, _f in subset):
+                            return 0
+                        return _placement_ctx_checkpoints
+
+                    def _tiered_subsets(ranked: list, floor: int) -> list:
+                        # (count, prefix) in _select_gpus order: unshared discrete first.
+                        tier = LlamaCppBackend._discrete_tier(ranked, _tier_gpus, _shared_gpus)
+                        tiers = (
+                            (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
+                        )
+                        return [(n, t[:n]) for t in tiers for n in range(floor, len(t) + 1)]
+
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
                     # tightest. Hand it the difference, both directions, measured from
                     # the default so an untouched slider leaves the command alone.
-                    # One broadcast value: --fit-target does take a per-device list, but
-                    # in llama.cpp's enumeration order, which the visible-device pin and
-                    # the ROCr/Vulkan ordinal quirks make not ours to assume, and a
-                    # misaligned list hands a card the wrong margin. So the direction
-                    # picks the card: lowering scales by the largest, so no device ends
-                    # up under the margin it asked for, raising by the smallest, so none
-                    # is taken below its own. Mixed cards gain a little less, and hold
-                    # back a little more, than a per-device list would.
+                    # --fit-target takes a per-device list in llama.cpp's enumeration
+                    # order. Where CUDA's PCI order makes that order provable, each card
+                    # gets its own margin, spelled at spawn against the final mask. A
+                    # single broadcast value would otherwise have to be sized by the
+                    # largest card when lowering, which on mixed cards can exceed a
+                    # smaller card's whole memory and leave it unused. Elsewhere (Vulkan,
+                    # ROCm, UUID/MIG masks, --device/--rpc) the direction picks the card:
+                    # lowering scales by the largest, so no device ends up under the
+                    # margin it asked for, raising by the smallest, so none is taken
+                    # below its own.
                     if _vram_frac != _CTX_FIT_VRAM_FRACTION and gpus:
                         # Free stands in for an unreported total, the same scale
                         # _vram_usable_mib falls back to: MIG/vGPU and the two-column
@@ -26723,6 +27587,19 @@ class LlamaCppBackend:
                             max(_scales) if _vram_frac < _CTX_FIT_VRAM_FRACTION else min(_scales)
                         )
                         _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * _scale
+                        # Where llama.cpp's device order is provable, each card gets
+                        # its own margin instead (_per_device_fit_target_argv). Every
+                        # probed row, not just `gpus`: an unpinned child sees them all.
+                        if self._fit_target_per_device_ok(
+                            is_vulkan_backend = is_vulkan_backend,
+                            extra_args = extra_args,
+                            env = os.environ,
+                        ):
+                            _fit_target_delta_by_idx = {
+                                int(_idx): (_CTX_FIT_VRAM_FRACTION - _vram_frac)
+                                * (_total if _total and _total > 0 else _free)
+                                for _idx, _free, _total in _gpu_mem
+                            }
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
@@ -26736,6 +27613,15 @@ class LlamaCppBackend:
                             frac,
                             sysmem_fallback = _sysmem_fallback,
                         )
+
+                    def _gpu_rank(
+                        g,
+                        frac = _vram_frac,
+                        floor_mib = 0.0,
+                    ):
+                        # iGPUs after every discrete card that holds its split buffers (_select_gpus).
+                        usable = _gpu_usable(g, frac)
+                        return (g[0] not in _shared_gpu_ids and usable > floor_mib, usable)
 
                     def _pool_budget_mib(subset, frac):
                         # Sum each GPU's own usable budget. Pooling free and total
@@ -27540,27 +28426,52 @@ class LlamaCppBackend:
                         # whether _mm_need carries a context-compute term, so the two
                         # cannot drift apart.
                         _mm_split_aware = self._can_estimate_kv()
-                        _, _mm_needs_fit = (
-                            self._select_gpus_split_aware(
-                                _mm_need,
-                                _mm_budgeted_gpus,
-                                usable_fraction = _mm_frac,
-                                total_by_idx = total_by_idx,
-                                per_device_overhead_bytes = _pipeline_overhead_bytes
-                                + _cc_bytes(_mm_floor_ctx),
-                                min_gpus = _layer_min_gpus,
-                                split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
-                            )
-                            if _mm_split_aware
-                            else self._select_gpus(
-                                _mm_need,
-                                _mm_budgeted_gpus,
-                                usable_fraction = _mm_frac,
-                                total_by_idx = total_by_idx,
-                                per_device_overhead_bytes = _pipeline_overhead_bytes,
-                                min_gpus = _layer_min_gpus,
-                            )
+
+                        def _mm_probe_needs_fit(need: int, devices: list) -> bool:
+                            return (
+                                self._select_gpus_split_aware(
+                                    need,
+                                    devices,
+                                    usable_fraction = _mm_frac,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes
+                                    + _cc_bytes(_mm_floor_ctx),
+                                    min_gpus = _layer_min_gpus,
+                                    split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                                    shared_gpu_ids = _shared_gpu_ids,
+                                )
+                                if _mm_split_aware
+                                else self._select_gpus(
+                                    need,
+                                    devices,
+                                    usable_fraction = _mm_frac,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                    min_gpus = _layer_min_gpus,
+                                    shared_gpu_ids = _shared_gpu_ids,
+                                )
+                            )[1]
+
+                        _mm_needs_fit = _mm_probe_needs_fit(_mm_need, _mm_budgeted_gpus)
+                        # An APU reporting a total is budgeted above, but its "VRAM" is host
+                        # RAM, so moving the projector frees nothing there. Also pin when that
+                        # alone lets the discrete cards hold the model (#7624).
+                        _mm_discrete = LlamaCppBackend._discrete_tier(
+                            _mm_budgeted_gpus, _tier_gpus, _shared_gpus
                         )
+                        if (
+                            not _mm_needs_fit
+                            and _mm_discrete
+                            and _layer_min_gpus <= len(_mm_discrete)
+                        ):
+                            _mm_needs_fit = _mm_probe_needs_fit(
+                                _mm_need, _mm_discrete
+                            ) and not _mm_probe_needs_fit(
+                                _mm_need
+                                - mmproj_size
+                                - int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)),
+                                _mm_discrete,
+                            )
                         if _mm_needs_fit:
                             if tensor_parallel:
                                 # Held, not dropped. Applying it here would price a
@@ -27639,7 +28550,11 @@ class LlamaCppBackend:
                         def _probe_rank(drafter: bool) -> list:
                             return sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _probe_frac(drafter),
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
 
@@ -27678,15 +28593,16 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
-                        # (GPU count, target-only ctx, budget with drafter) per drafter-ranked subset.
-                        _target_placements: list[tuple[int, int, float]] = []
+                        # (GPU count, target-only ctx, budget with drafter, checkpoints) per
+                        # drafter-ranked subset; a discrete-tier subset pays no checkpoints.
+                        _target_placements: list[tuple[int, int, float, int]] = []
                         _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
                             _probe_min_gpus = _probe_floor(_probe_ranked, False)
-                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
-                                _subset = _probe_ranked[:_n]
+                            # The placement loop's subsets in its order: discrete first.
+                            for _n, _subset in _tiered_subsets(_probe_ranked, _probe_min_gpus):
                                 _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
                                 _base_wo = _probe_base(False, _n)
                                 _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
@@ -27711,7 +28627,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _placement_ctx_checkpoints,
+                                        ctx_checkpoints = _subset_ckpts(_subset),
                                     )
                                 )
                                 if _ctx_wo <= 0:
@@ -27765,7 +28681,9 @@ class LlamaCppBackend:
                                         _budget_w,
                                     )
                                 if _probe_ranked is _drafter_order:
-                                    _target_placements.append((_n, _ctx_wo, _budget_w))
+                                    _target_placements.append(
+                                        (_n, _ctx_wo, _budget_w, _subset_ckpts(_subset))
+                                    )
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
@@ -27794,7 +28712,7 @@ class LlamaCppBackend:
                                         budget_frac = 1.0,
                                         pooled = True,
                                         total_mib = None,
-                                        ctx_checkpoints = _placement_ctx_checkpoints,
+                                        ctx_checkpoints = _subset_ckpts(_subset),
                                     )
                                 )
                                 if (
@@ -27853,7 +28771,9 @@ class LlamaCppBackend:
                                     + _mtp_bytes(ctx, s, ub)
                                 ) / (1024 * 1024)
 
-                            def _ctx_with_drafter(n: int, ctx: int, budget: float, s: int) -> int:
+                            def _ctx_with_drafter(
+                                n: int, ctx: int, budget: float, s: int, ckpts: int
+                            ) -> int:
                                 if explicit_ctx:
                                     return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
                                 ub = _ubatch_for_slots(s)
@@ -27877,7 +28797,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    ctx_checkpoints = ckpts,
                                 )
                                 return (
                                     fitted
@@ -27890,8 +28810,8 @@ class LlamaCppBackend:
                                 _keep = 1 - (
                                     _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
                                 )
-                                for _n, _ctx_c, _budget_c in _target_placements:
-                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s)
+                                for _n, _ctx_c, _budget_c, _ckpts_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s, _ckpts_c)
                                     if _c <= 0:
                                         continue
                                     if _c >= _ctx_c * _keep:
@@ -28008,6 +28928,22 @@ class LlamaCppBackend:
 
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
+                    def _discrete_host_only(subset = None) -> int:
+                        # The shared-pool projector charge a discrete tier drops: only when
+                        # every discrete total is known, and none for a subset holding an
+                        # iGPU. Read by name so a later rebind of _shared_pool_mmproj carries.
+                        if subset is not None and not _integrated_gpus.isdisjoint(
+                            i for i, _f in subset
+                        ):
+                            return 0
+                        if _integrated_gpus and all(
+                            (total_by_idx or {}).get(i, 0) > 0
+                            for i, _f in gpus
+                            if i not in _integrated_gpus
+                        ):
+                            return _shared_pool_mmproj
+                        return 0
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
@@ -28140,18 +29076,39 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _vram_frac - _flat_mtp_reserve),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _vram_frac - _flat_mtp_reserve,
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
                             best_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
-                            for n_gpus in range(1, len(ranked_for_cap) + 1):
-                                subset = ranked_for_cap[:n_gpus]
+                            # Every subset Auto may take, discrete tier included, priced as Auto prices it.
+                            # With an integrated GPU, start at Auto's GPU floor: a forced split never takes
+                            # a checkpoint-free dGPU-only subset, explicit device pick or not.
+                            _cap_floor = 1
+                            if _integrated_gpus:
+                                _cap_floor = max(
+                                    1,
+                                    min(
+                                        _layer_min_gpus,
+                                        sum(
+                                            1
+                                            for g in ranked_for_cap
+                                            if _gpu_usable(g, _cap_fraction)
+                                            > _pipeline_overhead_bytes / (1024 * 1024)
+                                        )
+                                        or 1,
+                                    ),
+                                )
+                            for n_gpus, subset in _tiered_subsets(ranked_for_cap, _cap_floor):
                                 # Per-GPU-consistent pool budget (fixes mixed
                                 # known/unknown totals); pass it as an absolute
                                 # budget so the fit and the check below agree.
                                 pool_budget = _pool_budget_mib(subset, _cap_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_model_size(n_gpus) - _discrete_host_only(subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
@@ -28171,14 +29128,32 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    ctx_checkpoints = _subset_ckpts(subset),
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
-                                if footprint_mib <= pool_budget:
-                                    best_cap = max(best_cap, capped)
+                                if footprint_mib > pool_budget:
+                                    continue
+                                if (
+                                    n_gpus > 1
+                                    and _integrated_gpus
+                                    and _integrated_gpus.isdisjoint(i for i, _f in subset)
+                                ):
+                                    # A dGPU-only tier is not a usable-descending prefix, so pooling can
+                                    # hide a small card's replicated reserve: cap as Auto's walk does.
+                                    _usable_mib = [_gpu_usable(g, _cap_fraction) for g in subset]
+                                    _reserve_at = lambda c, n = n_gpus: (
+                                        _pipeline_overhead_bytes + _cc_bytes(c, n) // n
+                                    )
+                                    if not self._every_gpu_holds_reserve(
+                                        _usable_mib, _reserve_at(capped)
+                                    ):
+                                        capped = self._cap_ctx_to_per_device_reserve(
+                                            capped, _usable_mib, _reserve_at
+                                        )
+                                best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
@@ -28221,6 +29196,9 @@ class LlamaCppBackend:
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                                 shared = _shared_gpus,
+                                integrated = _tier_gpus,
+                                discrete_size_bytes = requested_total - _discrete_host_only(),
+                                shared_gpu_ids = _shared_gpu_ids,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -28278,6 +29256,14 @@ class LlamaCppBackend:
                                             split_extra_bytes = _cc_split_extra(
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
+                                            shared = _shared_gpus,
+                                            integrated = _tier_gpus,
+                                            discrete_size_bytes = model_size_fit
+                                            + _q8_kv
+                                            + _mtp_bytes(effective_ctx)
+                                            + _cc_bytes(effective_ctx, cache_type = "q8_0")
+                                            - _discrete_host_only(),
+                                            shared_gpu_ids = _shared_gpu_ids,
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(
@@ -28291,8 +29277,14 @@ class LlamaCppBackend:
                             # headroom threshold as _select_gpus (#5106). Rank by the
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
+                            # Max _reserve_at ask: a short card must not hide an iGPU that fits.
+                            _rank_floor_mib = (
+                                _pipeline_overhead_bytes + _cc_bytes(effective_ctx, 2) // 2
+                            ) / (1024 * 1024)
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus,
+                                key = lambda g: _gpu_rank(g, pin_fraction, _rank_floor_mib),
+                                reverse = True,
                             )
                             # Skips _select_gpus, so apply its cap: count only cards
                             # whose usable VRAM clears the per-device layer overhead.
@@ -28331,15 +29323,22 @@ class LlamaCppBackend:
                                 if _unshared is not None:
                                     ranked.remove(_unshared)
                                     ranked.insert(0, _unshared)
-                            for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
+                            _subsets = _tiered_subsets(ranked, _auto_min_gpus)
+
+                            def _subset_ms(n_gpus: int, subset) -> int:
+                                # A CPU-pinned projector is charged for a shared pool; a
+                                # discrete-tier subset draws on none.
+                                return _subset_model_size(n_gpus) - _discrete_host_only(subset)
+
+                            def _auto_fit(n_gpus: int, subset, ctx: int) -> Optional[int]:
+                                # The context ``subset`` holds when Auto caps ``ctx`` to it, or None.
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_ms(n_gpus, subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
                                 capped = self._fit_context_to_vram(
-                                    effective_ctx,
+                                    ctx,
                                     pool_budget,
                                     _ms,
                                     cache_type_kv,
@@ -28354,14 +29353,14 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    ctx_checkpoints = _subset_ckpts(subset),
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
                                 if footprint_mib > pool_budget:
-                                    continue
+                                    return None
                                 # Pooling admits a subset whose per-device reserve
                                 # does not fit the smallest card, which then OOMs at
                                 # launch; only knowable once `capped` is chosen.
@@ -28375,15 +29374,13 @@ class LlamaCppBackend:
                                 ):
                                     # Keep the largest context the smallest card holds
                                     # rather than lose the subset to the 4096 drop below.
-                                    # Costs no context: subsets are prefixes of a
-                                    # usable-descending ranking and the reserve is the
-                                    # same function of context for every n > 1, so any
-                                    # later subset clears the gate no higher than this.
+                                    # Costs no context: a longer prefix never has a larger
+                                    # smallest card, and the reserve is one function for n > 1.
                                     capped = self._cap_ctx_to_per_device_reserve(
                                         capped, _usable_mib, _reserve_at
                                     )
                                     if capped <= 0:
-                                        continue
+                                        return None
                                     # Pooled terms only shrink with the context, so this
                                     # cannot newly fail; re-price rather than lean on that
                                     # across the KV and MTP branches.
@@ -28392,23 +29389,47 @@ class LlamaCppBackend:
                                         _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                     ) / (1024 * 1024)
                                     if footprint_mib > pool_budget:
-                                        continue
+                                        return None
+                                return capped
+
+                            for n_gpus, subset in _subsets:
+                                capped = _auto_fit(n_gpus, subset, effective_ctx)
+                                if capped is None:
+                                    continue
                                 effective_ctx = capped
                                 _ctx_capped_for_vram = 0 < capped < _ctx_before_fit
+                                if (
+                                    _ctx_capped_for_vram
+                                    and _tier_gpus
+                                    and _tier_gpus.isdisjoint(i for i, _f in subset)
+                                ):
+                                    # Capped only by the discrete preference: the base walk
+                                    # holds the full context, so nothing evicted would help.
+                                    _base_ctx = next(
+                                        (
+                                            c
+                                            for n in range(_auto_min_gpus, len(ranked) + 1)
+                                            for c in (_auto_fit(n, ranked[:n], _ctx_before_fit),)
+                                            if c is not None
+                                        ),
+                                        None,
+                                    )
+                                    _ctx_capped_for_vram = not (
+                                        _base_ctx is not None and _base_ctx >= _ctx_before_fit
+                                    )
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
                             else:
-                                # No discrete-GPU subset holds the model at a fitted
-                                # context. Prefer a useful chat context before
+                                # No GPU subset (discrete or full pool) holds the model at a
+                                # fitted context. Prefer a useful chat context before
                                 # handing placement to --fit on and host offload.
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                        subset = ranked[:n_gpus]
+                                    for n_gpus, subset in _subsets:
                                         kv = _kv_bytes(effective_ctx)
                                         footprint_mib = (
-                                            _subset_model_size(n_gpus)
+                                            _subset_ms(n_gpus, subset)
                                             + kv
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, n_gpus)
@@ -28447,6 +29468,9 @@ class LlamaCppBackend:
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
                             shared = _shared_gpus,
+                            integrated = _tier_gpus,
+                            discrete_size_bytes = _fs_total - _discrete_host_only(),
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
@@ -28779,6 +29803,30 @@ class LlamaCppBackend:
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
 
+                        if (
+                            intent.refuse_partial_gpu_fit
+                            and gpu_memory_mode != "manual"
+                            and not _paravirtual_cpu_forced
+                            # A CPU-only child takes no Metal memory; the host-RAM guard prices it.
+                            and not _device_selection_is_cpu(extra_args, os.environ)
+                        ):
+                            # No discrete GPU row on Metal, so the partial-placement verdict
+                            # cannot refuse this; CPU offload adds no unified memory.
+                            budget_mib = _apple_fit_budget_mib
+                            # Unknown headroom skips the wired cap, a known 0 is exhausted. The
+                            # reserve matches the wired refusals: the footprint omits an unsized MTP draft.
+                            wired_bytes = self._apple_metal_wired_headroom_bytes()
+                            if wired_bytes is not None:
+                                wired_mib = int(
+                                    wired_bytes // (1024 * 1024) * max(0.0, 1.0 - _flat_mtp_reserve)
+                                )
+                                budget_mib = min(budget_mib, wired_mib)
+                            need_mib = math.ceil(
+                                _apple_footprint_mib(effective_ctx, _fit_ctx_checkpoints)
+                            )
+                            if need_mib > budget_mib:
+                                _metal_alongside_shortfall = (need_mib, budget_mib)
+
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
@@ -28840,6 +29888,10 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
+                            # Picks a subset, so an explicit device pick keeps the base pick.
+                            integrated = _tier_gpus,
+                            discrete_host_only_bytes = _discrete_host_only(),
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -28875,6 +29927,9 @@ class LlamaCppBackend:
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _placement_ctx_checkpoints,
+                                    integrated = _tier_gpus,
+                                    discrete_host_only_bytes = _discrete_host_only(),
+                                    shared_gpu_ids = _shared_gpu_ids,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -29064,6 +30119,8 @@ class LlamaCppBackend:
                         )
                         # A per-device list reads as its largest entry (the larger shortfall).
                         _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        # Studio's own per-card margins, when it spells the list itself.
+                        _margins_by_idx: Optional[dict[int, float]] = None
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -29071,6 +30128,12 @@ class LlamaCppBackend:
                             _env_mib = None if _emits else fit_target_margin_in((), _child_env)
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                            if _emits:
+                                _margins_by_idx = self._fit_target_margins_mib(
+                                    auto_fit = _auto_fit,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                                    supports_fit_target = _supports_fit_target,
+                                )
                         # A lazily read table stays mmap'd on the host, never on the GPU.
                         _lazy_host = self._lazy_read_host_bytes(
                             model_path,
@@ -29101,7 +30164,10 @@ class LlamaCppBackend:
                             )
                             + _cc_bytes(effective_ctx, len(_on))
                         )
-                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        _free = sum(
+                            max(0.0, free - _margin_mib_for(_margins_by_idx or _margin_mib, _idx))
+                            for _idx, free in _on
+                        )
                         return _need - _free * 1024 * 1024
 
                     def _moe_resident_share_now() -> Optional[float]:
@@ -29460,6 +30526,20 @@ class LlamaCppBackend:
                         if _fitter_runs
                         else 0.0
                     )
+                    # Studio's per-card list replaces the single value only when Studio
+                    # owns the margin: a pass-through one wins outright (above).
+                    _fit_margins_by_idx = (
+                        self._fit_target_margins_mib(
+                            auto_fit = (gpu_memory_mode == "manual" and gpu_layers < 0),
+                            fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                            supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                        )
+                        if _fitter_runs
+                        and use_fit
+                        and not _metal_fit_target_floor_mib
+                        and fit_target_margin_in(_fit_extras, _fit_env) is None
+                        else None
+                    )
                     # A projector Unsloth never resolved but the child loads anyway:
                     # LLAMA_ARG_MMPROJ / _URL are read before argv and only the vision
                     # switch and the paravirtual pin clear them, while model_size carries
@@ -29515,6 +30595,9 @@ class LlamaCppBackend:
                     # allowance, exactly what _fit_model_size and _fit_soft_overhead
                     # just charged, and the same abstain when it cannot be sized.
                     _spill_inputs["env_mmproj_unsized"] = _fit_env_mmproj_unsized
+                    _spill_inputs["host_mmproj_bytes"] = _mmproj_pinned_bytes + (
+                        _fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0
+                    )
                     _spill_inputs["env_mmproj_bytes"] = (
                         0
                         if _fit_env_mmproj_on_host
@@ -29592,7 +30675,7 @@ class LlamaCppBackend:
                         # A running fitter keeps --fit-target free per device, so that
                         # margin is not VRAM this fit may spend. Zero only when the
                         # fitter is provably off; see _fitter_runs above.
-                        fit_margin_mib = _fit_margin_mib,
+                        fit_margin_mib = _fit_margins_by_idx or _fit_margin_mib,
                         is_vulkan_backend = is_vulkan_backend,
                         # Never stripped, and appended last, so they beat this
                         # launch's own -ngl.
@@ -29690,6 +30773,16 @@ class LlamaCppBackend:
                         mtp_overhead_fn = None
                         _mtp_kv_unsized = False
 
+                # Outside the placement catch, which would fall back to --fit on; the route
+                # evicts an idle resident and retries.
+                if _metal_alongside_shortfall is not None:
+                    need_mib, budget_mib = _metal_alongside_shortfall
+                    raise GpuMemoryShortError(
+                        f"This model and its context need about {need_mib / 1024:.1f} GiB, "
+                        f"but only {budget_mib / 1024:.1f} GiB remains in this Mac's "
+                        "unified-memory budget. Free memory or use a smaller model.",
+                        short_mib = need_mib - budget_mib,
+                    )
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
                 # Vulkan and APU checks, which describe hardware this branch has ruled out.
@@ -29707,11 +30800,21 @@ class LlamaCppBackend:
                     need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
+                    # The probe's own classifiers: an integrated CUDA SoC can report a real total.
+                    try:
+                        _shared = (
+                            _shared_pool_gpus
+                            | self._rocm_unified_memory_gpu_ids()
+                            | self._integrated_cuda_gpu_ids()
+                        )
+                    except Exception:
+                        _shared = None
                     raise GpuMemoryShortError(
                         _gpu_short_message(need_gb, free_gb, asked_ctx, effective_ctx, capped_only),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
                         gpu_indices = tuple(idx for idx, _ in gpus),
+                        discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
@@ -30108,7 +31211,7 @@ class LlamaCppBackend:
                 env = self._llama_server_env_for_binary(binary)
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
-                cmd.extend(_video_fps_flags(server_caps))
+                cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -30223,6 +31326,32 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
+                    _mixed_split = self._mixed_pin_split(
+                        list(gpu_indices),
+                        _spill_inputs,
+                        _shared_gpu_ids,
+                        extra_args,
+                        env,
+                        layer_min_gpus = _layer_min_gpus,
+                        tensor_parallel = tensor_parallel,
+                        pin_owns_devices = _gpu_ids_own_device_flags,
+                    )
+                    if _mixed_split is not None:
+                        self._mixed_split_flags = [
+                            "--tensor-split",
+                            self._format_tensor_split(_mixed_split),
+                        ]
+                        cmd.extend(self._mixed_split_flags)
+                        if gpu_memory_mode != "manual":
+                            self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                                _mixed_split
+                            )
+                        logger.info(
+                            "Filling discrete GPU(s) before the shared-memory iGPU: "
+                            "--tensor-split %s over %s",
+                            cmd[-1],
+                            list(gpu_indices),
+                        )
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
@@ -30278,6 +31407,16 @@ class LlamaCppBackend:
                 # the capability and a budget at the default all leave the child
                 # unpriced, and each is decided inside that call.
                 _fit_target_priced = "--fit-target" in _integrity_flags
+                # Spelled per device at spawn, against the child's final mask.
+                _fit_target_margins_by_idx = (
+                    self._fit_target_margins_mib(
+                        auto_fit = auto_fit,
+                        fit_target_delta_by_idx = _fit_target_delta_by_idx,
+                        supports_fit_target = bool(server_caps.get("supports_fit_target")),
+                    )
+                    if _fit_target_priced and use_fit and not _metal_fit_target_floor_mib
+                    else None
+                )
                 if _metal_fit_target_floor_mib:
                     # Rebuilt after the price is read: the floor is the machine's
                     # margin, not the budget slider's.
@@ -32484,6 +33623,9 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        run_cmd = self._per_device_fit_target_argv(
+                            run_cmd, env, _fit_target_margins_by_idx
+                        )
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
@@ -32700,6 +33842,10 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            if self._mixed_split_flags:
+                                # common/fit.cpp aborts a multi-device fit on a set split.
+                                _run = _without_subsequence(_run, self._mixed_split_flags)
+                                self._auto_tensor_split_emitted = None
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
@@ -34204,6 +35350,9 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            cmd = self._per_device_fit_target_argv(
+                                cmd, env, _fit_target_margins_by_idx
+                            )
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the
                             # launched-argv snapshot itself -- the zero-offload
@@ -36115,7 +37264,7 @@ class LlamaCppBackend:
             )
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
-        """MiB per GPU the other serving backends' running servers hold."""
+        """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
         held: dict[int, int] = {}
         serving = _serving_backends_snapshot()
         if self not in serving:
@@ -36125,7 +37274,20 @@ class LlamaCppBackend:
                 continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
                 held[idx] = held.get(idx, 0) + mib
+        # Weights plus generation headroom, the full figure _net_of_held_vram needs (empty under Off).
+        from core.inference.gpu_residency import media_held_mib
+
+        for idx, mib in media_held_mib().items():
+            held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _media_unallocated_vram_mib(self) -> dict[int, int]:
+        """MiB per GPU of the resident image/video models' price not yet allocated (empty under Off)."""
+        if self not in _serving_backends_snapshot():
+            return {}
+        from core.inference.gpu_residency import media_unallocated_mib
+
+        return media_unallocated_mib()
 
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):
@@ -37786,6 +38948,8 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
                         return False
+                    if not self._health_listener_is_ours(process):
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -37844,6 +39008,126 @@ class LlamaCppBackend:
             return _LLAMA_FIT_TARGET_DEFAULT_MIB
         base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
         return max(_VRAM_FLOOR_RESERVE_MIB, base + fit_target_delta_mib, floor_mib)
+
+    @staticmethod
+    def _fit_target_margins_mib(
+        *,
+        auto_fit: bool,
+        fit_target_delta_by_idx: Optional[Mapping[int, float]],
+        supports_fit_target: bool = True,
+    ) -> Optional[dict[int, float]]:
+        """``_fit_target_margin_mib`` for each card, keyed by physical GPU id.
+
+        None when there is no per-card delta, so callers keep the single margin. One
+        formula for the priced margins and the emitted list, like the scalar.
+        """
+        if not fit_target_delta_by_idx or not supports_fit_target:
+            return None
+        return {
+            int(idx): LlamaCppBackend._fit_target_margin_mib(
+                auto_fit = auto_fit, fit_target_delta_mib = delta
+            )
+            for idx, delta in fit_target_delta_by_idx.items()
+        }
+
+    @staticmethod
+    def _fit_target_per_device_ok(
+        *,
+        is_vulkan_backend: bool,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]],
+    ) -> bool:
+        """Whether a per-card ``--fit-target`` list can be lined up with llama.cpp's devices.
+
+        The list is positional over the child's device enumeration. CUDA under
+        PCI_BUS_ID enumerates the visible physical ids in mask order (ascending when
+        unmasked), which ties a position to an nvidia-smi index. Vulkan and HIP order
+        devices their own way, a UUID or MIG mask cannot be mapped back to indices,
+        and --device / --rpc / a pass-through --fit-target change or own the list, so
+        each of those keeps the single broadcast margin.
+        """
+        if is_vulkan_backend or sys.platform == "darwin":
+            return False
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return False
+        if (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper() != "PCI_BUS_ID":
+            return False
+        if LlamaCppBackend._visibility_mask_is_unmappable():
+            return False
+        # A resolvable uuid mask still reaches the child as uuids, which the spawn-time
+        # spelling cannot order, so the pricing keeps the broadcast margin with it.
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is not None and not all(t.strip().isdigit() for t in mask.split(",") if t.strip()):
+            return False
+        if LlamaCppBackend._SMI_MIG_INDICES:
+            return False
+        if LlamaCppBackend._host_torch_is_rocm():
+            return False
+        env = env or {}
+        if fit_target_margin_in(extra_args or (), env) is not None:
+            return False
+        if (_extra_args_device(extra_args, {"--device", "-dev", "--rpc"}) or "").strip():
+            return False
+        # A companion device flag can make the pin add --device after planning, which
+        # the spawn-time spelling then declines; decline here so pricing agrees.
+        if any(_extra_args_device(extra_args, flags) for flags in _COMPANION_DEVICE_FLAG_GROUPS):
+            return False
+        if any(str(env.get(k, "")).strip() for k in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_RPC")):
+            return False
+        return True
+
+    @staticmethod
+    def _per_device_fit_target_argv(
+        cmd: list[str], env: Mapping[str, str], margins_by_idx: Optional[Mapping[int, float]]
+    ) -> list[str]:
+        """``cmd`` with Studio's ``--fit-target`` spelled per device for the child's mask.
+
+        llama.cpp broadcasts a single value, so on mixed cards the margin sized for
+        the largest card can exceed a smaller card's whole memory and leave it
+        unused. Built from the FINAL child env at spawn time, since a retry can
+        re-pin the mask. Returns ``cmd`` unchanged when the order cannot be proven
+        (a device without a margin, a non-numeric mask, another device order) or
+        when every card would get the same value, which a single value already says.
+        """
+        if not margins_by_idx:
+            return cmd
+        at = None
+        for k in range(len(cmd) - 2, -1, -1):
+            if cmd[k] == "--fit-target":
+                at = k
+                break
+        if at is None:
+            return cmd
+        if (str(env.get("CUDA_DEVICE_ORDER") or "")).strip().upper() != "PCI_BUS_ID":
+            return cmd
+        # --device narrows the model's devices and --rpc puts remote ones first, both
+        # re-indexing the list; a companion widen can add --device after planning.
+        if (_extra_args_device(cmd, {"--device", "-dev", "--rpc"}) or "").strip() or any(
+            str(env.get(k, "")).strip() for k in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_RPC")
+        ):
+            return cmd
+        mask = env.get("CUDA_VISIBLE_DEVICES")
+        if mask is None:
+            order = sorted(int(i) for i in margins_by_idx)
+        else:
+            try:
+                order = [int(tok) for tok in str(mask).split(",") if tok.strip()]
+            except ValueError:
+                return cmd
+        if not order or any(i < 0 or i not in margins_by_idx for i in order):
+            return cmd
+        values = [str(int(margins_by_idx[i])) for i in order]
+        spelled = values[0] if len(set(values)) == 1 else ",".join(values)
+        if cmd[at + 1] == spelled:
+            return cmd
+        out = list(cmd)
+        out[at + 1] = spelled
+        logger.info(
+            "Per-device --fit-target %s for GPUs %s: each card keeps its own budget margin.",
+            spelled,
+            order,
+        )
+        return out
 
     @staticmethod
     def _ctx_integrity_flags(
@@ -38052,13 +39336,18 @@ class LlamaCppBackend:
                     or getattr(self, "_chat_template", None),
                 ),
             }
+        from core.rag.conversation_archive import inference_running
+
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-        with httpx.Client(
-            timeout = stream_timeout,
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        ) as client:
+        with (
+            inference_running(),
+            httpx.Client(
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client,
+        ):
             first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
@@ -38792,6 +40081,8 @@ class LlamaCppBackend:
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = continue_final_message,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -39115,6 +40406,7 @@ class LlamaCppBackend:
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
+        website_policy: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -39865,6 +41157,8 @@ class LlamaCppBackend:
                                 strict = True,
                                 chat_template_kwargs = _reasoning_kw,
                             ),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -40026,6 +41320,8 @@ class LlamaCppBackend:
                                 style = "inline",
                                 recall_done = True,
                                 branch_messages = _extend_live_branch(conversation),
+                                cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                                background = True,
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -40325,6 +41621,7 @@ class LlamaCppBackend:
                                                 permission_mode = permission_mode,
                                                 name = current_name,
                                                 sandbox_level = sandbox_level,
+                                                session_id = session_id,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -40475,6 +41772,7 @@ class LlamaCppBackend:
                                                                 permission_mode = "off",
                                                                 name = _sniffed,
                                                                 sandbox_level = sandbox_level,
+                                                                session_id = session_id,
                                                             )
                                                         )
                                                         and not has_text_only_provisional_card(
@@ -41358,7 +42656,8 @@ class LlamaCppBackend:
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         # A browser call acts on the page as it is then: two scrolls are two scrolls.
-                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
+                        # Two identical generate_image calls are two images.
+                        elif _key in _seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -41494,6 +42793,7 @@ class LlamaCppBackend:
                         is_high_risk = is_high_risk_tool_call,
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
+                        session_id = session_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -41547,7 +42847,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None
@@ -41878,6 +43179,8 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            if website_policy:
+                                kwargs["website_policy"] = website_policy
                             # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                             if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                                 kwargs["tool_execution_mode"] = "required"
@@ -42709,6 +44012,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -42853,6 +44158,8 @@ class LlamaCppBackend:
                             style = "inline",
                             recall_done = True,
                             branch_messages = _extend_live_branch(conversation),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )["counts"]
                     )
                 # Recorded rather than only forwarded, for the same reason as the
@@ -43839,6 +45146,7 @@ class LlamaCppBackend:
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,

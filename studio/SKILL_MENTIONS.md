@@ -50,8 +50,8 @@ is never taken as proof that instructions survived compaction. If the complete
 current manifest is already in actual system/tool context, it is not injected a
 second time. Continue/partial-assistant resumes do not activate old mentions.
 
-The Studio chat-completions path covers local GGUF, safetensors, managed engines,
-and external Studio-owned tool loops (including the shared Codex transport). It
+The Unsloth chat-completions path covers local GGUF, safetensors, managed engines,
+and external Unsloth-owned tool loops (including the shared Codex transport). It
 does not change client-tool passthrough or introduce mention execution in unrelated
 Anthropic/OpenAI compatibility endpoints. Tool-less native models and Tools-off
 requests retain their existing behavior.

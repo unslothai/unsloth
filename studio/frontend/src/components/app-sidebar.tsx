@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
   SidebarContent,
@@ -48,6 +49,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import {
+  returnToChatThreadId,
+  useApprovalWaitingStore,
+  watchApprovalWaiting,
+} from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
@@ -92,6 +98,8 @@ import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -105,6 +113,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  DashboardSquareEditIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -148,7 +157,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
+import { ArrowRightIcon, Copy, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -164,6 +173,7 @@ import {
   EditProjectDialog,
   forkChatRow,
   showForkCreatedToast,
+  showForkFailedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
   sandboxSessionIdsHolding,
@@ -244,6 +254,7 @@ import {
   type ShortcutId,
   useShortcut,
   prefersReducedMotion,
+  FullInstallDialog,
 } from "@/features/settings";
 import type {
   SidebarNavItemId,
@@ -356,6 +367,9 @@ type NavRowDef = {
   pending?: boolean;
   // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
+  // Greyed out but clickable: Train on an upgradable Chat only install opens the full install dialog.
+  dimmed?: boolean;
+  tooltipAction?: { label: string; onClick: () => void };
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -393,7 +407,7 @@ const SELECT_WITH_META =
 // zoom or UI scale instead of rounding differently per row.
 // DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
 // cue's border again above it.
-const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']`;
+const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-foreground before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
 const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
@@ -402,7 +416,7 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 const DROP_CUE_IN_FOLDER = "before:left-[calc(39px*var(--ui-space-scale,1))]";
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
-const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 // "Move to": the whole submenu stays inside the window, and each group's list scrolls past about
 // seven rows, the next one half showing, so a long list of projects keeps the Sections group, and
 // each group's Remove, in reach. No scrollbar: it would take its width out of the rows' right
@@ -416,7 +430,7 @@ const MOVE_TO_LIST =
 // Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
 const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
-const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 /** Reports while it is mounted, so a folder row ProgressiveRows has not drawn reads nothing. */
 function MountedFolder({
   id,
@@ -462,7 +476,7 @@ function landedOrder(
 
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
-  "rounded-full bg-primary/8 outline-solid outline-[length:1.5px] outline-primary -outline-offset-[1.5px]";
+  "rounded-full bg-wash-8 outline-solid outline-[length:1.5px] outline-foreground -outline-offset-[1.5px]";
 
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.
@@ -635,7 +649,9 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  waiting,
   tooltip,
+  tooltipAction,
   alwaysTooltip,
   onIntent,
   badge,
@@ -652,12 +668,15 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Replaces the spinner with the approval mark; the text is read after the label.
+  waiting?: string;
   onIntent?: () => void;
   // Stable hook for the UI smokes, which assert a row spins rather than greys out
   // while its capability verdict is still unmeasured.
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
+  tooltipAction?: { label: string; onClick: () => void };
   // Show that tooltip on the expanded row too, not just the collapsed rail where it
   // stands in for the hidden label.
   alwaysTooltip?: boolean;
@@ -667,10 +686,25 @@ function NavItem({
   // Wraps the row in a hover flyout that names it, so the label tooltip is dropped.
   flyout?: (row: ReactNode) => ReactNode;
 }) {
+  const rowTooltip =
+    tooltip && tooltipAction
+      ? {
+          className: "tooltip-compact",
+          children: (
+            <div className="flex flex-col items-start gap-1.5">
+              <span>{tooltip}</span>
+              <Button size="xs" onClick={tooltipAction.onClick}>
+                {tooltipAction.label}
+              </Button>
+            </div>
+          ),
+        }
+      : (tooltip ?? label);
   const row = (
     <div className="relative">
       <SidebarMenuButton
-        tooltip={flyout ? undefined : (tooltip ?? label)}
+        tooltip={flyout ? undefined : rowTooltip}
+        interactiveTooltip={Boolean(tooltip && tooltipAction)}
         alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
         disabled={disabled}
         onClick={onClick}
@@ -679,7 +713,7 @@ function NavItem({
         isActive={active}
         data-tour={dataTour}
         data-testid={testId}
-        data-spinner={spinner ? "true" : undefined}
+        data-spinner={spinner && !waiting ? "true" : undefined}
         className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
@@ -689,13 +723,27 @@ function NavItem({
             {badge}
           </Badge>
         )}
-        {spinner && (
-          // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
-          <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+        {waiting ? (
+          <>
+            <span className="sr-only"> {waiting}</span>
+            <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
+          </>
+        ) : (
+          spinner && (
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )
         )}
       </SidebarMenuButton>
-      {spinner && (
-        <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+      {waiting ? (
+        <ApprovalMark
+          testId="nav-approval"
+          className="pointer-events-none absolute right-1 top-1 hidden size-2.5 group-data-[collapsible=icon]:block"
+        />
+      ) : (
+        spinner && (
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )
       )}
       {overlay}
     </div>
@@ -705,6 +753,28 @@ function NavItem({
       {flyout ? flyout(row) : row}
       {children}
     </SidebarMenuItem>
+  );
+}
+
+/** The spinner's stand-in while a run waits on Allow / Deny. Its shape, not only its colour, tells it from
+ *  the unread dot (amber-accent themes, colour-blind users); static, since motion means working. */
+function ApprovalMark({ className, testId }: { className: string; testId?: string }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      data-testid={testId}
+      className={cn("shrink-0", className)}
+    >
+      <circle cx="7" cy="7" r="7" className="fill-amber-700 dark:fill-amber-400" />
+      <path
+        d="M7 3.6v4.1"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        className="stroke-white dark:stroke-neutral-900"
+      />
+      <circle cx="7" cy="10.3" r="1" className="fill-white dark:fill-neutral-900" />
+    </svg>
   );
 }
 
@@ -811,7 +881,8 @@ function MediaNavDisclosure({
       )}
     >
       <span className="sidebar-row-action-glyph">
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           className={cn(
             "size-3.5 transition-transform duration-200",
             !expanded && "-rotate-90",
@@ -944,6 +1015,7 @@ function MoreMenuItem({
   label,
   active,
   disabled,
+  dimmed,
   tooltip,
   badge,
   spinner,
@@ -954,6 +1026,7 @@ function MoreMenuItem({
   label: string;
   active: boolean;
   disabled?: boolean;
+  dimmed?: boolean;
   tooltip?: string;
   badge?: string;
   spinner?: boolean;
@@ -968,7 +1041,7 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(active && "bg-accent/60")}
+      className={cn(active && "bg-accent/60", dimmed && "opacity-50")}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -1307,8 +1380,15 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
+  const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const canRepair = repair !== null && !repair.isExternalServer;
+  const fullInstall = useFullInstallUpgrade();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -1327,22 +1407,31 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
-          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        ? // `unsloth studio update` keeps no-torch. chatOnlyHint: a Mac the MLX wheels skip.
+          chatOnlyHint
+          ? chatOnlyHint
+          : canRepair
+            ? "Training was left out of this install (Chat only). Use Upgrade to full install in Settings to add it."
+            : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "rosetta"
+        ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||
             chatOnlyReason === "torch_cuda_unavailable"
           ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
             // and unactionable here, so name the installed build and point at the repair.
-            chatOnlyDetail
-            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
-            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+            // A closed AMD device node is not fixed by a reinstall (#14067).
+            chatOnlyHint
+            ? `Training cannot use this machine's GPU. ${chatOnlyHint}`
+            : chatOnlyDetail
+              ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+              : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
             ? "Training needs an NVIDIA or AMD GPU."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health: the backend MLX self-heal
@@ -1993,6 +2082,9 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Watched here, not by the tool cards: only the open chat mounts those.
+  const approvalWaitingThreadIds = useApprovalWaitingStore((s) => s.threadIds);
+  useEffect(() => watchApprovalWaiting(useChatRuntimeStore), []);
   // Shared with the thread's own Fork, so neither surface can post a second one.
   const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
@@ -2016,13 +2108,27 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
-  // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
+  const activeThreadId = isChatRoute
+    ? (search.thread as string | undefined) ??
+      (search.compare as string | undefined) ??
+      storeThreadId ??
+      undefined
+    : undefined;
+  // Less the open chat: its card is already on screen.
+  const approvalWaitingElsewhere = useMemo(() => {
+    if (!activeThreadId) return approvalWaitingThreadIds;
+    const open = allChatItems.find((item) => item.id === activeThreadId);
+    const openIds = new Set(open ? getSidebarItemThreadIds(open) : [activeThreadId]);
+    return new Set([...approvalWaitingThreadIds].filter((id) => !openIds.has(id)));
+  }, [approvalWaitingThreadIds, activeThreadId, allChatItems]);
+  const anyChatWaiting = useMemo(
+    () => [...approvalWaitingElsewhere].some((id) => runningByThreadId[id]),
+    [approvalWaitingElsewhere, runningByThreadId],
+  );
+  // Where "Return to Chat" lands: a running chat, not an empty New Chat draft. Compare rows
+  // resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
-    const ids = Object.entries(runningByThreadId)
-      .filter(([, on]) => on)
-      .map(([id]) => id);
-    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    const id = returnToChatThreadId(runningByThreadId, approvalWaitingElsewhere);
     if (!id) return null;
     const pair = allChatItems.find(
       (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
@@ -2030,13 +2136,7 @@ export function AppSidebar() {
     return pair
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
-  }, [runningByThreadId, allChatItems]);
-  const activeThreadId = isChatRoute
-    ? (search.thread as string | undefined) ??
-      (search.compare as string | undefined) ??
-      storeThreadId ??
-      undefined
-    : undefined;
+  }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
   // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
@@ -3389,17 +3489,30 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured,
-      tooltip: trainDisabledHint,
+      disabled: chatOnlyMeasured && !fullInstall,
+      dimmed: chatOnlyMeasured && fullInstall !== null,
+      tooltip: fullInstall
+        ? "Training is not installed. It needs at least 5 GB of disk space."
+        : trainDisabledHint,
+      tooltipAction: fullInstall
+        ? { label: "Install Training", onClick: () => setFullInstallOpen(true) }
+        : undefined,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) return;
+        if (chatOnlyMeasured) {
+          if (fullInstall) {
+            setFullInstallOpen(true);
+            closeMobileIfOpen();
+          }
+          return;
+        }
         navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
+        if (chatOnlyMeasured) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -3629,16 +3742,9 @@ export function AppSidebar() {
       const result = await forkChatRow(item);
       setActiveThreadId(result.thread.id);
       navigate({ to: "/chat", search: { thread: result.thread.id } });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
-      // A chat still generating is a refusal, not a failure: say so without the alarm.
-      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
-      } else {
-        toast.error("Failed to fork", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
+      showForkFailedToast(error);
     } finally {
       inFlight.setForking(false);
     }
@@ -4101,66 +4207,81 @@ export function AppSidebar() {
       isSurfaceBackgrounded("#root")
     );
   };
-  useShortcut("archiveChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("archiveChat", () => void archiveSelected());
-      return;
-    }
-    if (followsSelectionAction("archiveChat")) return;
-    withActiveChat((item) => void handleArchiveThread(item));
-  });
-  useShortcut("markChatUnread", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("markChatUnread", markSelectedUnread);
-      return;
-    }
-    if (followsSelectionAction("markChatUnread")) return;
-    withActiveChat((item) =>
-      markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
-    );
-  });
-  useShortcut("togglePinChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
-      return;
-    }
-    if (followsSelectionAction("togglePinChat")) return;
-    withActiveChat((item) => togglePinnedChat(item.id));
-  });
+  const sidebarUncovered = () => !sidebarCovered();
+  useShortcut(
+    "archiveChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("archiveChat", () => void archiveSelected());
+        return;
+      }
+      if (followsSelectionAction("archiveChat")) return;
+      withActiveChat((item) => void handleArchiveThread(item));
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "markChatUnread",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("markChatUnread", markSelectedUnread);
+        return;
+      }
+      if (followsSelectionAction("markChatUnread")) return;
+      withActiveChat((item) =>
+        markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
+      );
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "togglePinChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
+        return;
+      }
+      if (followsSelectionAction("togglePinChat")) return;
+      withActiveChat((item) => togglePinnedChat(item.id));
+    },
+    { claims: sidebarUncovered },
+  );
   // A selection made behind a dialog is invisible and still what the mutating chords hit once the
   // dialog closes, which is the thing those chords being guarded was meant to prevent.
-  useShortcut("selectAllChats", () => {
-    if (sidebarCovered()) return;
-    selectAllChats();
+  useShortcut("selectAllChats", () => selectAllChats(), {
+    claims: sidebarUncovered,
   });
   useShortcut("clearChatSelection", clearSelection);
-  useShortcut("deleteSelectedChats", () => {
-    if (sidebarCovered()) return;
-    if (selectionCount > 0) deleteSelected();
-  });
+  useShortcut(
+    "deleteSelectedChats",
+    () => {
+      if (selectionCount > 0) deleteSelected();
+    },
+    { claims: sidebarUncovered },
+  );
   // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
   // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
   // the chord would look dead and leave a rename waiting to appear when the row came back.
-  useShortcut("renameChat", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => openRenameChat(item));
-  });
+  useShortcut(
+    "renameChat",
+    () => withActiveChat((item) => openRenameChat(item)),
+    { claims: sidebarUncovered },
+  );
   // The clipboard is outside the app, so writing a hidden chat's contents into it from behind a
   // dialog is not something the user can take back by closing the dialog.
-  useShortcut("copyChatAsMarkdown", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatItemAsMarkdown(item));
-  });
-  useShortcut("copySessionId", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatSessionId(item));
-  });
+  useShortcut(
+    "copyChatAsMarkdown",
+    () => withActiveChat((item) => void copyChatItemAsMarkdown(item)),
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "copySessionId",
+    () => withActiveChat((item) => void copyChatSessionId(item)),
+    { claims: sidebarUncovered },
+  );
 
   // The chat header's menu acts on the open chat through the same handlers as its row's menu and
   // the chords above. Every render, so the handlers it calls are never stale.
@@ -4246,18 +4367,33 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  // No undo and no menu item anywhere, so it says what it did.
-  useShortcut("clearAllUnreads", () => {
-    if (sidebarCovered()) return;
-    const state = useChatNavigationStore.getState();
-    const cleared = countUnreadRows(state);
-    if (state.unreadThreadIds.size === 0) {
-      toast.info("No unread chats");
-      return;
-    }
-    state.clearAllUnreads();
-    toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
-  });
+  useShortcut(
+    "clearAllUnreads",
+    () => {
+      const state = useChatNavigationStore.getState();
+      const cleared = countUnreadRows(state);
+      if (state.unreadThreadIds.size === 0) {
+        toast.info("No unread chats");
+        return;
+      }
+      const threadIds = [...state.unreadThreadIds];
+      const rowIds = { ...state.unreadRowIds };
+      state.clearAllUnreads();
+      toast.success(
+        `Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`,
+        {
+          action: {
+            label: t("shell.sections.undo"),
+            onClick: () =>
+              useChatNavigationStore
+                .getState()
+                .markThreadsUnread(threadIds, rowIds),
+          },
+        },
+      );
+    },
+    { claims: sidebarUncovered },
+  );
 
   // The six slots register as <Shortcut> elements: a loop of hooks would break the rules of hooks.
   const slotShortcuts = (
@@ -4413,6 +4549,16 @@ export function AppSidebar() {
             onChange: setChatSort,
             options: CHAT_SORT_OPTIONS,
           })}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              navigateFromRow({ to: "/projects" });
+              closeMobileIfOpen();
+            }}
+          >
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.organize.projectsHome")}</span>
+          </DropdownMenuItem>
         </>
       );
     } else if (options.kind === "recents") {
@@ -4595,7 +4741,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               Pinned
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* Pinning is the grouping, so no organize half and no "+". */}
             {renderSidebarHeaderMenu({
@@ -4733,7 +4879,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               <span className="min-w-0 truncate">{section.name}</span>
-              <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* As Recents has, a chat started here is filed here. */}
             <button
@@ -4855,7 +5001,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               {t("shell.navigation.projects")}
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -5215,7 +5361,7 @@ export function AppSidebar() {
               onSelect={() => void forkChatFromRow(item)}
             >
               <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-              <span>Fork</span>
+              <span>{t("library.chats.menu.fork")}</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
@@ -5356,11 +5502,16 @@ export function AppSidebar() {
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
+    const awaitingApproval =
+      isGenerating &&
+      threadIds.some((threadId) => approvalWaitingElsewhere.has(threadId));
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
     const hasUnreadActivity =
       !isGenerating && !hasQueuedActivity && alreadyUnread;
+    // The spinner and the unread dot say more, and share its spot.
+    const showForkMark = Boolean(item.isFork) && !showWorkSpinner && !hasUnreadActivity;
     const itemClass = cn(
       variant === "project"
         ? "group/project-chat-item relative"
@@ -5379,7 +5530,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity || showForkMark ? "pr-9" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5437,7 +5588,8 @@ export function AppSidebar() {
               data-thread-type={item.type}
               data-thread-id={item.id}
               data-generating={isGenerating ? "true" : undefined}
-              aria-busy={isGenerating || undefined}
+              // Waiting on the user is not busy.
+              aria-busy={(isGenerating && !awaitingApproval) || undefined}
               isActive={activeThreadId === item.id}
               data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
               className={buttonClass}
@@ -5458,6 +5610,12 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {/* The mark and the dot sit outside the button, so its name carries them. */}
+              {awaitingApproval ? (
+                <span className="sr-only"> {translate("shell.navigation.chatAwaitingApproval")}</span>
+              ) : hasUnreadActivity ? (
+                <span className="sr-only"> {translate("shell.navigation.chatUnread")}</span>
+              ) : null}
             </SidebarMenuButton>
             {showWorkSpinner ? (
               // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
@@ -5475,30 +5633,50 @@ export function AppSidebar() {
                     : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
               >
-                <Spinner
-                  data-testid="chat-row-spinner"
-                  // role="status" + label: announced, not motion-only.
-                  label={
-                    isGenerating
-                      ? translate("shell.navigation.chatGenerating")
-                      : "Queued"
-                  }
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                />
+                {awaitingApproval ? (
+                  <ApprovalMark testId="chat-row-approval" className="size-3.5" />
+                ) : (
+                  <Spinner
+                    data-testid="chat-row-spinner"
+                    // role="status" + label: announced, not motion-only.
+                    label={
+                      isGenerating
+                        ? translate("shell.navigation.chatGenerating")
+                        : "Queued"
+                    }
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
               </span>
             ) : null}
             {hasUnreadActivity ? (
+              // Same box and anchor as the spinner, so both share one column.
               <span
                 className={cn(
-                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
                 aria-hidden
               >
-                {/* Neutral: a finished reply is news, not a fault. */}
-                <span className="size-2 rounded-full bg-muted-foreground/60" />
+                {/* Accent, not a warning colour: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-primary" />
+              </span>
+            ) : null}
+            {showForkMark ? (
+              // In the trailing column the spinner uses, and yields it to the pin and kebab like the unread dot.
+              <span
+                role="img"
+                aria-label="Forked chat"
+                className={cn(
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity [@media(pointer:coarse)]:hidden",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                )}
+              >
+                <GitBranchIcon aria-hidden={true} strokeWidth={1.75} className="size-3.5" />
               </span>
             ) : null}
             {variant === "project" && (
@@ -5912,7 +6090,7 @@ export function AppSidebar() {
                   >
                     {t("shell.navigation.search")}
                     {searchShortcutLabel && (
-                      <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+                      <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
                         {searchShortcutLabel}
                       </kbd>
                     )}
@@ -5996,6 +6174,12 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
+              // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
+              waiting={
+                anyChatWaiting
+                  ? t("shell.navigation.chatAwaitingApproval")
+                  : undefined
+              }
               // An action, not a destination, so it never marks itself active: the active pill is the
               // hover pill, and on a blank new chat it left the row looking permanently hovered.
               active={false}
@@ -6087,13 +6271,15 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
-                    alwaysTooltip={rowState.pending}
+                    tooltipAction={rowState.pending ? undefined : row.tooltipAction}
+                    alwaysTooltip={rowState.pending || Boolean(row.dimmed)}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
                       row.className,
+                      row.dimmed && "opacity-50",
                       id === "images" && "group/images-item",
                       id === "audio" && "group/audio-item",
                     )}
@@ -6282,7 +6468,13 @@ export function AppSidebar() {
                             badge={row.badge}
                             active={row.active}
                             disabled={rowState.disabled}
-                            tooltip={rowState.tooltip}
+                            dimmed={row.dimmed}
+                            // A menu item holds no button, but selecting it runs the same action.
+                            tooltip={
+                              row.tooltipAction && !rowState.pending
+                                ? `${rowState.tooltip} Click to install it.`
+                                : rowState.tooltip
+                            }
                             spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
@@ -6351,7 +6543,7 @@ export function AppSidebar() {
               >
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
                 {/* Starts a chat outside any project, whatever page is open. */}
                 <button
@@ -6429,7 +6621,7 @@ export function AppSidebar() {
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", headerInset, scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -6485,7 +6677,7 @@ export function AppSidebar() {
                           side="bottom"
                           align="end"
                           sideOffset={0}
-                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 font-heading rounded-full border-0"
                           trigger={(triggerRef) => (
                             <button
                               ref={triggerRef}
@@ -6581,7 +6773,7 @@ export function AppSidebar() {
                     .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] border border-border/60 bg-transparent px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                className="btn-fill flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
                 <span
                   aria-hidden="true"
@@ -6632,7 +6824,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-xl border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -6744,6 +6936,18 @@ export function AppSidebar() {
                   alignEnd={true}
                   className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-56"
                 >
+                  {/* Pinned here rather than among the shortcuts above, which it can hide. */}
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      useSettingsDialogStore.getState().openDialog("appearance", {
+                        scrollTarget: "appearance-sidebar-nav",
+                      })
+                    }
+                  >
+                    <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.customizeSidebar")}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {HELP_GROUPS.map((group, index) => (
                     <DropdownMenuGroup key={group[0]}>
                       {index > 0 && <DropdownMenuSeparator />}
@@ -6817,6 +7021,13 @@ export function AppSidebar() {
     </Sidebar>
     </TooltipProvider>
     <ChatSearchDialog />
+    {fullInstall && (
+      <FullInstallDialog
+        open={fullInstallOpen}
+        onOpenChange={setFullInstallOpen}
+        onConfirm={() => void fullInstall.repairInstall()}
+      />
+    )}
     {!isTauri && (
       <ShutdownDialog
         open={shutdownOpen}
@@ -6879,7 +7090,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

@@ -250,6 +250,47 @@ def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
     assert stopped and isinstance(stopped[-1], _Proc), "the adopted worker was left running"
 
 
+def test_the_worker_env_hides_every_accelerator_only_in_the_child(monkeypatch):
+    """CUDA, HIP and SYCL are hidden only in the worker env, never in the parent's os.environ."""
+    import multiprocessing as mp_module
+
+    from core.training import account_jobs
+    from utils import process_lifetime
+
+    service = token_preview._TokenPreviewService()
+    envs = []
+
+    class _Proc:
+        pid = 4243
+
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising = False)
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: False)
+    monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(
+        account_jobs,
+        "account_process_spec",
+        lambda module, fn, env, kw: envs.append(env) or ((), {}),
+    )
+    monkeypatch.setattr(token_preview._CTX, "Process", _Proc)
+    monkeypatch.setattr(token_preview._CTX, "Queue", lambda: mp_module.Queue())
+    service._spawn_locked(("k",), {})
+    assert envs, "the worker was not spawned"
+    env = envs[0]
+    assert env["CUDA_VISIBLE_DEVICES"] == "" and env["HIP_VISIBLE_DEVICES"] == ""
+    assert env["ONEAPI_DEVICE_SELECTOR"] == "opencl:cpu"
+    assert env.get("ZE_AFFINITY_MASK") != ""
+    assert "ONEAPI_DEVICE_SELECTOR" not in os.environ
+
+
 def test_a_supplied_cache_folder_is_never_the_tokenizer_source(captured):
     _call_route(
         TokenPreviewRequest.model_validate(

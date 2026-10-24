@@ -1731,7 +1731,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     assert top >= 14, f"the top gutter {top}px is inside the card shadow's 14px reach"
     expected = {
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
-        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
+        "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
         "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
@@ -1739,6 +1739,10 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
         provider,
     ), "the rail's right padding is no longer the px card inset plus the panel width"
+    assert re.search(
+        r"const STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER =\s*`calc\(\$\{STACK_SHADOW_GUTTER_BOTTOM\}px \+ var\(",
+        provider,
+    ), "the rail's bottom padding is no longer the px gutter plus the composer clearance"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:

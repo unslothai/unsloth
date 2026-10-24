@@ -135,6 +135,7 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
+    "@/hooks/floating-panel-position": { FLOATING_PANEL_POSITION_KEYS: {} },
     "@/hooks/use-notification-frequency": notificationPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
@@ -173,6 +174,10 @@ function generalTab(initialToken: string) {
       loadCloseToTray: noop,
       updateCloseToTray: noop,
     },
+    "../api/tray-icon": {
+      loadTrayIconVisible: noop,
+      updateTrayIconVisible: noop,
+    },
     "../api/launch-at-login": {
       loadLaunchAtLogin: noop,
       updateLaunchAtLogin: noop,
@@ -183,12 +188,15 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
     "../components/desktop-update-control": componentStub,
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
+    "../components/developer-mode-section": componentStub,
+    "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,

@@ -52,3 +52,7 @@ export function canShowFile(name: string, contentType: string): boolean {
   if (documentKind(name, contentType) || mediaKind(name, contentType)) return true;
   return TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType;
 }
+
+export function savesFile(name: string, contentType: string, attachment = false): boolean {
+  return attachment || !canShowFile(name, contentType);
+}

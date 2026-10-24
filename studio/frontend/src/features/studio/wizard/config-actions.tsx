@@ -147,7 +147,7 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={() => void handleLoadConfig()}
           >
             <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
@@ -163,7 +163,7 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={handleSaveConfig}
           >
             <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
@@ -179,7 +179,7 @@ export function ConfigActions() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 cursor-pointer rounded-lg"
+            className="h-9 cursor-pointer rounded-full"
             onClick={handleResetConfig}
             disabled={!selectedModel}
           >

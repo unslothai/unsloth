@@ -950,6 +950,12 @@ def collect_descendants_known(
     if not pid:
         # Not a question about a process, so there is nothing indeterminate about it.
         return [], True
+    if not is_signalable_pid(pid):
+        # Below the floor. Every process on the host descends from init, so walking pid 1
+        # hands the whole machine to a caller that is about to SIGTERM what it gets back:
+        # a stand-in process with pid 1 in a test did exactly that and took the user's
+        # session down. Nothing under init is ours by descent.
+        return [], True
     # Windows records the creating pid on a process and never clears it, not even when
     # that parent exits and its number is handed to something else, so the raw table
     # lists strangers created by an earlier holder of this pid as children of it. A real

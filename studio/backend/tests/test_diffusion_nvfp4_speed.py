@@ -175,6 +175,12 @@ def _fake_torch():
     torch.randn = _fake_alloc("randn")
     torch.isfinite = lambda t: t
 
+    class _Generator:
+        def manual_seed(self, _seed):
+            return self
+
+    torch.Generator = _Generator
+
     def _device(kind, index = None):
         if isinstance(kind, _FakeDevice):
             return kind

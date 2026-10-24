@@ -91,7 +91,10 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
+    from utils.security.dataset_media import install as guard_dataset_media
+
     install_public_egress_guard()
+    guard_dataset_media()
     os.environ["PYTHONWARNINGS"] = "ignore"
 
     import warnings

@@ -20,6 +20,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
+  DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
   StopIcon,
@@ -390,7 +391,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "dark"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -438,7 +439,7 @@ function ClipBadge({ text }: { text: string | null | undefined }) {
   return (
     <span
       title={text}
-      className="max-w-[40%] shrink-0 truncate rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+      className="max-w-[40%] shrink-0 truncate rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
     >
       {text}
     </span>
@@ -449,6 +450,7 @@ export function TtsOutput({
   clips,
   selectedClip,
   selectedClipSrc,
+  retryClipSrc,
   srcById,
   peaksById,
   handleDownloadClip,
@@ -468,6 +470,7 @@ export function TtsOutput({
   handleArchiveClip,
   handleDownloadClipById,
   onUseTextAgain,
+  onReuseSeed,
   handleCopyPrompt,
   sendHandlersFor,
   onSaveVoice,
@@ -484,6 +487,7 @@ export function TtsOutput({
   AudioGallery,
   | "srcById"
   | "peaksById"
+  | "retryClipSrc"
   | "handleDownloadClip"
   | "handleDeleteClip"
   | "fallbackClip"
@@ -505,6 +509,8 @@ export function TtsOutput({
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
+    /** Puts the seed a clip was made with into the next take. */
+    onReuseSeed?: (seed: number) => void;
     sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
     onSaveVoice: (clip: AudioGalleryClip) => void;
     pending: {
@@ -593,6 +599,18 @@ export function TtsOutput({
             />
             {useAgainLabel}
           </DropdownMenuItem>
+          {onReuseSeed && typeof clip.settings?.seed === "number" ? (
+            <DropdownMenuItem
+              onClick={() => onReuseSeed(Number(clip.settings?.seed))}
+            >
+              <HugeiconsIcon
+                icon={DiceFaces03Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Reuse seed
+            </DropdownMenuItem>
+          ) : null}
           {showCopyText ? (
             <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
               <HugeiconsIcon
@@ -617,7 +635,20 @@ export function TtsOutput({
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <div className="flex w-full flex-col gap-2">
+          <div
+            className="flex w-full max-w-xl flex-col gap-2"
+            onErrorCapture={(event) => {
+              // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
+              const media = event.target;
+              if (
+                selectedClipSrc &&
+                media instanceof HTMLMediaElement &&
+                media.getAttribute("src") === selectedClipSrc
+              ) {
+                retryClipSrc(selectedClip, selectedClipSrc);
+              }
+            }}
+          >
             <VariationChips
               siblings={siblings}
               selectedId={selectedClip.id}

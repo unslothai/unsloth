@@ -223,7 +223,7 @@ export function ArchivedChatsView() {
             : t("settings.data.library.unarchiveAll")}
         </Button>
         <Button
-          variant="ghost"
+          variant="destructive"
           size="sm"
           className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           disabled={busy || filtered.length === 0}
@@ -282,7 +282,7 @@ export function ArchivedChatsView() {
                     aria-label={t("settings.data.library.unarchiveItem", {
                       title: item.title,
                     })}
-                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    className="rounded-full bg-muted/60 hover:bg-muted"
                   >
                     {t("settings.data.library.unarchive")}
                   </Button>

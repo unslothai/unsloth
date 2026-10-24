@@ -67,6 +67,7 @@ from storage.studio_db import (
     get_chat_project,
     get_chat_thread,
     get_chat_message,
+    next_message_created_at,
     list_chat_attachments_page,
     list_chat_projects,
     list_chat_sidebar_rows,
@@ -81,6 +82,7 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    ProjectWorkingFolderConflictError,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -344,6 +346,10 @@ class ChatProjectWorkingFolder(BaseModel):
     native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
 
 
+class ChatProjectCreate(ChatProject):
+    nativePathLease: Optional[str] = Field(default = None, min_length = 1)
+
+
 class ChatAgentsMd(BaseModel):
     text: str = ""
 
@@ -544,6 +550,10 @@ class ChatSettingsPayload(BaseModel):
     # Last-used params per checkpoint id. Deep-merged per key, so patching one
     # model cannot drop another's.
     inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    # Per model id, keys of the entry above removed before this patch merges; never stored.
+    forgetInferenceParamsByModel: Optional[
+        dict[str, Annotated[list[str], Field(max_length = 64)]]
+    ] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
@@ -606,6 +616,8 @@ class ChatSettingsPayload(BaseModel):
     # contextPolicy/headroom are the per-request overrides for UNSLOTH_CONTEXT_POLICY and
     # ROLLING_COMPACTION_HEADROOM_RATIO.
     autoCompactEnabled: Optional[bool] = None
+    # Off: a chat or Deep Research run stops once no tab follows it (state/unattended_runs.py).
+    keepRunningWhenTabClosed: Optional[bool] = None
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
     compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
@@ -995,7 +1007,32 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
             logger.warning("Could not remove the uploaded documents for %s", thread_id)
 
 
-def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+def _fork_document_cutoff(
+    source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
+) -> Optional[str]:
+    """Uploads made once the source moved past the fork point stay behind; None at the tip.
+
+    Message times come from the browser's clock and upload times from this server's, so the
+    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
+    against server now)."""
+    import time
+    from datetime import datetime, timezone
+
+    if not branch_message_id:
+        return None
+    next_at = next_message_created_at(source_thread_id, branch_message_id)
+    if next_at is None:
+        return None
+    skew_ms = int(time.time() * 1000) - client_now_ms
+    return datetime.fromtimestamp((next_at + skew_ms) / 1000, timezone.utc).isoformat()
+
+
+def _copy_thread_rag_documents(
+    source_thread_id: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> bool:
     """Copy the source's uploads into the fork. False when the fork should warn that some were
     left behind."""
     try:
@@ -1005,7 +1042,7 @@ def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
         if not rag_db.rag_available():
             return not conversation_archive.thread_has_documents(source_thread_id)
         document_ids, missed = conversation_archive.copy_thread_documents(
-            source_thread_id, thread_id
+            source_thread_id, thread_id, created_before = created_before
         )
         if get_chat_thread(thread_id) is None:
             conversation_archive.delete_thread_documents(thread_id)
@@ -1268,11 +1305,16 @@ def delete_attachment(
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
+    # Backfill only projects without a recorded root; the rest are ensured where their files are used.
     return ChatProjectListResponse(
         projects = [
             ChatProject(
                 **{
-                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    **(
+                        project
+                        if project.get("rootPath")
+                        else (ensure_chat_project_workspace(project["id"]) or project)
+                    ),
                     "lastActivityAt": project["lastActivityAt"],
                 }
             )
@@ -1282,9 +1324,20 @@ def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
+    lease = getattr(payload, "nativePathLease", None)
+    if lease is not None and not is_owner_context():
+        raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        project = payload.model_dump(exclude = {"nativePathLease"})
+        if lease is None:
+            return ChatProject(**upsert_chat_project(project))
+        working_folder = _resolve_project_working_folder(lease)
+        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+    except HTTPException:
+        raise
+    except ProjectWorkingFolderConflictError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
         # upsert also opens the database, which lives elsewhere.
@@ -1295,6 +1348,17 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
             "location.",
             event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
+    except Exception as exc:
+        if lease is None:
+            raise
+        # The grant is spent: HTTPException keeps CORS so the webview does not resend it (#13131).
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not create the project.",
+            event = "chat_history.create_project_with_folder_failed",
             log = logger,
         ) from exc
 
@@ -1374,7 +1438,7 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Studio's own folders cannot be used as a project folder.",
+                detail = "Unsloth's own folders cannot be used as a project folder.",
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")
@@ -2059,7 +2123,12 @@ def fork_thread(
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
-    if not _copy_thread_rag_documents(thread_id, payload.newThreadId):
+    created_before = _fork_document_cutoff(
+        thread_id, forked.get("forkedFromMessageId"), payload.createdAt
+    )
+    if not _copy_thread_rag_documents(
+        thread_id, payload.newThreadId, created_before = created_before
+    ):
         warning = " ".join(
             filter(None, [warning, "Documents attached to the parent chat were not copied."])
         )

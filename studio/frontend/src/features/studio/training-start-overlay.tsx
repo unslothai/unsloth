@@ -277,7 +277,7 @@ function ResourceRow({
       ) : null}
       {state.cachePath ? (
         <div
-          className="truncate rounded bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
+          className="truncate rounded-full bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
           title={state.cachePath}
         >
           {formatCachePath(state.cachePath)}

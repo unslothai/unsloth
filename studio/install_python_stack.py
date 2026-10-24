@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import glob
 import importlib
@@ -27,6 +28,8 @@ import sys
 import sysconfig
 import tempfile
 import textwrap
+import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -52,7 +55,10 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
+    KERNELS,
+    gpu_below_flash_attn_floor,
     install_prebuilt,
+    kernel_install_lock,
     uninstall_command,
 )
 from backend.utils.wheel_utils import (
@@ -2337,21 +2343,13 @@ def _detect_windows_gfx_arch() -> str | None:
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
                     # (#8458 ran an RX 580 through it). PowerShell syntax because this
                     # branch is Windows-only: a pasted VAR=value parses there as a
-                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
-                    # that variable there, so this would abort the next update.
-                    if _is_windows_arm64():
-                        _safe_print(
-                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
-                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
-                            "from source, or run this on x64."
-                        )
-                    else:
-                        _safe_print(
-                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
-                            "It selects the llama.cpp bundle at install time, so setting it "
-                            "afterwards has no effect until you install or update again."
-                        )
+                    # command name and sets nothing.
+                    _safe_print(
+                        "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                        "It selects the llama.cpp bundle at install time, so setting it "
+                        "afterwards has no effect until you install or update again."
+                    )
                 else:
                     _safe_print(
                         f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
@@ -4295,6 +4293,41 @@ def _torch_family_for_cuda_version(major: int, minor: int) -> str:
     return "cpu"  # ancient driver: no usable CUDA wheels
 
 
+_TEGRA_RELEASE = "/etc/nv_tegra_release"
+_DEVICE_TREE_COMPATIBLE = "/proc/device-tree/compatible"
+_TEGRA_WARNED = False
+
+
+@functools.lru_cache(maxsize = 1)
+def _is_tegra() -> bool:
+    """Mirrors studio/backend/utils/tegra.py."""
+    try:
+        if os.path.exists(_TEGRA_RELEASE):
+            return True
+        with open(_DEVICE_TREE_COMPATIBLE, "rb") as fh:
+            return b"nvidia,tegra" in fh.read()
+    except OSError:
+        return False
+
+
+def _tegra_cuda_family(family: str, cuda_major: "int | None") -> str:
+    """Mirrors install.sh: Jetson before CUDA 13 gets "cpu" (SBSA wheels see no GPU, #4856)."""
+    global _TEGRA_WARNED
+    if not _is_cuda_family_leaf(family) or (cuda_major is not None and cuda_major >= 13):
+        return family
+    if not _is_tegra():
+        return family
+    if not _TEGRA_WARNED:
+        _TEGRA_WARNED = True
+        _safe_print(
+            "   [WARN] NVIDIA Jetson (Tegra) detected: the generic aarch64 CUDA PyTorch wheels do "
+            "not run on it, so no CUDA torch is installed or repaired here and training runs on the CPU. "
+            "A JetPack torch built for this venv's Python is kept (NVIDIA's own wheels target JetPack's "
+            "system Python: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/)."
+        )
+    return "cpu"
+
+
 def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
     """Return the CUDA wheel family (index leaf) for the host's NVIDIA driver.
 
@@ -4343,7 +4376,7 @@ def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
         if m is None:
             continue
         tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
-        return _cap_cuda_family_for_pre_turing(tag, exe)
+        return _tegra_cuda_family(_cap_cuda_family_for_pre_turing(tag, exe), int(m.group(1)))
     # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
     # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
     # caller's default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
@@ -4352,8 +4385,11 @@ def _detect_cuda_torch_index_family(*, known_only: bool = False) -> str | None:
         sms = _inventory_compute_sms(inventory)
         if sms:
             family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
-            return _cap_cuda_family_for_pre_turing(family, None, sms)
-    return None if known_only else "cu126"
+            return _tegra_cuda_family(
+                _cap_cuda_family_for_pre_turing(family, None, sms),
+                inventory.cuda_driver_version[0],
+            )
+    return None if known_only else _tegra_cuda_family("cu126", None)
 
 
 def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
@@ -6635,7 +6671,21 @@ def _ensure_rocm_torch() -> "bool | None":
         # The discrete card a leading Strix deferred to. One served only by the generic index
         # (gfx942) skips this per-arch install: the generic route below installs for it, since
         # the deferral already required a readable ROCm version.
-        if not _gfx_override_env and _inferred_target != _inferred_linux_gfx:
+        # Only to a card something installs for (a per-arch index, a generic tag, or a known
+        # minimum generic tag the fallback below picks without a version, e.g. gfx950): a target
+        # moved by KFD order on a versionless host with none of these would leave CPU torch.
+        if (
+            not _gfx_override_env
+            and _inferred_target != _inferred_linux_gfx
+            and (
+                _amd_arch_index_url(_inferred_target) is not None
+                or _inferred_target in _GENERIC_WHEEL_GFX_MIN_ROCM
+                or (
+                    (_target_rocm := _detect_rocm_version()) is not None
+                    and _generic_pytorch_rocm_tag(_target_rocm) is not None
+                )
+            )
+        ):
             _inferred_linux_gfx = _inferred_target
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
@@ -7003,7 +7053,7 @@ def _ensure_rocm_torch() -> "bool | None":
             f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
             f"   kernels and fail at first use). gfx906 is a community-maintained legacy\n"
             f"   path: 16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA\n"
-            f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+            f"   requires a source build of bitsandbytes for gfx906 (see unsloth.ai/docs/get-started/install/amd).\n"
         )
 
     # Either reroute must fire even when has_hip_torch is True: an existing
@@ -7124,7 +7174,7 @@ def _ensure_rocm_torch() -> "bool | None":
             _dim(
                 "   gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels). "
                 "Build bitsandbytes from source for 4-bit QLoRA -- "
-                "see docs.unsloth.ai/get-started/install-and-update/amd."
+                "see unsloth.ai/docs/get-started/install/amd."
             )
         )
         # The base install resolves unsloth's unconditional bitsandbytes dep to a
@@ -7184,7 +7234,7 @@ def _ensure_rocm_torch() -> "bool | None":
                 _red(
                     "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
                     "4-bit QLoRA needs a source build -- "
-                    "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                    "https://unsloth.ai/docs/get-started/install/amd"
                 )
             )
 
@@ -7510,21 +7560,67 @@ def _step(
 
 def _progress(label: str) -> None:
     """Print an in-place progress bar aligned to the step column layout."""
-    global _STEP, _PROGRESS_LINE_ACTIVE
+    global _STEP
     _STEP += 1
     if VERBOSE:
         return
+    _draw_progress(label, end = "\n" if _STEP >= _TOTAL else "")
+
+
+def _draw_progress(label: str, end: str = "") -> None:
+    global _PROGRESS_LINE_ACTIVE
     width = 20
     filled = int(width * _STEP / _TOTAL)
     bar = "=" * filled + "-" * (width - filled)
     pad = " " * (_COL - len(_LABEL))
-    end = "\n" if _STEP >= _TOTAL else ""
     try:
         sys.stdout.write(f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}")
         sys.stdout.flush()
         _PROGRESS_LINE_ACTIVE = end == ""
     except OSError:
         pass
+
+
+def _stdout_is_tty() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+_HEARTBEAT_NOTE_SECONDS = 60
+_HEARTBEAT_TICK_SECONDS = 1
+# Fits "flash-attn 120:00", so the final padded label overwrites every frame.
+_HEARTBEAT_WIDTH = 30
+
+
+@contextlib.contextmanager
+def _install_heartbeat(label: str):
+    """Show a quiet install is alive: elapsed time on a TTY bar, else a flushed note each minute."""
+    in_place = not VERBOSE and _PROGRESS_LINE_ACTIVE and _stdout_is_tty()
+    done = threading.Event()
+    started = time.monotonic()
+
+    def beat() -> None:
+        interval = _HEARTBEAT_TICK_SECONDS if in_place else _HEARTBEAT_NOTE_SECONDS
+        while not done.wait(interval):
+            minutes, seconds = divmod(int(time.monotonic() - started), 60)
+            if not in_place:
+                _note(f"still installing {label} ({minutes} min)")
+                sys.stdout.flush()
+            # A message printed meanwhile closed the bar line; do not glue onto it.
+            elif _PROGRESS_LINE_ACTIVE:
+                _draw_progress(f"{f'{label} {minutes}:{seconds:02d}':<{_HEARTBEAT_WIDTH}}")
+
+    thread = threading.Thread(target = beat, daemon = True, name = f"{label}-heartbeat")
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(timeout = 2)
+        if in_place and _PROGRESS_LINE_ACTIVE:
+            _draw_progress(f"{label:<{_HEARTBEAT_WIDTH}}")
 
 
 _ENV_FOR_CMD = object()
@@ -8574,6 +8670,12 @@ def _remove_stale_flash_attn() -> None:
         )
 
 
+def _flash_attn_gpu_below_floor() -> bool:
+    """A visible CUDA GPU below sm80 (a T4), where Unsloth leaves FlashAttention 2 off. No visible
+    GPU is False: an image build installs ahead of the GPU it will run on."""
+    return gpu_below_flash_attn_floor()
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
@@ -8592,22 +8694,29 @@ def _ensure_flash_attn() -> None:
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
+    if wheel_url and not (env or {}).get("hip_version") and _flash_attn_gpu_below_floor():
+        # Unsloth only turns FlashAttention 2 on from sm80; a T4 would download it for nothing.
+        _note("flash-attn needs an sm80 or newer GPU; skipped")
+        if stale:
+            _remove_stale_flash_attn()
+        return
     wheel_available = url_exists(wheel_url) if wheel_url else False
     if wheel_available:
         # installing a distribution invalidates caches keyed on the action counter.
         _count_install_action()
-        outcome = install_prebuilt(
-            wheel_url,
-            install = install_wheel,
-            verify = _flash_attn_importable,
-            on_failed = lambda installer, wheel_result: _print_optional_install_failure(
-                f"Installing flash-attn prebuilt wheel with {installer}",
-                wheel_result,
-            ),
-            use_uv = USE_UV,
-            uv_needs_system = UV_NEEDS_SYSTEM,
-            reinstall = stale,
-        )
+        with _install_heartbeat("flash-attn"):
+            outcome = install_prebuilt(
+                wheel_url,
+                install = install_wheel,
+                verify = _flash_attn_importable,
+                on_failed = lambda installer, wheel_result: _print_optional_install_failure(
+                    f"Installing flash-attn prebuilt wheel with {installer}",
+                    wheel_result,
+                ),
+                use_uv = USE_UV,
+                uv_needs_system = UV_NEEDS_SYSTEM,
+                reinstall = stale,
+            )
         if outcome == "installed":
             return
         if outcome == "rejected":
@@ -8646,6 +8755,129 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
+
+
+# The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
+_SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
+# Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
+_SSM_EXTENSION_BROKEN_EXIT = 87
+# Missing outright = the extension-free mamba_ssm wheel (Triton route); causal_conv1d has none.
+_SSM_EXTENSION_OPTIONAL = {"selective_scan_cuda"}
+_SSM_EXTENSION_PROBE = (
+    "import importlib.util\n"
+    "import sys\n"
+    "import torch\n"
+    "if {optional} and importlib.util.find_spec('{extension}') is None:\n"
+    "    sys.exit(0)\n"
+    "try:\n"
+    "    import {extension}\n"
+    "except (ImportError, OSError) as exc:\n"
+    "    print('{extension}: %s: %s' % (type(exc).__name__, exc), file = sys.stderr)\n"
+    "    sys.exit({code})\n"
+)
+
+
+def _ssm_extension_probe(extension: str) -> str:
+    return _SSM_EXTENSION_PROBE.format(
+        extension = extension,
+        code = _SSM_EXTENSION_BROKEN_EXIT,
+        optional = extension in _SSM_EXTENSION_OPTIONAL,
+    )
+
+
+def _probe_tail(stderr) -> str:
+    lines = [line for line in str(stderr or "").strip().splitlines() if line.strip()]
+    return " | ".join(lines[-3:])[-400:]
+
+
+def _run_import_probe(code: str):
+    """Run *code* in a child; None when it hung or could not start (inconclusive)."""
+    try:
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _remove_stale_ssm_kernels() -> None:
+    """Remove an installed causal-conv1d / mamba-ssm whose compiled extension no longer imports,
+    e.g. built for the torch a repair just replaced. Never installs: a model that needs them
+    installs them when it loads, and a broken native module left behind can take that load down.
+
+    Removal needs proof: torch itself imports, and the extension import then completes with an
+    ImportError / OSError. A torch that does not import, a probe killed by a signal, a hang or a
+    probe that cannot start says nothing about the kernel, and an offline machine could not get
+    it back, so each keeps it."""
+    if NO_TORCH or IS_MACOS:
+        return
+    installed = [
+        name
+        for name in _SSM_KERNEL_EXTENSIONS
+        if _installed_distribution_version(KERNELS[name][0]) is not None
+    ]
+    if not installed:
+        return
+    torch_probe = _run_import_probe("import torch")
+    if torch_probe is None or torch_probe.returncode != 0:
+        detail = "" if torch_probe is None else f": {_probe_tail(torch_probe.stderr)}"
+        _note(f"torch did not import cleanly; kept {', '.join(installed)}{detail}")
+        return
+    for name in installed:
+        distribution = KERNELS[name][0]
+        extension = _SSM_KERNEL_EXTENSIONS[name]
+        probe = _run_import_probe(_ssm_extension_probe(extension))
+        if probe is None or probe.returncode == 0:
+            continue
+        tail = _probe_tail(probe.stderr)
+        if probe.returncode != _SSM_EXTENSION_BROKEN_EXIT or extension not in tail:
+            # A signal (negative code) or a crash outside the extension import: inconclusive.
+            _note(f"could not check {name} (exit {probe.returncode}); kept it: {tail}")
+            continue
+        # The verdict above was reached before this lock, which can wait up to KERNEL_LOCK_WAIT
+        # while a Studio worker or `unsloth install-kernels` (re)installs this kernel. So decide
+        # again while holding it: remove only when the extension still fails the same way, never
+        # a fresh install that loads now.
+        with kernel_install_lock(name) as held:
+            if not held:
+                _note(
+                    f"{name} does not load with this torch, but its install lock is busy; kept it"
+                )
+                continue
+            recheck = _run_import_probe(_ssm_extension_probe(extension))
+            if recheck is not None and recheck.returncode == 0:
+                _note(f"{name} now loads with this torch; kept it")
+                continue
+            recheck_tail = "" if recheck is None else _probe_tail(recheck.stderr)
+            if (
+                recheck is None
+                or recheck.returncode != _SSM_EXTENSION_BROKEN_EXIT
+                or extension not in recheck_tail
+            ):
+                code = "hung" if recheck is None else f"exit {recheck.returncode}"
+                _note(f"could not re-check {name} ({code}); kept it: {recheck_tail}")
+                continue
+            tail = recheck_tail
+            _count_install_action()
+            try:
+                removed = _uninstall_distribution(distribution)
+            except OSError:
+                removed = False
+        if removed:
+            _step("warning", f"{name} does not load with this torch; removed it ({tail})", _warn)
+        else:
+            _step(
+                "warning",
+                f"{name} does not load with this torch and could not be removed; "
+                f"uninstall {distribution} manually ({tail})",
+                _warn,
+            )
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -8687,13 +8919,45 @@ def _bootstrap_uv() -> bool:
     return True
 
 
+# CA trust floor. certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3. pip before 26.2.2
+# always verifies TLS with its own vendored certifi (pip dropped Python 3.9 before that release).
+_TRUST_FLOOR_CERTIFI = "certifi>=2026.10.19"
+_TRUST_FLOOR_PIP = "pip>=26.2.2"
+
+
+def _trust_floor_specs() -> list[str]:
+    """The trust-floor requirements this venv does not already satisfy."""
+    wanted = [_TRUST_FLOOR_CERTIFI]
+    if sys.version_info >= (3, 10):
+        wanted.append(_TRUST_FLOOR_PIP)
+    missing = []
+    for spec in wanted:
+        name, specifier = re.match(r"([a-z]+)(.*)", spec).groups()
+        installed = _installed_distribution_version(name)
+        if installed is None or _version_satisfies(installed, specifier) is not True:
+            missing.append(spec)
+    return missing
+
+
+def _ensure_trust_floor() -> None:
+    """Raise certifi (and pip on 3.10+) to the trust floor. Every setup, update and repair, both
+    modes. A lower bound only: a satisfied venv runs nothing, and nothing is ever downgraded.
+    Offline it warns and carries on; the next run with a network retries."""
+    missing = _trust_floor_specs()
+    if not missing:
+        return
+    if not pip_install_try("Raising the CA trust floor (" + ", ".join(missing) + ")", *missing):
+        _note("warning: could not install " + ", ".join(missing) + "; retrying on the next update")
+
+
 def _venv_pip_is_usable() -> bool:
     """Whether this interpreter already has a pip new enough for the pass.
 
     Read from metadata rather than by spawning it: the bootstrap below reinstalls pip from the
     index on every run, a download and a resolve for a package nothing changed. 23.0 is the
     floor because the constraint and override handling the pass relies on predates it
-    comfortably; a fresh uv venv has no pip at all and still bootstraps.
+    comfortably; a fresh uv venv has no pip at all and still bootstraps. On Python 3.10+ the
+    floor is the trust floor's pip, since an older pip verifies TLS with its own vendored certifi.
     """
     try:
         if importlib.util.find_spec("pip") is None:
@@ -8708,6 +8972,11 @@ def _venv_pip_is_usable() -> bool:
     except (AttributeError, ValueError):
         return False
     if major < 23:
+        return False
+    if (
+        sys.version_info >= (3, 10)
+        and _version_satisfies(installed, _TRUST_FLOOR_PIP[3:]) is not True
+    ):
         return False
     # Metadata survives a truncated pip, and everything without uv is `python -m pip`: one bounded
     # launch settles it.
@@ -9522,7 +9791,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.3` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.8) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -10352,6 +10621,103 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     return ok
 
 
+FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
+
+
+def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
+    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
+
+    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
+    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
+    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
+    """
+    zoo_spec = "unsloth-zoo"
+    desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+    if not (desktop_min_ver and package_name == "unsloth"):
+        return package_name, zoo_spec
+    spec = f"unsloth>={desktop_min_ver}"
+    marker = Path(sys.prefix) / FEED_CEILING_MARKER
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    if not USE_UV:
+        return spec, zoo_spec
+
+    def resolve(*requirements: str, deps: bool = False) -> "dict[str, str] | None":
+        # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        # Linux x86_64 is fixed so a host without torch wheels (Intel Mac, no-torch) still resolves.
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "probe.txt"
+            argv = ["uv", "pip", "compile", "--python", sys.executable]
+            argv += ["--python-platform", "x86_64-manylinux_2_28"] if deps else ["--no-deps"]
+            argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
+            argv += ["--output-file", str(out), "-"]
+            try:
+                result = subprocess.run(
+                    argv,
+                    input = "\n".join(requirements) + "\n",
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 120,
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                text = out.read_text(encoding = "utf-8") if result.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError):
+                return None
+        if text is None:
+            return None
+        found = dict(
+            re.findall(r"^(unsloth(?:-zoo)?)==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        )
+        return found or None
+
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+        return (resolve(requirement) or {}).get(name)
+
+    found = resolve(spec, zoo_spec, deps = True) or {}
+    if found.get("unsloth"):
+        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
+        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
+        return spec, (
+            f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
+        )
+    requested_present = newest(spec) is not None
+    # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
+    zoo = newest(zoo_spec, "unsloth-zoo")
+    available = newest(f"unsloth<={zoo}") if zoo else None
+    if available is None:
+        return spec, zoo_spec
+    # A newer unsloth whose zoo floor the index still meets beats that bound (unsloth patch
+    # releases often ship without a zoo release).
+    pair = resolve(f"unsloth>={available}", zoo_spec, deps = True) or {}
+    if pair.get("unsloth") and pair.get("unsloth-zoo"):
+        available, zoo = pair["unsloth"], pair["unsloth-zoo"]
+    elif requested_present:
+        # The index has the release and nothing older resolves either: not a lag to work around.
+        return spec, zoo_spec
+    try:
+        from packaging.version import Version
+        lowered = Version(available) < Version(desktop_min_ver)
+    except Exception:  # noqa: BLE001 - unparseable: treat as lowered, as before
+        lowered = True
+    if lowered:
+        _note(
+            f"[WARN] your package index does not have {spec} with a matching unsloth-zoo yet; "
+            f"installing unsloth {available} + unsloth-zoo {zoo}, the newest pair it has",
+            _warn,
+        )
+        try:
+            marker.write_text(
+                json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+                encoding = "utf-8",
+            )
+        except OSError:
+            pass
+    return f"unsloth=={available}", f"unsloth-zoo=={zoo}"
+
+
 def pip_install(
     label: str,
     *args: str,
@@ -10611,7 +10977,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -10620,8 +10986,11 @@ _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PIN
 )
 # mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
 # needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
+# Pillow is capped: mflux imports PIL._typing, which in Pillow 13.0.0 needs numbers._IntegralLike,
+# absent on CPython 3.11 - 3.14, so every mflux import fails with it.
 _MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
 _MLX_DIFFUSION_DEPS: tuple[str, ...] = (
+    "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",
     "toml>=0.10.2,<1",
@@ -11690,9 +12059,10 @@ def _triton_kernels_step() -> None:
 
 DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
 
-# Diffusers main declares requires-python >= 3.10 while the release pin file still names 0.36.0
-# for anything older, so 3.9 is a supported install this step can never satisfy.
-DIFFUSERS_MAIN_MIN_PYTHON = (3, 10)
+# Diffusers main declares requires-python >= 3.11 (huggingface/diffusers#15030) while the release
+# pin covers 3.10 (0.41.0) and 3.9 (0.36.0), so both are supported installs this step can never
+# satisfy. They keep the release and only a model that needs the main build is unavailable.
+DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 
 
 def _diffusers_main_requested() -> bool:
@@ -12035,11 +12405,11 @@ def _diffusers_main_step() -> None:
         _progress("diffusers main (opted out, skipped)")
         return
     if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
-        # Diffusers main needs 3.10, and the release pin file still carries a 0.36.0 line for
-        # older interpreters, so 3.9 is a supported path this can never satisfy. Unmarked, pip would
-        # clone the repository and only then reject its requires-python, and since the build can
-        # never become resident that clone repeats on every install and update forever.
-        _progress("diffusers main (skipped, needs python 3.10)")
+        # Diffusers main needs 3.11, and the release pin covers 3.10 and 3.9, so those are supported
+        # paths this can never satisfy. Unmarked, pip would clone the repository and only then reject
+        # its requires-python, and since the build can never become resident that clone repeats on
+        # every install and update forever.
+        _progress("diffusers main (skipped, needs python 3.11)")
         return
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file():
@@ -12524,6 +12894,10 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
+    # 2a. Before the bulk installs and outside every skip path: the bootstrap above only
+    # guarantees an installer, not a current trust store.
+    _ensure_trust_floor()
+
     # A superseded dist-info makes version() and every RECORD consumer choose
     # an arbitrary package version. Repair it before any fast package operation,
     # including installer handoffs that set skip_base after their own upgrade.
@@ -12601,12 +12975,7 @@ def install_python_stack() -> int:
     elif NO_TORCH:
         # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -12616,7 +12985,7 @@ def install_python_stack() -> int:
             "--upgrade-package",
             "unsloth-zoo",
             unsloth_spec,
-            "unsloth-zoo",
+            zoo_spec,
         )
         # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(
@@ -12659,12 +13028,7 @@ def install_python_stack() -> int:
         )
     else:
         _progress("base packages")
-        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         with _FreezeNewTorchForCoreUpdate():
             pip_install(
                 "Updating core packages",
@@ -12674,7 +13038,7 @@ def install_python_stack() -> int:
                 "--upgrade-package",
                 "unsloth-zoo",
                 unsloth_spec,
-                "unsloth-zoo",
+                zoo_spec,
             )
 
     # The package just installed may ship a newer copy of this file. Raised rather than rerun
@@ -12784,7 +13148,7 @@ def install_python_stack() -> int:
             _note(
                 "AMD GPU detected but ROCm PyTorch could not be auto-installed. "
                 "Manual install may be required. See: "
-                "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                "https://unsloth.ai/docs/get-started/install/amd"
             )
 
     # 3. Extra dependencies
@@ -12829,6 +13193,7 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
+        _remove_stale_ssm_kernels()
 
     # # 6. Patch: override llama_cpp.py with fix from unsloth-zoo  feature/llama-cpp-windows-support branch
     # patch_package_file(
@@ -13014,6 +13379,7 @@ def install_python_stack() -> int:
             _install_torchao_for_torch(_torch_after_repair)
             # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -13030,6 +13396,7 @@ def install_python_stack() -> int:
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
             # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
+            _remove_stale_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
