@@ -134,9 +134,7 @@ import {
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 
-const SaveForModelButton = lazy(
-  () => import("./components/save-for-model-button"),
-);
+const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -1710,10 +1708,10 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
-            {/* Saves only these sampling values, so it sits under them. */}
+            {/* Remembers only these sampling values, so it sits under them. */}
             {!isExternalModel && currentCheckpoint ? (
               <Suspense fallback={null}>
-                <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
+                <SamplingFooter store={useChatRuntimeStore} notify={toast} />
               </Suspense>
             ) : null}
           </div>
