@@ -187,10 +187,10 @@ def validate_rule(rule: dict) -> dict:
         json_type = schema.get("type", "object")
         if json_type not in JSON_TYPES:
             raise RewardError(f"schema.type takes one of {', '.join(JSON_TYPES)}.")
-        out["schema"] = {
-            "type": json_type,
-            "required": [str(k) for k in schema.get("required", []) or []],
-        }
+        required = schema.get("required", []) or []
+        if not isinstance(required, list) or not all(isinstance(k, str) for k in required):
+            raise RewardError("schema.required must be a list of key names.")
+        out["schema"] = {"type": json_type, "required": required}
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
@@ -401,10 +401,15 @@ def _to_float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _no_constant(name: str) -> Any:
+    raise ValueError(name)
+
+
 def _json_matches(text: str, schema: dict) -> bool:
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
-        value = json.loads(fenced.group(1) if fenced else text)
+        # parse_constant: NaN / Infinity / -Infinity are Python's extension, not JSON.
+        value = json.loads(fenced.group(1) if fenced else text, parse_constant = _no_constant)
     except (ValueError, TypeError):
         return False
     kind = schema["type"]
@@ -412,8 +417,11 @@ def _json_matches(text: str, schema: dict) -> bool:
     if kind == "null":
         ok = value is None
     elif kind in ("number", "integer"):
-        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-        ok = ok and (kind == "number" or float(value).is_integer())
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        # 1e999 parses to inf without passing through parse_constant.
+        ok = ok or (isinstance(value, float) and math.isfinite(value))
+        # An int may be past float range, so only a float is asked whether it is whole.
+        ok = ok and (kind == "number" or isinstance(value, int) or value.is_integer())
     else:
         ok = isinstance(
             value, {"object": dict, "array": list, "string": str, "boolean": bool}[kind]

@@ -248,3 +248,24 @@ def test_json_schema_types_are_checked_or_refused():
     assert rewards.score_rule(rule("null"), "null") == 1
     with pytest.raises(rewards.RewardError, match = "schema.type"):
         rule("objcet")
+
+
+def test_json_schema_refuses_nan_huge_ints_and_a_scalar_required():
+    def rule(kind, **schema):
+        return rewards.validate_rule(
+            {
+                "type": "json_schema",
+                "schema": {"type": kind, **schema},
+                "score": {"match": 1, "miss": 0},
+            }
+        )
+
+    # Python's json.loads takes NaN / Infinity, which are not JSON.
+    assert rewards.score_rule(rule("number"), "NaN") == 0
+    assert rewards.score_rule(rule("number"), "-Infinity") == 0
+    assert rewards.score_rule(rule("number"), "1e999") == 0
+    assert rewards.score_rule(rule("number"), "2.5") == 1
+    # A whole number past float range is still an integer, and must not raise.
+    assert rewards.score_rule(rule("integer"), "9" * 400) == 1
+    with pytest.raises(rewards.RewardError, match = "required"):
+        rule("object", required = "id")
