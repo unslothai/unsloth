@@ -51,10 +51,8 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
-    // A filled action button has one shape at every text size, icon or not, so sm, lg and hero
-    // read as the same control as default: 12px from the edge to the label at the sides and 8px above
-    // and below its line, the 1px border included. Icons take no height of their own, so an icon never
-    // adds padding. Ghost and link stay compact for toolbars and inline actions.
+    // Filled buttons share one shape at every size: 12px sides, 8px above and below the label's line
+    // (border included); icons take no height. Ghost and link stay compact.
     compoundVariants: [
       {
         variant: [
