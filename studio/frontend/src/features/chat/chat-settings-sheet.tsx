@@ -1491,7 +1491,8 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={openSystemPromptEditor}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  // Full 28px target, laid out at the chevron's 14px so this header is as tall as the others.
+                  className="nav-icon-btn -my-[7px] text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
                   aria-label="Edit system prompt"
                 >
                   <HugeiconsIcon
