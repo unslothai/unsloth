@@ -3649,6 +3649,19 @@ def _openai_llama_preemption_plan(
     # prefill waits for it as an unpausable holder does. One with no token yet may still be
     # arming itself, and waiting on it could wait on a chat that waits on this one.
     awaited = [v.gen_id for v in victims if not v.parked_on_a_tool and not v.fresh]
+    # The plan counts chats another arrival already told to pause as gone, so with no room of its
+    # own this one waits for them as well, as an unpausable holder does.
+    in_flight = [
+        g
+        for g in controller.evictions_in_flight(exclude = gen_id)
+        if g not in awaited and not getattr(controller.participant(g), "fresh", True)
+    ]
+    if (
+        in_flight
+        and participant is not None
+        and not controller.room_for(gen_id, participant.tokens)
+    ):
+        awaited += in_flight
     if awaited and participant is not None:
         participant.awaiting_victims = awaited
     snapshot = controller.snapshot()
