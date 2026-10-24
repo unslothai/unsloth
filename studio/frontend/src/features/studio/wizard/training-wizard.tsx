@@ -493,7 +493,7 @@ export function TrainingWizard({
           titleBadge={<NewBadge />}
           description={t("rl.rewards.description")}
           icon={Award01Icon}
-          chipTint="var(--chart-2)"
+          chipTint="var(--chart-1)"
         >
           <RewardsSection />
         </SectionBox>
