@@ -13239,6 +13239,8 @@ class DiffusionBackend:
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
+            # Kicked from the finally below: an offloaded denoiser's placement (restore_resident) must be back first.
+            kick_bg = False
             bg_eager = False
             bg_token = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
@@ -14293,7 +14295,7 @@ class DiffusionBackend:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
                     if _hires_pass is None or not _hires_pass.defer_bg_kick:
-                        bg.kick()
+                        kick_bg = True
                 else:
                     try:
                         # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
@@ -14429,6 +14431,11 @@ class DiffusionBackend:
                         restore_resident()
                     except Exception as exc:  # noqa: BLE001 - the groups keep streaming
                         logger.warning("diffusion.memory: re-residency failed: %s", exc)
+                if kick_bg and bg is not None:
+                    try:
+                        bg.kick()
+                    except Exception as exc:  # noqa: BLE001 - the next render compiles inline
+                        logger.warning("diffusion.bg_compile: kick failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
