@@ -10,8 +10,10 @@ import {
   Background,
   BackgroundVariant,
   type Edge,
+  getNodesBounds,
   type EdgeTypes,
   type Node,
+  type NodeChange,
   type NodeTypes,
   Panel,
   ReactFlow,
@@ -33,6 +35,10 @@ import { buildRecipeEditorTourSteps } from "./tour";
 import { BlockSheet } from "./components/block-sheet";
 import { CANVAS_DELETE_KEYS } from "./constants";
 import { LayoutControls } from "./components/controls/layout-controls";
+import {
+  SuperCardBreadcrumbBar,
+  SuperCardCombineToolbar,
+} from "./components/controls/super-card-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
@@ -42,6 +48,7 @@ import {
   type RecipeGraphAuxNodeData,
 } from "./components/recipe-graph-aux-node";
 import { RecipeNode } from "./components/recipe-graph-node";
+import { RecipeGraphSuperCardNode } from "./components/recipe-graph-super-card-node";
 import { RecipeGraphSemanticEdge } from "./components/recipe-graph-semantic-edge";
 import { RecipeStudioHeader } from "./components/recipe-studio-header";
 import { DataEdge } from "./components/rf-ui/data-edge";
@@ -68,12 +75,24 @@ import {
   FIT_VIEW_PADDING,
   getFitViewTargetNodes,
 } from "./utils/graph/fit-view";
+import {
+  SUPER_CARD_NODE_TYPE,
+  applySuperCardView,
+  getCombinableSelection,
+  superCardFocusIds,
+} from "./utils/graph/super-cards";
 import { buildRecipePayload } from "./utils/payload";
 import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
 
-const NODE_TYPES: NodeTypes = { builder: RecipeNode, aux: RecipeGraphAuxNode };
+const SUPER_CARD_FOCUS_MIN_ZOOM = 0.8;
+
+const NODE_TYPES: NodeTypes = {
+  builder: RecipeNode,
+  aux: RecipeGraphAuxNode,
+  [SUPER_CARD_NODE_TYPE]: RecipeGraphSuperCardNode,
+};
 const EDGE_TYPES: EdgeTypes = {
   canvas: DataEdge,
   semantic: RecipeGraphSemanticEdge,
@@ -158,6 +177,15 @@ export function RecipeStudioPage({
     applyLayout,
     setAuxNodePosition,
     setExecutionLocked,
+    superCards,
+    openSuperCardId,
+    selectedSuperCardIds,
+    combineSelectionIntoSuperCard,
+    ungroupSuperCard,
+    openSuperCard,
+    renameSuperCard,
+    setSuperCardPosition,
+    setSelectedSuperCardIds,
   } = useRecipeStudioStore(
     useShallow((state) => ({
       nodes: state.nodes,
@@ -198,6 +226,15 @@ export function RecipeStudioPage({
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
       setExecutionLocked: state.setExecutionLocked,
+      superCards: state.superCards,
+      openSuperCardId: state.openSuperCardId,
+      selectedSuperCardIds: state.selectedSuperCardIds,
+      combineSelectionIntoSuperCard: state.combineSelectionIntoSuperCard,
+      ungroupSuperCard: state.ungroupSuperCard,
+      openSuperCard: state.openSuperCard,
+      renameSuperCard: state.renameSuperCard,
+      setSuperCardPosition: state.setSuperCardPosition,
+      setSelectedSuperCardIds: state.setSelectedSuperCardIds,
     })),
   );
   const [sheetContainer, setSheetContainer] = useState<HTMLDivElement | null>(
@@ -311,8 +348,17 @@ export function RecipeStudioPage({
         processors,
         layoutDirection,
         auxNodePositions,
+        superCards,
       ),
-    [auxNodePositions, configs, edges, layoutDirection, nodes, processors],
+    [
+      auxNodePositions,
+      configs,
+      edges,
+      layoutDirection,
+      nodes,
+      processors,
+      superCards,
+    ],
   );
   const getCurrentPayloadFromStore = useCallback((): RecipePayload => {
     const state = useRecipeStudioStore.getState();
@@ -323,6 +369,7 @@ export function RecipeStudioPage({
       state.processors,
       state.layoutDirection,
       state.auxNodePositions,
+      state.superCards,
     ).payload;
   }, []);
   const {
@@ -381,8 +428,7 @@ export function RecipeStudioPage({
   const {
     activeExecution,
     runtimeVisualState,
-    displayGraph,
-    displayNodeIds,
+    displayGraph: flatDisplayGraph,
     currentColumnIcon,
   } = useRecipeRuntimeVisuals({
     executions,
@@ -393,6 +439,100 @@ export function RecipeStudioPage({
     auxNodePositions,
     llmAuxVisibility,
   });
+  // Cards live outside the store, so keep React Flow's measurements here: a
+  // card handed back without them is hidden for a frame and eats clicks.
+  const superCardSizesRef = useRef(
+    new Map<string, { width: number; height: number }>(),
+  );
+  const displayGraph = useMemo(() => {
+    const view = applySuperCardView({
+      graph: flatDisplayGraph,
+      superCards,
+      openSuperCardId,
+      selectedSuperCardIds: new Set(selectedSuperCardIds),
+      configs,
+      edges,
+      layoutDirection,
+      executions,
+      runtime: runtimeVisualState,
+    });
+    return {
+      ...view,
+      nodes: view.nodes.map((node) => {
+        const measured =
+          node.type === SUPER_CARD_NODE_TYPE
+            ? superCardSizesRef.current.get(node.id)
+            : undefined;
+        return measured ? { ...node, measured } : node;
+      }),
+    };
+  }, [
+    configs,
+    edges,
+    executions,
+    flatDisplayGraph,
+    layoutDirection,
+    openSuperCardId,
+    runtimeVisualState,
+    selectedSuperCardIds,
+    superCards,
+  ]);
+  const displayNodeIds = useMemo(
+    () => displayGraph.nodes.map((node) => node.id),
+    [displayGraph.nodes],
+  );
+  const combinableIds = useMemo(
+    () => (openSuperCardId ? [] : getCombinableSelection(nodes, superCards)),
+    [nodes, openSuperCardId, superCards],
+  );
+  const handleCanvasNodesChange = useCallback(
+    (changes: NodeChange<Node<RecipeNodeData | RecipeGraphAuxNodeData>>[]) => {
+      const rest: typeof changes = [];
+      let selection: string[] | null = null;
+      for (const change of changes) {
+        if (!("id" in change && superCards[change.id])) {
+          rest.push(change);
+          continue;
+        }
+        if (change.type === "dimensions" && change.dimensions) {
+          superCardSizesRef.current.set(change.id, change.dimensions);
+        } else if (change.type === "position" && change.position) {
+          setSuperCardPosition(change.id, change.position);
+        } else if (change.type === "select") {
+          selection ??= [...selectedSuperCardIds];
+          selection = change.selected
+            ? [...new Set([...selection, change.id])]
+            : selection.filter((id) => id !== change.id);
+        }
+      }
+      if (selection) {
+        setSelectedSuperCardIds(selection);
+      }
+      if (rest.length > 0) {
+        handleNodesChange(rest);
+      }
+    },
+    [
+      handleNodesChange,
+      selectedSuperCardIds,
+      setSelectedSuperCardIds,
+      setSuperCardPosition,
+      superCards,
+    ],
+  );
+  const handleCanvasNodeDoubleClick = useCallback(
+    (
+      event: Parameters<typeof handleNodeDoubleClick>[0],
+      node: Node<RecipeNodeData | RecipeGraphAuxNodeData>,
+    ) => {
+      if (node.type === SUPER_CARD_NODE_TYPE) {
+        openSuperCard(node.id);
+        return;
+      }
+      handleNodeDoubleClick(event, node);
+    },
+    [handleNodeDoubleClick, openSuperCard],
+  );
   const tourSteps = useMemo(
     () =>
       buildRecipeEditorTourSteps({
@@ -501,7 +641,11 @@ export function RecipeStudioPage({
     runDialogKind === "preview" ? previewLoading : fullLoading;
 
   const scheduleFitView = useCallback(
-    ({ delayMs = 0 }: { delayMs?: number } = {}) => {
+    ({
+      delayMs = 0,
+      nodeIds,
+      minZoom,
+    }: { delayMs?: number; nodeIds?: string[]; minZoom?: number } = {}) => {
       if (!reactFlowInstance) {
         // eslint-disable-next-line @typescript-eslint/no-empty-function
         return () => {
@@ -520,18 +664,44 @@ export function RecipeStudioPage({
           (n) => n.measured?.width != null && n.measured?.height != null,
         );
 
+      const getTargets = (): Node[] => {
+        const nodes = reactFlowInstance.getNodes();
+        if (!nodeIds) {
+          return getFitViewTargetNodes(nodes);
+        }
+        const byId = new Map(nodes.map((node) => [node.id, node]));
+        return nodeIds.flatMap((id) => {
+          const node = byId.get(id);
+          return node ? [node] : [];
+        });
+      };
+
       /** Execute fitView on the current primary workflow nodes. */
       const doFit = () => {
-        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        const targets = getTargets();
         if (targets.length === 0) {
           return;
         }
         viewportMovedSinceAutoFitRef.current = false;
+        // When the whole group won't fit at minZoom, centre the first target
+        // at minZoom instead of letting a clamped fit push it off screen.
+        const box = flowContainerRef.current?.getBoundingClientRect();
+        const bounds = getNodesBounds(targets);
+        const fitZoom = box
+          ? Math.min(
+              box.width / (bounds.width * (1 + 2 * FIT_VIEW_PADDING)),
+              box.height / (bounds.height * (1 + 2 * FIT_VIEW_PADDING)),
+            )
+          : Number.POSITIVE_INFINITY;
+        const centreFirst = minZoom !== undefined && fitZoom < minZoom;
         reactFlowInstance.fitView({
           duration: FIT_VIEW_DURATION_MS,
-          maxZoom: FIT_VIEW_MAX_ZOOM,
+          maxZoom: centreFirst ? minZoom : FIT_VIEW_MAX_ZOOM,
           padding: FIT_VIEW_PADDING,
-          nodes: targets.map((n) => ({ id: n.id })),
+          nodes: (centreFirst ? targets.slice(0, 1) : targets).map((n) => ({
+            id: n.id,
+          })),
+          ...(minZoom ? { minZoom } : {}),
         });
       };
 
@@ -546,7 +716,7 @@ export function RecipeStudioPage({
           doFit();
           return;
         }
-        const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
+        const targets = getTargets();
         if (allTargetsMeasured(targets)) {
           stableCount++;
           // Extra frames after measurements appear let updateNodeInternals
@@ -585,6 +755,20 @@ export function RecipeStudioPage({
     },
     [reactFlowInstance],
   );
+
+  // Frame the new card and what it wires to, but never below a readable zoom;
+  // far neighbours can sit past the edge.
+  const handleCombine = useCallback(() => {
+    combineSelectionIntoSuperCard();
+    const state = useRecipeStudioStore.getState();
+    const cardId = state.selectedSuperCardIds[0];
+    if (cardId && state.superCards[cardId]) {
+      scheduleFitView({
+        nodeIds: superCardFocusIds(cardId, state.superCards, state.edges),
+        minZoom: SUPER_CARD_FOCUS_MIN_ZOOM,
+      });
+    }
+  }, [combineSelectionIntoSuperCard, scheduleFitView]);
 
   const toggleMaximize = useCallback(() => {
     // The maximized surface is a fixed z-50 overlay that already covers the app sidebar
@@ -651,151 +835,175 @@ export function RecipeStudioPage({
 
   let editorContent: ReactElement;
   if (initialRecipeReady) {
+    const openCard = openSuperCardId ? superCards[openSuperCardId] : null;
     editorContent = (
-      <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
-        onInit={setReactFlowInstance}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        nodes={displayGraph.nodes}
-        edges={displayGraph.edges}
-        proOptions={{ hideAttribution: true }}
-        nodeTypes={NODE_TYPES}
-        edgeTypes={EDGE_TYPES}
-        defaultEdgeOptions={{
-          type: "canvas",
-          data: { path: "smoothstep" },
-        }}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={handleEdgesChange}
-        onConnect={onConnect}
-        onNodeClick={handleNodeClick}
-        onNodeDoubleClick={handleNodeDoubleClick}
-        deleteKeyCode={CANVAS_DELETE_KEYS}
-        isValidConnection={isValidConnection}
-        onMoveEnd={(event) => {
-          if (event) {
-            viewportMovedSinceAutoFitRef.current = true;
-          }
-        }}
-        nodesDraggable={canvasInteractive}
-        nodesConnectable={canvasInteractive}
-        elementsSelectable={canvasInteractive}
-        fitView={false}
-        className="@container/canvas h-full w-full rounded-t-none"
-      >
-        <LayoutControls
-          direction={layoutDirection}
-          onLayout={applyLayout}
-          onToggleDirection={handleToggleDirection}
-        />
-        <InternalsSync nodeIds={displayNodeIds} />
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={18}
-          size={1}
-          color="#d4d4d8"
-        />
-        {nodes.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
-            <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 px-6 py-6 text-center shadow-border backdrop-blur-[1px]">
-              <div className="mx-auto flex size-12 items-center justify-center corner-squircle rounded-md border border-border/70 bg-muted/40">
-                <HugeiconsIcon
-                  icon={DocumentAttachmentIcon}
-                  className="size-6 text-muted-foreground"
-                />
-              </div>
-              <div className="mt-4 space-y-2">
-                <p className="text-ui-11 font-semibold uppercase tracking-wide text-primary">
-                  Best place to start
-                </p>
-                <p className="text-sm font-semibold text-foreground">
-                  Start with source data
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Most synthetic-data recipes begin with a document, dataset, or
-                  file before adding generation and checks.
-                </p>
-              </div>
-              <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
-                <Button
-                  variant="dark"
-                  type="button"
-                  className="corner-squircle"
-                  onClick={openSourceBlockSheet}
-                >
-                  <HugeiconsIcon
-                    icon={DocumentAttachmentIcon}
-                    className="size-4"
-                  />
-                  Start with source data
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="corner-squircle"
-                  onClick={openRootBlockSheet}
-                >
-                  <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
-                  Browse all steps
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-        <Panel position="top-right" className="m-3" data-tour="recipe-add-step">
-          <BlockSheet
-            container={sheetContainer}
-            sheetView={sheetView}
-            onViewChange={setSheetView}
-            open={sheetOpen}
-            onOpenChange={setSheetOpen}
-            onAddSampler={handleAddSamplerFromSheet}
-            onAddSeed={handleAddSeedFromSheet}
-            onAddLlm={handleAddLlmFromSheet}
-            onAddModelProvider={handleAddModelProviderFromSheet}
-            onAddModelConfig={handleAddModelConfigFromSheet}
-            onAddToolProfile={handleAddToolProfileFromSheet}
-            onAddExpression={handleAddExpressionFromSheet}
-            onAddValidator={handleAddValidatorFromSheet}
-            onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
-            onOpenProcessors={openProcessorsFromSheet}
-            copied={copied}
-            onCopy={copyRecipe}
-            onImport={() => setImportOpen(true)}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {openCard && (
+          <SuperCardBreadcrumbBar
+            card={openCard}
+            recipeName={workflowName}
+            locked={executionLocked}
+            onExit={() => openSuperCard(null)}
+            onRename={renameSuperCard}
+            onUngroup={ungroupSuperCard}
           />
-        </Panel>
-        <ViewportControls
-          interactive={canvasInteractive}
-          lockDisabled={executionLocked}
-          onToggleInteractive={toggleInteractive}
-          maximized={maximized}
-          onToggleMaximize={toggleMaximize}
-        />
-        {islandExecution &&
-          (isExecutionInProgress(islandExecution.status) ||
-            islandExecution.status === "completed") && (
-            <Panel position="top-center" className="!m-0">
-              <ExecutionProgressIsland
-                execution={islandExecution}
-                currentColumnIcon={currentColumnIcon}
-                minimized={runtimeIslandMinimized}
-                onMinimizedChange={setRuntimeIslandMinimized}
-                onViewExecutions={() => setActiveView("executions")}
+        )}
+        <div className="relative min-h-0 flex-1">
+          <ReactFlow<Node<RecipeNodeData | RecipeGraphAuxNodeData>, Edge>
+            onInit={setReactFlowInstance}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            nodes={displayGraph.nodes}
+            edges={displayGraph.edges}
+            proOptions={{ hideAttribution: true }}
+            nodeTypes={NODE_TYPES}
+            edgeTypes={EDGE_TYPES}
+            defaultEdgeOptions={{
+              type: "canvas",
+              data: { path: "smoothstep" },
+            }}
+            onNodesChange={handleCanvasNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={handleNodeClick}
+            onNodeDoubleClick={handleCanvasNodeDoubleClick}
+            deleteKeyCode={CANVAS_DELETE_KEYS}
+            isValidConnection={isValidConnection}
+            onMoveEnd={(event) => {
+              if (event) {
+                viewportMovedSinceAutoFitRef.current = true;
+              }
+            }}
+            nodesDraggable={canvasInteractive}
+            nodesConnectable={canvasInteractive}
+            elementsSelectable={canvasInteractive}
+            fitView={false}
+            className="@container/canvas h-full w-full rounded-t-none"
+          >
+            <LayoutControls
+              direction={layoutDirection}
+              onLayout={applyLayout}
+              onToggleDirection={handleToggleDirection}
+            />
+            <SuperCardCombineToolbar
+              nodeIds={combinableIds}
+              locked={executionLocked}
+              onCombine={handleCombine}
+            />
+            <InternalsSync nodeIds={displayNodeIds} />
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={18}
+              size={1}
+              color="#d4d4d8"
+            />
+            {nodes.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
+                <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 px-6 py-6 text-center shadow-border backdrop-blur-[1px]">
+                  <div className="mx-auto flex size-12 items-center justify-center corner-squircle rounded-md border border-border/70 bg-muted/40">
+                    <HugeiconsIcon
+                      icon={DocumentAttachmentIcon}
+                      className="size-6 text-muted-foreground"
+                    />
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <p className="text-ui-11 font-semibold uppercase tracking-wide text-primary">
+                      Best place to start
+                    </p>
+                    <p className="text-sm font-semibold text-foreground">
+                      Start with source data
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Most synthetic-data recipes begin with a document,
+                      dataset, or file before adding generation and checks.
+                    </p>
+                  </div>
+                  <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
+                    <Button
+                      variant="dark"
+                      type="button"
+                      className="corner-squircle"
+                      onClick={openSourceBlockSheet}
+                    >
+                      <HugeiconsIcon
+                        icon={DocumentAttachmentIcon}
+                        className="size-4"
+                      />
+                      Start with source data
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="corner-squircle"
+                      onClick={openRootBlockSheet}
+                    >
+                      <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
+                      Browse all steps
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <Panel
+              position="top-right"
+              className="m-3"
+              data-tour="recipe-add-step"
+            >
+              <BlockSheet
+                container={sheetContainer}
+                sheetView={sheetView}
+                onViewChange={setSheetView}
+                open={sheetOpen}
+                onOpenChange={setSheetOpen}
+                onAddSampler={handleAddSamplerFromSheet}
+                onAddSeed={handleAddSeedFromSheet}
+                onAddLlm={handleAddLlmFromSheet}
+                onAddModelProvider={handleAddModelProviderFromSheet}
+                onAddModelConfig={handleAddModelConfigFromSheet}
+                onAddToolProfile={handleAddToolProfileFromSheet}
+                onAddExpression={handleAddExpressionFromSheet}
+                onAddValidator={handleAddValidatorFromSheet}
+                onAddMarkdownNote={handleAddMarkdownNoteFromSheet}
+                onOpenProcessors={openProcessorsFromSheet}
+                copied={copied}
+                onCopy={copyRecipe}
+                onImport={() => setImportOpen(true)}
               />
             </Panel>
-          )}
-        <RunValidateFloatingControls
-          runBusy={runBusy}
-          runDialogKind={runDialogKind}
-          validateLoading={validateLoading}
-          executionLocked={executionLocked}
-          onOpenRunDialog={openRunDialog}
-          onValidate={() => {
-            openRunDialog(runDialogKind);
-            void validateFromDialog();
-          }}
-        />
-      </ReactFlow>
+            <ViewportControls
+              interactive={canvasInteractive}
+              lockDisabled={executionLocked}
+              onToggleInteractive={toggleInteractive}
+              maximized={maximized}
+              onToggleMaximize={toggleMaximize}
+            />
+            {islandExecution &&
+              (isExecutionInProgress(islandExecution.status) ||
+                islandExecution.status === "completed") && (
+                <Panel position="top-center" className="!m-0">
+                  <ExecutionProgressIsland
+                    execution={islandExecution}
+                    currentColumnIcon={currentColumnIcon}
+                    minimized={runtimeIslandMinimized}
+                    onMinimizedChange={setRuntimeIslandMinimized}
+                    onViewExecutions={() => setActiveView("executions")}
+                  />
+                </Panel>
+              )}
+            <RunValidateFloatingControls
+              runBusy={runBusy}
+              runDialogKind={runDialogKind}
+              validateLoading={validateLoading}
+              executionLocked={executionLocked}
+              onOpenRunDialog={openRunDialog}
+              onValidate={() => {
+                openRunDialog(runDialogKind);
+                void validateFromDialog();
+              }}
+            />
+          </ReactFlow>
+        </div>
+      </div>
     );
   } else {
     editorContent = (

@@ -11,6 +11,7 @@ import type {
   RecipeProcessorConfig,
 } from "../../types";
 import { isSemanticRelation } from "../graph/relations";
+import { type SuperCard, superCardsToUi } from "../graph/super-cards";
 import { getConfigErrors } from "../index";
 import {
   getDefaultDataSourceHandle,
@@ -99,6 +100,7 @@ export function buildRecipePayload(
   processors: RecipeProcessorConfig[] = [],
   layoutDirection: LayoutDirection = "LR",
   auxNodePositions: Record<string, XYPosition> = {},
+  superCards: Record<string, SuperCard> = {},
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
@@ -393,6 +395,7 @@ export function buildRecipePayload(
     recipeProcessors.push(seedDropProcessor);
   }
   const uiAdvancedOpenByNode = collectAdvancedOpenByNode(configs);
+  const uiSuperCards = superCardsToUi(superCards, configs);
 
   return {
     errors,
@@ -457,6 +460,10 @@ export function buildRecipePayload(
         ...(Object.keys(uiAdvancedOpenByNode).length > 0 && {
           // biome-ignore lint/style/useNamingConvention: ui schema
           advanced_open_by_node: uiAdvancedOpenByNode,
+        }),
+        ...(uiSuperCards.length > 0 && {
+          // biome-ignore lint/style/useNamingConvention: ui schema
+          super_cards: uiSuperCards,
         }),
       },
     },
