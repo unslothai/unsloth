@@ -599,8 +599,7 @@ def _t4_plan(act, mode = None):
 
 
 def test_sdxl_measured_activation_keeps_a_t4_resident():
-    """The flat 8 GiB guess put a 6.6 GiB fp16 SDXL on whole-module offload on a 15 GB card (and demoted an explicit
-    fast); its measured peak (2.4 GiB decode) fits resident with the reserve intact."""
+    """The flat 8 GiB guess offloaded (and demoted explicit fast) SDXL on a 15 GB card; the measured peak fits."""
     act = calibrated_image_activation("sdxl")
     assert _t4_plan(None).offload_policy == OFFLOAD_MODEL
     assert _t4_plan(None, MEMORY_MODE_FAST).offload_policy == OFFLOAD_MODEL
@@ -613,8 +612,7 @@ def test_sdxl_measured_activation_keeps_a_t4_resident():
 
 
 def test_sdxl_measured_activation_only_ever_adds_the_resident_tier():
-    """A U-Net cannot stream its encoders: the measurement may only swap whole-module offload for resident, never
-    reach a group tier, and more VRAM never picks a slower tier."""
+    """Only whole-module offload may become resident (never a group tier); more VRAM never picks a slower tier."""
     act = calibrated_image_activation("sdxl")
     resident_from = None
     for gib in (6, 8, 10, 12, 14, 15, 16, 20, 24, 48):
@@ -626,5 +624,4 @@ def test_sdxl_measured_activation_only_ever_adds_the_resident_tier():
         if resident_from is not None:
             assert plan.offload_policy == OFFLOAD_NONE, gib
     assert resident_from == 15
-    # 12 GB cards keep whole-module offload: 6.6 GiB of weights + the measured decode + reserve do not fit
     assert _plan(12, SDXL_FP16, act).offload_policy == OFFLOAD_MODEL
