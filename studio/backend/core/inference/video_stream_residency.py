@@ -491,6 +491,7 @@ def fit_for_request(
         from .diffusion_memory import (
             _keep_groups_resident,
             _user_budget_reserve_mib,
+            cuda_reusable_cache_bytes,
             release_resident_groups,
         )
 
@@ -498,7 +499,7 @@ def fit_for_request(
         if dev.type != "cuda":
             return None
         free, total = torch.cuda.mem_get_info(dev)
-        unused = int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
+        unused = cuda_reusable_cache_bytes(dev)
         current = resident_mib(module)
         # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
         module._unsloth_video_pending = None

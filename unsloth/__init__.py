@@ -1717,6 +1717,14 @@ else:
     except Exception:
         pass
 
+    # Native FSDP2 shards inside the Trainer.__init__ wrapper that FastLanguageModel / FastModel loads
+    # install. A FastSentenceTransformer encoder never loads through them, so under UNSLOTH_FSDP2=1 its
+    # Trainer trained with DDP instead, silently. Install the wrapper up front under the flag.
+    from .fsdp2_launch import install_native_fsdp2_trainer_init as _install_native_trainer_init
+
+    _install_native_trainer_init()
+    del _install_native_trainer_init
+
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:

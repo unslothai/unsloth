@@ -718,6 +718,45 @@ def media_fit_kwargs(
     return kwargs
 
 
+def refuse_unless_fits(
+    owner: str,
+    *,
+    policy: str = "off",
+    gpu_ids: Optional[Iterable[int]] = None,
+    need_mib: Optional[dict] = None,
+    cancel: Any = None,
+) -> None:
+    """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
+
+    For loads inside a generation (MLX diffusers fallback). Gives up on ``cancel``: a lock-holding evictor awaits our drain."""
+    from utils.account_context import current_account_id
+
+    while not arb._lock.acquire(timeout = 0.05):
+        if cancel is not None and cancel.is_set():
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+    try:
+        arb._sync_from_view()
+        others = [name for name in arb._residents if name != owner]
+        if not others:
+            return
+        if policy != "off" and owner in arb._KEPT_UNDER_ALWAYS:
+            coreside_locked(
+                owner,
+                policy = policy,
+                need_mib = need_mib,
+                gpu_ids = gpu_ids,
+                allow_evict = False,
+                evict_first = False,
+                acting = current_account_id(),
+                evicted = None,
+            )
+            return
+        raise arb.GpuOwnerBusyError(others[-1])
+    finally:
+        arb._lock.release()
+
+
 def free_for(
     owner: str,
     gpu_ids: Optional[Iterable[int]],

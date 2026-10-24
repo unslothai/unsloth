@@ -558,6 +558,38 @@ def test_detail_result_runs_every_image_with_its_own_seed(monkeypatch):
     assert result["detailer"][0]["model"] == "sam3.1"
 
 
+def test_every_inpaint_runs_as_an_auxiliary_eager_unrecorded_pass(monkeypatch):
+    from core.inference import diffusion_bg_compile as bg
+
+    _patch_detect(monkeypatch, [[_face((40, 30, 80, 80)), _face((150, 60, 230, 150))]])
+    seen = []
+
+    def _generate(**kwargs):
+        seen.append(
+            (bg.eager_forced(), bg._NO_RECORD.get(), getattr(bg, "auxiliary", lambda: False)())
+        )
+        crop = Image.open(
+            __import__("io").BytesIO(
+                __import__("base64").b64decode(kwargs["init_image"].split(",", 1)[1])
+            )
+        )
+        return {"images": [crop.convert("RGB")]}
+
+    result = {"images": [_scene()], "seeds": [3], "seed": 3}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 8,
+        guidance = 0.0,
+        generate_kwargs = {},
+    )
+    assert seen == [(True, True, True), (True, True, True)]
+    assert not bg.eager_forced() and not bg._NO_RECORD.get()
+
+
 def test_a_failed_pass_keeps_the_render(monkeypatch):
     _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
     image = _scene()

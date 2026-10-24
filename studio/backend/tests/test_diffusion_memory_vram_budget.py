@@ -420,6 +420,24 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     )  # the plain free reading still never goes negative
 
 
+def test_video_h3_residency_budget_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.video as vid
+    import core.inference.video_minimax_h3_residency as res
+
+    monkeypatch.setattr(vid, "_h3_signed_free_device_bytes", lambda device: 1000 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(res, "h3_phase_need_gb", lambda *a, **k: 0.0)
+    residency = types.SimpleNamespace(resident_bytes = lambda: 0)
+    budget = vid._h3_residency_budget_bytes(
+        residency, "cuda", width = 64, height = 64, frames = 1, te_streamed = True, te_scheme = None
+    )
+    assert budget == 1100 * 2**20
+
+
 def test_video_request_available_reading_charges_the_reserve(fraction, monkeypatch):
     import core.inference.video as vid
     from utils import hardware
@@ -590,14 +608,14 @@ def test_denoiser_hold_between_calls_keeps_the_reserve_free(fraction, monkeypatc
 def test_cfg_batch_doubled_call_keeps_the_reserve_free(fraction, monkeypatch):
     from core.inference import diffusion_cfg_batch as cb
 
-    fake = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(
-            mem_get_info = lambda device: (10 * GiB << 20, 24 * GiB << 20),
-            memory_reserved = lambda device: 2 * GiB << 20,
-            memory_allocated = lambda device: 1 * GiB << 20,
-        )
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device = None: (10 * GiB << 20, 24 * GiB << 20)
     )
-    monkeypatch.setattr(cb, "_torch", lambda: fake)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 2 * GiB << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 1 * GiB << 20)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
     assert cb._usable_free_mib("cuda:0") == 11 * GiB
     fraction["value"] = 0.75
     assert cb._usable_free_mib("cuda:0") == 11 * GiB - 6 * GiB
@@ -720,3 +738,41 @@ def test_backend_entry_points_run_under_their_budget_scope():
             assert (owner, True) in _scopes(getattr(cls, name)), (cls.__name__, name)
         for name in gens:
             assert (owner, False) in _scopes(getattr(cls, name)), (cls.__name__, name)
+
+
+def test_denoiser_hold_fit_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_multistage as MS
+
+    param = types.SimpleNamespace(device = torch.device("cuda", 0))
+    dit = types.SimpleNamespace(parameters = lambda: iter([param]))
+    monkeypatch.setattr(MS, "_denoisers", lambda pipe: [dit])
+    monkeypatch.setattr(MS, "HOLD_MARGIN_BYTES", 1200 * 2**20)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (1000 * 2**20, 24 * GiB << 20))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    # 1000 free + 100 reusable = 1100 MiB < 1200 need; counting the 500 graph-held gave 1600.
+    assert MS.companions_fit_beside_denoiser(object(), ()) is False
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    assert MS.companions_fit_beside_denoiser(object(), ()) is True  # no graph pool: unchanged
+
+
+def test_cfg_replica_free_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_multigpu as mg
+
+    seen = []
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (1000, 24 * GiB))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(
+        dm, "_graph_held_cache_bytes", lambda device = None: seen.append(device) or 500 * 2**20
+    )
+    router = types.SimpleNamespace(secondary = torch.device("cuda", 1))
+    assert mg.CfgParallelRouter._secondary_free_total_mib(router) == (1100, 24 * GiB)
+    assert seen == [1]  # the replica card's pools, not the primary's
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    assert mg.CfgParallelRouter._secondary_free_total_mib(router) == (1600, 24 * GiB)

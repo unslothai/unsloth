@@ -144,6 +144,60 @@ def test_recording_dedups_by_input_shape_and_ignores_unforced_calls():
     job.close()
 
 
+def test_a_detailer_pass_neither_compiles_a_whole_compiled_unet_nor_feeds_the_recorder():
+    """Detailer crops are box-dependent sizes: on a static whole-module compile each one was a fresh compile, and a
+    pending background compile recorded them as the shapes to build."""
+    counter = _Counter()
+    net = _whole_compiled(counter)
+    job = bg.arm(net)
+    with torch.no_grad():
+        with bg.force_eager():
+            net(torch.randn(2, 8), return_dict = False)
+        assert len(job.samples) == 1
+        restore = bg.gate_compiled_eager([net])
+        try:
+            with bg.auxiliary_pass():
+                assert bg.auxiliary() and bg.eager_forced()
+                for rows in (3, 4, 5):
+                    net(torch.randn(rows, 8), return_dict = False)
+        finally:
+            restore()
+        assert not bg.auxiliary() and not bg.eager_forced()
+        assert (
+            len(job.samples) == 1
+        ), "a Detailer crop shape was recorded for the background compile"
+        job.close()
+        assert counter.compiles == 0
+        net(torch.randn(2, 8), return_dict = False)
+    assert counter.compiles == 1
+
+
+def test_force_eager_alone_still_reaches_a_whole_compiled_module():
+    """Why the Detailer installs the gate: GraphedCompiledCall's eager path is the compiled U-Net call."""
+    counter = _Counter()
+    net = _whole_compiled(counter)
+    with torch.no_grad(), bg.force_eager():
+        net(torch.randn(2, 8), return_dict = False)
+    assert counter.compiles == 1
+
+
+def test_a_whole_compiled_unet_under_the_gate_takes_no_cuda_graph():
+    counter = _Counter()
+    net = _whole_compiled(counter)
+    graphed = cg.GraphedCompiledCall(net).install()
+    restore = bg.gate_compiled_eager([net])
+    try:
+        with torch.no_grad(), bg.auxiliary_pass():
+            net(torch.randn(3, 8), return_dict = False)
+        assert graphed.stats["captures"] == 0 and graphed.stats["eager_calls"] == 0
+        assert counter.compiles == 0
+    finally:
+        restore()
+        graphed.uninstall()
+        graphed.free()
+    assert net._compiled_call_impl is graphed.compiled
+
+
 def test_close_breaks_the_hook_job_cycle():
     net = _whole_compiled(_Counter())
     job = bg.arm(net)
