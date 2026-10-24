@@ -2828,7 +2828,6 @@ def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
 
 
 def test_hf_cache_entry_offers_no_quant_from_a_partial_only_repo(tmp_path):
-    """A repo with no complete quant is not servable, so auto-switch must not offer it."""
     repo = tmp_path / "models--org--Repo"
     snapshot = repo / "snapshots" / "revision"
     snapshot.mkdir(parents = True)

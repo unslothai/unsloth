@@ -42,8 +42,6 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     return any(marker in normalized for marker in _VOCODER_MARKERS)
 
 
-# Diffusion and video ``general.architecture`` values (stable-diffusion.cpp / ComfyUI-GGUF), which
-# llama.cpp cannot load. The listing classifier and the chat-load refusal share these sets.
 DIFFUSION_IMAGE_GGUF_ARCHS = frozenset(
     {
         "flux",
@@ -68,7 +66,6 @@ UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
 AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 # Not architectures: placeholders gguf-connector writes for its diffusion GGUFs.
 PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
-# Text-to-video archs the Video page can offer.
 VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 
 

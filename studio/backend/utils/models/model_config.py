@@ -1928,7 +1928,6 @@ _IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_imatrix_path(path: str) -> bool:
-    """A calibration imatrix published beside the weights; see utils.gguf_names."""
     return _gguf_names.is_imatrix_filename(path)
 
 
@@ -1937,7 +1936,6 @@ _DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """A separate-file drafter, excluded everywhere mmproj is; see utils.gguf_names."""
     return _gguf_names.is_mtp_drafter_path(path)
 
 

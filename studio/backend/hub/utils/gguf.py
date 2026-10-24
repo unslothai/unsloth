@@ -82,7 +82,6 @@ def is_mmproj_filename(filename: str) -> bool:
     return _gguf_names.is_mmproj_filename(filename)
 
 
-# Aliases for this module's callers; the rules live in utils.gguf_names.
 _IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 _DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
 _DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
@@ -90,12 +89,10 @@ _DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """A calibration imatrix, not a model; see utils.gguf_names.is_imatrix_filename."""
     return _gguf_names.is_imatrix_filename(path)
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """A separate-file drafter, not a selectable quant; see utils.gguf_names.is_mtp_drafter_path."""
     return _gguf_names.is_mtp_drafter_path(path)
 
 

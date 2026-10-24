@@ -3417,7 +3417,6 @@ _DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EA
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
-    """See utils.gguf_names.drafter_path_kind."""
     return _gguf_names.drafter_path_kind(path)
 
 
@@ -3425,23 +3424,12 @@ _IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
-    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
-    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Shares utils.gguf_names with the hub
-    listing so variant resolution never picks a companion as the main model --
-    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
-    ahead of the real weight.
-
-    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
-    """
+    """Exclude companions from main-model selection; use _is_mtp_only_drafter_path for launch."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    # An imatrix is a valid GGUF container holding calibration statistics, so only the name
-    # rules it out.
     if _gguf_names.is_imatrix_filename(p):
         return True
     return _gguf_names.is_mtp_drafter_path(path)
@@ -22418,55 +22406,15 @@ class LlamaCppBackend:
             return None
         return str(mtp_draft_path)
 
-    # ── Lifecycle ─────────────────────────────────────────────────
-
-    # GGUF ``general.architecture`` values for diffusion / image models.
-    # llama.cpp has no such architectures, so loading one as a chat model dies
-    # with "unknown model architecture: '<arch>'". These match the patched
-    # stable-diffusion.cpp / ComfyUI-GGUF enums. Unsloth publishes FLUX and
-    # Qwen-Image GGUFs under
-    # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
-    # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
-    # (e.g. "taiwan") isn't misrouted to Images.
     _IMAGE_ARCHES = _gguf_archs.DIFFUSION_IMAGE_GGUF_ARCHS
-    # Archs shared by more than one family, so the header alone does NOT say whether the
-    # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
-    # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
-    # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
-    # repo id and the filename and tags the rest ``image-diffusion-unsupported``, hiding
-    # them from the Images picker, so the refusal must run the SAME resolution before it
-    # names that page -- e.g. ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf``
-    # declares "lumina2" and resolves to no family ("lumina-2" is not aliased to bare
-    # "lumina").
     _AMBIGUOUS_IMAGE_ARCHES = _gguf_archs.AMBIGUOUS_DIFFUSION_GGUF_ARCHS
-    # Text-to-video archs the Video page can offer. Split from the image set so the refusal
-    # names Video: sending a Wan / LTX-2 GGUF to Images is a second dead end.
     _VIDEO_ARCHES = _gguf_archs.VIDEO_GGUF_ARCHS
-    # Media archs Unsloth recognises but NO page can run, so the refusal must not promise
-    # one. The listing classifier tags these
-    # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
-    #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
-    #     every cosmos repo id and for override="cosmos"), and the published cosmos GGUFs
-    #     are Cosmos-Predict2-14B-Text2Image, which Images cannot assemble either.
-    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the 1.5 GGUFs that do map to
-    #     one are still tagged unsupported (that family ships no ``gguf_repo``).
-    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
-    #     the same reason, so "use the Images page" was always an empty promise.
-    # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
-    # destination.
     _UNRUNNABLE_MEDIA_ARCHES = _gguf_archs.UNSUPPORTED_DIFFUSION_GGUF_ARCHS
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). One
-    # shared definition, so this gate and the listing classifier cannot drift.
     _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
-    # Not architectures: the literal placeholders gguf-connector writes into
-    # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
-    # calcuis/cosmos-predict2-gguf both declare "pig"); ComfyUI-GGUF special cases the same
-    # two. llama.cpp knows neither, so without this they slip past the arch sets and die in
-    # llama-server as the opaque failure this preflight exists to prevent.
     _PLACEHOLDER_ARCHES = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 
     @staticmethod

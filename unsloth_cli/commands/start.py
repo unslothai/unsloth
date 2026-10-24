@@ -2555,7 +2555,7 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     return [n for n in ggufs if not _is_auxiliary_gguf(n)]
 
 
-# Copied from studio/backend/utils/gguf_names.py because the CLI can drive a remote server without the backend importable. dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
+# Keep in sync with utils/gguf_names.py; the remote CLI cannot require backend imports.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 

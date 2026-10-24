@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every layer reads GGUF filename and architecture rules from utils.gguf_names and
-utils.gguf_archs, and torn split downloads are never offered as servable."""
-
 import sys
 from pathlib import Path
 
@@ -122,7 +119,6 @@ def _hf_cache_repo(tmp_path, files):
 
 
 def test_auto_switch_does_not_offer_a_torn_split_quant_from_the_hf_cache(tmp_path):
-    """Shard 1 of 3 after a cancelled download: the Hub calls it partial, auto-switch must too."""
     from types import SimpleNamespace
 
     from core.inference import local_model_resolver as resolver
@@ -148,7 +144,6 @@ def test_a_complete_quant_beside_a_torn_one_is_still_offered(tmp_path):
 
 
 def test_the_inventory_row_calls_a_torn_split_partial_without_any_marker(tmp_path):
-    """No manifest, cancel marker or .incomplete blob: the files alone decide."""
     from hub.utils.inventory_scan import is_gguf_repo_partial
 
     repo = _hf_cache_repo(tmp_path, {"m-Q4_K_M-00001-of-00003.gguf": 400})
