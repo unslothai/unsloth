@@ -424,7 +424,7 @@ _HV15_I2V_REFUSAL = (
 )
 
 
-# Cosmos3 (diffusers >= 0.40): Nano and Edge are separate families (different card sampling and hidden_size).
+# Cosmos3 (diffusers >= 0.41): Nano and Edge are separate families (different card sampling and hidden_size).
 COSMOS3_NANO_FAMILY = "cosmos3-nano"
 COSMOS3_EDGE_FAMILY = "cosmos3-edge"
 COSMOS3_FAMILIES = (COSMOS3_NANO_FAMILY, COSMOS3_EDGE_FAMILY)
