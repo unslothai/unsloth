@@ -335,6 +335,53 @@ def test_tensors_left_out_of_the_layout_are_not_uploaded_with_the_chunk(fake_pin
         assert torch.equal(params[name].detach(), expect[name])
 
 
+def _layout_chunk_ptrs(module):
+    layout = module.__dict__[dm._KEEP_ATTR].get("pin_layout") or []
+    return {buf.data_ptr() for buf, _ in layout}
+
+
+@pytest.mark.parametrize("fast_upload", ["1", "0"])
+@pytest.mark.parametrize("cast_on", ["host", "device"])
+def test_a_dtype_change_releases_the_obsolete_pinned_chunks(
+    fake_pin, monkeypatch, fast_upload, cast_on
+):
+    # The SDXL fp32 VAE decode casts an offloaded component and back: its kept weights are new host tensors, so the
+    # chunks pinned for the old ones must not stay referenced by the layout (fast upload on or off).
+    monkeypatch.setenv(dm.OFFLOAD_FAST_UPLOAD_ENV, fast_upload)
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    old = _layout_chunk_ptrs(module)
+    assert old
+    if cast_on == "device":
+        module.half()  # cast while onloaded: the offload brings back new host tensors
+        module._hf_hook.init_hook(module)
+    else:
+        module._hf_hook.init_hook(module)
+        module.half()  # cast while offloaded: the next onload finds new host tensors
+        _onload(pipe)
+    assert not old & _layout_chunk_ptrs(module)
+    state = module.__dict__[dm._KEEP_ATTR]
+    live = {v.untyped_storage().data_ptr() for v in state["host"].values()}
+    assert not old & live
+
+
+def test_a_replaced_weight_drops_out_of_the_layout_and_the_rest_stays(fake_pin):
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    module._hf_hook.init_hook(module)
+    before = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    names = {name for _, entries in before for name, _, _ in entries}
+    module[0].weight = torch.nn.Parameter(torch.zeros(16, 16))
+    _onload(pipe)
+    after = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    left = {name for _, entries in after for name, _, _ in entries}
+    assert left == names - {"0.weight"}
+
+
 def _quantised(scheme, n = N_LAYERS):
     """A Linear stack with torchao int8 / fp8 wrapper weights (Studio's quantised denoisers under low_vram)."""
     quant = pytest.importorskip("torchao.quantization")
@@ -426,6 +473,27 @@ def test_a_wrapper_with_an_inner_tensor_outside_the_layout_takes_the_stock_copy(
     assert [x.data_ptr() for _, x in dm._wrapper_inner(module[1].weight.data)] != [
         x.data_ptr() for _, x in dm._wrapper_inner(host["1.weight"])
     ]
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_the_layout_prune_keeps_unchanged_wrapper_weights_and_drops_replaced_ones(fake_pin, scheme):
+    # A wrapper weight's entries are its inner tensors: the prune must match those, not the wrapper itself.
+    module = _quantised(scheme)
+    host = {n: p.data for n, p in module.named_parameters()}
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    host = {n: p.data for n, p in module.named_parameters()}
+    names = [name for _, entries in layout for name, _, _ in entries]
+    wrapped = {n for n in names if dm._wrapper_inner(host.get(n)) is not None}
+    assert wrapped
+    dm._prune_pin_layout(layout, host, {})
+    assert [name for _, entries in layout for name, _, _ in entries] == names
+    # a dequantised (dtype-changed) or re-quantised weight is a new host tensor: its entries go, the rest stay
+    host["0.weight"] = host["0.weight"].dequantize()
+    host["1.weight"] = _quantised(scheme, n = 2)[1].weight.data
+    dm._prune_pin_layout(layout, host, {})
+    left = [name for _, entries in layout for name, _, _ in entries]
+    assert left == [n for n in names if n not in ("0.weight", "1.weight")]
 
 
 def _quantised_pipe(scheme):

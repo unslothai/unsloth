@@ -409,6 +409,9 @@ export const BUDGET = {
   // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
   // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
   // that plus about 300 B raw / 100 B transfer, as for #14568.
+  // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
+  // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
+  // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
@@ -418,8 +421,9 @@ export const BUDGET = {
   // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
   // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
   // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
-  transferBytes: 2_097_108,
-  rawBytes: 6_959_760,
+  // Re-added on top of main's #14181 budget at the a31803a76 merge.
+  transferBytes: 2_097_338,
+  rawBytes: 6_961_272,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
