@@ -1240,6 +1240,85 @@ def _agree_over_ranks(
     return [int(v) == ranks for v in t.tolist()]
 
 
+def _mesh_broadcast_from_first(tensor, mesh, dist):
+    """Broadcast `tensor` in place from the mesh's first rank to every rank of `mesh` (the world when
+    None): one broadcast per mesh dimension, each from its group's first rank."""
+    if mesh is None:
+        dist.broadcast(tensor, src = 0)
+        return
+    for dim in range(mesh.ndim):
+        group = mesh.get_group(dim)
+        dist.broadcast(tensor, src = dist.get_global_rank(group, 0), group = group)
+
+
+_FINGERPRINT_CHUNK = (
+    1 << 20
+)  # 8 MiB per float64 buffer: a few of them before fully_shard, never a full copy
+
+
+def _content_fingerprint(p):
+    """Four float64 numbers that tell two ranks' copies of a tensor apart: sum, L1 norm, a sum weighted
+    by a position-dependent cos(i * golden ratio) (so a permutation such as [1, -1] vs [-1, 1] differs),
+    and the count of non-finite elements. Non-finite values are mapped to fixed finite stand-ins first,
+    so a NaN cannot hide the other elements while identical NaN patterns still agree. Chunked, so no
+    float64 copy of a large weight is made: each chunk holds a few 8 MiB float64 buffers."""
+    flat = p.detach().reshape(-1)
+    out = torch.zeros(4, dtype = torch.float64, device = flat.device)
+    for start in range(0, flat.numel(), _FINGERPRINT_CHUNK):
+        chunk = flat[start : start + _FINGERPRINT_CHUNK].to(torch.float64)
+        bad = ~torch.isfinite(chunk)
+        chunk = torch.nan_to_num(chunk, nan = 3.0, posinf = 5.0, neginf = -7.0)
+        index = torch.arange(start, start + chunk.numel(), dtype = torch.float64, device = chunk.device)
+        weight = torch.cos(index * 0.6180339887498949)
+        out += torch.stack(
+            (chunk.sum(), chunk.abs().sum(), (chunk * weight).sum(), bad.sum().double())
+        )
+    return out
+
+
+def _sync_trainable_from_first_rank(
+    model,
+    dist,
+    device,
+    mesh = None,
+):
+    """Every rank must start from the same trainable weights. DDP broadcasts rank 0's parameters when
+    it wraps the model; fully_shard keeps each rank's own slice instead, so a weight initialised
+    without a seed on each rank (a LoRA adapter whose loader ignored random_state, a fresh head) became
+    a mix of the ranks' values, and the ranks trained different models. Compares a content fingerprint per
+    trainable tensor over the ranks of `mesh` and broadcasts the first rank's values of the tensors
+    that differ (only those, so a full finetune is not re-sent). Returns how many were synced."""
+    params = [
+        p
+        for p in model.parameters()
+        if p.requires_grad and p.device.type != "meta" and _floating(p)
+    ]
+    if not params or dist.get_world_size() == 1:
+        return 0
+    from .fsdp2_save import mesh_all_reduce
+
+    with torch.no_grad():
+        local = torch.stack([_content_fingerprint(p).to(device) for p in params])
+        first = local.clone()
+        _mesh_broadcast_from_first(first, mesh, dist)
+        differs = (local != first).any(dim = 1).to(torch.int32)
+        mesh_all_reduce(differs, mesh, dist)
+        index = [i for i, n in enumerate(differs.tolist()) if n]
+        for i in index:
+            p = params[i]
+            data = p.data if p.device == device else p.data.to(device)
+            _mesh_broadcast_from_first(data, mesh, dist)
+            if data is not p.data:
+                p.data.copy_(data)
+    if index:
+        _print_rank0(
+            f"Unsloth: native FSDP2: {len(index)} trainable tensors differed across ranks before "
+            "sharding (initialised without a common seed); every rank now starts from the first "
+            "rank's values, as DDP does."
+        )
+    return len(index)
+
+
 def _place_replicated(params, device):
     """Parameters left out of FSDP (ignored_params) are never moved by it: they must already sit on this
     rank's device. Moves plain ones that do not; refuses meta (a meta / broadcast load must materialise
@@ -1304,6 +1383,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if device.type == "cuda":
         torch.cuda.set_device(device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
+    _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
     _patch_recompute_input_cast()  # before any fully_shard registers FSDPState._pre_forward

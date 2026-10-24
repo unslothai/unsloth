@@ -38,10 +38,12 @@ from .diffusion_profiles import (
 )
 from .llama import logger
 from .loader_utils import (
+    is_automatic_device_map,
     planner_config_overrides,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
+    prepare_device_map,
     requested_device_map,
     resolve_unsloth_device_map,
 )
@@ -356,8 +358,15 @@ class FastDiffusionModel:
 
         # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
         # torch.device("unsloth") in transformers and raises instead of loading.
+        device_map = requested_device_map(device_map)
+        if is_automatic_device_map(device_map):
+            # Under torchrun / accelerate launch each rank loads one whole model on its own device, as
+            # FastLanguageModel / FastModel do: "auto" would spread every rank over all the visible cards.
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
         device_map = resolve_unsloth_device_map(
-            requested_device_map(device_map),
+            device_map,
             model_name,
             full_finetuning = full_finetuning,
             skip_reason = (
