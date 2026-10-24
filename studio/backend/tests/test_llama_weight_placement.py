@@ -78,6 +78,12 @@ def test_dry_run_and_drafter_blocks_do_not_count():
         "I load_tensors: offloaded 3/3 layers to GPU",
         "I load_tensors:        CUDA0 model buffer size =   600.00 MiB",
     ]
+    # A drafter can also be DEEPER than its target (Gemma 4 E2B, 35 layers, for 26B A4B, 30): still the main model.
+    deeper = lines + [
+        "I load_tensors: offloaded 36/36 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size =  2000.00 MiB",
+    ]
+    assert parse_weight_placement(deeper)["gpu_mib"] == 13258.5
     assert parse_weight_placement(lines) == {
         "gpu_mib": 13258.5,
         "host_mib": 13986.8,

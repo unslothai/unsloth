@@ -1083,7 +1083,7 @@ def parse_weight_placement(
 ) -> "Optional[dict]":
     """Where llama.cpp put the main model's weights, from its startup log.
 
-    ``gpu_mib`` / ``host_mib`` sum the main model's buffer block (largest M; the drafter's comes after).
+    ``gpu_mib`` / ``host_mib`` sum the main model's buffer block, the first allocated one (dry runs log 0.00 MiB).
     "offloaded 31/31" hides an expert spill, so ``overflow_layers`` comes from --fit's final per-device
     lines; the last device's count includes the output layer, which spills nothing (a 3090 gemma-4-26B
     load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit.
@@ -1150,7 +1150,8 @@ def parse_weight_placement(
     loaded = [block for block in blocks if block[1] + block[2] > 0]
     if not loaded:
         return None
-    main = max(loaded, key = lambda block: block[0])
+    # llama-server loads the main model before any drafter, which can have MORE layers (Gemma 4 E2B: 35 vs 26B A4B: 30).
+    main = loaded[0]
     host_mib = main[2]
     if main[3] and main[1] > 0 and model_bytes:
         host_mib = min(host_mib, max(0.0, model_bytes / (1024 * 1024) - main[1]))
