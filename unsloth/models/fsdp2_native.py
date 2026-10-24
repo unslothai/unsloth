@@ -751,9 +751,7 @@ _NCCL2_WARN_MAX_BYTES = 24 * 2**30
 
 
 def _uses_nccl2(dist, device):
-    """True when the default group's CUDA backend is torch 2.14's second NCCL implementation:
-    `backend = "nccl2"`, or `"nccl"` redirected by TORCH_DIST_USE_NCCL2=1 (get_backend() still
-    says "nccl" then, so the backend object is checked)."""
+    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
     try:
         group = dist.distributed_c10d._get_default_group()
         impl = type(group._get_backend(device)).__name__
@@ -770,16 +768,14 @@ def _uses_nccl2(dist, device):
 
 
 def _warn_nccl2_memory(dist, device):
-    """Warn once: under nccl2 every other rank that can see GPU 0 also creates a CUDA context there
-    (measured torch 2.14.1, Kaggle 2 x T4: rank 1 held 102 MiB on GPU 0 after its first all_reduce,
-    with or without init_process_group(device_id = ...); plain nccl: none). That grows with the rank
-    count, so on small GPUs the first GPU runs out first."""
+    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
+    per rank, plain nccl none), so small GPU 0 runs out first."""
     global _NCCL2_WARNED
     if _NCCL2_WARNED or device.type != "cuda":
         return
     try:
         if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:
-            return  # one rank, or each rank sees only its own GPU: no other rank can land on GPU 0
+            return
         if torch.cuda.get_device_properties(device).total_memory > _NCCL2_WARN_MAX_BYTES:
             return
     except Exception:

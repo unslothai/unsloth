@@ -8,12 +8,8 @@ Each training log then gains `train_tflops_per_gpu` and `train_hw_tflops_per_gpu
 GPU peak is known, `train_mfu` and `train_hfu`. Set `UNSLOTH_PEAK_TFLOPS` to the per GPU dense
 peak to override the table (for example a measured MAMF number).
 
-`train_mfu` / `train_tflops_per_gpu` are model FLOPs: forward plus backward, without the forward
-that gradient checkpointing runs again (the PaLM definition of MFU, so runs with and without
-checkpointing compare on the same work). `train_hfu` / `train_hw_tflops_per_gpu` are hardware
-FLOPs: the recompute included, i.e. what the GPU actually executed. Without checkpointing the
-two are equal. Before this split `train_mfu` / `train_tflops_per_gpu` included the recompute
-(they were HFU); that value is now `train_hfu` / `train_hw_tflops_per_gpu`.
+`train_mfu` excludes the checkpointing recompute (PaLM MFU); `train_hfu` includes it. They were
+one value (HFU) before the split; that value is now `train_hfu` / `train_hw_tflops_per_gpu`.
 
 Model FLOPs per non padding token, summed over every linear layer with n = in * out weights:
     forward                  2n   every linear, frozen or trainable
@@ -64,9 +60,7 @@ _PEAK_TFLOPS_16BIT = (
     ("H200 NVL", 835.5),
     ("H200", 989.0),
     ("GH200", 989.0),
-    # Blackwell: NVIDIA lists sparse FP16 / BF16 (dense = 1/2). HGX B200 and HGX B300: 36 PFLOPS sparse
-    # per 8 GPUs = 2.25 PFLOPS dense each (nvidia.com/en-us/data-center/hgx); GB200 / GB300 NVL72: 360
-    # PFLOPS sparse per 72 GPUs = 2.5 dense each (nvidia.com/en-us/data-center/gb200-nvl72, gb300-nvl72).
+    # Dense = half NVIDIA's sparse figure (nvidia.com/en-us/data-center/hgx, gb200-nvl72).
     # GB* first: the B200 / B300 keys would match inside their names.
     ("GB300", 2500.0),
     ("GB200", 2500.0),
@@ -412,7 +406,6 @@ class UnslothMFUCallback(TrainerCallback):
         self._linear_per_token = 0
         self._head_per_token = 0
         self._attention_per_pair = 0
-        # Hardware (recompute included) counterparts; equal to the above without checkpointing.
         self._hw_linear_per_token = 0
         self._hw_attention_per_pair = 0
         self._bidirectional = False
