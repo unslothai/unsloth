@@ -63,6 +63,12 @@ export interface MemoryEstimate {
   gpuLayers: number | null;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
+  /** Lookup-only tables (per-layer embeddings / Engram) in the model file, never on the GPU.
+   *  Absent or 0 on an older backend. */
+  lookupTableBytes?: number;
+  /** Those tables are streamed from disk (llama.cpp's default), so they are not in
+   *  `weightsBytes` or `totalBytes`. */
+  lookupTableOnDisk?: boolean;
   /** MLX: share of the PLE tables / routed experts read from disk, priced in `weightsBytes`. */
   mlxPleOffload: number | null;
   mlxExpertOffload: number | null;
@@ -157,6 +163,8 @@ interface ApiEstimateResponse {
   layer_count: number | null;
   gpu_layers: number | null;
   moe_offload_unmodelled: boolean;
+  lookup_table_bytes?: number;
+  lookup_table_on_disk?: boolean;
   mlx_offload?: { ple?: unknown; experts?: unknown; offloadable?: unknown } | null;
 }
 
@@ -292,6 +300,8 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     layerCount: nullableCount(body.layer_count),
     gpuLayers: nullableCount(body.gpu_layers),
     moeOffloadUnmodelled: flag(body.moe_offload_unmodelled, false),
+    lookupTableBytes: finiteBytes(body.lookup_table_bytes, 0),
+    lookupTableOnDisk: flag(body.lookup_table_on_disk, false),
     mlxPleOffload: offloadFraction(body.mlx_offload?.ple),
     mlxExpertOffload: offloadFraction(body.mlx_offload?.experts),
     mlxOffloadable: offloadableParts(body.mlx_offload?.offloadable),

@@ -8,7 +8,13 @@
  * chat picker can't disagree.
  */
 
-export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";
+export type GgufFitClass =
+  | "fits"
+  | "marginal"
+  | "partial"
+  | "ram"
+  | "streamed"
+  | "oom";
 
 export interface GgufFitInput {
   gpuGb?: number;
@@ -142,6 +148,9 @@ export function classifyGgufFit(
 export interface GgufVariantSizes {
   size_bytes: number;
   download_size_bytes?: number;
+  /** Lookup-only tables inside `size_bytes` that llama.cpp reads lazily from disk (its default
+   *  `--lazy-mode auto` for a flagged table over 4 GiB). Absent or 0 on older backends. */
+  lookup_table_bytes?: number;
 }
 
 /** Byte basis for a fit verdict on a listed variant.
@@ -161,9 +170,31 @@ export function ggufVariantFitSizeBytes(variant: GgufVariantSizes): number {
   return Math.max(variant.size_bytes, variant.download_size_bytes ?? 0);
 }
 
+export function ggufVariantLookupTableBytes(variant: GgufVariantSizes): number {
+  const table = Number(variant.lookup_table_bytes ?? 0);
+  if (!Number.isFinite(table) || table <= 0) return 0;
+  return Math.min(table, ggufVariantFitSizeBytes(variant));
+}
+
+/** Lookup tables are mmapped from disk by default: a load that fits only without them is `streamed`. */
+export function classifyGgufFitWithLookupTables(
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  variant: GgufVariantSizes,
+): GgufFitClass {
+  const size = ggufVariantFitSizeBytes(variant);
+  const full = fitOf(size);
+  const table = ggufVariantLookupTableBytes(variant);
+  if (table <= 0) return full;
+  if (full !== "oom") return full;
+  return fitOf(size - table) === "oom" ? full : "streamed";
+}
+
 export function classifyGgufVariantFit(
   variant: GgufVariantSizes,
   input: GgufFitInput,
 ): GgufFitClass {
-  return classifyGgufFit(ggufVariantFitSizeBytes(variant), input);
+  return classifyGgufFitWithLookupTables(
+    (sizeBytes) => classifyGgufFit(sizeBytes, input),
+    variant,
+  );
 }

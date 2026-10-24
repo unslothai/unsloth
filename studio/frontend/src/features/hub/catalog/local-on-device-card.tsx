@@ -72,6 +72,7 @@ import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
+import { ggufVariantLookupTableBytes } from "@/lib/gguf-fit";
 
 interface LocalOnDeviceCardProps {
   modelId: string;
@@ -358,6 +359,8 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // The table size the local listing could not read (0) comes from the Hub's.
+        lookup_table_bytes: variant.lookup_table_bytes || remoteVariant.lookup_table_bytes,
         // Both sides measure the same cache; keep the local reading and let the
         // remote one cover a row the local listing could not price.
         download_remaining_bytes:
@@ -670,6 +673,7 @@ export function LocalOnDeviceCard({
             loadId={localGgufPath}
             quant={selectedQuant ?? ""}
             sizeBytes={selectedVariant?.size_bytes}
+            lookupTableBytes={selectedVariant ? ggufVariantLookupTableBytes(selectedVariant) : 0}
             gpuGb={gpuGb}
             className="px-3 pb-2"
           />

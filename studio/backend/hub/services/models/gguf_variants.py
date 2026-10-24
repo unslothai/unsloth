@@ -12,6 +12,7 @@ import contextvars
 import functools
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -1352,6 +1353,336 @@ async def _mlx_precision_variants_answer(
     return VariantsAnswer(response, None, cache_authorized = False)
 
 
+# Lookup-only tables llama.cpp streams from disk, priced per variant so the fit badge does not
+# charge them as resident: local copies from their headers, Hub-only lazy quants by bounded Range
+# reads that fill a cache. Off with UNSLOTH_LOOKUP_TABLE_REMOTE=0; 0 bytes on any failure.
+_LOOKUP_REMOTE_ENV = "UNSLOTH_LOOKUP_TABLE_REMOTE"
+_LOOKUP_DEADLINE_S = 2.0
+_LOOKUP_CONCURRENCY = 4
+_LOOKUP_ARCH_TTL_S = 6 * 3600.0
+_LOOKUP_ARCH_FAIL_TTL_S = 600.0
+_lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
+_lookup_arch_lock = threading.Lock()
+_lookup_inflight: set = set()
+# Its own pool (size = concurrency cap): Hub reads never queue a listing or a load behind them.
+_LOOKUP_POOL = ThreadPoolExecutor(
+    max_workers = _LOOKUP_CONCURRENCY, thread_name_prefix = "gguf-lookup-tables"
+)
+
+
+async def _lookup_thread(fn, /, *args):
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args)
+    return await loop.run_in_executor(_LOOKUP_POOL, call)
+
+
+def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
+    """Done callback: a read the pool refused, or whose wrapper was cancelled before the
+    pool ran it, never reaches its own ``finally``, so its in-flight key is released here.
+    A started read still owns the key: a closing loop cancels the wrapper, not the thread."""
+    if not started and (task.cancelled() or task.exception() is not None):
+        with _lookup_arch_lock:
+            _lookup_inflight.discard(key)
+
+
+async def _lookup_await_once(key, deadline: float, fn, /, *args):
+    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time); None when
+    late or already in flight. A late call keeps running once started."""
+    with _lookup_arch_lock:
+        if key in _lookup_inflight:
+            return None
+        _lookup_inflight.add(key)
+
+    started: list = []
+    # Set at the deadline: a worker freeing up mid-cancel skips the call instead of running late.
+    expired = threading.Event()
+
+    def _run():
+        started.append(True)
+        try:
+            return None if expired.is_set() else fn(*args)
+        finally:
+            with _lookup_arch_lock:
+                _lookup_inflight.discard(key)
+
+    task = asyncio.ensure_future(_lookup_thread(_run))
+    task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
+    loop = asyncio.get_running_loop()
+    done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
+    if task not in done:
+        # Unstarted: dropped and its key released. Started: runs on and lands in the cache.
+        expired.set()
+        task.cancel()
+        return None
+    if task.cancelled() or task.exception() is not None:
+        return None
+    return task.result()
+
+
+def _cached_hub_repo_architecture(repo_id: str, hf_token: Optional[str]):
+    """``(known, architecture)`` from the cache alone; never blocks on the Hub."""
+    key = (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+    with _lookup_arch_lock:
+        hit = _lookup_arch_cache.get(key)
+    if hit is not None and hit[1] > time.monotonic():
+        return True, hit[0]
+    return False, None
+
+
+_LOOKUP_HOST_TTL_S = 60.0
+_lookup_host_streams: list = [None, 0.0]
+
+
+def _host_streams_lookup_tables() -> bool:
+    """Whether a default launch here streams the tables (an iGPU / APU reads them resident)."""
+    now = time.monotonic()
+    with _lookup_arch_lock:
+        streams, expires = _lookup_host_streams
+    if streams is not None and expires > now:
+        return streams
+    try:
+        from routes.inference import get_llama_cpp_backend
+        streams = bool(get_llama_cpp_backend().lookup_tables_stream_by_default())
+    except Exception:  # noqa: BLE001 -- unknown: price the tables as resident
+        streams = False
+    with _lookup_arch_lock:
+        _lookup_host_streams[:] = [streams, now + _LOOKUP_HOST_TTL_S]
+    return streams
+
+
+def _listing_lazy_mode() -> str:
+    """The lazy mode a default launch here runs under: a server-wide ``on`` streams every
+    flagged table, not only those over the auto threshold."""
+    try:
+        from core.inference.llama_cpp import _effective_lazy_mode
+        from routes.inference import get_llama_cpp_backend
+
+        flag = get_llama_cpp_backend().probe_server_capabilities().get("lazy_mode_flag")
+        mode = _effective_lazy_mode(None, os.environ, flag = str(flag or "--lazy-mode"))
+    except Exception:  # noqa: BLE001 -- unknown build: the default threshold
+        return "auto"
+    return "on" if mode == "on" else "auto"
+
+
+def _lookup_remote_enabled() -> bool:
+    return (os.environ.get(_LOOKUP_REMOTE_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _hub_repo_architecture(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
+    """``general.architecture`` the Hub reports for a GGUF repo, cached per repo and token."""
+    key = (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+    now = time.monotonic()
+    with _lookup_arch_lock:
+        hit = _lookup_arch_cache.get(key)
+    if hit is not None and hit[1] > now:
+        return hit[0]
+    arch: Optional[str] = None
+    ttl = _LOOKUP_ARCH_FAIL_TTL_S
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo_id, expand = ["gguf"], token = hf_token or None, timeout = 5)
+        gguf_meta = getattr(info, "gguf", None) or {}
+        arch = str(gguf_meta.get("architecture") or "") or None
+        ttl = _LOOKUP_ARCH_TTL_S
+    except Exception as exc:  # noqa: BLE001 -- unknown arch: no remote reads
+        logger.debug("lookup tables: no architecture for %s (%s)", repo_id, exc)
+    with _lookup_arch_lock:
+        _lookup_arch_cache[key] = (arch, now + ttl)
+    return arch
+
+
+def _local_variant_gguf(
+    answer: "VariantsAnswer",
+    repo_id: str,
+    variant,
+    local_path: Optional[str] = None,
+) -> Optional[str]:
+    """The on-disk main GGUF behind a listed row, or None. Searches the copy *local_path* names
+    (its snapshot, or its cache root) the way the listing did."""
+    filename = str(variant.filename or "")
+    sources = answer.variant_context_sources or {}
+    candidates = [sources.get(str(variant.quant or "").lower())]
+    roots = [repo_id] if is_local_path(repo_id) else []
+    if answer.context_source:
+        roots.append(answer.context_source)
+    pinned = _snapshot_scope_for_request(repo_id, local_path)
+    if pinned is not None:
+        roots.append(str(pinned))
+    for root in roots:
+        path = Path(root).expanduser()
+        candidates.append(str((path.parent if path.is_file() else path) / filename))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    if (
+        variant.downloaded
+        and answer.cache_authorized
+        and not is_local_path(repo_id)
+        and _is_valid_repo_id(repo_id)
+    ):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            repo_dir = _repo_cache_dir_for_request(repo_id, local_path)
+            found = try_to_load_from_cache(repo_id, filename, cache_dir = str(repo_dir.parent))
+            if isinstance(found, str) and os.path.isfile(found):
+                return found
+        except Exception:  # noqa: BLE001 -- not cached here
+            return None
+    return None
+
+
+def _remote_lookup_bytes(
+    repo_id: str,
+    filename: str,
+    hf_token,
+    identity,
+    mode = "auto",
+) -> int:
+    from hub.utils.gguf_lookup_tables import remote_lookup_info
+    return remote_lookup_info(repo_id, filename, hf_token, identity = identity, mode = mode)[1]
+
+
+async def _with_lookup_tables(
+    answer: "VariantsAnswer",
+    repo_id: str,
+    *,
+    hf_token: Optional[str],
+    offline: bool,
+    prefer_local_cache: bool,
+    local_path: Optional[str] = None,
+) -> "VariantsAnswer":
+    """``answer`` with ``lookup_table_bytes`` filled per variant. Never raises; a row it
+    cannot size keeps 0, which prices the whole file the way the listing always did."""
+    try:
+        from core.inference.lookup_tables import LAZY_READ_AUTO_MIN_BYTES
+        from hub.utils.gguf_lookup_tables import (
+            lazy_architecture,
+            local_lookup_info,
+            remote_cached,
+        )
+
+        variants = list(answer.response.variants or ())
+        mode = await listing_thread(True, _listing_lazy_mode)
+        found: dict[int, int] = {}
+        arch: Optional[str] = None
+        unresolved = []
+        for index, v in enumerate(variants):
+            if not str(v.filename or "").lower().endswith(".gguf"):
+                continue
+            path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v, local_path)
+            if path:
+                local_arch, table = await listing_thread(True, local_lookup_info, path, mode)
+                # Only a lazy one speaks for the repo: a repo can hold several families.
+                if lazy_architecture(local_arch):
+                    arch = arch or local_arch
+                found[index] = table
+            else:
+                unresolved.append((index, v))
+        remote_ok = (
+            unresolved
+            and not offline
+            and not prefer_local_cache
+            and _lookup_remote_enabled()
+            and not is_local_path(repo_id)
+            and _is_valid_repo_id(repo_id)
+            and await listing_thread(True, _host_streams_lookup_tables)
+        )
+        if remote_ok:
+            # Its own try: a Hub failure must not drop the local answers above.
+            try:
+                deadline = asyncio.get_running_loop().time() + _LOOKUP_DEADLINE_S
+                if arch is None:
+                    known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
+                    if not known and (
+                        mode == "on"
+                        or any(
+                            int(v.size_bytes or 0) > LAZY_READ_AUTO_MIN_BYTES
+                            for _i, v in unresolved
+                        )
+                    ):
+                        arch = await _lookup_await_once(
+                            ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
+                            deadline,
+                            _hub_repo_architecture,
+                            repo_id,
+                            hf_token,
+                        )
+                if lazy_architecture(arch):
+                    _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
+                    expired = threading.Event()
+                    tasks = {}
+                    for index, v in unresolved:
+                        identity = int(v.size_bytes or 0)
+                        cached = remote_cached(repo_id, v.filename, None, identity, mode = mode)
+                        if cached is not None:
+                            found[index] = cached[1]
+                            continue
+                        key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
+                        with _lookup_arch_lock:
+                            busy = key in _lookup_inflight
+                            if not busy:
+                                _lookup_inflight.add(key)
+                        if busy:
+                            continue
+
+                        started: list = []
+
+                        def _read(
+                            name = v.filename,
+                            ident = identity,
+                            k = key,
+                            ran = started,
+                        ):
+                            ran.append(True)
+                            try:
+                                if expired.is_set():
+                                    return 0
+                                return _remote_lookup_bytes(repo_id, name, hf_token, ident, mode)
+                            finally:
+                                with _lookup_arch_lock:
+                                    _lookup_inflight.discard(k)
+
+                        task = asyncio.ensure_future(_lookup_thread(_read))
+                        task.add_done_callback(
+                            functools.partial(_release_unrun_lookup, started, key)
+                        )
+                        tasks[task] = index
+                    if tasks:
+                        # One deadline for the listing; unstarted reads are dropped so a stalled Hub
+                        # leaves no queue.
+                        done, pending = await asyncio.wait(
+                            tasks,
+                            timeout = max(0.0, deadline - asyncio.get_running_loop().time()),
+                        )
+                        expired.set()
+                        for task in pending:
+                            task.cancel()
+                        for task in done:
+                            if not task.cancelled() and task.exception() is None:
+                                found[tasks[task]] = int(task.result() or 0)
+            except Exception as exc:  # noqa: BLE001 -- keep the local answers
+                logger.debug("lookup tables: Hub reads skipped for %s (%s)", repo_id, exc)
+        if not any(found.values()) or not await listing_thread(True, _host_streams_lookup_tables):
+            return answer
+        updated = [
+            v.model_copy(update = {"lookup_table_bytes": int(found.get(i, 0) or 0)})
+            if found.get(i)
+            else v
+            for i, v in enumerate(variants)
+        ]
+        return answer._replace(response = answer.response.model_copy(update = {"variants": updated}))
+    except Exception as exc:  # noqa: BLE001 -- the listing never fails on this
+        logger.debug("lookup tables: listing annotation skipped for %s (%s)", repo_id, exc)
+        return answer
+
+
 async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -2582,7 +2913,14 @@ async def get_gguf_variants_answer(
             )
             if mlx_answer is not None:
                 return mlx_answer
-        return answer
+        return await _with_lookup_tables(
+            answer,
+            repo_id,
+            hf_token = hf_token,
+            offline = bool(offline),
+            prefer_local_cache = bool(prefer_local_cache),
+            local_path = local_path,
+        )
     except HTTPException as exc:
         # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.
         if (

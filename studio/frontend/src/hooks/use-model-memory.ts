@@ -45,6 +45,7 @@ import {
   extraArgsAddResidentFiles,
   extraArgsOwnPlacement,
   extraArgsShapeKvCache,
+  memoryBarWeightsBytes,
 } from "@/lib/model-memory";
 import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -55,6 +56,8 @@ export interface ModelMemorySource {
   quant: string;
   /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
+  /** The listing's lookup-table bytes (never VRAM), taken off ``sizeBytes`` for that first draw. */
+  lookupTableBytes?: number | null;
   /**
      * The concrete thing this row loads, when the listing resolved one.
      *
@@ -533,7 +536,7 @@ export function useModelMemory(
     // automatic launch preserves that pin. budgetIsMeaningful sees only browser-side pins and saved
     // config, so this is the one placement override it cannot reach.
     if (estimate?.inheritedDevicePin) return computeModelMemory({});
-    const weights = estimate?.weightsBytes ?? source?.sizeBytes;
+    const weights = memoryBarWeightsBytes(estimate, source);
     return computeModelMemory({
       // The projector is resident alongside the weights, so it belongs in that
       // segment rather than as a fourth sliver the eye cannot resolve.
@@ -569,5 +572,5 @@ export function useModelMemory(
           ? plan.nCtx == null
           : !estimate.contextIsPinned,
     });
-  }, [plan, entry, source?.sizeBytes, budgetGb, budgetFraction]);
+  }, [plan, entry, source?.sizeBytes, source?.lookupTableBytes, budgetGb, budgetFraction]);
 }

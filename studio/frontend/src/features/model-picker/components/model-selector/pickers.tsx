@@ -120,7 +120,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  ggufVariantFitSizeBytes,
+  classifyGgufFitWithLookupTables,
+  ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
 import { formatGiB } from "@/lib/memory/format";
@@ -835,6 +836,12 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
     label: "RAM fallback",
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
+  },
+  // Runs only with its lookup tables left on disk (llama.cpp's default); the resident weights fit.
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tone: AMBER,
+    hint: "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
   },
   oom: OFFLOADS,
   exceeds: WONT_FIT,
@@ -2214,7 +2221,7 @@ function GgufVariantExpander({
   // fitting while the recommendation had already ruled it OOM.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      getGgufFit(ggufVariantFitSizeBytes(variant)),
+      classifyGgufFitWithLookupTables(getGgufFit, variant),
     [getGgufFit],
   );
 
@@ -5252,11 +5259,13 @@ export function HubModelPicker({
     downloaded: ReadonlyMap<string, string | null>;
     visionByRepo: ReadonlyMap<string, boolean>;
     sizes: ReadonlyMap<string, number>;
+    lookupTables: ReadonlyMap<string, number>;
   }>({
     validated: false,
     downloaded: new Map(),
     visionByRepo: new Map(),
     sizes: new Map(),
+    lookupTables: new Map(),
   });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
@@ -5305,11 +5314,24 @@ export function HubModelPicker({
               (variant) =>
                 [pinKey(repoId, variant.quant), variant.size_bytes] as const,
             ),
+            lookupTables: downloaded.map(
+              (variant) =>
+                [
+                  pinKey(repoId, variant.quant),
+                  ggufVariantLookupTableBytes(variant),
+                ] as const,
+            ),
           };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
           // missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
+          return {
+            repoId,
+            hasVision: undefined,
+            downloaded: [],
+            sizes: [],
+            lookupTables: [],
+          };
         }
       }),
     ).then((groups) => {
@@ -5325,6 +5347,9 @@ export function HubModelPicker({
             ),
           ),
           sizes: new Map(groups.flatMap((group) => group.sizes)),
+          lookupTables: new Map(
+            groups.flatMap((group) => group.lookupTables),
+          ),
         });
       }
     });
@@ -6676,7 +6701,16 @@ export function HubModelPicker({
                 diffusionTaskById.get(entry.repoId.toLowerCase()),
               )
                 ? undefined
-                : { repoId: entry.repoId, quant: entry.quant }
+                : {
+                    repoId: entry.repoId,
+                    quant: entry.quant,
+                    // Same listing figures as the sole-quant row, so a streamed table is off the
+                    // weights segment here too.
+                    sizeBytes,
+                    lookupTableBytes: pinnedQuantValidation.lookupTables.get(
+                      pinKey(entry.repoId, entry.quant),
+                    ),
+                  }
             }
             gpuGb={expanderGpuGb}
             alignMeta="device"
@@ -6839,6 +6873,7 @@ export function HubModelPicker({
                     repoId: c.repo_id,
                     quant: variant.quant,
                     sizeBytes: variant.size_bytes,
+                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
                     loadId: c.load_id,
                   }
             }

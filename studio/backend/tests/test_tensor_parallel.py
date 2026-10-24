@@ -1600,7 +1600,7 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     # The gate's required footprint must include the non-shrinkable MTP reserve,
     # not weights alone, or a separate-drafter MTP load can still overcommit.
     assert "_tp_mtp_floor" in src
-    assert "model_size + _tp_mtp_floor" in src
+    assert "model_size - _host_input_embd + _tp_mtp_floor" in src
 
 
 def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
