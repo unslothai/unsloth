@@ -18,7 +18,6 @@ test("only nvidia's Cosmos3 Edge is routed to the Video page; Nano, siblings and
   const cases: Array<[string, object]> = [
     ["nvidia/Cosmos3-Edge", { ...UNSUPPORTED, supportedIn: "video" }],
     ["NVIDIA/cosmos3-edge", { ...UNSUPPORTED, supportedIn: "video" }],
-    // Nano's checkpoint enables the Cosmos guardrail, whose package Studio does not install.
     ["nvidia/Cosmos3-Nano", UNSUPPORTED],
     ["nvidia/Cosmos3-Nano-FP8", UNSUPPORTED],
     ["nvidia/Cosmos3-Edge-Policy-DROID", UNSUPPORTED],

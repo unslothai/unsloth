@@ -1762,7 +1762,6 @@ def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
 
 
 def test_a_cosmos3_snapshot_prices_a_known_zero_text_term(tmp_path):
-    # Cosmos3's transformer is its own text model: no text_encoder/, so the text term is a known 0.0.
     fam = _fam("cosmos3-edge")
     entry = json.loads(
         (Path(__file__).parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
@@ -1775,5 +1774,4 @@ def test_a_cosmos3_snapshot_prices_a_known_zero_text_term(tmp_path):
     _component(tmp_path, "vae", vae_gb)
     sizes = dcs.local_component_sizes(tmp_path)
     assert dcs.video_header_terms(fam, sizes) == pytest.approx((denoiser_gb, 0.0, vae_gb))
-    # A family with a text encoder reads the same snapshot as missing one.
     assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[1] is None

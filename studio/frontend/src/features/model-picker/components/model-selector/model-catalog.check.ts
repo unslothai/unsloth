@@ -360,7 +360,6 @@ for (const id of [
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
-// Cosmos3 Edge loads as a pipeline only; Nano and the non-generator repos stay out.
 for (const id of ["nvidia/Cosmos3-Edge"]) {
   const group = groupForRepoId(id, VIDEO_CATALOG);
   assert.ok(group, id);

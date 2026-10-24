@@ -113,7 +113,6 @@ def _studio_frames(repo, requests, common, monkeypatch):
         return real_encode(frames, fps, audio, pipe, **kwargs)
 
     monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(_encode))
-    # Nano's index leaves the guardrail on, which needs NVIDIA's cosmos_guardrail; Edge ships it off.
     if repo.endswith("Nano"):
         monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
     else:
@@ -194,7 +193,6 @@ def test_studio_renders_what_plain_diffusers_renders(
             request["height"],
         )
         assert frames.shape == (request["num_frames"], request["height"], request["width"], 3)
-        # A flat frame (NaN decode, dead sampler) has pixel std 0; any picture has far more.
         assert min(float(frame.std()) for frame in frames) > 1.0, name
         differing = int(np.count_nonzero(frames != reference[name]))
         record_property(f"{repo}:{name}:differing_values", differing)

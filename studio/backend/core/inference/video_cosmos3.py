@@ -70,8 +70,7 @@ def _cached_model_index(repo_id: str) -> Optional[dict]:
 
 
 def checkpoint_enables_safety_checker(repo_id: str, index: Optional[dict] = None) -> bool:
-    """The checkpoint's own choice: ``enable_safety_checker`` in its model_index.json, else the pipeline default (on).
-    With no index at hand, the base repo's shipped value, and on for anything unknown."""
+    """``enable_safety_checker`` from the model_index.json, else the base repo's shipped value; on when unknown."""
     if index is None:
         index = _cached_model_index(repo_id)
     if index is not None:
@@ -86,11 +85,7 @@ _TE_QUANT_UNSET = frozenset({"", "auto", "none", "off"})
 def load_request_refusal(
     family: str, kind: str, text_encoder_quant: Optional[str]
 ) -> Optional[str]:
-    """Why a Cosmos3 load request cannot run, before anything is evicted or fetched; None when it can.
-
-    Cosmos3 loads only as its diffusers pipeline: a gguf / single_file pick builds the denoiser with
-    ``Cosmos3OmniTransformer.from_single_file``, which does not exist. And it has no separate text encoder (the omni
-    transformer reads the prompt tokens itself), so an explicit encoder precision can never engage."""
+    """Refuse non-pipeline picks (no ``from_single_file``) and an explicit text-encoder precision (none exists)."""
     if kind != "pipeline":
         return (
             f"{family} loads only as its full Diffusers pipeline (nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge): "
@@ -120,8 +115,7 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
 
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
-    """Extra ``from_pretrained`` kwargs: no sound tokenizer (Studio renders video only), and the guardrail off only on
-    the explicit opt-out."""
+    """``from_pretrained`` kwargs: no sound tokenizer; guardrail off only on the explicit opt-out."""
     kwargs: dict[str, Any] = {"sound_tokenizer": None}
     if safety_checker_opted_out():
         kwargs["enable_safety_checker"] = False
@@ -140,12 +134,8 @@ def output_frames(output: Any) -> Any:
 
 
 def install_untiled_encode(pipe: Any, logger: Any = None) -> bool:
-    """Run ``pipe.vae.encode`` untiled, tiled only when that runs out of memory.
-
-    Image-to-video encodes the conditioning clip (the first frame repeated to the clip length) and every denoising
-    step attends to that latent, so a tiled encode's small shift grows across the clip: against plain diffusers on
-    the same stack, Nano i2v measured 24.7 dB PSNR with the tiled encode while t2v held 39.4 dB (t2v encodes an all-zero
-    clip, which tiling cannot change). The decode follows the family's untiled-when-fits policy."""
+    """Run ``pipe.vae.encode`` untiled, tiled only on out-of-memory: every step attends to the encoded i2v clip,
+    so tiling's small shift grows across it (Nano i2v vs diffusers: 24.7 dB tiled)."""
     vae = getattr(pipe, "vae", None)
     encode = getattr(vae, "encode", None)
     if vae is None or not callable(encode):

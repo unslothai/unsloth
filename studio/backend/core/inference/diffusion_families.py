@@ -2457,8 +2457,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
     # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
     "QwenImage21Pipeline": "0.41.0",
-    # Cosmos3OmniPipeline is in 0.39.0, but Cosmos3-Edge's model_index sets use_native_flow_schedule, a pipeline
-    # config 0.40.0 added; 0.39.0 would drop it with a warning and sample Edge on the wrong schedule.
+    # 0.39.0 has the class but drops Edge's use_native_flow_schedule (added in 0.40.0) and samples the wrong schedule.
     "Cosmos3OmniPipeline": "0.40.0",
     # FLUX.3 Image Klein (huggingface/diffusers#15046) is in no release yet, so the first one that can carry it is
     # 0.42.0. Main and the PR branch both report 0.41.0.dev0, which reads as the 0.41.0 release that lacks it, so the

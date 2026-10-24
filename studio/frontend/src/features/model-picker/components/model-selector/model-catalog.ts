@@ -759,7 +759,6 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     displayName: "Cosmos3 Edge",
     description: "Text and image to video 480p, small",
     scope: "video",
-    // Resident bf16: transformer 6.7 GB + VAE 1.4 GB; the download adds a vision encoder video does not load.
     artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
   },
 ];

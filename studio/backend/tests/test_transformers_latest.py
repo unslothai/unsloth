@@ -1108,7 +1108,6 @@ def test_upgrade_check_ignores_inert_nested_types(monkeypatch):
     assert out["supported_in_pypi"] is True
     assert "cosmos3_edge_projector" not in asked
 
-    # Any other unknown nested type still vetoes, exactly as before.
     cfg["projector_config"] = {"model_type": "zz_unknown_projector"}
     assert tl.check_upgrade_for_model("nvidia/Cosmos3-Edge") is None
 

@@ -543,7 +543,6 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
 
 
 def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
-    # a family whose every step attends to the encoded conditioning clip keeps the encoder's kernels (Cosmos3-Edge)
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
 

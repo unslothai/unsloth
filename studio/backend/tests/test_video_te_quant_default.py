@@ -128,7 +128,6 @@ def test_families_with_their_own_tristate_get_the_raw_request(name):
 
 @pytest.mark.parametrize("name", ["cosmos3-nano", "cosmos3-edge"])
 def test_a_cosmos3_family_has_no_text_encoder_to_default(name):
-    # No text encoder, so nothing hosted to default to: every request comes back as given.
     fam = _family(name)
     for raw in (None, "", "auto", "none", "fp8"):
         for speed_mode in ("default", "off"):

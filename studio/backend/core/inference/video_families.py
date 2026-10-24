@@ -303,7 +303,7 @@ class VideoFamily:
     # The scheme an UNSET text_encoder_quant takes (video.video_te_quant_request), same contract as
     # DiffusionFamily.te_quant_auto: must be a scheme this family HOSTS (te_prequant_repos / TE_INT8_CONVROT_FILES), so
     # the default never costs a dense download plus an in-place cast. "none" / "off" still pin the released encoder.
-    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset; Cosmos3 has no text encoder.
+    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset.
     te_quant_auto: Optional[str] = None
     # The pipeline encoders that automatic pick casts, when not all of them (empty = every present encoder). An
     # explicit text_encoder_quant still covers every encoder.
@@ -433,7 +433,6 @@ PIPELINE_ONLY_VIDEO_FAMILIES = frozenset(COSMOS3_FAMILIES)
 I2V_IN_T2V_PIPELINE_CLASSES = frozenset({"Cosmos3OmniPipeline"})
 # Nano's index names the pre-release class.
 _COSMOS3_INDEX_CLASSES = frozenset({"Cosmos3OmniPipeline", "Cosmos3OmniDiffusersPipeline"})
-# Root config.json model_type -> {transformer hidden_size: family}.
 _COSMOS3_MODEL_TYPES = {
     "cosmos3_omni": {4096: COSMOS3_NANO_FAMILY},
     "cosmos3_edge": {2048: COSMOS3_EDGE_FAMILY},
@@ -1075,7 +1074,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         cudnn_benchmark = False,
     ),
-    # The pipeline pads the latent grid itself, so /16 sizes (720) run.
     VideoFamily(
         name = "cosmos3-nano",
         pipeline_class = "Cosmos3OmniPipeline",
@@ -1102,12 +1100,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         duration_presets = (2.0, 5.0, 7.875),
         bf16_components_gb = (30.4, 0.0, 1.4),
-        # Unmeasured: the DiT runs over a prompt-length sequence.
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
         i2v_fits_first_frame = False,
         scheduler_overrides = _COSMOS3_NANO_SCHEDULER,
-        # Same VAE and conditioning as Edge (see the Edge row).
         cudnn_benchmark = False,
         vae_fused_encoder = False,
     ),
@@ -1142,10 +1138,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
-# Names no family can serve, each with its refusal: Wan2.1 / FastWan / AnyFlow, and the Cosmos3 siblings. Each row is
-# kept to its own lineage's spellings so no other family's name can match. FastWan, AnyFlow, I2V and conditioning
-# markers count only in the last path segment (an owner or folder named "fastwan", "i2v" or "fun" is not such a
-# checkpoint), and "fun" only right after the Wan2.1 token, where every Fun release puts it.
+# Wan2.1 / FastWan / AnyFlow names no family can serve, each with its refusal. Kept to Wan2.1 / FastWan / AnyFlow
+# spellings so no other family's name can match. FastWan, AnyFlow, I2V and conditioning markers count only in the last path segment (an owner or folder
+# named "fastwan", "i2v" or "fun" is not such a checkpoint), and "fun" only right after the Wan2.1 token, where every Fun
+# release puts it.
 _WAN21_TOKEN = r"(?<![a-z0-9])wan-?2-?1(?![0-9])"
 _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     (
@@ -1236,7 +1232,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE), Cosmos3 Reasoners a family token.
+    # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
     needle = model_identity(repo_id).lower()
@@ -1809,7 +1805,6 @@ def validate_video_reference_conditioning(
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
-    # First so a parent folder spelling another key cannot outrank them.
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3

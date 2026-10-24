@@ -115,7 +115,6 @@ test("the other families keep their recipes", () => {
     ["fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf", 20, 6],
     ["/home/user/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors", 20, 5],
-    // Cosmos3 keys count only in the model name, so a parent folder or owner never outranks the checkpoint's family.
     ["/models/ltx/Cosmos3-Nano", 35, 6],
     ["/home/distilled/Cosmos3-Nano", 35, 6],
     ["/data/fusionx/Cosmos3-Edge", 20, 6],

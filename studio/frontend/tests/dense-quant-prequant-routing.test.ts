@@ -353,8 +353,6 @@ test("the Wan2.1 rows are sized by the bf16 weights the backend keeps resident",
 });
 
 test("the Cosmos3 rows are sized by the bf16 weights the backend keeps resident", () => {
-  // Edge: 6.7 + 0.0 + 1.4 GB bf16 (no text encoder), peaking at 13.3 GiB at 832x480x121 on a GB300: fits 16 GB, not 12.
-  // Nano is not listed until Studio installs the Cosmos guardrail its checkpoint enables.
   const EDGE = "nvidia/Cosmos3-Edge";
   assert.equal(artifactForRepoId("nvidia/Cosmos3-Nano", VIDEO_CATALOG), null);
   assert.equal(artifactForRepoId(EDGE, VIDEO_CATALOG)?.artifact.approxSizeGb, 9);

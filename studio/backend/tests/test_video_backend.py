@@ -9091,7 +9091,6 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
-    # Cosmos3-Nano's guardrail needs a package this runtime lacks.
     monkeypatch.setenv("UNSLOTH_COSMOS3_SAFETY_CHECKER", "0")
     calls = _capture_plan(monkeypatch)
     for fam in _FAMILIES:
@@ -13136,7 +13135,6 @@ def test_cudnn_benchmark_opt_out_families():
         fam.vae_force_fp32
         or fam.name in ("ltx-2", "ltx-2.5")
         or fam.name.startswith("hunyuanvideo-1.5")
-        # The Wan2.2 VAE in bf16, as the Cosmos3 cards run it.
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
         if not fam.cudnn_benchmark

@@ -1114,7 +1114,6 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
 
 
 def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
-    # Validation refuses an explicit encoder precision for Cosmos3 (no text encoder): the plan must pass it along.
     backend = video_module.get_video_backend()
     seen: dict = {}
 

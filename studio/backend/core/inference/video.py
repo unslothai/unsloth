@@ -9604,13 +9604,11 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Cosmos3 conditions every step on the VAE-encoded first-frame clip, so that encode runs untiled.
             if vae_tiling and fam.name in COSMOS3_FAMILIES:
                 from .video_cosmos3 import install_untiled_encode
                 install_untiled_encode(pipe, logger = logger)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical,
-            # except for Cosmos3, which has no earlier output to keep: its stock 16x tiles leave a 4-latent edge tile at
-            # 480 / 832 px, and untiled is what the publisher's pipeline decodes.
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            # Cosmos3 always: its stock tiles leave a seam at 480 / 832 px, and its reference pipeline decodes untiled.
             if (
                 offload_policy == "none"
                 and target.device == "cuda"

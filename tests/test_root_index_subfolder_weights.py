@@ -122,7 +122,6 @@ def test_prefetch_keeps_subfolder_weights_only_when_the_root_index_maps_there(
     )
     assert ({SHARD, VISION} <= selected) is keeps_subfolder_weights, seen
     assert "transformer/config.json" in selected
-    # The fix changes nothing else about the request.
     pruned, _ = hub(ROOT_SHARDS)
     diff = set(pruned["ignore_patterns"]) - set(seen["ignore_patterns"])
     assert diff == (set(U._SUBDIR_WEIGHT_IGNORE_PATTERNS) if keeps_subfolder_weights else set())
