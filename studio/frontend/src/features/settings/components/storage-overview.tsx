@@ -60,7 +60,8 @@ export function StorageOverview({
         <p className="text-sm font-semibold text-foreground">{heading}</p>
         {action}
       </div>
-      <div className="flex h-6 overflow-hidden rounded-full bg-muted">
+      {/* A rounded rectangle, not a pill: the design asks for square-ish ends on the usage bar. */}
+      <div className="flex h-6 overflow-hidden rounded-sm bg-muted">
         {scale > 0
           ? segments.map((segment) =>
               segment.bytes > 0 ? (
