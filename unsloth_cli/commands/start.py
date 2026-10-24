@@ -2471,13 +2471,8 @@ def _resolve_model(
                 # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
                 if {**payload, **carried}.get("gpu_memory_mode") != "manual":
                     carried.pop("tensor_split", None)
-                # Slots Auto cut to keep a drafter must stay defaulted: an explicit count makes the same command reload (_runtime_matches_intent).
-                slots, effective = (
-                    status_snapshot.get("requested_parallel_slots"),
-                    status_snapshot.get("parallel_slots"),
-                )
-                if slots is not None and effective is not None and effective < slots:
-                    carried.pop("n_parallel", None)
+                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+                carried.pop("n_parallel", None)
             payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:

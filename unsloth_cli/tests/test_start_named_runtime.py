@@ -142,8 +142,8 @@ def test_named_resident_with_extras_left_to_server_inheritance(monkeypatch, opti
     assert payload == {"model_path": MODEL, "gguf_variant": "Q8_0", **sent}
 
 
-@pytest.mark.parametrize("effective, carried", [(2, False), (4, True)])
-def test_named_resident_slots_cut_for_drafter_stay_defaulted(monkeypatch, effective, carried):
+@pytest.mark.parametrize("effective", [2, 4])
+def test_named_resident_slot_count_stays_defaulted(monkeypatch, effective):
     status = {
         "is_gguf": True,
         "gguf_variant": "Q4_K_M",
@@ -151,7 +151,7 @@ def test_named_resident_slots_cut_for_drafter_stay_defaulted(monkeypatch, effect
         "parallel_slots": effective,
     }
     payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(gguf_variant = "Q4_K_M"))
-    assert ("n_parallel" in payload) is carried
+    assert "n_parallel" not in payload
 
 
 @pytest.mark.parametrize("mode, carried", [("auto", False), ("manual", True)])
