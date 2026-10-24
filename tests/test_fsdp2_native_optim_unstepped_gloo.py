@@ -60,7 +60,13 @@ def _batch(step, rank):
     return {"input_ids": ids, "labels": ids.clone(), "use_cache": False}
 
 
-def _step(model, opt, step, rank, skip = None):
+def _step(
+    model,
+    opt,
+    step,
+    rank,
+    skip = None,
+):
     loss = model(**_batch(step, rank)).loss
     loss.backward()
     if skip is not None:
@@ -94,7 +100,9 @@ def _diff_optims(a, b):
             t, u = v.get(name), w.get(name)
             if isinstance(t, torch.Tensor) or isinstance(u, torch.Tensor):
                 if not (
-                    isinstance(t, torch.Tensor) and isinstance(u, torch.Tensor) and torch.equal(t, u)
+                    isinstance(t, torch.Tensor)
+                    and isinstance(u, torch.Tensor)
+                    and torch.equal(t, u)
                 ):
                     out.append(f"{k}.{name}")
             elif t != u:
@@ -102,7 +110,10 @@ def _diff_optims(a, b):
 
     def _groups(o):
         # The full-state load hands betas back as a list (torch's state-dict flattening).
-        return [{k: list(v) if isinstance(v, tuple) else v for k, v in g.items()} for g in o["param_groups"]]
+        return [
+            {k: list(v) if isinstance(v, tuple) else v for k, v in g.items()}
+            for g in o["param_groups"]
+        ]
 
     if _groups(a) != _groups(b):
         out.append("param_groups")
@@ -114,11 +125,14 @@ _SKIP = "model.layers.0.post_attention_layernorm.weight"
 
 def _new(native, seed):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
-
     model = native.shard_model(_model(seed), native.FSDP2Config(param_dtype = torch.float32))
-    return model, torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False), (
-        StateDictOptions,
-        set_model_state_dict,
+    return (
+        model,
+        torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False),
+        (
+            StateDictOptions,
+            set_model_state_dict,
+        ),
     )
 
 
@@ -161,7 +175,9 @@ def _case_resume(native, dist, rank, tmp):
         loss = _step(m, o, 3, rank).item()
         res[f"{arm}_loss"] = [want["loss"], loss]
         res[f"{arm}_after_diff"] = _diff_models(want["after"], _full_model(m))
-        res[f"{arm}_optim_diff"] = [str(d)[:200] for d in _diff_optims(want["optim"], _full_optim(m, o))]
+        res[f"{arm}_optim_diff"] = [
+            str(d)[:200] for d in _diff_optims(want["optim"], _full_optim(m, o))
+        ]
     res["n_trainable"] = sum(1 for p in model.parameters() if p.requires_grad)
     return res
 
@@ -220,7 +236,12 @@ def _worker(rank, world, port, out, case, tmp):
             pass
 
 
-def _run(case, tmp, world = 2, timeout = 600):
+def _run(
+    case,
+    tmp,
+    world = 2,
+    timeout = 600,
+):
     import queue
 
     import torch.multiprocessing as mp
@@ -228,7 +249,9 @@ def _run(case, tmp, world = 2, timeout = 600):
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     port = _free_port()
-    procs = [ctx.Process(target = _worker, args = (r, world, port, out, case, tmp)) for r in range(world)]
+    procs = [
+        ctx.Process(target = _worker, args = (r, world, port, out, case, tmp)) for r in range(world)
+    ]
     for p in procs:
         p.start()
     results = {}
