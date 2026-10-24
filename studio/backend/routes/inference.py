@@ -30302,12 +30302,6 @@ async def _proxy_to_external_provider(
             raise HTTPException(status_code = 400, detail = str(exc)) from None
     else:
         reasoning_config = None
-    if extra_headers is None and payload.provider_id and managed is None:
-        config = saved_provider_snapshot or await asyncio.to_thread(
-            providers_db.get_provider, payload.provider_id
-        )
-        if config is not None:
-            extra_headers = config.get("extra_headers")
 
     # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
