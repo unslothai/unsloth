@@ -345,7 +345,8 @@ function CollapsibleSection({
 
   const headerClasses = cn(
     "flex w-full items-center justify-between text-ui-12 font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
-    first ? "pt-4 pb-5" : "py-5",
+    // pt-2: the first row's label centers on the sidebar's New chat row beside the sheet.
+    first ? "pt-2 pb-5" : "py-5",
   );
 
   return (
