@@ -51,10 +51,12 @@ HYBRID_ATTENTION_CLASSES = (
 )
 # Attention-only models whose Hugging Face attention runs under Ulysses without a stateful mixer.
 # DeepSeek V2 / V3 MLA (Moonlight) pass a YaRN-scaled softmax scale and narrower value heads.
+# Gemma 4 passes its sliding window per layer and a softmax scale of 1.0.
 ULYSSES_ATTENTION_CLASSES = HYBRID_ATTENTION_CLASSES + (
     "MiniMaxM2Attention",
     "DeepseekV2Attention",
     "DeepseekV3Attention",
+    "Gemma4TextAttention",
 )
 
 
@@ -529,8 +531,41 @@ def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
     return wrap_gated_delta_forward(module, get_cp_manager)
 
 
+_SLIDING_BLOCK_MASKS = {}
+_FLEX = {}
+
+
+def _flex_sliding_attention(*, config, context, Q, K, V, window, scale):
+    """Causal sliding-window attention over the gathered sequence with a block-sparse flex mask.
+
+    SDPA has no window, so the dense path would build a [S, S] mask and compute every block;
+    flex skips the blocks outside the window like the stock (non-CP) Gemma 4 path does.
+    """
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    if "fn" not in _FLEX:
+        _FLEX["fn"] = torch.compile(flex_attention, dynamic = False)
+    seq = context.q_len
+    cache_key = (seq, window, Q.device)
+    block_mask = _SLIDING_BLOCK_MASKS.get(cache_key)
+    if block_mask is None:
+
+        def keep(b, h, q, k):
+            return (q >= k) & (q - k < window)
+
+        if len(_SLIDING_BLOCK_MASKS) >= 8:
+            _SLIDING_BLOCK_MASKS.clear()
+        block_mask = create_block_mask(keep, None, None, seq, seq, device = Q.device)
+        _SLIDING_BLOCK_MASKS[cache_key] = block_mask
+    out = _FLEX["fn"](
+        Q, K, V, block_mask = block_mask, scale = scale, enable_gqa = config.n_groups != 1
+    )
+    return out.transpose(1, 2)
+
+
 def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, **kwargs):
     from .attention_dispatch import (
+        SDPA,
         AttentionConfig,
         AttentionContext,
         _run_attention,
@@ -576,8 +611,35 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
         seq_info = seq_info,
         attention_mask = None,
         causal_mask = None,
+        # After the exchange each rank holds the full sequence, so the window applies unchanged.
+        sliding_window = kwargs.get("sliding_window"),
+        # Keeps training SDPA off cuDNN attention on SM100 (#15019) on the Ulysses path too.
+        training = module.training,
     )
-    out = ulysses_attention(_run_attention, config, context, query, key, value, group)
+    window = context.sliding_window
+    run = _run_attention
+    if (
+        config.backend == SDPA
+        and window is not None
+        and 0 < window < q_len * dist.get_world_size(group)
+        and seq_info is None
+        and query.is_cuda
+        and not _FLEX.get("broken")
+    ):
+
+        def run(*, config, context, Q, K, V):
+            try:
+                return _flex_sliding_attention(
+                    config = config, context = context, Q = Q, K = K, V = V,
+                    window = window, scale = scaling,
+                )
+            except Exception as error:
+                # A flex compile failure (old torch, unsupported head size) keeps the dense path.
+                _FLEX["broken"] = True
+                print(f"Unsloth: Ulysses flex sliding attention unavailable ({error}); using SDPA.")
+                return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    out = ulysses_attention(run, config, context, query, key, value, group)
     return (out if v_dim == head_dim else out[..., :v_dim]), None
 
 

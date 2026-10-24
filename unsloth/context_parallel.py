@@ -112,6 +112,9 @@ def context_parallel_options(config) -> tuple:
 
 # Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks.
 _ULYSSES_OWN_MASK_MODEL_TYPES = ("deepseek_v32", "deepseek_v4")
+# Hugging Face attention that passes sliding_window per call; Ulysses hands it to the dispatcher.
+# Llama-style fast forwards ignore the window, so the refusal stays for every other model.
+_ULYSSES_SLIDING_MODEL_TYPES = ("gemma4_text",)
 
 
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
@@ -126,7 +129,12 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
             continue
         if backend == "ulysses" and getattr(c, "model_type", None) in _ULYSSES_OWN_MASK_MODEL_TYPES:
             continue
+        windowed = (
+            backend == "ulysses" and getattr(c, "model_type", None) in _ULYSSES_SLIDING_MODEL_TYPES
+        )
         layer_types = getattr(c, "layer_types", None)
+        if windowed and layer_types:
+            layer_types = [t for t in layer_types if t != "sliding_attention"]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -137,15 +145,33 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
-            c, "use_sliding_window", None
-        ) is True:
+        if not windowed and (
+            (isinstance(sliding_window, int) and sliding_window > 0)
+            or getattr(c, "use_sliding_window", None) is True
+        ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
         if getattr(c, "attn_logit_softcapping", None):
             return "attention logit softcapping"
     return None
+
+
+def _attention_head_counts(config) -> set:
+    """(attention heads, key / value heads) pairs to check against the Ulysses split.
+
+    Heterogeneous configs (Gemma 4 on transformers >= 5.15) refuse global reads of per-layer
+    attributes, so read each layer's config; Gemma 4's global layers carry their own KV head count.
+    """
+    layers = getattr(config, "per_layer_config", None) or [config]
+    counts = set()
+    for layer in layers:
+        heads = layer.num_attention_heads
+        counts.add((heads, getattr(layer, "num_key_value_heads", None) or heads))
+        global_kv_heads = getattr(layer, "num_global_key_value_heads", None)
+        if global_kv_heads:
+            counts.add((heads, global_kv_heads))
+    return counts
 
 
 def _unregister_cp_sharding_rules() -> None:
@@ -776,12 +802,8 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if backend == "ulysses":
             # Every rank raises here, before any collective.
             text_config = getattr(model_config, "text_config", None) or model_config
-            ulysses_head_plan(
-                text_config.num_attention_heads,
-                getattr(text_config, "num_key_value_heads", None)
-                or text_config.num_attention_heads,
-                size,
-            )
+            for heads, kv_heads in _attention_head_counts(text_config):
+                ulysses_head_plan(heads, kv_heads, size)
         _check_stateful_mixers(self.model, backend, size)
         # MiniMax-M2 and DeepSeek have no stateful mixer but run on the same Ulysses path.
         hf_ulysses = (
@@ -802,7 +824,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention "
                 "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear, "
-                "MiniMax (M1 hybrids, M2) and DeepSeek (V2 / V3 MLA, V3.2, V4)."
+                "MiniMax (M1 hybrids, M2), DeepSeek (V2 / V3 MLA, V3.2, V4) and Gemma 4 text."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
