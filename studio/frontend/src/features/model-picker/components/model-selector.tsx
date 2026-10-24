@@ -677,8 +677,8 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          // Half the left inset before the bar; an overlay bar takes its measured strip on top.
-          <div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*4+var(--overlay-scrollbar-gutter,0px))] pb-4 pl-4 [scrollbar-gutter:stable]">
+          // 16px to the content like the picker list: a classic bar's 8px plus 8px, or an overlay bar's strip capped at 8px plus 8px.
+          <div className="min-h-0 w-full overflow-y-auto pt-4 pr-[calc(var(--spacing)*2+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4 pl-4 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,
