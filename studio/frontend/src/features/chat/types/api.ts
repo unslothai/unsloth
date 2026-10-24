@@ -322,7 +322,7 @@ export interface LoadModelResponse {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
   spec_draft_model?: string | null;
-  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  /** Whether the user's tensor split is active; false for an automatic one. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
    *  round-trips the Advanced Settings switch even on a GGUF that never had a projector, unlike
@@ -481,7 +481,7 @@ export interface InferenceStatusResponse {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
   spec_draft_model?: string | null;
-  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  /** Whether the user's tensor split is active; false for an automatic one. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
    *  round-trips the Advanced Settings switch even on a GGUF that never had a projector. */
