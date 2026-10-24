@@ -215,6 +215,14 @@ test("the placement readout names expert weights and gives both memory figures",
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
 });
 
+test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {
+  // CUDA build, no usable device: llama.cpp still logs "offloaded 29/29 layers to GPU", buffers AMX + CPU_Mapped.
+  assert.deepEqual(
+    describePlacement({ offloaded: 29, total: 29, overflowLayers: null, gpuWeightsMib: 0, hostWeightsMib: 499.8, expertCacheMib: null }),
+    { layers: "All 29 layers on the CPU", memory: "0.5 GiB in RAM" },
+  );
+});
+
 test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () => {
   // --fit names no layer on this path; the backend reports the model's MoE layer count instead.
   const placement = loadedPlacementFrom({

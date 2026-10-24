@@ -153,7 +153,9 @@ export function loadedPlacementFrom(response: {
 function describeLayers(p: LoadedPlacement): string | null {
   const { offloaded, total, overflowLayers, expertCacheMib } = p;
   if (offloaded === null || total === null || total <= 0) return null;
-  if (offloaded <= 0) return `All ${total} layers on the CPU`;
+  // A GPU build whose backend failed to start still logs "offloaded N/N"; its buffers are all host ones.
+  const noGpuBuffers = p.gpuWeightsMib === 0 && (p.hostWeightsMib ?? 0) > 0;
+  if (offloaded <= 0 || noGpuBuffers) return `All ${total} layers on the CPU`;
   if (offloaded < total)
     return `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
   if (expertCacheMib !== null && expertCacheMib > 0) {

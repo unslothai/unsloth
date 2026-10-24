@@ -341,3 +341,34 @@ def test_each_os_reads_its_own_load_counter(monkeypatch):
     monkeypatch.setattr(llama_cpp.sys, "platform", "freebsd14")
     assert LlamaCppBackend._read_load_bytes(7) is None
     assert calls == [7]
+
+
+def test_the_load_counter_reads_a_real_process_on_this_os(tmp_path):
+    """No mocks: a child reads a file into memory, and this OS's counter must see at least that much.
+    Linux rchar and Windows read_bytes count the read; on macOS a page-cached file reads nothing from
+    disk, so the physical footprint of the held bytes carries it."""
+    if not (os.path.isdir("/proc") or sys.platform in ("darwin", "win32")):
+        pytest.skip("no load counter on this platform")
+    size = 64 * 1024 * 1024
+    blob = tmp_path / "weights.bin"
+    blob.write_bytes(os.urandom(size))
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\n"
+            "data = open(sys.argv[1], 'rb').read()\n"
+            "print(len(data), flush = True)\n"
+            "time.sleep(60)\n",
+            str(blob),
+        ],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+    try:
+        assert int(child.stdout.readline()) == size
+        loaded = LlamaCppBackend._read_load_bytes(child.pid)
+        assert loaded is not None and loaded >= size
+    finally:
+        child.kill()
+        child.wait(10)
