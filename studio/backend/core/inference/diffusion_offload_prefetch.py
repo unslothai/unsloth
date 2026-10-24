@@ -672,7 +672,8 @@ class GroupPrefetcher:
         if self.active:
             return
         if self.slot_raw:
-            torch.cuda.synchronize(self.device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(self.device)
             bump_placement_epoch()
         self.slot_of = {}
         self.slot_buffers = {}
@@ -745,7 +746,8 @@ class GroupPrefetcher:
         self._staging().clear()  # nothing is staged under capture; the synchronize below lands the rest
         self.staged_bytes = 0
         try:
-            torch.cuda.synchronize(self.device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(self.device)
         except Exception:  # noqa: BLE001 - the copies below are what matters
             pass
         for group in self.groups:
