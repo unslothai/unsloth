@@ -11,10 +11,8 @@ transformers already picks False for a ``PreTrainedModel`` under checkpointing; 
 plain LoRA adapter on a dense text model, where every trainable parameter gets a gradient each step.
 Without checkpointing True works (and tolerates an adapter a step never runs), so it is left alone.
 
-The other way round: a fully finetuned vision-language model is a ``PreTrainedModel``, so transformers
-picks False under checkpointing, and a text-only batch then leaves the trainable vision tower without
-gradients ("Expected to have finished reduction in the prior iteration"). Unsloth already checkpoints
-VLMs non-reentrantly under DDP, which works with True, so True is picked there (as TRL does).
+Conversely a fully finetuned VLM gets False from transformers, and a text-only batch leaves its
+trainable tower without gradients; Unsloth checkpoints VLMs non-reentrantly, so True is picked (as TRL).
 """
 
 import os
@@ -185,8 +183,7 @@ def _unwrapped_models(model):
 
 
 def _vlm_tower_needs_unused_search(args, model):
-    """True for a model whose trainable vision / audio tower a text-only batch skips, checkpointed
-    non-reentrantly by Unsloth's DDP VLM path (``_unsloth_vlm_gc_non_reentrant``)."""
+    """Trainable tower a text-only batch skips, under ``_unsloth_vlm_gc_non_reentrant``."""
     models = _unwrapped_models(model)
     if not any(getattr(m, "_unsloth_vlm_gc_non_reentrant", False) is True for m in models):
         return False
@@ -213,8 +210,7 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
 
     Kept at None (transformers' True) for anything a step may skip: MoE / expert LoRA, vision or audio
     towers, MTP heads, lm_head / embedding adapters, modules_to_save, several adapters, non-LoRA PEFT.
-    Set to True for a VLM with a trainable tower under Unsloth's non-reentrant DDP checkpointing, where
-    transformers would pick False for a full finetune. Returns the value now on ``args``.
+    Set to True for a VLM with a trainable tower under non-reentrant checkpointing. Returns the value now on ``args``.
     """
     if args is None or not hasattr(args, "ddp_find_unused_parameters"):
         return None

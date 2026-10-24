@@ -3445,8 +3445,7 @@ def _refuse_parallelism_config(training_args):
 
 
 def _expert_parallel_requested(model):
-    """from_pretrained(distributed_config = DistributedConfig(enable_expert_parallel = True)): the
-    experts are split over the ranks (each holds num_experts // world of them)."""
+    """from_pretrained(distributed_config = DistributedConfig(enable_expert_parallel = True))."""
     for m in (model, getattr(model, "get_base_model", lambda: None)()):
         dc = getattr(getattr(m, "config", None), "distributed_config", None)
         if dc is None:
@@ -3462,10 +3461,9 @@ def _expert_parallel_requested(model):
 
 
 def _refuse_tensor_parallel_model(model):
-    """A model loaded with a tensor-parallel plan (from_pretrained(tp_plan = ...)) or with
-    transformers' expert parallelism (DistributedConfig(enable_expert_parallel = True), which sets
-    tp_size to the world size) already holds DTensor or per-rank expert parameters on its own mesh;
-    the Trainer would also build a ParallelismConfig from its tp_size. Native FSDP2 cannot shard it again."""
+    """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
+    parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
+    Native FSDP2 cannot shard it again."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return
     tp_size = getattr(model, "tp_size", None)

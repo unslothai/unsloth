@@ -296,8 +296,7 @@ def _llava(**text_extra):
 
 
 def test_full_finetune_vlm_searches_unused_tower(ddp_env):
-    # transformers picks False for a checkpointed PreTrainedModel; a text-only batch then
-    # leaves the vision tower without gradients and DDP fails the next step.
+    # transformers' False would leave the tower without gradients on a text-only batch.
     args = _args()
     assert _helper()(args, _llava()) is True
     assert args.ddp_find_unused_parameters is True
