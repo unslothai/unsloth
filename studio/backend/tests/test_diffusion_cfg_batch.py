@@ -894,6 +894,19 @@ def test_the_verdict_store_is_keyed_on_the_card_and_skipped_off_cuda(monkeypatch
     assert (tmp_path / "verdicts.json").read_text() == before
 
 
+def test_usable_free_does_not_count_graph_held_cache(monkeypatch):
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda total_mib: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
+    assert cb._usable_free_mib(torch.device("cuda", 0)) == 1100
+
+
 class _QuantDen(torch.nn.Module):
     def __init__(self):
         super().__init__()
