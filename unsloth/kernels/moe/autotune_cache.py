@@ -507,9 +507,17 @@ def _itemsize(dtype: Optional[torch.dtype], default: int = 2) -> int:
 
 
 def _estimate_smem(
-    kind: str, config: Any, act_bytes: int, weight_bytes: int, capability: Tuple[int, int]
+    kind: str,
+    config: Any,
+    act_bytes: int,
+    weight_bytes: int,
+    capability: Tuple[int, int],
+    pipelined_dW: bool = False,
 ) -> int:
-    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB."""
+    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB.
+
+    pipelined_dW: the per-expert dW kernel with unpermuted operands. Its one M loop is software pipelined (the
+    legacy kernel's nested loop and a gathered load never are), so 16-bit shared memory grows with num_stages."""
     M, N, K = config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K
     stages = max(int(config.num_stages), 1)
     if kind == "fwd":
@@ -534,7 +542,12 @@ def _estimate_smem(
             buffers = stages if hopper_like else stages - 1
         else:
             buffers = min(stages, 2) if hopper_like else 1
-        return buffers * (a + b) + (2048 if hopper_like else 1024)
+        need = buffers * (a + b) + (2048 if hopper_like else 1024)
+        if pipelined_dW and stages > 1:
+            # sm_90+ buffers both tiles per stage; sm_80-class cp.async buffers X (b) stages - 1 times beside one dY tile.
+            piped = stages * (a + b) + 2048 if hopper_like else (stages - 1) * b + a + 1024
+            need = max(need, piped)
+        return need
     if hopper_like:
         # A cast operand keeps num_stages - 1 buffers plus one copy in the dot dtype.
         if a_cast:
@@ -554,10 +567,13 @@ def _fit_config_to_smem(
     weight_bytes: int,
     capability: Tuple[int, int],
     smem: int,
+    pipelined_dW: bool = False,
 ) -> Any:
     # Halving a power-of-two tile keeps it dividing N / K.
     def fits():
-        return _estimate_smem(kind, config, act_bytes, weight_bytes, capability) <= smem
+        return (
+            _estimate_smem(kind, config, act_bytes, weight_bytes, capability, pipelined_dW) <= smem
+        )
 
     before = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
     loop_dim = _LOOP_DIM[kind]

@@ -4,7 +4,11 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useLocale, useT, type TranslationKey } from "@/i18n";
 import { useLibraryProjectLabels } from "./use-library-project-labels";
-import { Folder01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  FilterHorizontalIcon,
+  Folder01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,6 +106,7 @@ export function LibraryToolbar({
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
+            <HugeiconsIcon icon={FilterHorizontalIcon} className="size-4 shrink-0" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"
@@ -256,10 +261,13 @@ export function ChatLibraryGroups<T extends LibraryItem>({
   items,
   projects,
   children,
+  groupActions,
 }: {
   items: readonly T[];
   projects: ReadonlyMap<string, string>;
   children: (item: T) => ReactNode;
+  /** Trailing control on a group's heading, given the group's id ("" for no project) and name. */
+  groupActions?: (group: { id: string; name: string }) => ReactNode;
 }) {
   const t = useT();
   const labels = useLibraryProjectLabels();
@@ -286,6 +294,7 @@ export function ChatLibraryGroups<T extends LibraryItem>({
                 { count: group.items.length },
               )}
             </span>
+            {groupActions?.(group)}
           </div>
           <div className="divide-y divide-border/50 rounded-xl border border-border/60 px-3 sm:px-4">
             {group.items.map((item) => (
