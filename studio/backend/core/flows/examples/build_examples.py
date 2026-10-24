@@ -878,6 +878,71 @@ def pocket_village() -> B:
     return b
 
 
+def lantern_isle_3d() -> B:
+    b = B(
+        "lantern-isle-3d",
+        "Lantern Isle 3D",
+        "world",
+        "Pocket Village in first person: the same generated villagers, quests and art, walked through in 3D. "
+        "Mouse to look, WASD to move, E to talk. The World Player node switches between 3D and the map.",
+        tags = ["world", "game", "rpg", "npc", "3d"],
+        seed = 2031,
+    ).need("chat", "image")
+    premise = (
+        "A small island of lantern makers at dusk. The lighthouse lamp went dark last night and the boats are due "
+        "home before the tide turns."
+    )
+    b.param("premise", "text", premise, "Premise")
+    b.n("premise", "input.param", 0, 1, name = "premise", type = "text", default = premise)
+    b.n(
+        "gen",
+        "world.generator",
+        1,
+        1,
+        model = CHAT,
+        npcs = 4,
+        items = 4,
+        biome = "beach",
+        style = "cute storybook illustration, soft lantern light, full body, plain background",
+    )
+    b.n(
+        "keeper",
+        "world.npc",
+        1,
+        2.4,
+        name = "Keeper Ines",
+        persona = "The old lighthouse keeper, gruff but kind, who has never once let the lamp go out until now. "
+        "Talks about the sea like an old friend. Suspects the gulls stole the brass wick key.",
+        greeting = "Mind the rocks. The light is out and I am in no mood for shipwrecks.",
+    )
+    b.n("art", "world.art", 2, 1, model = IMAGE, tiles = True, sprites = True)
+    b.n("play", "world.play", 3, 1, view = "3d", time_of_day = "dusk")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        3,
+        2.4,
+        label = "Islander voices (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words. Drop gentle hints about quests.",
+    )
+    b.e("premise.value", "gen.premise")
+    b.e("gen.world", "art.world")
+    b.e("art.world", "play.world")
+    b.note(
+        "n1",
+        "Run, then Play\n\nRun paints the villagers and items. Play opens in 3D: click the view to look around "
+        "with the mouse, WASD or arrows to walk, E to talk and pick things up, Esc to free the mouse. Set the World "
+        "Player node's View to 2d for the map, or change its Time of day.",
+        0,
+        3.4,
+        1.8,
+        1.2,
+    )
+    return b
+
+
 def comic_strip() -> B:
     b = B(
         "comic-strip",
@@ -4338,6 +4403,7 @@ BUILDERS = (
     localization_kit,
     inventory_reconcile,
     campaign_kit,
+    lantern_isle_3d,
 )
 
 

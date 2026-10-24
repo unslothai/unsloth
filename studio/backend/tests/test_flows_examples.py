@@ -30,7 +30,7 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 53
+    assert len(BUILT) == 54
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -93,6 +93,18 @@ def test_pocket_village_plays_after_a_run():
     assert not warnings
     assert [n["name"] for n in w["npcs"]] == ["Bea", "Grandma Fern"]
     assert w["entry_points"] == {"npc_reply": "reply"}
+
+
+def test_lantern_isle_3d_opens_in_first_person():
+    doc = _example("lantern-isle-3d")
+    world = normalize_world({"title": "Isle", "npcs": [{"name": "Bea"}]}, seed = 1)
+    w, warnings = resolve_world_report(doc, {"art": {"world": world}})
+    assert not warnings
+    assert w["render"] == "3d" and w["view3d"] == {"time_of_day": "dusk"}
+    assert [n["name"] for n in w["npcs"]] == ["Bea", "Keeper Ines"]
+    # Pocket Village keeps the map.
+    w, _ = resolve_world_report(_example("pocket-village"), {"art": {"world": world}})
+    assert "render" not in w
 
 
 def test_smallville_lite_is_a_simulated_village():
