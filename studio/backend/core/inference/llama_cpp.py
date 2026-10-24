@@ -2811,7 +2811,7 @@ def _post_through_park(
     ``window``, the caller's own read timeout. A non-streaming response carries no notices, so the
     aggregate ``stall_grace`` reading is the one signal; without one, or without a window, this is
     ``client.post`` on that timeout. Past the window with no park, or past the park cap, it raises
-    ``httpx.ReadTimeout`` and closes ``client`` so the request in flight ends with it; a set
+    ``httpx.ReadTimeout`` and shuts ``client`` down so the request in flight ends with it; a set
     ``cancel_event`` raises ``httpx.ReadError`` the same way, a blocked read not waking for it."""
     if stall_grace is None or window is None:
         return client.post(url, json = json, timeout = httpx.Timeout(window, connect = 10))
@@ -2836,8 +2836,9 @@ def _post_through_park(
     crossed_at: Optional[float] = None
 
     def _abandon(exc):
-        with contextlib.suppress(Exception):
-            client.close()
+        # A close alone leaves the worker's recv() blocked and the request open upstream, still
+        # generating into the cells the caller is about to give back.
+        LlamaCppBackend._shutdown_active_httpx_sockets(client)
         worker.join(timeout = 0.2)
         raise exc
 
@@ -48615,10 +48616,9 @@ class LlamaCppBackend:
                 def _close_when_cancelled() -> None:
                     while not finished.wait(0.05):
                         if cancel_event.is_set():
-                            # Closing mid-request makes the blocking post raise
-                            # httpx.RequestError, the only way out of it.
-                            with contextlib.suppress(Exception):
-                                client.close()
+                            # Shut down, not only closed: a close neither wakes the blocked
+                            # post nor leaves `_post_through_park` a socket to hang up.
+                            self._shutdown_active_httpx_sockets(client)
                             return
 
                 watcher = threading.Thread(target = _close_when_cancelled, daemon = True)
