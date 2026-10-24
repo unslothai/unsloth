@@ -24,6 +24,7 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(PACKAGE_ROOT / "tests" / "_shared"))
 
 import test_missing_kernel_arch_routing_9396 as routing  # noqa: E402
+import test_uncovered_amd_read_arch_linux_8529 as read_arch  # noqa: E402
 import test_unsupported_arch_routing_guards_8529 as guards  # noqa: E402
 
 stack_mod = routing.stack_mod
@@ -107,6 +108,8 @@ def test_install_sh_lone_gfx90c_takes_cpu_with_the_vulkan_hint(monkeypatch, tmp_
     assert "export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer" in err, err
     # TheRock rates gfx90c build-passing only and current torch there has no device-gfx90c extra.
     assert "TheRock" not in err, err
+    # The torch 2.11 ROCm wheels carry gfx900 kernels, which run gfx90c under this override.
+    assert "export HSA_OVERRIDE_GFX_VERSION=9.0.0" in err, err
 
 
 @_POSIX
@@ -148,3 +151,33 @@ def test_python_gfx90c_spoofed_to_gfx900_keeps_rocm():
         env = {"HSA_OVERRIDE_GFX_VERSION": "9.0.0"},
     )
     assert "download.pytorch.org/whl/rocm7.2" in calls, calls
+
+
+# ── the gfx900-override hint is gfx90c's alone ──────────────────────────────
+
+_OVERRIDE_HINT = "export HSA_OVERRIDE_GFX_VERSION=9.0.0"
+
+
+@_POSIX
+def test_install_sh_other_uncovered_arches_get_no_gfx900_hint(monkeypatch, tmp_path):
+    rocminfo = _ROCMINFO_GFX90C.replace("gfx90c", "gfx1010").replace("AMD Radeon Graphics", "AMD Radeon RX 5700 XT")
+    _rocminfo_harness(monkeypatch, tmp_path, rocminfo)
+    url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
+    assert url.endswith("/cpu"), (url, err)
+    assert _OVERRIDE_HINT not in err, err
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "gfx,hint", [("gfx90c", True), ("gfx1010", False), ("gfx803", False)]
+)
+def test_setup_sh_names_the_gfx900_override_for_gfx90c_only(gfx, hint):
+    out = read_arch._setup_report(gfx, gfx, "")
+    assert f"AMD GPU detected ({gfx}) -- no ROCm PyTorch wheels" in out, out
+    assert (_OVERRIDE_HINT in out) is hint, out
+
+
+@pytest.mark.parametrize("gfx,hint", [("gfx90c", True), ("gfx1010", False)])
+def test_python_names_the_gfx900_override_for_gfx90c_only(gfx, hint):
+    routing._run_install(gfx_devices = (gfx,), rocm_version = (7, 2))
+    assert (_OVERRIDE_HINT in routing._run_install.printed) is hint, routing._run_install.printed

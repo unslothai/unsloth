@@ -4686,6 +4686,9 @@ EOF
         else
             substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
             substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value gives this GPU one."
+            if [ "$_setup_unsup_gfx" = gfx90c ]; then
+                substep "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
+            fi
         fi
         if [ "$_setup_unsup_gfx" = gfx1153 ]; then
             substep "GGUF chat keeps the llama.cpp HIP build on this GPU (gfx1153 has one); no Vulkan switch is needed."
