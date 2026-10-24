@@ -166,6 +166,7 @@ from core.inference.llama_preemption import (
     preemption_enabled,
     read_slot_occupancy,
     reclaim_idle_slots,
+    register_preemption_participant,
     set_reload_hook,
     set_routed_backend,
 )
@@ -3381,8 +3382,8 @@ def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -
         ):
             return None
         gen_id = f"{prefix}-{uuid.uuid4().hex}"
-        controller = get_preemption_controller(_preempt_key(llama_backend))
-        controller.register(
+        controller = register_preemption_participant(
+            _preempt_key(llama_backend),
             gen_id,
             tokens = max(1, int(tokens)),
             state = ParticipantState.STREAMING_RAW,

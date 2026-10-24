@@ -2086,23 +2086,38 @@ _CONTROLLERS_LOCK = threading.Lock()
 _CONTROLLERS: Dict[str, PreemptionController] = {}
 
 
+def _preemption_controller_locked(key: str) -> PreemptionController:
+    """``get_preemption_controller`` for a caller already holding ``_CONTROLLERS_LOCK``."""
+    controller = _CONTROLLERS.get(key)
+    if controller is None:
+        controller = PreemptionController(key)
+        _CONTROLLERS[key] = controller
+        # base_url changes every load. is_idle takes each controller's lock, so the list is
+        # built first. A controller is idle between being fetched for an enrolment and its
+        # register, while that chat already holds a lease on its key's queue: dropped then, the
+        # chat registered on an orphan and later lookups found an empty controller.
+        stale = [
+            k
+            for k, c in _CONTROLLERS.items()
+            if k != key and c.is_idle() and not _admission_in_flight(k)
+        ]
+        for k in stale:
+            del _CONTROLLERS[k]
+    return controller
+
+
 def get_preemption_controller(key: str) -> PreemptionController:
     with _CONTROLLERS_LOCK:
-        controller = _CONTROLLERS.get(key)
-        if controller is None:
-            controller = PreemptionController(key)
-            _CONTROLLERS[key] = controller
-            # base_url changes every load. is_idle takes each controller's lock, so the list is
-            # built first. A controller is idle between being fetched for an enrolment and its
-            # register, while that chat already holds a lease on its key's queue: dropped then, the
-            # chat registered on an orphan and later lookups found an empty controller.
-            stale = [
-                k
-                for k, c in _CONTROLLERS.items()
-                if k != key and c.is_idle() and not _admission_in_flight(k)
-            ]
-            for k in stale:
-                del _CONTROLLERS[k]
+        return _preemption_controller_locked(key)
+
+
+def register_preemption_participant(key: str, gen_id: str, **kwargs) -> PreemptionController:
+    """Look up ``key``'s controller and register ``gen_id`` on it in one step. A holder with no
+    admission lease leaves its controller idle between the two otherwise, and another key's first
+    lookup retires it: registered on that orphan, the holder is invisible to its own key's chats."""
+    with _CONTROLLERS_LOCK:
+        controller = _preemption_controller_locked(key)
+        controller.register(gen_id, **kwargs)
         return controller
 
 
