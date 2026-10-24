@@ -109,11 +109,21 @@ def wide_tile_plan(
             area = (n_h * tile_h) * (n_w * tile_w)
             key = (n_h * n_w, area)
             if best is None or key < best[0]:
-                best = (key, (tile_h, stride_h if n_h > 1 else height, tile_w, stride_w if n_w > 1 else width))
+                best = (
+                    key,
+                    (
+                        tile_h,
+                        stride_h if n_h > 1 else height,
+                        tile_w,
+                        stride_w if n_w > 1 else width,
+                    ),
+                )
     if best is None:
         return None
     tile_h, stride_h, tile_w, stride_w = best[1]
-    stock_tiles = len(range(0, height, _STOCK_TILE[1] // ratio)) * len(range(0, width, _STOCK_TILE[1] // ratio))
+    stock_tiles = len(range(0, height, _STOCK_TILE[1] // ratio)) * len(
+        range(0, width, _STOCK_TILE[1] // ratio)
+    )
     if best[0][0] >= stock_tiles:
         return None
     return tile_h * ratio, stride_h * ratio, tile_w * ratio, stride_w * ratio
@@ -219,9 +229,17 @@ def install_untiled_decode(
             stats["tiled"] += 1
             wide = None
             ratio = int(getattr(vae, "spatial_compression_ratio", 0) or 0)
-            if _wide_tiles_enabled() and free is not None and hasattr(vae, "tile_sample_min_height"):
+            if (
+                _wide_tiles_enabled()
+                and free is not None
+                and hasattr(vae, "tile_sample_min_height")
+            ):
                 wide = wide_tile_plan(
-                    family, tuple(getattr(z, "shape", ())), ratio, free, itemsize = _decoder_itemsize(vae)
+                    family,
+                    tuple(getattr(z, "shape", ())),
+                    ratio,
+                    free,
+                    itemsize = _decoder_itemsize(vae),
                 )
             if wide is None or (oom_wide and need is not None and need >= oom_wide[0]):
                 return decode(z, *args, **kwargs)
@@ -272,7 +290,9 @@ def install_untiled_decode(
             clear_partial_decode(vae, z)
             torch.cuda.empty_cache()
             if logger is not None:
-                logger.warning("video.vae_untiled: wide tiles ran out of memory; decoding at the stock tile size")
+                logger.warning(
+                    "video.vae_untiled: wide tiles ran out of memory; decoding at the stock tile size"
+                )
             return decode(z, *args, **kwargs)
         import torch
 

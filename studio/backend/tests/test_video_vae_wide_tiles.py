@@ -18,7 +18,12 @@ WAN21 = "wan2.1-t2v-1.3b"
 
 def _tiles(height, width, ratio, plan):
     min_h, stride_h, min_w, stride_w = plan
-    return len(range(0, height, stride_h // ratio)), len(range(0, width, stride_w // ratio)), min_h // ratio, min_w // ratio
+    return (
+        len(range(0, height, stride_h // ratio)),
+        len(range(0, width, stride_w // ratio)),
+        min_h // ratio,
+        min_w // ratio,
+    )
 
 
 def test_plan_covers_the_frame_with_fewer_tiles_than_stock():
@@ -76,7 +81,9 @@ def test_gate_decodes_wide_when_untiled_does_not_fit(monkeypatch, oom):
     vae = _FakeVae(oom_wide = oom)
     pipe = types.SimpleNamespace(vae = vae)
     monkeypatch.setattr(U, "_free_bytes", lambda device: 10 * GiB)
-    monkeypatch.setattr("core.inference.diffusion_vae_oom.clear_partial_decode", lambda vae, z: None)
+    monkeypatch.setattr(
+        "core.inference.diffusion_vae_oom.clear_partial_decode", lambda vae, z: None
+    )
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     assert U.install_untiled_decode(pipe, FIVE_B)
     z = torch.zeros(1, 48, 11, 44, 80)
@@ -84,7 +91,10 @@ def test_gate_decodes_wide_when_untiled_does_not_fit(monkeypatch, oom):
     assert vae.seen[0][2] is True and vae.seen[0][0] == 704  # wide tiles, tiling still on
     if oom:
         assert vae.seen[-1][:2] == (256, 256)  # the retry runs at the stock size
-    assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == (256, 192)  # restored either way
+    assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == (
+        256,
+        192,
+    )  # restored either way
 
 
 def test_kill_switch_keeps_stock_tiles(monkeypatch):
