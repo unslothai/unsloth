@@ -25,6 +25,7 @@ import sys
 import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterator, Optional
+from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
 
@@ -317,7 +318,7 @@ def _pin_host_weights(
     import torch
 
     mode = _pin_mode()
-    if mode == "off" or not torch.cuda.is_available():
+    if mode == "off" or not torch.cuda.is_available() or not host_pinning_allowed():
         return 0
     # (name, owner tensor, inner attribute or None, the tensor to pin)
     params: list = []
@@ -5360,7 +5361,7 @@ def _streamed_pin_plan(
 ) -> tuple[bool, bool]:
     """(pin transformer, pin encoders), transformer first."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-    if forced in ("0", "off", "false", "no"):
+    if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
         return False, False
     if forced in ("1", "on", "true", "yes"):
         return True, True
@@ -5434,7 +5435,7 @@ def _background_pin_enabled() -> bool:
         "off",
         "false",
         "no",
-    )
+    ) and host_pinning_allowed()
 
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
@@ -5514,7 +5515,7 @@ def _fast_pin_supported() -> bool:
     try:
         import torch
 
-        if is_rocm_torch(torch) or not torch.cuda.is_available():
+        if is_rocm_torch(torch) or not torch.cuda.is_available() or not host_pinning_allowed():
             return False
         cudart = torch.cuda.cudart()
         return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")
@@ -5967,6 +5968,8 @@ def _pin_top_level_group(
     ``.data``) and when the copy does not fit the pinnable host RAM."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
+    if not host_pinning_allowed():
+        return False
     try:
         import torch
         from diffusers.hooks import group_offloading as go
@@ -6216,7 +6219,8 @@ def _apply_group_offload(
                     streamed_encoders[name] = comp
 
         onload = torch.device(device)
-        use_stream = onload.type == "cuda"  # overlap H2D copies with compute
+        # overlap H2D copies with compute; a stream makes diffusers pin, so not on an integrated GPU
+        use_stream = onload.type == "cuda" and host_pinning_allowed(onload)
         gkwargs: dict[str, Any] = {
             "onload_device": onload,
             "offload_device": torch.device("cpu"),
@@ -6415,7 +6419,7 @@ def stream_text_encoders_onto(
     install_group_offload_buffer_restore()
     install_group_offload_hooks_eager()
     onload = torch.device(device)
-    use_stream = onload.type == "cuda"
+    use_stream = onload.type == "cuda" and host_pinning_allowed(onload)
     kwargs: dict[str, Any] = {
         "onload_device": onload,
         "offload_device": torch.device("cpu"),
@@ -6990,7 +6994,9 @@ def _apply_streaming_offload(
         onload = torch.device(device)
         offload = torch.device("cpu")
         params = inspect.signature(apply_group_offloading).parameters
-        use_stream = onload.type == "cuda" and "low_cpu_mem_usage" in params
+        use_stream = (
+            onload.type == "cuda" and "low_cpu_mem_usage" in params and host_pinning_allowed(onload)
+        )
 
         # Keep small companions such as the tiled VAE resident. Every transformer and text encoder remains on CPU behind
         # a granular hook.

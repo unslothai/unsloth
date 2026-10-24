@@ -780,6 +780,10 @@ def _adopt_top_group(
         return None
     if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in off:
         return None
+    from .host_pinning import host_pinning_allowed
+
+    if not host_pinning_allowed():
+        return None
     go = _go()
     registry = getattr(module, "_diffusers_hook", None)
     get_hook = getattr(registry, "get_hook", None)
