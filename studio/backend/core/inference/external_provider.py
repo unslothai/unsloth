@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -1569,6 +1571,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1578,6 +1581,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1646,6 +1651,12 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        headers.update(
+            render_provider_extra_headers(
+                getattr(self, "extra_headers", {}),
+                getattr(self, "_header_vars", {}),
+            )
+        )
         return headers
 
     def _is_openai_compatible(self) -> bool:
@@ -1696,6 +1707,12 @@ class ExternalProviderClient:
         only when supplied, since the frontend's capability map already filters them per provider.
         ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently dropped elsewhere); it
         adds the beta header and ``speed: "fast"``."""
+        self._header_vars = {
+            "CHAT_SESSION_ID": (thread_id or "").strip(),
+            "THREAD_ID": (thread_id or "").strip(),
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
         # tool_choice="none" hard-disables hosted/builtin tools across every provider so enabled_tools cannot
         # accidentally bill or leak.
         tool_choice_disabled = (

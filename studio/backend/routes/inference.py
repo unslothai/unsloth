@@ -30254,6 +30254,7 @@ async def _proxy_to_external_provider(
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
     reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
+    extra_headers: Optional[dict] = None
     saved_provider_snapshot: Optional[dict] = None
 
     if managed is not None:
@@ -30286,6 +30287,7 @@ async def _proxy_to_external_provider(
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
         reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
+        extra_headers = config.get("extra_headers")
 
     if not provider_type:
         raise HTTPException(
@@ -30300,6 +30302,12 @@ async def _proxy_to_external_provider(
             raise HTTPException(status_code = 400, detail = str(exc)) from None
     else:
         reasoning_config = None
+    if extra_headers is None and payload.provider_id and managed is None:
+        config = saved_provider_snapshot or await asyncio.to_thread(
+            providers_db.get_provider, payload.provider_id
+        )
+        if config is not None:
+            extra_headers = config.get("extra_headers")
 
     # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
@@ -30942,6 +30950,7 @@ async def _proxy_to_external_provider(
         api_key = api_key,
         api_type = api_type,
         **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
     _non_stream_custom_responses = (

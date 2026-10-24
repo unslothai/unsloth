@@ -55,6 +55,7 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   reasoning_config?: CustomReasoningConfig | null;
+  extra_headers?: Record<string, string>;
   shared?: boolean;
   shared_by_owner?: boolean;
   created_at: string;
@@ -219,6 +220,7 @@ export async function createProviderConfig(payload: {
   availableModels?: string[];
   maxOutputTokens?: number | null;
   reasoningConfig?: CustomReasoningConfig | null;
+  extraHeaders?: Record<string, string>;
   shared?: boolean;
   apiKey?: string;
 }): Promise<ProviderConfig> {
@@ -239,6 +241,9 @@ export async function createProviderConfig(payload: {
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
         ...(payload.shared === undefined ? {} : { shared: payload.shared }),
         encrypted_api_key: encryptedApiKey,
       }),
@@ -273,6 +278,7 @@ export async function updateProviderConfig(
     availableModels?: string[];
     maxOutputTokens?: number | null;
     reasoningConfig?: CustomReasoningConfig | null;
+    extraHeaders?: Record<string, string>;
     shared?: boolean;
     apiKey?: string;
     clearApiKey?: boolean;
@@ -297,6 +303,9 @@ export async function updateProviderConfig(
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
         ...(payload.shared === undefined ? {} : { shared: payload.shared }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
@@ -349,6 +358,7 @@ export async function testProviderConnection(payload: {
   apiKey: string;
   baseUrl?: string | null;
   apiType?: ConnectionApiType;
+  extraHeaders?: Record<string, string>;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -362,6 +372,9 @@ export async function testProviderConnection(payload: {
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
         ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
         model_id: payload.modelId ?? null,
       }),
     });
@@ -376,6 +389,7 @@ export async function listProviderModels(payload: {
   apiKey: string;
   baseUrl?: string | null;
   apiType?: ConnectionApiType;
+  extraHeaders?: Record<string, string>;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {
@@ -388,6 +402,9 @@ export async function listProviderModels(payload: {
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
         ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);

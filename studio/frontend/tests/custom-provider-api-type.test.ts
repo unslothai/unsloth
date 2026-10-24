@@ -34,3 +34,20 @@ test("Responses survives provider requests and cache while legacy cache defaults
   providers.saveExternalProviders([config]);
   assert.equal(providers.loadExternalProviders()[0].apiType, "chat_completions");
 });
+
+test("extra header drafts round-trip and reject reserved names", async () => {
+  const providers = await vite.ssrLoadModule("/src/features/chat/external-providers.ts");
+  const parsed = providers.parseExtraHeadersDraft(
+    "X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}\nX-Title: Unsloth\n",
+  );
+  assert.equal(parsed["X-LiteLLM-Session-Id"], "unsloth-{{CHAT_SESSION_ID}}");
+  assert.equal(
+    providers.extraHeadersToDraft(parsed),
+    "X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}\nX-Title: Unsloth",
+  );
+  assert.throws(() => providers.parseExtraHeadersDraft("Authorization: Bearer secret"));
+  const json = providers.parseExtraHeadersDraft('{"X-Title":"Studio"}');
+  assert.equal(json["X-Title"], "Studio");
+  assert.equal(providers.normalizeProviderExtraHeaders({ Authorization: "nope", "X-Title": "ok" })["X-Title"], "ok");
+  assert.equal(providers.normalizeProviderExtraHeaders({ Authorization: "nope" }), undefined);
+});
