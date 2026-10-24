@@ -1844,7 +1844,6 @@ def test_an_unload_naming_the_load_token_unloads_that_load(token_client):
 def test_an_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
     client, backend = token_client
     assert _load_with(client, "t1").status_code == 200
-    # The same model again, from the UI (no token) or another client.
     assert _load_with(client, newer).status_code == 200
     resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
     assert resp.status_code == 200
@@ -1935,7 +1934,6 @@ def test_the_unload_answers_are_declared_in_the_schema(token_client):
         assert f"#/components/schemas/{model}" in refs
     outcome = schema["components"]["schemas"]["MediaUnloadOutcome"]
     assert set(outcome["required"]) == {"unloaded", "outcome"}
-    # Without a token the answer is the status, field for field, as before.
     assert _load_with(client, "t1").status_code == 200
     plain = client.post("/api/inference/video/unload").json()
     assert set(plain) == set(video_routes.VideoStatusResponse.model_fields)

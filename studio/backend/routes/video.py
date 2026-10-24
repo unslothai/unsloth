@@ -288,7 +288,6 @@ async def load_video_model(
     from core.inference.chat_swap_kv import preparing_load
 
     try:
-        # Carries the request's token, so an unload naming it stops this POST before it tears anything down.
         with preparing_load("video", request.load_token):
             loaded = await load_video_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
@@ -1021,7 +1020,6 @@ async def unload_video_model(
         )
 
         def unload(only_if):
-            # The same checks as below, once the token is known to name the load in the slot.
             account_access.require_resident_control("video")
             if account_access.managed_account():
                 account_access.require_resident_control("video", backend.status().get("repo_id"))

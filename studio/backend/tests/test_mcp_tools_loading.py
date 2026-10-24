@@ -900,7 +900,6 @@ class _TokenVideo:
     async def status(self, request, body):
         if self.stall_status:
             await asyncio.sleep(30)
-        # Only the next read is slow.
         delay, self.status_s = self.status_s, 0.0
         await asyncio.sleep(delay)
         if not self.resident:
@@ -1009,7 +1008,6 @@ def test_a_stopped_load_never_cancels_a_newer_load_from_the_ui(monkeypatch, fast
     async def scenario():
         await _video_load(caller)
         await loading.unload_media(caller, "video")
-        # The Studio UI loads the same model meanwhile, with no token.
         backend.admit(LTX, None)
         backend.finish()
         (job,) = loading.LOADS.jobs_of("owner")

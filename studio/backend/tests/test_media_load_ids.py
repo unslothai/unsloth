@@ -91,7 +91,6 @@ def test_the_token_unloads_its_own_load_in_flight_or_resident(finished):
         engine.finish()
     assert _unload(engine, "t1") == ("unloaded", {"loaded": False})
     assert engine.unloads == 1
-    # Done: the same token again is a no-op.
     assert _unload(engine, "t1") == ("superseded", None)
     assert engine.unloads == 1
 
@@ -154,7 +153,6 @@ def test_an_unseen_token_cancels_its_load_before_it_starts():
     with pytest.raises(media_load_ids.LoadCancelledError):
         _load(engine, "t3")
     assert engine._load_token == 0 and not engine.loading
-    # Another token, or none, loads as before.
     _load(engine, "t2")
     _load(engine, None)
     assert engine._load_token == 2
@@ -222,7 +220,6 @@ def test_a_cancellation_is_consumed_by_its_load_or_expires(monkeypatch):
     assert _unload(engine, "t1") == ("cancelled", None)
     with pytest.raises(media_load_ids.LoadCancelledError):
         _load(engine, "t1")
-    # Its one load arrived and was refused: nothing is left of it.
     assert not any("t1" in tokens for tokens in media_load_ids._cancelled.values())
     clock = [1000.0]
     monkeypatch.setattr(media_load_ids, "_now", lambda: clock[0])
@@ -254,7 +251,6 @@ def test_status_names_the_load_in_the_slot():
     assert media_load_ids.current_id("video", engine) == "t1"
     engine.finish()
     assert media_load_ids.current_id("video", engine) == "t1"
-    # A load without a token gets one from Studio, which an unload can name.
     _load(engine, None)
     made = media_load_ids.current_id("video", engine)
     assert made.startswith("studio-") and made != "t1"
@@ -348,7 +344,6 @@ def test_a_load_that_ends_before_the_teardown_costs_no_other_model(named):
         engine.fail()
 
     def unload(only_if):
-        # The settle lands just before the engine takes its lock.
         if named == "t2":
             engine.fail()
         else:

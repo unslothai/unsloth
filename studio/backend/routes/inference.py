@@ -51838,7 +51838,6 @@ async def load_diffusion_model(
     from core.inference.chat_swap_kv import preparing_load
 
     try:
-        # Carries the request's token, so an unload naming it stops this POST before it tears anything down.
         with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
@@ -52272,7 +52271,6 @@ async def load_diffusion_model_gated(
             # Snapshotted BEFORE the worker starts: a cached load can publish before begin_load returns.
             prior_state = loaded_state_of(engine)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
-            # Recorded with its token, so an unload can name this load.
             prior_load = media_load_ids.admitting("diffusion", engine, request.load_token)
             started = engine.begin_load(
                 request.model_path,
@@ -53988,7 +53986,6 @@ async def unload_diffusion_model(
         from core.inference import media_load_ids
 
         def guarded_unload(only_if):
-            # The same checks as the plain unload, once the token is known to name the load in the slot.
             account_access.require_resident_control("diffusion")
             if account_access.managed_account():
                 account_access.require_resident_control("diffusion", active.status().get("repo_id"))

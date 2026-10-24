@@ -14300,8 +14300,7 @@ class DiffusionBackend:
         fenced = False
         try:
             with self._generation_cancel_lock, self._load_cancel_lock:
-                # A conditional unload (a load token naming the load): checked under the lock the load
-                # worker settles under, so a load that ended since the check costs no other model.
+                # Rechecked under the load worker's lock, so a load that ended since costs nothing.
                 if only_if is not None and not only_if():
                     return None
                 if expected_account is not None:

@@ -80,7 +80,6 @@ def _weak(state: Any) -> Callable[[], Any]:
 
 
 _lock = threading.Lock()
-# The last load admitted per slot.
 _current: dict[str, _Record] = {}
 # The load that published the resident state before the last admission, as (token, engine, state):
 # a newer load that failed leaves it resident.
@@ -114,7 +113,6 @@ def _remember(
 def _cancel(modality: str, token: str) -> None:
     now = _now()
     tokens = _cancelled.get((modality, _account()))
-    # Expiries are in insertion order (one TTL), so the expired ones are at the front.
     while tokens and next(iter(tokens.values())) <= now:
         tokens.popitem(last = False)
     _remember(_cancelled, modality, token, now + _CANCELLED_TTL_S)

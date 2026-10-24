@@ -775,7 +775,6 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     finally:
         # Even if this call is cancelled meanwhile, so a load it stopped still ends.
         ended = [_unload_media_token(caller, kind, token) for token in tokens]
-    # Shielded: a cancelled call leaves them running.
     outcomes = await asyncio.shield(asyncio.gather(*ended)) if ended else []
     try:
         before = as_dict(status_read.result())
