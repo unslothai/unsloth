@@ -38,6 +38,10 @@ const OS_OPTIONS: { id: ExampleOs; labelKey: TranslationKey }[] = [
   { id: "windows", labelKey: "settings.apiKeys.osWindows" },
 ];
 
+// The btn-fill grey (index.css), so a selected pill matches a standard filled button.
+const LIGHT_FILL_PILL =
+  "[html:not(.dark)_&]:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] [html:not(.dark)_&]:shadow-none";
+
 // Lines that fit the example box's starting height (h-46); longer ones start there and scroll.
 const START_LINES = 8;
 
@@ -142,7 +146,14 @@ export function ExampleToggle<T extends string>({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {value === option.id && <SegmentedPill group={pillId} />}
+            {value === option.id && (
+              <SegmentedPill
+                group={pillId}
+                // With no track behind them, the pills take a filled button's grey in light mode, not a
+                // white lifted pill.
+                className={toggle ? undefined : LIGHT_FILL_PILL}
+              />
+            )}
             <span className="relative truncate">{option.label}</span>
           </button>
         ))}

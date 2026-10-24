@@ -1238,7 +1238,7 @@ export function ApiMonitorPage(): ReactElement {
         <HugeiconsIcon
           icon={CodeIcon}
           strokeWidth={1.75}
-          className="size-3.5"
+          className="size-4"
         />
       </Button>
     </ToolbarTooltip>
