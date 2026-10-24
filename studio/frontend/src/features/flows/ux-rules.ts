@@ -132,6 +132,21 @@ export function modelsToDownload(
   );
 }
 
+/**
+ * What a download check answered: `stale` when the user moved to another flow while it was out (drop it),
+ * `download` when a model must download first, `clear` when nothing must (safe to remember for these picks) and
+ * `unchecked` when the plan had errors, so it listed no models and proves nothing.
+ */
+export function planCheck(
+  plan: { models?: PlanModel[] | null; errors?: unknown[] | null },
+  askedFor: string,
+  current: string | null | undefined,
+): "stale" | "download" | "clear" | "unchecked" {
+  if (current !== askedFor) return "stale";
+  if (modelsToDownload(plan.models).length > 0) return "download";
+  return plan.errors && plan.errors.length > 0 ? "unchecked" : "clear";
+}
+
 /** Total download size, or null when any size is unknown. */
 export function downloadBytes(models: PlanModel[]): number | null {
   let total = 0;

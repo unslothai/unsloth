@@ -15,7 +15,7 @@ import { documentFromState, useDocStore } from "../stores/doc-store";
 import { pinsForRun } from "../stores/pins-store";
 import { createEventBatcher, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import { failedSteps, modelSignature, modelsToDownload } from "../ux-rules";
+import { failedSteps, modelSignature, planCheck } from "../ux-rules";
 
 let follower: AbortController | null = null;
 
@@ -110,10 +110,11 @@ async function heldForDownloads(
     ),
   ]).catch(() => null);
   if (!plan) return false;
-  if (modelsToDownload(plan.models).length === 0) {
-    checkedModels.set(flowId, signature);
-    return false;
-  }
+  const verdict = planCheck(plan, flowId, useDocStore.getState().flowId);
+  // Another flow is open now: its editor must never show (or confirm) this flow's downloads, nor run this one.
+  if (verdict === "stale") return true;
+  if (verdict === "clear") checkedModels.set(flowId, signature);
+  if (verdict !== "download") return false;
   useUiStore.getState().setPendingRun({ options: { ...options }, plan });
   return true;
 }
