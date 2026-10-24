@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import type { DesktopAppModelSettings } from "../components/desktop-app-run-settings-state";
 
 const BASE = "/api/settings/claude-desktop";
 
@@ -124,3 +125,20 @@ export async function setClaudeDesktopMappings(
   }
   return (await res.json()) as ClaudeDesktopMappingsResult;
 }
+
+
+/** Where a model's shared run settings live and what bounds them (trained context, MTP heads,
+ *  the memory guard). Shared by the Claude Desktop and Codex Desktop cards. */
+export async function fetchDesktopAppModelSettings(
+  model: string,
+): Promise<DesktopAppModelSettings> {
+  const res = await authFetch(
+    `${BASE}/model-settings?model=${encodeURIComponent(model)}`,
+  );
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, "Failed to read the model's settings"));
+  }
+  return await res.json();
+}
+
+export type { DesktopAppModelSettings };

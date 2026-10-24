@@ -12,7 +12,12 @@ from pydantic import BaseModel
 from auth import policy
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core import claude_desktop as session
-from routes.desktop_app_models import DesktopAppModel, available_models
+from routes.desktop_app_models import (
+    DesktopAppModel,
+    DesktopAppModelSettings,
+    available_models,
+    model_settings,
+)
 from utils import client_ip
 
 
@@ -130,6 +135,17 @@ async def disconnect_claude_desktop(request: Request) -> DisconnectResponse:
 @router.get("/models", response_model = list[DesktopAppModel])
 async def claude_desktop_models() -> list[DesktopAppModel]:
     return await available_models()
+
+
+@router.get("/model-settings", response_model = DesktopAppModelSettings)
+async def desktop_app_model_settings(
+    model: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> DesktopAppModelSettings:
+    """Shared by the Claude Desktop and Codex Desktop cards: where a model's run settings live
+    (the same remembered per-model settings Run settings edits) and what bounds them."""
+    return await model_settings(model, request, current_subject)
 
 
 @router.put("/mappings", response_model = MappingsResponse)

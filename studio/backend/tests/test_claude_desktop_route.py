@@ -476,3 +476,110 @@ def test_start_claude_opens_a_closed_connected_claude(mac, monkeypatch):
     response = client.put(f"{URL}/mappings", json = {"mappings": MAPPED, "restart": True})
     assert response.json()["status"] == "connected"
     assert mac["quit"] == [] and mac["opened"] == [mac["app"], mac["app"]]
+
+
+# -- shared run settings (Agents → Run settings) ---------------------------------------------
+
+
+def test_guard_fit_is_linear_between_two_priced_points():
+    from routes.desktop_app_models import guard_fitted_context
+
+    gib = 1024**3
+    # 8k costs 10 GiB, 262k costs 30 GiB: a 20 GiB budget fits about half way.
+    fitted = guard_fitted_context(262_144, 8_192, 10 * gib, 30 * gib, 20 * gib)
+    assert fitted == (8_192 + (262_144 - 8_192) // 2) // 1024 * 1024
+    # The full context fits: nothing to cap.
+    assert guard_fitted_context(262_144, 8_192, 10 * gib, 30 * gib, 31 * gib) is None
+    # Not even 8k fits: the loader's floor, never less.
+    assert guard_fitted_context(262_144, 8_192, 10 * gib, 30 * gib, 5 * gib) == 8_192
+    # No budget (not Apple Silicon): no guard to show.
+    assert guard_fitted_context(262_144, 8_192, 10 * gib, 30 * gib, 0) is None
+
+
+def _model_settings_stubs(monkeypatch, *, override, loaded = False):
+    import routes.desktop_app_models as dam
+    import routes.llama_compat as llama_compat
+    import utils.openai_auto_switch_settings as overrides
+    from models.inference import LoadRequest
+
+    path = "/hub/models--unsloth--Qwen3.8-GGUF/snapshots/abc"
+
+    async def catalog_row(model_id):
+        return model_id, {"id": model_id, "loaded": loaded, "context_length": 131_072 if loaded else None}, True
+
+    async def load_target(model_id):
+        request = LoadRequest(model_path = path, gguf_variant = "UD-Q4_K_XL")
+        request._override_alias_id = "unsloth/Qwen3.8-GGUF"
+        return request, model_id
+
+    async def guard(load_request, trained, fastapi_request, subject):
+        return 24 * 1024**3, 98_304
+
+    monkeypatch.setattr(llama_compat, "_catalog_row", catalog_row)
+    monkeypatch.setattr(llama_compat, "_resolve_load_target", load_target)
+    monkeypatch.setattr(overrides, "resolve_override_for_load", lambda *a, **k: ("k", override))
+    monkeypatch.setattr(dam, "_gguf_header_facts", lambda *a: (262_144, True))
+    monkeypatch.setattr(dam, "_guard_context", guard)
+    return path
+
+
+def test_model_settings_names_run_settings_key_bounds_and_guard(mac, monkeypatch):
+    path = _model_settings_stubs(
+        monkeypatch, override = {"custom_context_length": 65_536, "speculative_type": "mtp"}, loaded = True
+    )
+    body = _client(monkeypatch).get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF:UD-Q4_K_XL"}).json()
+    # The key Run settings saves a loaded model under, and the one a load reads first.
+    assert body["config_id"] == path
+    assert body["alias_id"] == "unsloth/Qwen3.8-GGUF"
+    assert body["gguf_variant"] == "UD-Q4_K_XL"
+    # The values come from the SAME server override a gateway load applies.
+    assert body["custom_context_length"] == 65_536
+    assert body["speculative_type"] == "mtp"
+    assert body["trained_context"] == 262_144
+    assert body["mtp_available"] is True
+    assert body["guard_context"] == 98_304
+    assert body["guard_budget_bytes"] == 24 * 1024**3
+    assert body["loaded"] is True and body["loaded_context"] == 131_072
+
+
+def test_model_settings_without_an_override_is_auto(mac, monkeypatch):
+    _model_settings_stubs(monkeypatch, override = {})
+    body = _client(monkeypatch).get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF"}).json()
+    assert body["custom_context_length"] is None
+    assert body["speculative_type"] is None
+
+
+def test_model_settings_needs_the_owner_ui_session(mac, monkeypatch):
+    _model_settings_stubs(monkeypatch, override = {})
+    client = _client(monkeypatch, via_api_key = True)
+    assert client.get(f"{URL}/model-settings", params = {"model": "x"}).status_code == 403
+
+
+def test_guard_prices_the_load_with_its_saved_settings(monkeypatch):
+    import asyncio
+
+    import routes.desktop_app_models as dam
+    import routes.inference as inference
+    from core.inference.llama_cpp import LlamaCppBackend
+    from models.inference import LoadRequest
+
+    gib = 1024**3
+    asked = []
+
+    async def estimate(request, fastapi_request, subject):
+        asked.append((request.n_ctx, request.cache_type_kv, request.speculative_type))
+        gpu = 10 * gib + (request.n_ctx - 8_192) * (20 * gib) // (262_144 - 8_192)
+        return _types.SimpleNamespace(available = True, gpu_bytes = gpu, total_bytes = gpu)
+
+    monkeypatch.setattr(inference, "estimate_memory", estimate)
+    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 20 * gib))
+    load = LoadRequest(model_path = "/m", gguf_variant = "Q4", cache_type_kv = "q8_0", speculative_type = "mtp")
+    budget, fitted = asyncio.run(dam._guard_context(load, 262_144, None, "owner"))
+    assert budget == 20 * gib
+    assert 130_000 < fitted < 140_000
+    assert asked == [(262_144, "q8_0", "mtp"), (8_192, "q8_0", "mtp")]
+    # Off Apple Silicon there is no guard budget, and nothing is priced.
+    asked.clear()
+    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0))
+    assert asyncio.run(dam._guard_context(load, 262_144, None, "owner")) == (None, None)
+    assert asked == []

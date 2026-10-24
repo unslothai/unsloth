@@ -30,6 +30,7 @@ import { ClaudeDesktopModels } from "./claude-desktop-models";
 import { claudeDesktopView } from "./claude-desktop-state";
 import { CodexDesktopCard } from "./codex-desktop-card";
 import { pinnedModels } from "./desktop-app-models";
+import { DesktopAppRunSettings } from "./desktop-app-run-settings";
 import { SettingsSection } from "./settings-section";
 
 const POLL_MS = 5000;
@@ -57,6 +58,7 @@ export function ClaudeDesktopSection() {
         <div className="mt-2 flex min-w-0 flex-col gap-2">
           <ClaudeDesktopCard onUnavailable={hide} />
           <CodexDesktopCard onUnavailable={hide} />
+          <DesktopAppRunSettings preferred={[]} />
         </div>
       </SettingsSection>
     </div>
