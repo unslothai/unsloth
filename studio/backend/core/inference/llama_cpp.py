@@ -37271,8 +37271,11 @@ class LlamaCppBackend:
                     self._commit_effective_parallel_slots(n_parallel)
                     if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                         self._server_preempts_kv = False
+                        self._server_launched_parking = False
+                    # Same argv as the first launch, so what that launch recorded stands: it was
+                    # taken before /props confirmation, which a failed read can leave False.
                     self._server_launched_parking = bool(
-                        self._server_preempts_kv and kv_cache_unified
+                        self._server_launched_parking and kv_cache_unified
                     )
                     self._launched_parking_mib = (
                         _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
