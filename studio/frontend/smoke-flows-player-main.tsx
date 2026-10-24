@@ -28,6 +28,8 @@ const picnic = JSON.parse(picnicJson) as StoryManifest;
 
 const params = new URLSearchParams(location.search);
 const kind = params.get("flow") === "world" ? "world" : "story";
+// `&render=3d` opens the world in the first-person view; `&time=dusk` picks its time of day.
+const time = params.get("time");
 
 const WORLD: WorldSpec = {
   title: "Mossy Hollow",
@@ -85,6 +87,10 @@ const WORLD: WorldSpec = {
   intro_text:
     "The Lantern Festival starts tonight, but the golden bell is missing.",
   entry_points: { npc_reply: "reply" },
+  ...(params.get("render") === "3d" ? { render: "3d" as const } : {}),
+  ...(time === "dawn" || time === "day" || time === "dusk" || time === "night"
+    ? { view3d: { time_of_day: time } }
+    : {}),
 };
 
 const sessions = new Map<string, SessionRecord>();
