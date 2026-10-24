@@ -670,6 +670,7 @@ def _remote_etag(
         return None
     _reach.note_hub_success(endpoint)
     with _lock:
+        _UNREACHABLE.pop(endpoint, None)
         _REMOTE_MEMO[memo] = (time.monotonic(), value)
     return value
 

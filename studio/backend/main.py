@@ -336,6 +336,9 @@ del _guard_dataset_media
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# Studio decides training / export / chat-only from its own hardware detection, so keep
+# `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Same rule as unsloth/__init__.py, reached through Studio's own copy because this parent must
 # not import unsloth: that runs unsloth/__init__.py, whose GPU branch pulls torch, Triton,
