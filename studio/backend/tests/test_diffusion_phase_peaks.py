@@ -410,6 +410,23 @@ class _GuardTorch:
         self.cuda = cuda
 
 
+def test_decode_release_keeps_the_vram_budget_reserve_free(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dm,
+        "release_resident_groups",
+        lambda pipe, need, logger = None, reason = "", device = None, **kw: calls.append(need)
+        or (lambda: None),
+    )
+    pipe = types.SimpleNamespace()
+    pipe._unsloth_decode_lend = (4040, 5900, 1024 * 1024, False)
+    # 7500 MiB covers the decode, but not plus a 2 GiB reserve
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 2048 << 20)
+    monkeypatch.setitem(sys.modules, "torch", _GuardTorch(free_mib = 7500))
+    assert dm.release_for_decode(pipe, width = 1024, height = 1024, device = "cuda:0") is not None
+    assert calls == [6785 + dm._DECODE_SLACK_MIB - (7500 - 2048)]
+
+
 def test_decode_streams_lent_encoders_only_when_free_memory_is_short(monkeypatch):
     calls = []
     monkeypatch.setattr(

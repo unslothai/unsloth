@@ -488,13 +488,18 @@ def fit_for_request(
     try:
         import torch
 
-        from .diffusion_memory import _keep_groups_resident, release_resident_groups
+        from .diffusion_memory import (
+            _keep_groups_resident,
+            _user_budget_reserve_mib,
+            cuda_reusable_cache_bytes,
+            release_resident_groups,
+        )
 
         dev = torch.device(device)
         if dev.type != "cuda":
             return None
-        free, _total = torch.cuda.mem_get_info(dev)
-        unused = int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
+        free, total = torch.cuda.mem_get_info(dev)
+        unused = cuda_reusable_cache_bytes(dev)
         current = resident_mib(module)
         # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
         module._unsloth_video_pending = None
@@ -519,6 +524,7 @@ def fit_for_request(
             if wider > room:
                 room = wider
                 _COUNTS["measured_fits"] += 1
+        room = max(0, room - _user_budget_reserve_mib(int(total) >> 20))
         if not blocks_enabled():
             top = _top_group_mib(module)
             room = min(room, top) if top else 0

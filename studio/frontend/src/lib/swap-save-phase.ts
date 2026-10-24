@@ -44,3 +44,8 @@ export function watchSavingPhase(
     },
   };
 }
+
+/** Whether a load-progress phase is a load still running (every nonterminal phase, the chat-context save included). */
+export function isLoadInFlightPhase(phase: unknown): boolean {
+  return phase === "downloading" || phase === "finalizing" || phase === SAVING_CHAT_CONTEXT;
+}

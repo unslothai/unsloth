@@ -8,7 +8,7 @@ import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -167,7 +167,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       onClick={pickFolder}
       title="Upload every supported file in a folder. Linking a folder that stays in sync needs the desktop app."
     >
-      <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
+      <HugeiconsIcon icon={FolderAddIcon} data-icon="inline-start" />
       Add folder
     </Button>
   );
@@ -201,13 +201,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5",
           )}
         >
-          <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <HugeiconsIcon
-              icon={PlusSignIcon}
-              strokeWidth={1.75}
-              className="size-6"
-            />
-          </span>
           <div className="space-y-1">
             <p className="text-ui-15 font-semibold text-foreground">
               Give this project context
@@ -228,7 +221,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
-            {addFolderButton}
           </div>
           <p className="text-ui-11 text-muted-foreground">
             {isTauri ? "Or drop files here" : "Or drop files or a folder here"}

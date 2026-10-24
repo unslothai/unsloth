@@ -739,6 +739,51 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
     assert IMAGE_REFUSAL_HEADER not in other.headers
 
 
+def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monkeypatch):
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        UnifiedMemoryShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise UnifiedMemoryShortfallError("Could not load the diffusers engine: needs about 30 GB")
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 400
+    assert resp.headers.get(IMAGE_REFUSAL_HEADER) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    assert "30 GB" in resp.json()["detail"]
+
+
+def test_generate_returns_the_load_refusal_of_a_refused_mlx_fallback(client, monkeypatch):
+    from fastapi import HTTPException
+    from core.inference.gpu_arbiter import MULTI_MODEL_REFUSAL_HEADERS
+    from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise FallbackLoadRefusedError(
+            HTTPException(
+                status_code = 409,
+                detail = "Unload the chat model first.",
+                headers = dict(MULTI_MODEL_REFUSAL_HEADERS),
+            )
+        )
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Unload the chat model first."
+    for key, value in MULTI_MODEL_REFUSAL_HEADERS.items():
+        assert resp.headers.get(key) == value
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
@@ -1279,8 +1324,14 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
     )
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
@@ -3314,6 +3365,139 @@ def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
     assert ("load", "black-forest-labs/flux-3-image-klein") in seen
     validated = [entry[2:] for entry in seen if entry[0] == "validate"]
     assert validated and set(validated) == {(None, "pipeline")}, seen
+
+
+@pytest.fixture
+def token_client(client, monkeypatch):
+    """The client, with begin_load publishing a state and moving the load epoch as the real engines do."""
+    from core.inference import media_load_ids
+
+    media_load_ids._reset_for_tests()
+    backend = diffusion_module.get_diffusion_backend()
+    begin, unload = backend.begin_load, backend.unload
+    backend._load_token, backend._state, backend.unloads = 0, None, 0
+
+    def begin_load(model_path, **kwargs):
+        backend._load_token += 1
+        backend._state = object()
+        return begin(model_path, **kwargs)
+
+    def counted_unload(**kwargs):
+        only_if = kwargs.get("only_if")
+        if only_if is not None and not only_if():
+            return None
+        backend.unloads += 1
+        backend._load_token += 1
+        backend._state = None
+        return unload()
+
+    monkeypatch.setattr(backend, "begin_load", begin_load)
+    monkeypatch.setattr(backend, "unload", counted_unload)
+    yield client, backend
+    media_load_ids._reset_for_tests()
+
+
+def _load_with_token(client, token):
+    body = {
+        "model_path": "unsloth/Z-Image-Turbo-GGUF",
+        "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+    }
+    return _post_load(client, **body, **({"load_token": token} if token else {}))
+
+
+def test_an_image_unload_naming_the_load_token_unloads_that_load(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert (resp.json()["outcome"], resp.json()["loaded"]) == ("unloaded", False)
+    assert backend.unloads == 1
+
+
+@pytest.mark.parametrize("newer", [None, "t2"])
+def test_an_image_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert _load_with_token(client, newer).status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "superseded"}
+    assert backend.unloads == 0 and backend.loaded
+
+
+def test_an_image_unload_naming_a_load_not_started_yet_refuses_that_load(token_client):
+    client, backend = token_client
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "cancelled"}
+    refused = _load_with_token(client, "t1")
+    assert refused.status_code == 409 and "cancelled" in refused.json()["detail"]
+    assert backend.unloads == 0 and not backend.loaded
+
+
+def test_image_status_names_the_load_an_unload_can_name(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert client.get("/api/inference/images/status").json()["load_id"] == "t1"
+
+
+def test_image_status_and_load_id_name_the_same_load(token_client):
+    import threading
+
+    from core.inference import media_load_ids
+    from hub.services.models import account_access
+
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    read = backend.status
+    admitted = threading.Event()
+
+    def newer_load():
+        with account_access.media_load_lock:
+            prior = media_load_ids.admitting("diffusion", backend, "t2")
+            backend._load_token += 1
+            backend.loading = ("unsloth/Z-Image-Turbo-GGUF",)
+            media_load_ids.admitted("diffusion", backend, "t2", prior)
+            admitted.set()
+
+    reads = []
+
+    def racing_status():
+        # The first read is slow and a load is admitted meanwhile, which it does not hold up.
+        reads.append(True)
+        if len(reads) == 1:
+            worker = threading.Thread(target = newer_load)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive()
+        return read()
+
+    backend.status = racing_status
+    try:
+        answer = client.get("/api/inference/images/status").json()
+    finally:
+        backend.status = read
+    assert admitted.wait(5)
+    # The read that straddled the admission was read again, so the id is that of the state it shows.
+    assert answer["load_id"] == "t2" and len(reads) == 2
+    backend.loading = ()
+
+
+def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
+    import json
+
+    client, backend = token_client
+    schema = client.app.openapi()
+    answer = schema["paths"]["/api/inference/images/unload"]["post"]["responses"]["200"]
+    refs = json.dumps(answer)
+    for model in ("DiffusionLoadUnloadedResponse", "MediaUnloadOutcome", "DiffusionStatusResponse"):
+        assert f"#/components/schemas/{model}" in refs
+    assert _load_with_token(client, "t1").status_code == 200
+    plain = client.post("/api/inference/images/unload").json()
+    assert set(plain) == set(inference_routes.DiffusionStatusResponse.model_fields)
+    assert _load_with_token(client, "t2").status_code == 200
+    named = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert set(named) == set(plain) | {"unloaded", "outcome"}
+    stale = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
+    assert stale == {"unloaded": False, "outcome": "superseded"}
 
 
 def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():

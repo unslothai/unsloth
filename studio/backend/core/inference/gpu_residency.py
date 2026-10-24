@@ -220,7 +220,11 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         resolve_model_kind,
     )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    from core.inference.diffusion_engine_router import has_active_loras, predict_engine
+    from core.inference.diffusion_engine_router import (
+        has_active_loras,
+        mlx_load_blocker,
+        predict_engine,
+    )
     from core.inference.diffusion_families import (
         detect_family_for_pick,
         local_pipeline_components_are_complete,
@@ -250,6 +254,11 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
             gpu_ordinal = gpu_ordinal,
             gguf_filename = name,
             with_loras = has_active_loras(getattr(request, "loras", None)),
+            # An explicit precision keeps a default-routed Apple Silicon load on diffusers, as the load does.
+            mlx_blocker = mlx_load_blocker(
+                transformer_quant = getattr(request, "transformer_quant", None),
+                text_encoder_quant = getattr(request, "text_encoder_quant", None),
+            ),
         )
         != ENGINE_DIFFUSERS
     ):
@@ -707,6 +716,45 @@ def media_fit_kwargs(
     if need:
         kwargs["need_mib"] = need
     return kwargs
+
+
+def refuse_unless_fits(
+    owner: str,
+    *,
+    policy: str = "off",
+    gpu_ids: Optional[Iterable[int]] = None,
+    need_mib: Optional[dict] = None,
+    cancel: Any = None,
+) -> None:
+    """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
+
+    For loads inside a generation (MLX diffusers fallback). Gives up on ``cancel``: a lock-holding evictor awaits our drain."""
+    from utils.account_context import current_account_id
+
+    while not arb._lock.acquire(timeout = 0.05):
+        if cancel is not None and cancel.is_set():
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+    try:
+        arb._sync_from_view()
+        others = [name for name in arb._residents if name != owner]
+        if not others:
+            return
+        if policy != "off" and owner in arb._KEPT_UNDER_ALWAYS:
+            coreside_locked(
+                owner,
+                policy = policy,
+                need_mib = need_mib,
+                gpu_ids = gpu_ids,
+                allow_evict = False,
+                evict_first = False,
+                acting = current_account_id(),
+                evicted = None,
+            )
+            return
+        raise arb.GpuOwnerBusyError(others[-1])
+    finally:
+        arb._lock.release()
 
 
 def free_for(

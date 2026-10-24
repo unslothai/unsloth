@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from .host_pinning import host_pinning_allowed
+
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
 QUEUE_DEPTH = 8
 _STOP = object()
@@ -132,7 +134,7 @@ class StreamEncode:
                 self._side = torch.cuda.Stream(device = device)
             ready = torch.cuda.Event()
             ready.record(torch.cuda.current_stream(device))
-            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = True)
+            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = host_pinning_allowed(device))
             with torch.cuda.stream(self._side):
                 self._side.wait_event(ready)
                 host.copy_(x, non_blocking = True)
@@ -396,7 +398,7 @@ class H3StreamEncode(StreamEncode):
             pair = []
             for values in self._pixel:
                 host = torch.tensor(values, dtype = torch.float32)
-                if device.type == "cuda":
+                if device.type == "cuda" and host_pinning_allowed(device):
                     host = host.pin_memory()
                 pair.append(host.to(device, non_blocking = True).view(1, -1, 1, 1, 1))
             held = (device, tuple(pair))

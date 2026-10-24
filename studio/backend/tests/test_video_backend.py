@@ -2239,6 +2239,68 @@ def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch
     assert session.took == [seen[0][1]] and session.closed == 1
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_a_render_returns_its_pinned_clip_to_the_driver(fake_runtime, monkeypatch, fail):
+    # Each render empties the pinned host cache once, after the session closes and the clip is unreferenced.
+    import functools
+    import weakref
+
+    import core.inference.video as vid
+
+    class _Frames(list):
+        pass
+
+    class _Session:
+        closed = False
+
+        def hooks(self):
+            return contextlib.nullcontext()
+
+        def take(self, frames, fps):
+            return b"STREAMED"
+
+        def close(self):
+            self.closed = True
+
+    session = _Session()
+    monkeypatch.setattr(vid, "open_stream_encode", lambda *_a, **_k: session)
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe_cls = type(backend._state.pipe)
+    real_call = pipe_cls.__call__
+    clips = []
+
+    # wraps: the backend reads the pipeline's signature to decide which kwargs it threads.
+    @functools.wraps(real_call)
+    def call(self, *args, **kwargs):
+        out = real_call(self, *args, **kwargs)
+        out.frames = [_Frames(out.frames[0])]
+        clips.append(weakref.ref(out.frames[0]))
+        return out
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    if fail:
+
+        def boom(*_a, **_k):
+            raise RuntimeError("encode failed")
+
+        monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(boom))
+    released = []
+    monkeypatch.setattr(
+        vid,
+        "release_pinned_host_memory",
+        lambda: released.append((session.closed, [ref() is None for ref in clips])),
+    )
+    if fail:
+        with pytest.raises(RuntimeError, match = "encode failed"):
+            backend.generate(prompt = "a sloth")
+        # The in-flight traceback still holds the clip; the cache is emptied anyway, after the session is closed.
+        assert [closed for closed, _ in released] == [True]
+    else:
+        assert backend.generate(prompt = "a sloth")["mp4_bytes"]
+        assert released == [(True, [True])]
+
+
 def test_wan_a14b_dual_dit_pipeline_loads(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
