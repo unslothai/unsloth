@@ -34,6 +34,7 @@ export interface ExternalProviderConfig {
   backendProviderType?: string;
   /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
+  extraHeaders?: Record<string, string>;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -400,6 +401,18 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
+/** Copy saved headers into chat state. Validation lives in extra-headers.ts, loaded with Connections. */
+export function extraHeadersFromSaved(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
+    if (name && typeof headerValue === "string") headers[name] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 /** Whether a connection may carry a per-connection Max Tokens limit. Every type may, except
  *  ChatGPT subscriptions, whose routing, model list and output cap are fixed. Both types are
  *  checked: the stored one is what the server validates against, the UI one is all the dialog
@@ -644,6 +657,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    extraHeaders: extraHeadersFromSaved(raw.extraHeaders),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

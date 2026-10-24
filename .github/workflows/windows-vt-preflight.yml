@@ -23,9 +23,6 @@ name: "Windows: virtual terminal preflight"
 on:
   workflow_dispatch:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
-    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/scripts/Probe-VirtualTerminal.ps1'
       - '.github/workflows/windows-vt-preflight.yml'
@@ -39,7 +36,6 @@ concurrency:
 
 jobs:
   measure:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: "property vs native call (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -164,7 +160,7 @@ jobs:
   agree:
     name: did every measured host agree
     needs: measure
-    if: (always()) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
