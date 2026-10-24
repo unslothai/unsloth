@@ -99,7 +99,6 @@ def test_the_fresh_plan_matches_a_returning_load_within_the_seed_margin(store, m
     returning = _refine(_pipe(), _l4_plan())
     assert returning.resident_transformer_mib == 14017
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_BF16")
-    # with both, the larger of the seed and the learned peak places
     both = _refine(_pipe(), _l4_plan())
     assert both.resident_transformer_mib == fresh.resident_transformer_mib
 
@@ -116,24 +115,19 @@ def test_only_the_eager_tier_and_measured_sizes_are_seeded(store):
         m("flux.1", "off", dense_transformer_mib = 22681, dense_bf16 = True, dense_tier_seeds = True)
         == 4352
     )
-    # measured with a sub-quadratic attention kernel: elsewhere the seed does not apply
     assert m("flux.1", "off", dense_transformer_mib = 22681, dense_bf16 = True) is None
-    # the compiled tiers of a bf16 denoiser were not measured
     assert (
         m("flux.1", "default", dense_transformer_mib = 22681, dense_bf16 = True, dense_tier_seeds = True)
         is None
     )
-    # a DiT above the measured size keeps the flat estimate
     assert (
         m("flux.1", "off", dense_transformer_mib = 30000, dense_bf16 = True, dense_tier_seeds = True)
         is None
     )
-    # an unmeasured family too
     assert (
         m("z-image", "off", dense_transformer_mib = 11000, dense_bf16 = True, dense_tier_seeds = True)
         is None
     )
-    # the fp16 table is unchanged
     assert m("flux.1", "off", dense_transformer_mib = 22680) == 2816
 
 

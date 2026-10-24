@@ -36,8 +36,7 @@ def test_dense_measured_peak_scales_with_fp32_compute(monkeypatch):
 
 @pytest.mark.parametrize("bf16_table", [True, False])
 def test_dense_table_places_bf16_only_from_its_own_measurements(monkeypatch, bf16_table):
-    """The fp16 dense table never prices a bf16 denoiser; the bf16 table (FLUX.1, measured bf16) does, and with it off
-    a bf16 card keeps the flat plan."""
+    """bf16 is priced only by its own table; with it off a bf16 card keeps the flat plan."""
     import types
 
     for name in (

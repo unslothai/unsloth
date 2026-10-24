@@ -3330,18 +3330,13 @@ _MEASURED_DENSE_SPEED_MODES = ("off",)
 MEASURED_ACTIVATION_DENSE_TIERS_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS"
 
 
-# Dense bf16 denoisers, eager tier: the worst whole-render peak Studio itself recorded (diffusion_measured_peaks) for a
-# fresh load streaming every offload group, 1024x1024, encode + steps + VAE decode, the same quantity a returning user
-# places from. Without it a bf16 denoiser placed only from a learned peak, so a fresh install streamed all of it: FLUX.1
-# bf16 on an L4 moved 90 GiB per image with 171 MiB resident, the next load kept 13.8 GiB resident from its 3417 MiB peak.
-# family -> (peak MiB, largest loaded DiT MiB it covers). "0" places a bf16 denoiser from its learned peak alone again.
+# Dense bf16, eager tier: worst recorded whole-render peak at 1024x1024, all groups streamed (what a learned peak holds).
+# family -> (peak MiB, largest loaded DiT MiB it covers). "0" = learned peak alone.
 MEASURED_ACTIVATION_BF16_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_BF16"
 _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
-    # FLUX.1-schnell, Colab L4, 4 steps, all 57 groups streamed: 3417 (4 loads), 3581 (1 load).
+    # FLUX.1-schnell, Colab L4, 4 steps: 3417 (4 loads), 3581 (1 load).
     "flux.1": (3581, 23800),
-    # Not seeded: FLUX.2-klein-4B recorded 2446 MiB (B200 capped at 8 GiB, so with a tiled decode), below the 2645 MiB
-    # its untiled decode takes (_MEASURED_IMAGE_ACTIVATION_MIB); Qwen-Image-2.1's 5486 MiB was recorded resident, without
-    # the stream window.
+    # Not seeded: FLUX.2-klein-4B's 2446 used a tiled decode; Qwen-Image-2.1's 5486 was recorded resident, unstreamed.
 }
 
 
@@ -3350,7 +3345,6 @@ def _env_off(name: str) -> bool:
 
 
 def dense_bf16_seeded(family: Optional[str]) -> bool:
-    """Whether ``family`` has a measured dense bf16 eager peak (and the table is on)."""
     return not _env_off(MEASURED_ACTIVATION_BF16_ENV) and (
         str(family or "").lower() in _MEASURED_DENSE_BF16_EAGER_PEAK_MIB
     )
@@ -3370,8 +3364,7 @@ def _dense_seed_mib(
     GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
     s/step). ``tier_seeds``: the target is where the phase table was measured (NVIDIA with a sub-quadratic attention
     kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate.
-    ``bf16``: the bf16 table, eager tier only (the default / max tiers of a bf16 denoiser were not measured), and only on
-    a ``tier_seeds`` target: it was measured with a sub-quadratic attention kernel."""
+    ``bf16``: the bf16 table, eager tier and ``tier_seeds`` targets only (all it was measured on)."""
     if bf16:
         entry = _MEASURED_DENSE_BF16_EAGER_PEAK_MIB.get(family)
         if (
@@ -3427,7 +3420,7 @@ def measured_image_runtime_mib(
     (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed.
     ``static_seed=False`` (a denoiser no static table was measured on: bf16 or GGUF / int8 packed dense weights)
     answers from the learned peak alone. ``dense_tier_seeds`` enables the dense default / max tier seeds (``_dense_seed_mib``)
-    on the target the phase table was measured on. ``dense_bf16``: the dense denoiser computes in bf16 (its own table)."""
+    on the target the phase table was measured on."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     seed: Optional[int] = None
@@ -4137,8 +4130,7 @@ def _refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        # The dense tables cover fp16 / fp32 and (measured families) bf16 unpacked weights; everything else uses a
-        # learned peak alone. Stored fp8 layers widen per forward, which no static table priced, even beside torchao.
+        # Dense tables cover unpacked fp16 / fp32 / seeded bf16 only; stored fp8 widens per forward, never priced.
         packed = dense_mib is not None and _pipe_denoisers_hold_packed(pipe)
         fp8_stored = any(
             _holds_fp8_stored(getattr(pipe, name, None))
@@ -4151,7 +4143,6 @@ def _refine_plan_from_loaded_weights(
             and not fp8_stored
             and dense_bf16_seeded(family)
             and _denoiser_is_dense_bf16(pipe)
-            # measured with a sub-quadratic attention kernel: math-only SDPA / ROCm keep the learned peak alone
             and bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
         )
         static_seed = not (
@@ -5144,7 +5135,7 @@ def measured_request_extra_mib(
         or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
-        # the bf16 seed is an eager-tier measurement like a learned peak: the same markers invalidate it
+        # the bf16 seed is eager-only like a learned peak: same invalidation
         (learned or need is None or sized["dense_bf16"])
         and (
             getattr(pipe, "_unsloth_peak_static", False)
