@@ -1476,7 +1476,10 @@ def test_training_flex_options_keep_a_callers_backend(backend):
         "FORCE_USE_FLEX_ATTENTION": True,
     }
     flex = pytest.importorskip("torch.nn.attention.flex_attention")
-    if not hasattr(flex, "_apply_kernel_options") or "BACKEND" not in getattr(flex, "FlexKernelOptions", {}).__annotations__:
+    if (
+        not hasattr(flex, "_apply_kernel_options")
+        or "BACKEND" not in getattr(flex, "FlexKernelOptions", {}).__annotations__
+    ):
         return
     q = torch.randn(1, 1, 16, 16)
     flex._apply_kernel_options(q, q, q, False, M._training_flex_options(options))
