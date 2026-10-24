@@ -118,6 +118,20 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_hub_unreachable_verdict():
+    # The "Hub did not connect" verdict is per process: a test that fakes a transport failure must not make the next
+    # test's Hub calls skip.
+    def _forget():
+        reach = sys.modules.get("core.inference.hub_reachability")
+        if reach is not None:
+            reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_mxc_isolation_settings():
     # The setting is cached for a second across tests that each get their own Studio home.
     def _forget():

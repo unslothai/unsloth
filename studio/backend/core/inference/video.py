@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
+from . import hub_reachability
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -5285,7 +5286,11 @@ class VideoBackend:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is the size of a download
             # that is not going to happen -- every file below either resolves from the cache or fails the load. total
             # stays 0, which load_progress already reads as "no estimate" and reports as a bare phase.
-            api = HfApi(token = hf_token or None) if not local_files_only else None
+            api = (
+                hub_reachability.guarded(HfApi(token = hf_token or None))
+                if not local_files_only
+                else None
+            )
             for repo, wanted in requests:
                 if api is None:
                     break
@@ -6258,6 +6263,7 @@ class VideoBackend:
         way: the base entry drops the dense ``text_encoder/`` shards whenever this resolves, so
         without it the artifact that replaces them is in no entry at all and the disk preflight
         passes on a volume that cannot hold the 27 GB it is about to pull."""
+        api = hub_reachability.always_asked(api)  # picks the conditioner: bounded, never skipped
         from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
         filename = h3_te_quant_filename(scheme)
@@ -6479,6 +6485,9 @@ class VideoBackend:
         """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
         counts the checkpoint that replaces the dropped dense shards. The header probe asks with ``api``'s own
         token, so a gated artifact is judged by the same credentials that would stage it."""
+        api = hub_reachability.always_asked(
+            api
+        )  # picks the denoiser source: bounded, never skipped
         token = getattr(api, "token", None)
         sources = VideoBackend._denoiser_prequant_source_list(
             fam,
@@ -6850,7 +6859,7 @@ class VideoBackend:
             from huggingface_hub import HfApi
 
             total = 0
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             if skip_te_override is not None:
                 # The encoder fetches already ran: plan around what they actually staged.
                 skip_te_components = tuple(skip_te_override)
@@ -7052,7 +7061,7 @@ class VideoBackend:
             return required
 
         try:
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             listings = _OneCommitListings(api)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 listing = _video_listing_repo(repo_id)
@@ -7336,7 +7345,7 @@ class VideoBackend:
         required_total = 0
         checkpoint_bytes = 0
         try:
-            api = HfApi(token = hf_token or None)
+            api = hub_reachability.guarded(HfApi(token = hf_token or None))
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
@@ -7585,7 +7594,8 @@ class VideoBackend:
             # Listed from the mirror (byte identical, so the same names and sizes), then the fetch repo is settled
             # against the EXACT names: an upstream snapshot that already holds every one of them keeps being used.
             listing = _video_listing_repo(base)
-            info = HfApi(token = hf_token or None).model_info(
+            info = hub_reachability.model_info(
+                HfApi(token = hf_token or None),
                 listing,
                 files_metadata = True,
                 # The plan's commit describes the listing only when the plan reads the listing repo; an upstream kept for
