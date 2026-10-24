@@ -27,6 +27,7 @@ import torch
 
 import unsloth  # noqa: F401  (patches before transformers)
 from unsloth import FastLanguageModel, FastModel, is_bfloat16_supported
+from unsloth.device_type import xpu_keeps_explicit_bf16
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 _BLOCK = 128
@@ -36,8 +37,11 @@ _KEEP_16BIT = "model.layers.1.self_attn.o_proj"
 cuda_available = torch.cuda.is_available()
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
-# The tests ask for bf16; a GPU without bf16 (T4) loads in fp16 instead, so fp8 dequantizes to that.
-_LOAD_DTYPE = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+# The tests ask for bf16; as the loaders do, a GPU without bf16 (T4) loads in fp16 instead, except XPU,
+# which keeps an explicit bf16 request. fp8 dequantizes to the load dtype.
+_LOAD_DTYPE = (
+    torch.bfloat16 if is_bfloat16_supported() or xpu_keeps_explicit_bf16() else torch.float16
+)
 
 needs_gpu = pytest.mark.skipif(
     not (cuda_available or xpu_available), reason = "bitsandbytes 4bit needs a GPU"
