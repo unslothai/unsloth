@@ -30289,6 +30289,11 @@ async def _proxy_to_external_provider(
         reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
         extra_headers = config.get("extra_headers")
 
+    # An explicit key keeps the edited target. Headers come from the request then,
+    # never from a saved lookup that would bind stored routing metadata.
+    if managed is None and payload.encrypted_api_key:
+        extra_headers = payload.extra_headers
+
     if not provider_type:
         raise HTTPException(
             status_code = 400,

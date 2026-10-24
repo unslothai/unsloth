@@ -218,6 +218,7 @@ export interface ExternalRoutingFields {
   provider_api_type: "chat_completions" | "responses";
   provider_reasoning_config?: CustomReasoningConfig;
   encrypted_api_key?: string;
+  extra_headers?: Record<string, string>;
 }
 
 export type ExternalRoutingUnavailableReason =
@@ -294,6 +295,9 @@ export async function buildExternalRoutingFields(
             apiKey,
             options.forceRefreshPublicKey ?? false,
           ),
+          ...(provider.extraHeaders && Object.keys(provider.extraHeaders).length
+            ? { extra_headers: provider.extraHeaders }
+            : {}),
         }
       : {}),
   };

@@ -108,3 +108,62 @@ def test_extra_headers_persist_and_reach_the_wire(tmp_path, monkeypatch):
         assert recorded["session"] == "unsloth-chat-42"
         assert recorded["title"] == "Unsloth"
         assert recorded["authorization"] == "Bearer sk-test"
+
+
+def _drive(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def test_explicit_key_sends_request_headers_without_saved_lookup(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
+    class ClientReached(Exception):
+        pass
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: (_ for _ in ()).throw(
+            AssertionError("explicit keys must not bind saved metadata")
+        ),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "replacement-key",
+    )
+
+    def client(**kwargs):
+        raise ClientReached(kwargs)
+
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", client)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "provider-1",
+        provider_type = "custom",
+        provider_base_url = "https://new.example/v1",
+        encrypted_api_key = "encrypted-replacement",
+        extra_headers = HEADERS,
+        external_model = "new-model",
+    )
+    request = SimpleNamespace(headers = {}, state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(ClientReached) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, request))
+    assert reached.value.args[0] == {
+        "provider_type": "custom",
+        "base_url": "https://new.example/v1",
+        "api_key": "replacement-key",
+        "api_type": "chat_completions",
+        "extra_headers": HEADERS,
+    }
+
+
+def test_chat_request_rejects_reserved_extra_headers():
+    from models.inference import ChatCompletionRequest
+
+    with pytest.raises(ValidationError, match = "reserved"):
+        ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hello"}],
+            extra_headers = {"Authorization": "Bearer secret"},
+        )
