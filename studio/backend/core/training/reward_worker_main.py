@@ -7,6 +7,7 @@ The sandbox gives the process no stdin (MXC), so requests and replies are files 
 ``req-<n>.json`` in, ``res-<n>.json`` out, each written to a temp name and renamed into place.
 """
 
+import inspect
 import json
 import math
 import os
@@ -93,11 +94,23 @@ def _load(specs):
     return funcs, errors
 
 
+def _takes(fn, name):
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(p.kind is p.VAR_KEYWORD or p.name == name for p in params)
+
+
 def _score(fn, request):
+    kwargs = dict(request.get("kwargs") or {})
+    # answer_raw is added by the host, not the dataset; a reward that doesn't name it never sees it.
+    if "answer_raw" in kwargs and not _takes(fn, "answer_raw"):
+        del kwargs["answer_raw"]
     out = fn(
         prompts = request.get("prompts"),
         completions = request.get("completions"),
-        **(request.get("kwargs") or {}),
+        **kwargs,
     )
     n = len(request.get("completions") or [])
     out = list(out) if out is not None else []
