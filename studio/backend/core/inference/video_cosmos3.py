@@ -128,11 +128,6 @@ def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any
     return kwargs
 
 
-def output_frames(output: Any) -> Any:
-    """The clip from a ``Cosmos3OmniPipelineOutput`` (``.video`` is already unbatched)."""
-    return output.video
-
-
 def install_untiled_encode(pipe: Any, logger: Any = None) -> bool:
     """Run ``pipe.vae.encode`` untiled, tiled only on out-of-memory: every step attends to the encoded i2v clip,
     so tiling's small shift grows across it (Nano i2v vs diffusers: 24.7 dB tiled)."""

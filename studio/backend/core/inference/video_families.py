@@ -430,7 +430,6 @@ COSMOS3_EDGE_FAMILY = "cosmos3-edge"
 COSMOS3_FAMILIES = (COSMOS3_NANO_FAMILY, COSMOS3_EDGE_FAMILY)
 # No single-file or GGUF loader exists, so only a pipeline index is the generator.
 PIPELINE_ONLY_VIDEO_FAMILIES = frozenset(COSMOS3_FAMILIES)
-I2V_IN_T2V_PIPELINE_CLASSES = frozenset({"Cosmos3OmniPipeline"})
 # Nano's index names the pre-release class.
 _COSMOS3_INDEX_CLASSES = frozenset({"Cosmos3OmniPipeline", "Cosmos3OmniDiffusersPipeline"})
 _COSMOS3_MODEL_TYPES = {

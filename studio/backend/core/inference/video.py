@@ -12496,9 +12496,9 @@ class VideoBackend:
                     audio_track = audio[0] if audio is not None else None
                     audio_sample_rate = output.get("sampling_rate")
                 elif fam.name in COSMOS3_FAMILIES:
-                    from .video_cosmos3 import output_frames as cosmos3_output_frames
-
-                    video_frames = cosmos3_output_frames(output)
+                    video_frames = (
+                        output.video
+                    )  # Cosmos3OmniPipelineOutput: one clip, already unbatched
                     audio_track = None
                     audio_sample_rate = None
                 else:
@@ -12655,12 +12655,9 @@ class VideoBackend:
                 height or default_h,
             )
         # Fit once so both engines condition on identical pixels, unless the pipeline fits the frame itself.
-        if first is not None and not fam.i2v_fits_first_frame:
-            pass
-        elif first is not None and i2v_pipeline:
-            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_LAST)
-        elif first is not None:
-            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)
+        if first is not None and fam.i2v_fits_first_frame:
+            anchor = H3_ANCHOR_LAST if i2v_pipeline else H3_ANCHOR_FIRST
+            first = fit_h3_keyframe(first, width, height, anchor = anchor)
         if last is not None:
             last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
         conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)

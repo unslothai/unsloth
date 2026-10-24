@@ -602,12 +602,13 @@ def _local_model_task(model) -> Optional[str]:
 
         # Names are judged before the family, as the loader does.
         if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
-            pipeline_dir = _is_diffusers_pipeline_dir(Path(path))
             for needle in _local_family_needles(model):
                 family = detect_video_family(needle)
                 if family is None or not _is_trusted_video_repo(path):
                     continue
-                if _pipeline_only_video_family(family) and not pipeline_dir:
+                if _pipeline_only_video_family(family) and not _is_diffusers_pipeline_dir(
+                    Path(path)
+                ):
                     continue
                 return _VIDEO_GEN_TASK if _video_family_buildable(family) else None
     except Exception:
