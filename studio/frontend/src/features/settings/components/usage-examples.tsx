@@ -946,7 +946,6 @@ export function UsageExamples({
               }}
               className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <HugeiconsIcon icon={BotIcon} className="size-3.5" />
               {t("settings.apiKeys.openAgentsTab")}
               <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
             </button>
