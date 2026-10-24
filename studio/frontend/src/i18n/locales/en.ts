@@ -505,7 +505,7 @@ export const en = {
     tensorParallel: "Split layer computations across {count} GPUs.",
     inUse: "Unload the model before repairing, restoring or removing its engine.",
     title: "More engines",
-    description: "Extra engines that can run supported text and vision models faster, especially when many requests come in at once. Install one here, then choose it in a model's run settings. Experimental.",
+    description: "Extra engines for GPUs only. They may run supported text and vision models faster, especially when many requests come in at once. Install one here, then choose it in a model's run settings. Experimental.",
     picker: "Inference engine",
     precision: "Precision",
     precisionAuto: "Model default",
