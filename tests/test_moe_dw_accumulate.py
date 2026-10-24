@@ -30,6 +30,19 @@ except Exception as exc:  # pragma: no cover - depends on the installed stack
     pytest.skip(f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
 
 DEV = "cuda"
+
+
+def _compile_dtype():
+    # Inductor skips (SkipFrame) any graph with bf16 inputs or outputs on a card without native bf16 (sm_75), so
+    # Dynamo then traces each nested Python frame, op bodies included, and fullgraph fails on the first one.
+    # fp16, the dtype Unsloth trains in there, compiles as one graph.
+    try:
+        native = torch.cuda.is_bf16_supported(including_emulation = False)
+    except TypeError:  # torch without the argument
+        native = torch.cuda.get_device_capability()[0] >= 8
+    return torch.bfloat16 if native else torch.float16
+
+
 TMA_STORE = [False, True] if gg.supports_tma() else [False]
 
 
@@ -384,8 +397,9 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
     from torch._dynamo.utils import counters
 
     E, N, K, T, topk = 4, 128, 128, 64, 2
+    dtype = _compile_dtype()
     cfgs = _cfgs()
-    c = _Case(E, N, K, T, topk, "permute_x", torch.bfloat16)
+    c = _Case(E, N, K, T, topk, "permute_x", dtype)
 
     def fn(X, W):
         return _gemm(X, W, c.m_sizes, c.gather, topk, c.mode, cfgs)
@@ -395,7 +409,7 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
     compiled = torch.compile(fn, fullgraph = True)
     grads = []
     for f in (fn, compiled):
-        W = _param(E, N, K, torch.bfloat16)
+        W = _param(E, N, K, dtype)
         g0 = torch.randn_like(W)
         W.grad = g0.clone()
         X = c.X.clone().requires_grad_(True)
@@ -414,7 +428,7 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
         return buf
 
     counters.clear()
-    buf_e = torch.randn(E, N, K, device = DEV).bfloat16()
+    buf_e = torch.randn(E, N, K, device = DEV).to(dtype)
     buf_c = buf_e.clone()
     acc(c.X, c.G, buf_e)
     torch.compile(acc, fullgraph = True)(c.X, c.G, buf_c)

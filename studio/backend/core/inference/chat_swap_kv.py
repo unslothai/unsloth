@@ -68,10 +68,17 @@ def _leave_saving(key: tuple[str, Optional[str]]) -> None:
 
 
 class PreparingLoad:
-    """One load POST still before its engine registers the load; ``/<media>/unload`` cancels it."""
+    """One load POST still before its engine registers the load; ``/<media>/unload`` cancels it.
 
-    def __init__(self, media: str):
+    ``load_token`` is the request's own token, so an unload naming it cancels this POST and no other."""
+
+    def __init__(
+        self,
+        media: str,
+        load_token: Optional[str] = None,
+    ):
         self.media = media
+        self.load_token = load_token or None
         self._cancelled = threading.Event()
         # Held from the check through begin_load's registration, so a cancel lands before or after it.
         self.lock = threading.RLock()
@@ -102,15 +109,19 @@ def cancel_preparing_loads(
     account: Optional[str],
     *,
     any_account: bool = False,
+    load_token: Optional[str] = None,
 ) -> int:
-    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped."""
+    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped.
+
+    With ``load_token``, only ``account``'s POSTs that carry that token (an unload naming its load).
+    Returns once each one either stopped or registered, as the token's lock is held until then."""
     with _lock:
         tokens = [
             t
             for (m, a), held in _preparing.items()
             if m == media and (any_account or a == account)
             for t in held
-            if not t.cancelled
+            if not t.cancelled and (load_token is None or t.load_token == load_token)
         ]
     # Outside _lock: this waits for a registration in flight under the token's own lock.
     for token in tokens:
@@ -130,11 +141,24 @@ def raise_if_load_cancelled(message: str) -> None:
         raise RuntimeError(message)
 
 
+def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
+    """``fn(*args, **kwargs)`` under this POST's preflight lock once no unload has cancelled it, so a
+    destructive step (an engine switch, another resident's unload) never runs for a cancelled load:
+    a cancel lands before the check, or waits for ``fn`` to finish."""
+    token = _current_preparing.get()
+    if token is None:
+        return fn(*args, **kwargs)
+    with token.lock:
+        if token.cancelled:
+            raise RuntimeError(message)
+        return fn(*args, **kwargs)
+
+
 @contextlib.contextmanager
-def preparing_load(media: str):
+def preparing_load(media: str, load_token: Optional[str] = None):
     """Held around a load POST until begin_load registers it, so load-progress reads it as starting; yields the token an unload cancels."""
     key = (media, _account_id())
-    token = PreparingLoad(media)
+    token = PreparingLoad(media, load_token)
     with _lock:
         _preparing.setdefault(key, []).append(token)
     reset = _current_preparing.set(token)

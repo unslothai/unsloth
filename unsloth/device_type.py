@@ -83,6 +83,20 @@ def npu_is_available():
         return False
 
 
+def _zoo_cpu_backend(name):
+    """The CPU-fallback rules live in unsloth_zoo.device_type; an older zoo has none.
+
+    Only consulted once `import unsloth` has imported unsloth_zoo (as _gpu_init does before this
+    module). Importing it from here would pull the whole zoo package into anything that loads
+    unsloth.device_type on its own (Studio's hardware probes, the test harness's preload).
+    """
+    import sys
+
+    _zoo_device_type = sys.modules.get("unsloth_zoo.device_type")
+    check = getattr(_zoo_device_type, name, None)
+    return bool(check()) if callable(check) else False
+
+
 @functools.cache
 def get_device_type():
     # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
@@ -93,6 +107,8 @@ def get_device_type():
     # Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
+    if _zoo_cpu_backend("cpu_backend_forced"):
+        return "cpu"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -105,6 +121,8 @@ def get_device_type():
     accelerator = None
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
+            if _zoo_cpu_backend("cpu_backend_allowed"):
+                return "cpu"
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         # Listed, not returned: torch.npu is unusable here, so it only defers the AttributeError.
@@ -114,6 +132,8 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
+    if accelerator is None and _zoo_cpu_backend("cpu_backend_allowed"):
+        return "cpu"
     # torch.accelerator only exists from torch 2.6, so below that there is no name.
     raise NotImplementedError(
         f"Unsloth does not currently work on {accelerator}."
@@ -139,6 +159,8 @@ def get_device_count():
         return torch.xpu.device_count()
     elif DEVICE_TYPE == "npu":
         return torch.npu.device_count()
+    elif DEVICE_TYPE == "cpu":
+        return 0
     else:
         return 1
 
