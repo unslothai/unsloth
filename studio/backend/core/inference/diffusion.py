@@ -188,6 +188,7 @@ from .diffusion_memory import (
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
+    OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
@@ -221,6 +222,9 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     prefer_whole_module_offload,
+    whole_tier_request_costs,
+    pin_denoiser_for_call,
+    measured_image_runtime_mib,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -3082,6 +3086,108 @@ def _start_peak_probe(state: Any) -> Any:
         return probe
     except Exception:  # noqa: BLE001 - measurement only
         return None
+
+
+def _graphs_settled_eager(state: Any) -> bool:
+    """No CUDA graph can record over this load's denoiser placement any more: nothing alive on its card, and every
+    handle poisoned or declined for the load (a drop the speed check made). A whole-step or per-block recording keys on
+    the weights' addresses, so moving them would re-record."""
+    pipe = getattr(state, "pipe", None)
+    handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) or tuple(
+        getattr(state, "cuda_graphs", ()) or ()
+    )
+    try:
+        if cuda_graph.live_graph_count(_peak_device_index(state)):
+            return False
+    except Exception:  # noqa: BLE001 - unreadable: something may be recorded
+        return False
+    for handle in handles:
+        if getattr(handle, "poisoned", False):
+            continue
+        declined = getattr(handle, "_placement_declined", None)
+        if (
+            callable(declined)
+            and declined()
+            and getattr(handle, "fallback_handle", None) is None
+            and getattr(handle, "fallback", None) is None
+        ):
+            continue
+        return False
+    return True
+
+
+def _whole_tier_for_request(
+    state: Any,
+    *,
+    steps: int,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    cfg: Optional[bool],
+    condition_pixels: int,
+    logger: Any = None,
+) -> Optional[tuple[float, float, int]]:
+    """``(whole s, streamed s, activation MiB)`` when this request runs the streamed denoiser whole for the call (its
+    own step count and size price whole-module offload cheaper, ``whole_tier_request_costs``), else None: it streams
+    as the load placed it. Only where nothing compiled or recorded depends on the placement: the blocks compile below
+    their offload hooks, so a pin is a weight move the compiled code never sees, but a background compile still
+    pending or a CUDA graph that could still record over the streamed placement keeps the load's plan. The activation
+    room is this machine's learned pre-decode peak for the request's size; unmeasured, the call streams (and
+    records it)."""
+    pipe = getattr(state, "pipe", None)
+    if getattr(state, "offload_policy", None) != OFFLOAD_GROUP or getattr(
+        state, "transformer_cache", None
+    ):
+        return None
+    costs = whole_tier_request_costs(
+        pipe,
+        steps = steps,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        cfg = cfg,
+        condition_pixels = condition_pixels,
+    )
+    if costs is None or costs[0] >= costs[1]:
+        return None
+    bg = getattr(state, "bg_compile", None)
+    if bg is not None and bg.pending():
+        return None
+    if not _graphs_settled_eager(state):
+        return None
+    try:
+        family, label, speed = _live_peak_identity(state)
+    except Exception:  # noqa: BLE001
+        return None
+    if speed is None:
+        return None
+    activation = None
+    # A deferred compile tier records nothing (its key names the eager tier): the eager tier's pre-decode peak, which
+    # a compiled forward of the same graph does not exceed, stands in.
+    for tier in dict.fromkeys((speed, SPEED_OFF)):
+        activation = measured_image_runtime_mib(
+            family,
+            tier,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            quant = label,
+            static_seed = False,
+            phase = "pre_decode",
+        )
+        if activation is not None:
+            break
+    if activation is None:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: a %d-step render prices the denoiser whole (%.2f s vs %.2f s streamed), but no "
+                "pre-decode peak is learned for its size yet: it streams",
+                int(steps),
+                costs[0],
+                costs[1],
+            )
+        return None
+    return costs[0], costs[1], int(activation)
 
 
 def _peak_device_index(state: Any) -> Optional[int]:
@@ -10428,7 +10534,21 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
-                        plan = prefer_whole_module_offload(pipe, plan, logger = logger)
+                        try:
+                            # priced at the load's default step count: the plan is made once per load
+                            plan_steps, _ = default_generation_params(
+                                *((fam.name,) if is_flux3_family(fam) else ()),
+                                gguf_filename,
+                                content_variant_hint(repo_id, gguf_filename),
+                                repo_id,
+                                base,
+                                fam.name,
+                            )
+                        except Exception:  # noqa: BLE001 - unpriced: the unconditional switch
+                            plan_steps = None
+                        plan = prefer_whole_module_offload(
+                            pipe, plan, logger = logger, steps = plan_steps
+                        )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
@@ -13748,6 +13868,7 @@ class DiffusionBackend:
                         )
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
+                guard_condition_pixels = 0
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -14061,7 +14182,39 @@ class DiffusionBackend:
                     state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)
                 except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
                     state.pipe._unsloth_peak_cfg = None
-                peak_probe = _start_peak_probe(state)
+                # This request's own step count and size may price the streamed denoiser whole for the call
+                whole_tier = None
+                if _hires_pass is None and not aux_pass and not bg_eager:
+                    try:
+                        whole_tier = _whole_tier_for_request(
+                            state,
+                            steps = denoise_steps,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            cfg = getattr(state.pipe, "_unsloth_peak_cfg", None),
+                            condition_pixels = guard_condition_pixels,
+                            logger = logger,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the load's streamed plan
+                        logger.debug(
+                            "diffusion.memory: per-request whole denoiser skipped (%s)", exc
+                        )
+                        whole_tier = None
+                whole_release: list = []
+
+                def _release_whole_denoiser() -> None:
+                    while whole_release:
+                        try:
+                            whole_release.pop()()
+                        except Exception as release_exc:  # noqa: BLE001 - the groups keep their state
+                            logger.warning(
+                                "diffusion.memory: streaming the denoiser again failed (%s)",
+                                release_exc,
+                            )
+
+                # a whole-denoiser call's peak is not the streamed placement's: it records under no key
+                peak_probe = None if whole_tier is not None else _start_peak_probe(state)
                 decode_restores: list = []
                 try:
                     previewer = _start_previewer()
@@ -14133,6 +14286,24 @@ class DiffusionBackend:
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
                             if state.te_releaser is not None:
                                 state.te_releaser.release()
+                            if whole_tier is not None and not whole_release:
+                                # uploaded once, after the encode (whole-module offload's order), streamed again
+                                # at the decode
+                                release = pin_denoiser_for_call(
+                                    state.pipe,
+                                    getattr(guard_target, "torch_device", None) or state.device,
+                                    activation_mib = whole_tier[2],
+                                    logger = logger,
+                                )
+                                if release is not None:
+                                    whole_release.append(release)
+                                    logger.info(
+                                        "diffusion.memory: this %d-step render runs the denoiser whole (priced "
+                                        "%.2f s vs %.2f s streamed)",
+                                        int(denoise_steps),
+                                        whole_tier[0],
+                                        whole_tier[1],
+                                    )
 
                         chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
@@ -14142,6 +14313,8 @@ class DiffusionBackend:
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
+                            # the decode runs in the streamed placement's room
+                            _release_whole_denoiser()
                             # encoder residency lent to the decode streams again only if free memory is short now
                             restore = release_for_decode(
                                 state.pipe,
@@ -14222,6 +14395,7 @@ class DiffusionBackend:
                             )
                             continue
                         finally:
+                            _release_whole_denoiser()
                             while decode_restores:
                                 try:
                                     decode_restores.pop()()

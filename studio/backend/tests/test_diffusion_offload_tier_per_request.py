@@ -1,0 +1,281 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Whole-module vs streamed offload chosen per request: a load that priced streaming for an eligible bf16 denoiser runs
+a request whose own step count prices whole with the denoiser pinned for that call, through the same hooks."""
+
+from __future__ import annotations
+
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+import core.inference.diffusion as dif
+import core.inference.diffusion_memory as dm
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_diffusion_placement_monotonic import (  # noqa: E402, F401 - the autouse env fixture
+    _card_probe,
+    _clean_env,
+    _klein_above_floor,
+    _priced,
+)
+
+KLEIN_DIT_MIB = 7393
+
+
+@pytest.fixture(autouse = True)
+def _per_request_env(monkeypatch):
+    monkeypatch.delenv(dm.WHOLE_MODULE_OFFLOAD_ENV, raising = False)
+    monkeypatch.delenv(dm.WHOLE_MODULE_PER_REQUEST_ENV, raising = False)
+
+
+def _tier_pipe(card):
+    h2d, tflops = _card_probe(card)
+    pipe = types.SimpleNamespace()
+    setattr(
+        pipe,
+        dm.WHOLE_TIER_ATTR,
+        {"dit_mib": KLEIN_DIT_MIB, "h2d_gib_s": h2d, "bf16_tflops": tflops},
+    )
+    return pipe
+
+
+def _whole(pipe, steps, **kw):
+    costs = dm.whole_tier_request_costs(
+        pipe, steps = steps, width = kw.pop("width", 1024), height = kw.pop("height", 1024), **kw
+    )
+    return None if costs is None else costs[0] < costs[1]
+
+
+def test_streamed_load_records_the_probe_for_requests(monkeypatch):
+    """RTX PRO 6000 at the family default (4 steps): streamed plan, the probe kept for per-request pricing. A card that
+    priced whole keeps the #15129 whole-module plan and no per-request state."""
+    flat = _klein_above_floor(monkeypatch)
+    refined, plan = _priced(monkeypatch, 12544, flat, steps = 4, card = "rtx_pro_6000")
+    assert plan.offload_policy == dm.OFFLOAD_GROUP
+    import torch
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.bfloat16))
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: _card_probe("rtx_pro_6000"))
+    dm.prefer_whole_module_offload(pipe, refined, steps = 4)
+    tier = getattr(pipe, dm.WHOLE_TIER_ATTR)
+    assert tier["dit_mib"] == KLEIN_DIT_MIB
+    assert (tier["h2d_gib_s"], tier["bf16_tflops"]) == _card_probe("rtx_pro_6000")
+
+    for card in ("b200", "a100"):
+        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.bfloat16))
+        monkeypatch.setattr(dm, "_offload_cost_measurements", lambda card = card: _card_probe(card))
+        assert (
+            dm.prefer_whole_module_offload(pipe, refined, steps = 4).offload_policy
+            == dm.OFFLOAD_MODEL
+        )
+        assert not hasattr(pipe, dm.WHOLE_TIER_ATTR)
+
+    monkeypatch.setenv(dm.WHOLE_MODULE_PER_REQUEST_ENV, "0")
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.bfloat16))
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: _card_probe("rtx_pro_6000"))
+    assert dm.prefer_whole_module_offload(pipe, refined, steps = 4).offload_policy == dm.OFFLOAD_GROUP
+    assert not hasattr(pipe, dm.WHOLE_TIER_ATTR)
+
+
+def test_request_step_count_picks_the_tier():
+    """The measured RTX PRO 6000 calls: streamed at 2 and 4 steps, whole at 8."""
+    pipe = _tier_pipe("rtx_pro_6000")
+    assert [_whole(pipe, n) for n in (1, 2, 4, 8, 16)] == [False, False, False, True, True]
+
+
+def test_request_size_moves_the_crossover():
+    """More tokens per step (a larger canvas, a batch, CFG) make each step's compute cover more of its copy, so
+    streaming wins to more steps; a smaller canvas the other way."""
+    pipe = _tier_pipe("rtx_pro_6000")
+    assert _whole(pipe, 8) is True
+    assert _whole(pipe, 8, batch_size = 2) is False
+    assert _whole(pipe, 8, cfg = True) is False
+    assert _whole(pipe, 8, width = 1536, height = 1536) is False
+    assert _whole(pipe, 4, width = 512, height = 512) is True
+
+
+def test_no_tier_or_kill_switch_prices_nothing(monkeypatch):
+    assert (
+        dm.whole_tier_request_costs(types.SimpleNamespace(), steps = 8, width = 1024, height = 1024)
+        is None
+    )
+    pipe = _tier_pipe("rtx_pro_6000")
+    assert dm.whole_tier_request_costs(pipe, steps = None, width = 1024, height = 1024) is None
+    monkeypatch.setenv(dm.WHOLE_MODULE_PER_REQUEST_ENV, "0")
+    assert dm.whole_tier_request_costs(pipe, steps = 8, width = 1024, height = 1024) is None
+
+
+class _Bg:
+    def __init__(self, pending):
+        self._pending = pending
+
+    def pending(self):
+        return self._pending
+
+
+class _Graph:
+    def __init__(
+        self,
+        declined,
+        poisoned = False,
+    ):
+        self._declined = declined
+        self.poisoned = poisoned
+        self.fallback_handle = None
+        self.fallback = None
+
+    def _placement_declined(self):
+        return self._declined
+
+
+def _state(**kw):
+    pipe = _tier_pipe("rtx_pro_6000")
+    pipe._unsloth_cuda_graphs = kw.pop("graphs", ())
+    base = dict(
+        pipe = pipe,
+        offload_policy = dm.OFFLOAD_GROUP,
+        transformer_cache = None,
+        bg_compile = None,
+        cuda_graphs = (),
+        device = "cuda:0",
+    )
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def _request(state, steps = 8):
+    return dif._whole_tier_for_request(
+        state, steps = steps, width = 1024, height = 1024, batch_size = 1, cfg = False, condition_pixels = 0
+    )
+
+
+@pytest.fixture
+def _learned(monkeypatch):
+    seen = []
+
+    def fake_peak(family, speed, **kw):
+        seen.append((speed, kw.get("phase")))
+        return 2560 if speed == "off" else None
+
+    monkeypatch.setattr(
+        dif, "_live_peak_identity", lambda state: ("flux.2-klein", "label", "default")
+    )
+    monkeypatch.setattr(dif, "measured_image_runtime_mib", fake_peak)
+    monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: 0)
+    monkeypatch.setattr(dif, "_peak_device_index", lambda state: 0)
+    return seen
+
+
+def test_request_gate_prices_and_reads_the_eager_peak(_learned):
+    """A compiled deferred tier records no peak: the eager tier's pre-decode peak sizes the pinned call."""
+    whole, streamed, activation = _request(_state())
+    assert whole < streamed and activation == 2560
+    assert _learned == [("default", "pre_decode"), ("off", "pre_decode")]
+    assert _request(_state(), steps = 4) is None
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(offload_policy = dm.OFFLOAD_MODEL),
+        dict(transformer_cache = "fbcache"),
+        dict(bg_compile = _Bg(True)),
+        # a graph that could still record over the streamed placement
+        dict(graphs = (_Graph(declined = False),)),
+    ],
+)
+def test_request_gate_keeps_the_load_plan(_learned, kw):
+    assert _request(_state(**kw)) is None
+
+
+def test_request_gate_after_graphs_settle(_learned, monkeypatch):
+    assert _request(_state(bg_compile = _Bg(False), graphs = (_Graph(declined = True),))) is not None
+    assert _request(_state(graphs = (_Graph(declined = False, poisoned = True),))) is not None
+    monkeypatch.setattr(dif.cuda_graph, "live_graph_count", lambda index: 1)
+    assert _request(_state(graphs = (_Graph(declined = True),))) is None
+
+
+def test_request_gate_without_a_learned_peak_streams(_learned, monkeypatch):
+    monkeypatch.setattr(dif, "measured_image_runtime_mib", lambda *a, **k: None)
+    assert _request(_state()) is None
+
+
+def _cuda_net():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA-only: diffusers group offloading with a copy stream")
+    pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks import apply_group_offloading
+
+    class Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj_in = torch.nn.Linear(64, 1024)
+            self.blocks = torch.nn.ModuleList(torch.nn.Linear(1024, 1024) for _ in range(6))
+            self.proj_out = torch.nn.Linear(1024, 64)
+
+        def forward(self, x):
+            x = self.proj_in(x)
+            for block in self.blocks:
+                x = torch.nn.functional.gelu(block(x))
+            return self.proj_out(x)
+
+    torch.manual_seed(0)
+    net = Net()
+    x = torch.randn(3, 64)
+    ref = net.to("cuda")(x.cuda()).cpu()
+    net.to("cpu")
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    return torch, net, x, ref
+
+
+def test_pin_for_call_is_bit_identical_and_streams_again():
+    """Every group resident for the call, the same output, then exactly the pre-call placement again (host copies
+    reused: the same host tensors back under each parameter)."""
+    torch, net, x, ref = _cuda_net()
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    hosts = {id(p): p.data for p in net.blocks.parameters()}
+    release = dm.pin_denoiser_for_call(pipe, "cuda", activation_mib = 0)
+    assert release is not None
+    assert all(p.device.type == "cuda" for p in net.parameters())
+    assert dm.denoisers_pinned_resident(pipe)
+    for _ in range(2):
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    release()
+    release()  # idempotent
+    assert all(p.device.type == "cpu" for p in net.blocks.parameters())
+    assert all(p.data.data_ptr() == hosts[id(p)].data_ptr() for p in net.blocks.parameters())
+    assert not getattr(net, "_unsloth_resident_room", None)
+    assert not any(getattr(g, "_unsloth_resident", False) for g in dm._offload_groups(net))
+    assert dm.resident_group_mib(pipe) == 0
+    for _ in range(2):
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_pin_for_call_needs_the_room(monkeypatch):
+    torch, net, x, ref = _cuda_net()
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    torch.cuda.empty_cache()  # the room counts the allocator's reusable cache
+    free, total = torch.cuda.mem_get_info()
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1 << 20, total))
+    assert dm.pin_denoiser_for_call(pipe, "cuda", activation_mib = 0) is None
+    assert all(p.device.type == "cpu" for p in net.blocks.parameters())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (free, total))
+    assert dm.pin_denoiser_for_call(pipe, "cuda", activation_mib = 1 << 30) is None
+    release = dm.pin_denoiser_for_call(pipe, "cuda", activation_mib = 64)
+    assert release is not None
+    release()
+    assert torch.equal(net(x.cuda()).cpu(), ref)

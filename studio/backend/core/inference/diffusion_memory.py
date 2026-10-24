@@ -3988,6 +3988,134 @@ _WHOLE_MODULE_KEPT_REASON = (
     "whole-module offload ran the {dit} MiB denoiser whole below the streamed tiers' {floor} MiB floor; it still "
     "fits, and uploading it once per call beats streaming it every step"
 )
+_WHOLE_MODULE_COST_REASON = (
+    " (measured {h2d:.0f} GiB/s host-to-device and {tflops:.0f} bf16 TFLOPS: {model:.2f} s vs {group:.2f} s "
+    "streamed for a {steps}-step {side}px render)"
+)
+_WHOLE_MODULE_DECLINED_REASON = (
+    "streaming kept over whole-module offload of the {dit} MiB denoiser: measured {h2d:.0f} GiB/s host-to-device "
+    "and {tflops:.0f} bf16 TFLOPS price a {steps}-step {side}px render at {model:.2f} s whole vs {group:.2f} s streamed"
+)
+
+# ``auto`` (default): whole-module offload only where its estimated render cost beats streaming; ``1``: always
+# (#15129); ``0``: never (the streamed plan as refined).
+WHOLE_MODULE_OFFLOAD_ENV = "UNSLOTH_DIFFUSION_WHOLE_MODULE_OFFLOAD"
+# ``0``: a load that priced streaming keeps it for every request (no per-request whole denoiser).
+WHOLE_MODULE_PER_REQUEST_ENV = "UNSLOTH_DIFFUSION_WHOLE_MODULE_PER_REQUEST"
+# Set on a pipe whose load priced streaming over whole-module offload for an eligible bf16 denoiser: the probe readings
+# a request prices its own step count with.
+WHOLE_TIER_ATTR = "_unsloth_whole_tier"
+
+
+def per_request_whole_enabled() -> bool:
+    return not _env_off(WHOLE_MODULE_PER_REQUEST_ENV)
+
+
+# Whole-module offload uploads the denoiser once per call, not overlapped with compute; streaming overlaps every
+# step's copy with that step's compute. Fit on FLUX.2-klein-4B bf16 1024^2 (real weights, 2 / 4 / 8-step renders):
+# the per-call cost the whole upload adds over streaming is 1.47x (B200) and 1.27-1.58x (RTX PRO 6000, two VMs) one
+# streamed step's transfer time.
+_WHOLE_UPLOAD_FACTOR = 1.5
+# A resident step's time over 2 * params * image tokens FLOPs at the bf16 GEMM probe's rate: the probe is one large
+# GEMM, a DiT step also runs attention, norms and launches. Klein 1024^2 resident steps per probe-priced step: 1.38 on
+# the B200 (0.0296 s at a 1490 TFLOPS probe), 0.97 on the RTX PRO 6000 (0.0985 s at 309). 1.0 keeps both cards' calls
+# right (B200 whole from 2 steps; RTX PRO 6000 streamed at 2 and 4, whole at 8); 1.35 had the RTX PRO 6000 stream at 8.
+_DIT_COMPUTE_EFFICIENCY = 1.0
+# Planned render: Studio's default canvas.
+_COST_CANVAS_PX = 1024
+# DiT families patchify 2x2 latents of an 8x VAE: one token per 16x16 pixels.
+_DIT_PIXELS_PER_TOKEN = 16
+
+_OFFLOAD_COST_PROBES: dict = {}
+
+
+def _offload_cost_measurements() -> Optional[tuple[float, float]]:
+    """(pinned host-to-device GiB/s, bf16 GEMM TFLOPS) of the current CUDA device (the load's), measured once per
+    device and process; None off CUDA.
+
+    About 0.1 s and 0.3 GiB of device memory, released before returning. Best of a few CUDA-event-timed runs, so a
+    transient stall on a shared card reads as the card, not the stall."""
+    result = None
+    key = None
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return None
+        key = torch.cuda.current_device()
+        if key in _OFFLOAD_COST_PROBES:
+            return _OFFLOAD_COST_PROBES[key]
+        device = torch.device("cuda", key)
+        with torch.cuda.device(device):
+            nbytes = 256 << 20
+            host = torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
+            dev = torch.empty(nbytes, dtype = torch.uint8, device = device)
+            a = torch.randn(4096, 3072, dtype = torch.bfloat16, device = device)
+            b = torch.randn(3072, 3072, dtype = torch.bfloat16, device = device)
+            start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+
+            def _best_ms(fn, reps: int, inner: int) -> float:
+                fn()
+                torch.cuda.synchronize()
+                best = float("inf")
+                for _ in range(reps):
+                    start.record()
+                    for _ in range(inner):
+                        fn()
+                    end.record()
+                    end.synchronize()
+                    best = min(best, start.elapsed_time(end) / inner)
+                return best
+
+            copy_ms = _best_ms(lambda: dev.copy_(host, non_blocking = True), 3, 2)
+            gemm_ms = _best_ms(lambda: torch.mm(a, b), 3, 10)
+            del host, dev, a, b
+            torch.cuda.empty_cache()
+        if copy_ms > 0 and gemm_ms > 0:
+            result = (
+                (nbytes / 2**30) / (copy_ms / 1000.0),
+                2.0 * 4096 * 3072 * 3072 / (gemm_ms / 1000.0) / 1e12,
+            )
+    except Exception:  # noqa: BLE001 - unmeasurable: the caller keeps its unpriced choice
+        result = None
+    if key is not None:
+        _OFFLOAD_COST_PROBES[key] = result
+    return result
+
+
+def _whole_module_offload_costs(
+    dit_mib: int,
+    *,
+    steps: int,
+    h2d_gib_s: float,
+    bf16_tflops: float,
+    side_px: int = _COST_CANVAS_PX,
+    tokens: Optional[int] = None,
+) -> tuple[float, float]:
+    """(whole-module, streamed) seconds the denoiser costs over one ``steps``-step render; the rest of the render (text
+    encoders, VAE) is common to both and left out. ``tokens``: the image tokens one step runs (batch and CFG included),
+    else a single ``side_px`` square.
+
+    streamed: ``steps * max(compute, transfer)``, one step's copies overlapping its compute. The transfer is the whole
+    denoiser's bytes even when part of it is pinned resident: on the B200 a streamed klein step stayed at 0.145-0.170 s
+    with 0, 5471 or 6751 of its 7393 MiB resident. whole: one un-overlapped upload (``_WHOLE_UPLOAD_FACTOR`` x the
+    transfer) plus ``steps`` resident steps.
+
+    Against FLUX.2-klein-4B bf16 1024^2 (measured probe, then streamed transfer / resident compute per step): B200
+    51.5 GiB/s 1490 TFLOPS, 0.142 / 0.0296 s, whole from 2 steps; RTX PRO 6000 53.0 GiB/s 309 TFLOPS, 0.1415 / 0.0985
+    s, streamed at 2 and 4, whole at 8 (measured crossover 4.2 steps); A100 0.54 / <= 0.15 s, whole at 4."""
+    gib = max(0, int(dit_mib)) / 1024.0
+    transfer = gib / max(float(h2d_gib_s), 1e-6)
+    params = max(0, int(dit_mib)) * 2**20 / 2.0  # bf16
+    if tokens is None:
+        tokens = (int(side_px) // _DIT_PIXELS_PER_TOKEN) ** 2
+    compute = (
+        _DIT_COMPUTE_EFFICIENCY * 2.0 * params * tokens / (max(float(bf16_tflops), 1e-6) * 1e12)
+    )
+    n = max(1, int(steps))
+    whole = _WHOLE_UPLOAD_FACTOR * transfer + n * compute
+    streamed = n * max(compute, transfer)
+    return whole, streamed
 
 
 def prefer_whole_module_offload(
@@ -3995,12 +4123,22 @@ def prefer_whole_module_offload(
     refined: MemoryPlan,
     *,
     logger: Any = None,
+    steps: Optional[int] = None,
 ) -> MemoryPlan:
     """``refined`` (what ``refine_plan_from_loaded_weights`` returned), or whole-module offload in its place.
 
     Below the streamed tiers' floor whole-module offload holds the whole denoiser on the card while it runs; a few
-    hundred MiB more free VRAM used to switch to streaming all of it every step, but uploading it once per call beats
-    that (FLUX.2-klein-4B bf16, B200: 0.34 vs 0.60 s per image). Plain bf16 only: an fp16 T4 run pointed the other way."""
+    hundred MiB more free VRAM used to switch to streaming all of it every step. Uploading it once per call beats
+    that where streaming is slow next to the card's compute (FLUX.2-klein-4B bf16 4 steps, B200: 0.34 vs 0.60 s per
+    image; A100: 2.34 vs 3.43 s), but not on a card that streams fast at few steps (RTX PRO 6000: 0.762 vs 0.743 s at
+    4 steps, 1.022 vs 1.181 s at 8). So with ``steps`` (the load's default step count) the switch is priced from this
+    card's measured host-to-device bandwidth and bf16 throughput (:func:`_whole_module_offload_costs`) and kept only
+    when it is cheaper; unmeasurable, or without ``steps``, it is kept as before. Plain bf16 only: an fp16 T4 run
+    pointed the other way. ``UNSLOTH_DIFFUSION_WHOLE_MODULE_OFFLOAD``: ``auto`` (default), ``1`` always, ``0`` never.
+    """
+    switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
+    if switch in ("0", "off", "false", "no", "never"):
+        return refined
     try:
         if (
             getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
@@ -4032,6 +4170,55 @@ def prefer_whole_module_offload(
         if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
             return refined
         reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
+        priced: dict = {}
+        if (
+            steps is not None
+            and switch not in ("1", "on", "true", "yes", "always")
+            and getattr(pipe, "transformer", None) is not None
+        ):
+            measured = _offload_cost_measurements()
+            if measured is not None:
+                h2d, tflops = measured
+                whole, streamed = _whole_module_offload_costs(
+                    dit, steps = int(steps), h2d_gib_s = h2d, bf16_tflops = tflops
+                )
+                fields = dict(
+                    dit = dit,
+                    h2d = h2d,
+                    tflops = tflops,
+                    model = whole,
+                    group = streamed,
+                    steps = int(steps),
+                    side = _COST_CANVAS_PX,
+                )
+                priced = {
+                    "whole_module_cost_s": round(whole, 4),
+                    "streamed_cost_s": round(streamed, 4),
+                    "whole_module_cost_steps": int(steps),
+                    "measured_h2d_gib_s": round(h2d, 2),
+                    "measured_bf16_tflops": round(tflops, 1),
+                }
+                if whole >= streamed:
+                    declined = _WHOLE_MODULE_DECLINED_REASON.format(**fields)
+                    if logger is not None:
+                        logger.info("diffusion.memory: %s", declined)
+                    if per_request_whole_enabled():
+                        # the streamed plan is placed; a request whose own step count prices whole runs whole
+                        # (whole_tier_for_request), through the same offload hooks
+                        try:
+                            setattr(
+                                pipe,
+                                WHOLE_TIER_ATTR,
+                                {"dit_mib": int(dit), "h2d_gib_s": h2d, "bf16_tflops": tflops},
+                            )
+                        except Exception:  # noqa: BLE001 - the load-time plan then stays for every request
+                            pass
+                    return replace(
+                        refined,
+                        reasons = refined.reasons + (declined,),
+                        estimates = {**refined.estimates, **priced},
+                    )
+                reason += _WHOLE_MODULE_COST_REASON.format(**fields)
         if logger is not None:
             logger.info("diffusion.memory: %s", reason)
         return replace(
@@ -4044,12 +4231,157 @@ def prefer_whole_module_offload(
             resident_transformer_mib = None,
             resident_text_encoder_mib = None,
             reasons = refined.reasons + (reason,),
-            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor},
+            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor, **priced},
         )
     except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
         if logger is not None:
             logger.debug("diffusion.memory: whole-module comparison skipped (%s)", exc)
         return refined
+
+
+def whole_tier_request_costs(
+    pipe: Any,
+    *,
+    steps: Optional[int],
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    cfg: Optional[bool] = None,
+    condition_pixels: int = 0,
+) -> Optional[tuple[float, float]]:
+    """(whole, streamed) seconds :func:`_whole_module_offload_costs` prices this request's denoise at, from the probe
+    its load read; None for a pipe whose load did not price streaming over an eligible whole denoiser
+    (:data:`WHOLE_TIER_ATTR`), or with the per-request choice off. The tokens are the request's own: canvas, condition
+    images, batch, and the doubled batch of a CFG call."""
+    tier = getattr(pipe, WHOLE_TIER_ATTR, None)
+    if not isinstance(tier, dict) or steps is None or not per_request_whole_enabled():
+        return None
+    try:
+        w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+        h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        per_image = (w // _DIT_PIXELS_PER_TOKEN) * (h // _DIT_PIXELS_PER_TOKEN) + max(
+            0, int(condition_pixels or 0)
+        ) // (_DIT_PIXELS_PER_TOKEN**2)
+        tokens = per_image * max(1, int(batch_size or 1)) * (2 if cfg else 1)
+        return _whole_module_offload_costs(
+            int(tier["dit_mib"]),
+            steps = int(steps),
+            h2d_gib_s = float(tier["h2d_gib_s"]),
+            bf16_tflops = float(tier["bf16_tflops"]),
+            tokens = tokens,
+        )
+    except Exception:  # noqa: BLE001 - unpriced: the load's streamed plan
+        return None
+
+
+_MISSING = object()
+
+
+def pin_denoiser_for_call(
+    pipe: Any,
+    device: Any,
+    *,
+    activation_mib: int,
+    logger: Any = None,
+) -> Optional[Callable[[], None]]:
+    """Make every streamed offload group of ``pipe.transformer`` resident for one call (the whole-module tier through
+    the streamed tier's own hooks); returns the release that streams exactly those groups again, or None (nothing
+    pinned: the call streams as placed).
+
+    The hooks stay and the blocks compile below them (``compile_below_offload_hooks``), so neither the compiled code
+    nor the host copies change: a pin moves each tensor from its pinned host copy, a release points it back. Pinned
+    only when the card has the room now: the groups' bytes plus ``activation_mib`` (the learned pre-decode peak of
+    this request's size) within free memory, the VAE Budget reserve kept, plus the allocator's reusable cache. All or
+    nothing: a partial pin is released again."""
+    transformer = getattr(pipe, "transformer", None)
+    try:
+        import torch
+
+        groups = _offload_groups(transformer) if transformer is not None else []
+        if not groups or any(getattr(g, "offload_to_disk_path", None) for g in groups):
+            return None
+        streamed = [g for g in groups if not getattr(g, "_unsloth_resident", False)]
+        if not streamed:
+            return None
+        onload = torch.device(device if device is not None else "cuda")
+        if onload.type != "cuda":
+            return None
+        if onload.index is None:
+            onload = torch.device("cuda", torch.cuda.current_device())
+        unique: dict = {}
+        for group in streamed:
+            for t in _resident_tensors(group):
+                unique.setdefault(id(t), t)
+        need = sum(sum(_storage_nbytes(t)) for t in unique.values())
+        free, total = (int(x) for x in torch.cuda.mem_get_info(onload))
+        free -= user_budget_reserve_bytes(onload, total)
+        cached = max(
+            0,
+            int(torch.cuda.memory_reserved(onload))
+            - int(torch.cuda.memory_allocated(onload))
+            - _graph_held_cache_bytes(onload.index),
+        )
+        room = (free + cached) >> 20
+        if (need >> 20) + max(0, int(activation_mib)) > room:
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: the denoiser keeps streaming: running it whole needs %d MiB + %d MiB of "
+                    "activations, %d MiB free",
+                    need >> 20,
+                    int(activation_mib),
+                    room,
+                )
+            return None
+        every: dict = {}
+        for group in groups:
+            for t in _resident_tensors(group):
+                every.setdefault(id(t), t)
+        whole_mib = (sum(sum(_storage_nbytes(t)) for t in every.values()) >> 20) + 2
+        saved = {
+            name: transformer.__dict__.get(name, _MISSING)
+            for name in ("_unsloth_resident_room", "_unsloth_resident_device")
+        }
+        _keep_groups_resident(transformer, whole_mib, onload, logger)
+        pinned = [g for g in streamed if getattr(g, "_unsloth_resident", False)]
+        done = [False]
+
+        def release() -> None:
+            if done[0]:
+                return
+            done[0] = True
+            state = getattr(transformer, "_unsloth_stream_state", None)
+            if isinstance(state, dict):
+                state["streamed"] = (
+                    1  # a release that fails part way still waits on the copy stream
+                )
+            try:
+                for group in reversed(pinned):
+                    if getattr(group, "_unsloth_resident", False):
+                        _release_group(group)
+                        _release_group_range(transformer, group)
+            finally:
+                if isinstance(state, dict):
+                    state["streamed"] = _streamed_group_count(groups)
+                for name, value in saved.items():
+                    try:
+                        if value is _MISSING:
+                            transformer.__dict__.pop(name, None)
+                        else:
+                            setattr(transformer, name, value)
+                    except Exception:  # noqa: BLE001
+                        pass
+                from .diffusion_cuda_graph import synchronize_outside_capture
+
+                synchronize_outside_capture(onload)
+
+        if len(pinned) != len(streamed):
+            release()
+            return None
+        return release
+    except Exception as exc:  # noqa: BLE001 - streaming every group is the safe state
+        if logger is not None:
+            logger.warning("diffusion.memory: whole denoiser for this call skipped (%s)", exc)
+        return None
 
 
 def _refine_plan_from_loaded_weights(
