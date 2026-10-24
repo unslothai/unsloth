@@ -89,7 +89,13 @@ def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
             super().__init__()
             self.proj = torch.nn.Linear(8, 8)
 
-        def forward(self, hidden_states, attention_mask = None, position_ids = None, **kwargs):
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            position_ids = None,
+            **kwargs,
+        ):
             out = self.proj(hidden_states) + position_ids[..., None].to(hidden_states.dtype)
             return out * attention_mask[:, 0, :, :1]
 
