@@ -13,6 +13,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { useModelReasoningEnabledStore } from "@/features/model-picker/components/model-selector/model-reasoning-enabled";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -5680,6 +5682,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        // Remember Off/On for this checkpoint so eject + reload does not restore the family default.
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          useModelReasoningEnabledStore
+            .getState()
+            .setModelReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }

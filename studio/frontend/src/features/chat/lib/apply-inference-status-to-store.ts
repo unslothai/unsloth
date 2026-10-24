@@ -11,6 +11,8 @@ import {
 } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/model-reasoning-enabled";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
@@ -242,6 +244,7 @@ export function applyActiveModelStatusToStore(
   const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
+  const pinnedThinking = pinnedReasoningEnabled(checkpointId);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
@@ -487,7 +490,9 @@ export function applyActiveModelStatusToStore(
     reasoningEnabled: supportsReasoning
       ? reasoningStyle === "reasoning_effort"
         ? true
-        : useChatRuntimeStore.getState().reasoningEnabled
+        : hydratingExistingModel && pinnedThinking !== null
+          ? pinnedThinking
+          : useChatRuntimeStore.getState().reasoningEnabled
       : true,
     ...loadedContextFields(status),
     ...(status.is_gguf
@@ -734,7 +739,8 @@ export function applyActiveModelStatusToStore(
   if (
     supportsReasoning &&
     hydratingExistingModel &&
-    storedReasoningEnabled === null
+    storedReasoningEnabled === null &&
+    pinnedThinking === null
   ) {
     // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in "qwen3.5" /
     // "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (active).
