@@ -35,7 +35,9 @@ def _run(fn, q, k, v, cu, mx, window, gqa, g):
 
 
 def _torch(q, k, v, cu, mx, window, gqa):
-    return ad._TORCH_VARLEN_ATTN(q, k, v, cu, cu, mx, mx, scale = None, window_size = window, enable_gqa = gqa)
+    return ad._TORCH_VARLEN_ATTN(
+        q, k, v, cu, cu, mx, mx, scale = None, window_size = window, enable_gqa = gqa
+    )
 
 
 def _lean(q, k, v, cu, mx, window, gqa):
@@ -62,7 +64,9 @@ def test_lean_matches_torch_varlen(dtype, hq, hkv, window):
     got = _run(_lean, q, k, v, cu, max(lens), window, hq != hkv, g)
     assert torch.equal(got[0], ref[0])  # forward: identical kernel, identical bits
     for a, b, c in zip(got[1:], ref[1:], ref2[1:]):
-        noise = (b.float() - c.float()).abs().max().item()  # flash backward accumulates dq atomically
+        noise = (
+            (b.float() - c.float()).abs().max().item()
+        )  # flash backward accumulates dq atomically
         assert (a.float() - b.float()).abs().max().item() <= max(noise, 1e-6) * 2 + 1e-3
 
 

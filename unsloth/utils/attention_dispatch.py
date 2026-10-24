@@ -338,8 +338,14 @@ if _LEAN_VARLEN:
         # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
         try:
             from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
-
-            def _varlen_can_use_cudnn(query, key, value, max_q, window_size, enable_gqa = False):
+            def _varlen_can_use_cudnn(
+                query,
+                key,
+                value,
+                max_q,
+                window_size,
+                enable_gqa = False,
+            ):
                 return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
 
         except Exception:
@@ -348,7 +354,9 @@ if _LEAN_VARLEN:
 
 class _LeanFlashVarlen(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, query, key, value, cu_seqlens, max_seqlen, is_causal, scale, window_left, window_right):
+    def forward(
+        ctx, query, key, value, cu_seqlens, max_seqlen, is_causal, scale, window_left, window_right
+    ):
         out, lse, philox_seed, philox_offset, _ = torch.ops.aten._flash_attention_forward(
             query,
             key,
@@ -401,7 +409,15 @@ def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_si
         and not _varlen_can_use_cudnn(Q_f, K_f, V_f, max_seqlen, list(window_size), enable_gqa)
     ):
         return _LeanFlashVarlen.apply(
-            Q_f, K_f, V_f, cu_seqlens, max_seqlen, window_size == (-1, 0), scale, window_size[0], window_size[1]
+            Q_f,
+            K_f,
+            V_f,
+            cu_seqlens,
+            max_seqlen,
+            window_size == (-1, 0),
+            scale,
+            window_size[0],
+            window_size[1],
         )
     return _TORCH_VARLEN_ATTN(
         Q_f,
@@ -415,6 +431,7 @@ def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_si
         window_size = window_size,
         enable_gqa = enable_gqa,
     )
+
 
 from .flash_impl import flash_impl_allows  # noqa: E402
 
