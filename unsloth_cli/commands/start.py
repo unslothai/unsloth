@@ -266,6 +266,8 @@ _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
 # (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+_OPENCLAW_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
+_OPENCLAW_PROFILE_ENV_MIN_VERSION = (2026, 10, 8)
 
 # Shared by every agent command; only the config/env/command differ. Help is grouped into rich panels so `--help` reads as Model / Server / Session instead of one long unaligned list.
 _PANEL_MODEL = "Model"
@@ -6822,8 +6824,16 @@ def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
         if override := os.environ.get("OPENCLAW_STATE_DIR", "").strip():
             state = user_path(override)
         else:
-            # OpenClaw's --profile sets the path overrides; OPENCLAW_PROFILE alone does not.
-            state = home / ".openclaw"
+            # A named OPENCLAW_PROFILE selects ~/.openclaw-<profile> after 2026.10.7 (openclaw#133252); 2026.10.7 and older ignore it.
+            profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
+            if (
+                _OPENCLAW_PROFILE_RE.fullmatch(profile)
+                and profile.lower() != "default"
+                and _agent_version_at_least("openclaw", _OPENCLAW_PROFILE_ENV_MIN_VERSION)
+            ):
+                state = home / f".openclaw-{profile}"
+            else:
+                state = home / ".openclaw"
         path = state / "openclaw.json"
     updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
     return _AppTarget("openclaw", "OpenClaw app", path, updates)

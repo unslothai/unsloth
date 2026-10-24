@@ -431,9 +431,22 @@ def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, t
     assert start._openclaw_app_target().path == tmp_path / "selected-home" / "custom.json"
 
 
-def test_openclaw_profile_environment_alone_keeps_default_config(studio, monkeypatch):
-    monkeypatch.setenv("OPENCLAW_PROFILE", "work")
-    config = studio["home"] / ".openclaw" / "openclaw.json"
+@pytest.mark.parametrize(
+    "version, profile, selected",
+    [
+        ((2026, 10, 7), "work", ".openclaw"),
+        (None, "work", ".openclaw"),
+        ((2026, 10, 8), "work", ".openclaw-work"),
+        ((2026, 10, 8), "Default", ".openclaw"),
+        ((2026, 10, 8), "bad/name", ".openclaw"),
+    ],
+)
+def test_openclaw_profile_environment_alone(studio, monkeypatch, version, profile, selected):
+    # OpenClaw 2026.10.7 ignores OPENCLAW_PROFILE alone; later builds select ~/.openclaw-<profile> (openclaw#133252).
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/bin/" + name)
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    monkeypatch.setenv("OPENCLAW_PROFILE", profile)
+    config = studio["home"] / selected / "openclaw.json"
     config.parent.mkdir()
     config.write_text('{"marker": "active"}\n')
 
@@ -443,7 +456,8 @@ def test_openclaw_profile_environment_alone_keeps_default_config(studio, monkeyp
     data = json.loads(config.read_text())
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
     assert data["marker"] == "active"
-    assert not (studio["home"] / ".openclaw-work").exists()
+    other = ".openclaw-work" if selected == ".openclaw" else ".openclaw"
+    assert not (studio["home"] / other / "openclaw.json").exists()
 
 
 def test_openclaw_app_creates_no_allowlist(studio):
