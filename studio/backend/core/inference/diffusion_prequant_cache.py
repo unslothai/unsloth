@@ -466,12 +466,14 @@ def lookup(
         key = shards = None
         # Every shard set: a repo without refs/main may hold several commit-pinned snapshots.
         seen: set = set()
-        roots = [source_base, source] if source_base and source_base != source else [source]
-        for candidate in (
-            shard_set
-            for root in roots
-            for shard_set in (source_shards(root, component), *_shard_sets(root, component))
-        ):
+        # A caller that already loaded the dense weights from ``source_base`` may only be served a build of exactly
+        # those shards: another snapshot or the upstream repo can hold different weights under the same keys / shapes.
+        candidates = (
+            (source_shards(source_base, component),)
+            if source_base
+            else (source_shards(source, component), *_shard_sets(source, component))
+        )
+        for candidate in candidates:
             if not candidate or tuple(candidate) in seen:
                 continue
             seen.add(tuple(candidate))

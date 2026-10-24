@@ -1496,6 +1496,17 @@ def test_the_pipeline_read_finds_shards_under_the_source_base(env, tmp_path, sch
     assert C.lookup(fam, scheme, base_repo = str(upstream), source_base = str(mirror))
 
 
+def test_a_pipeline_read_is_never_served_a_build_of_other_source_shards(env, tmp_path, scheme):
+    """A build of the upstream shards must not be served to a load that read a different snapshot / mirror."""
+    upstream, model = _write_base(tmp_path, name = "upstream")
+    other, _ = _write_base(tmp_path, name = "other", seed = 1)
+    fam = types.SimpleNamespace(name = FAMILY, transformer_class = "Tiny", base_repo = str(upstream))
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, fam, base_repo = str(upstream))
+    assert C.lookup(fam, scheme, base_repo = str(upstream))
+    assert C.lookup(fam, scheme, base_repo = str(upstream), source_base = str(other)) is None
+
+
 def test_a_pipeline_read_that_does_not_fit_leaves_the_module_dense(
     env, tmp_path, scheme, monkeypatch
 ):
