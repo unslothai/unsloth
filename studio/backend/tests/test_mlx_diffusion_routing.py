@@ -65,7 +65,10 @@ class _Engine:
             return {"phase": "downloading"}
         return {"phase": "ready" if self._state is not None else None}
 
-    def unload(self, *, expected_account: Optional[str] = None) -> dict:
+    def unload(self, *, expected_account: Optional[str] = None, only_if = None) -> Optional[dict]:
+        # As the real engines: a conditional unload rechecks under the engine's lock first.
+        if only_if is not None and not only_if():
+            return None
         self.log.append((self.name, "unload"))
         self._state = None
         self._loading = False
@@ -522,6 +525,37 @@ def test_unload_frees_both_engines(rig):
     with pytest.raises(RuntimeError, match = DIFFUSION_NOT_LOADED_MSG):
         _img2img(rig.engine)
     assert ("diffusers", "load") not in rig.log
+
+
+def test_a_conditional_unload_the_load_no_longer_holds_tears_nothing_down(rig):
+    # A load token whose load ended: refused before the drain, so the fallback keeps running.
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    cancel = threading.Event()
+    rig.engine._fallback_cancel = cancel
+    epoch = rig.engine._epoch
+    assert rig.engine.unload(only_if = lambda: False) is None
+    assert rig.log == [] and not cancel.is_set() and rig.engine._epoch == epoch
+
+
+def test_a_conditional_unload_of_the_named_load_frees_both_engines(rig):
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    status = rig.engine.unload(only_if = lambda: True)
+    assert rig.log == [("mlx", "unload"), ("diffusers", "unload")]
+    assert status["loaded"] is False
+
+
+def test_a_conditional_unload_refused_by_the_mlx_recheck_keeps_the_fallback_model(rig):
+    # The named load ended between the router's check and the MLX engine's recheck under its lock.
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    rig.log.clear()
+    answers = iter([True, False])
+    assert rig.engine.unload(only_if = lambda: next(answers)) is None
+    assert ("diffusers", "unload") not in rig.log
 
 
 def test_a_scoped_unload_never_cancels_another_accounts_fallback(rig):

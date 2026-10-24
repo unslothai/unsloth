@@ -739,7 +739,17 @@ class RoutedMlxEngine:
             return self._diffusers().cancel_generate(expected_account = expected_account)
         return self._mlx().cancel_generate(expected_account = expected_account)
 
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
+        # A conditional unload (a load token naming the load): refused before the drain, which would
+        # end the fallback that load runs on; the MLX engine rechecks it under the lock its worker
+        # settles under. None, and nothing torn down, when the named load already ended.
+        if only_if is not None and not only_if():
+            return None
         # Drain the fallback first and stay fenced until teardown ends, so none reloads MLX or registers meanwhile.
         if expected_account is not None:
             with self._lock:
@@ -757,10 +767,11 @@ class RoutedMlxEngine:
                 raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
         ours = self._drain_fallback(replacing = True)
         try:
-            if expected_account is None:
-                self._mlx().unload()
-            else:
-                self._mlx().unload(expected_account = expected_account)
+            kwargs = {} if expected_account is None else {"expected_account": expected_account}
+            if only_if is not None:
+                kwargs["only_if"] = only_if
+            if self._mlx().unload(**kwargs) is None and only_if is not None:
+                return None
             if ours:
                 if expected_account is None:
                     self._diffusers().unload()
