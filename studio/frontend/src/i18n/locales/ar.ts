@@ -72,7 +72,7 @@ export const ar = {
       cursorDescription: "يعرض مؤشرًا حيث تنقر النماذج وتكتب وتسحب في الصفحة",
       askEveryTime: "السؤال في كل مرة",
       permissionsTitle: "أذونات الوكيل",
-      permissionsDescription: "اختر الإعدادات الافتراضية وأضف استثناءات لمواقع محددة. لا تُملأ حقول كلمات المرور والدفع أبدًا مهما كانت هذه الإعدادات.",
+      permissionsDescription: "عيّن الإعدادات الافتراضية والاستثناءات لكل موقع. لا تُملأ حقول كلمات المرور والدفع أبدًا.",
       site: "الموقع أو النمط",
       sitePlaceholder: "example.com أو *.example.com",
       default: "الافتراضي",

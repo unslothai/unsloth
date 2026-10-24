@@ -72,7 +72,7 @@ export const hi = {
       cursorDescription: "पेज पर जहाँ मॉडल क्लिक, टाइप और ड्रैग करते हैं, वहाँ एक पॉइंटर दिखाएँ",
       askEveryTime: "हर बार पूछें",
       permissionsTitle: "एजेंट अनुमतियाँ",
-      permissionsDescription: "डिफ़ॉल्ट चुनें और खास साइटों के लिए अपवाद जोड़ें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते, चाहे यहाँ कुछ भी हो।",
+      permissionsDescription: "डिफ़ॉल्ट और साइट के हिसाब से अपवाद तय करें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते।",
       site: "साइट या पैटर्न",
       sitePlaceholder: "example.com या *.example.com",
       default: "डिफ़ॉल्ट",

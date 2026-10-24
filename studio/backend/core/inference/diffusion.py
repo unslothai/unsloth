@@ -220,6 +220,7 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    prefer_whole_module_offload,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -10400,6 +10401,7 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
+                        plan = prefer_whole_module_offload(pipe, plan, logger = logger)
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
@@ -14888,6 +14890,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
         import torch
         from diffusers.hooks import apply_group_offloading
 
+        from .diffusion_memory import _apply_group_offloading_packed
         from .host_pinning import host_pinning_allowed
 
         onload = torch.device(device)
@@ -14914,7 +14917,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             install_group_offload_hooks_eager()
             kwargs["non_blocking"] = True
             kwargs["record_stream"] = True
-        apply_group_offloading(cn_model, **kwargs)
+        _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
         if prefetch:
             if not _pin_top_level_group(cn_model, logger):
                 _skip_top_level_copy_back(cn_model, logger)

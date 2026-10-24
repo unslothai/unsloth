@@ -227,6 +227,29 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
+# apply_hub_settings() writes these straight into os.environ, and importing the app runs it. A test
+# that left ModelScope selected put every later test on its xdist worker on that source, so the
+# auth-check probe in test_hub_token_caller_identity.py built huggingface.co URLs for a mirror.
+_HUB_SETTINGS_ENV = (
+    "UNSLOTH_STUDIO_HUB_SOURCE",
+    "HF_ENDPOINT",
+    "HF_DATASETS_SERVER",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+@pytest.fixture(autouse = True)
+def _restore_hub_settings_env():
+    saved = {name: os.environ.get(name) for name in _HUB_SETTINGS_ENV}
+    yield
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
 @pytest.fixture(autouse = True)
 def _reset_gpu_query_cache():
     # Only if already imported: importing utils.hardware would change import-order tests.

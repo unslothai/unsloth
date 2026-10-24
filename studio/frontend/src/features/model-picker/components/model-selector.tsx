@@ -67,6 +67,10 @@ import {
   hasDownloadedModels,
   type ModelPickerRowFilter,
 } from "./model-selector/pickers";
+import {
+  type HubSection,
+  resolveHubSection,
+} from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
@@ -323,8 +327,6 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "connected";
-
 // The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
 // Last tab the user actually clicked, or null. Only On Device / Recommended persist.
@@ -344,7 +346,7 @@ function saveLastHubSection(section: HubSection): void {
     // Ignore unavailable storage.
   }
 }
-// Default the Hub section: the last tab clicked; first time, On Device with downloads else Recommended.
+// Preserve saved choices until the task-scoped inventory settles.
 function defaultHubSection(hasAdditionalOnDeviceModels = false): HubSection {
   return (
     loadLastHubSection() ??
@@ -481,9 +483,16 @@ function ModelSelectorContent({
       ? "connected"
       : defaultHubSection(hasAdditionalOnDeviceModels),
   );
-  // Connected is only valid while external providers exist; fall back otherwise.
-  const effectiveHubSection: HubSection =
-    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+  const [sectionChosenThisOpen, setSectionChosenThisOpen] = useState(false);
+  const [hasDeviceModels, setHasDeviceModels] = useState<boolean | null>(null);
+  // Inventory is scoped to this picker's task. A remembered On Device tab must not
+  // open empty just because another page has downloaded models.
+  const effectiveHubSection = resolveHubSection({
+    section: hubSection,
+    hasExternal,
+    hasDeviceModels,
+    sectionChosenThisOpen,
+  });
 
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
@@ -499,6 +508,7 @@ function ModelSelectorContent({
   if (renderedOpen !== open) {
     setRenderedOpen(open);
     if (!open) {
+      setSectionChosenThisOpen(false);
       setConfigTarget(null);
       setConfigFocus(null);
       setConfigStandalone(false);
@@ -742,6 +752,7 @@ function ModelSelectorContent({
               rowFilter={rowFilter}
               moreModels={moreModels}
               npu={npu}
+              onDeviceInventoryChange={setHasDeviceModels}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -753,6 +764,7 @@ function ModelSelectorContent({
                   value={effectiveHubSection}
                   onValueChange={(next) => {
                     const section = next as HubSection;
+                    setSectionChosenThisOpen(true);
                     setHubSection(section);
                     saveLastHubSection(section);
                   }}

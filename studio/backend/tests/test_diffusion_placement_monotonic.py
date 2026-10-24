@@ -93,7 +93,10 @@ def _plan(
     speed_mode = "default",
     torchao = True,
     calibrated = None,
+    compute = None,
 ):
+    import torch
+
     plan = dm.plan_diffusion_memory(
         target = types.SimpleNamespace(supports_model_cpu_offload = True),
         device_memory = _discrete(free_mib, total_mib),
@@ -102,9 +105,10 @@ def _plan(
     )
     if plan.offload_policy == dm.OFFLOAD_MODEL and torchao:
         plan = dm.torchao_streaming_plan(plan)
-    return dm.refine_plan_from_loaded_weights(
-        types.SimpleNamespace(transformer = object()), plan, family = family, speed_mode = speed_mode
-    )
+    dtype = torch.float16 if compute == 2 else torch.bfloat16
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+    refined = dm.refine_plan_from_loaded_weights(pipe, plan, family = family, speed_mode = speed_mode)
+    return dm.prefer_whole_module_offload(pipe, refined)
 
 
 def _denoiser_key(plan, dit_mib):
@@ -148,7 +152,7 @@ def test_more_free_vram_never_keeps_less_of_the_denoiser(monkeypatch, family, qu
     total = gib * GIB
     previous = None
     for free in range(4 * GIB, min(80, gib) * GIB + 1, STEP_MIB):
-        plan = _plan(free, total, flat, family = family, torchao = torchao)
+        plan = _plan(free, total, flat, family = family, torchao = torchao, compute = compute)
         key = _denoiser_key(plan, dit)
         if key is None:
             continue
@@ -203,3 +207,175 @@ def test_explicit_modes_are_untouched(monkeypatch, mode):
         object(), plan, family = "flux.1", speed_mode = "default"
     )
     assert refined is plan
+
+
+def _speed_key(plan, dit_mib):
+    """(tier, -resident denoiser MiB), smaller is faster: 0 the whole denoiser stays on the device every step, 1
+    whole-module offload with the denoiser fitting the budget whole (uploaded once per call), 2 the denoiser streams
+    every step, 3 whole-module offload of a denoiser larger than the budget."""
+    if plan.offload_policy == dm.OFFLOAD_NONE or (
+        plan.offload_policy == dm.OFFLOAD_GROUP and not plan.stream_transformer
+    ):
+        return (0, -dit_mib)
+    if plan.offload_policy == dm.OFFLOAD_MODEL:
+        fits = dit_mib <= int(plan.estimates.get("safe_device_budget_mib") or 0)
+        return (1, 0) if fits else (3, 0)
+    resident = int(plan.resident_transformer_mib or 0)
+    return (0, -dit_mib) if resident >= dit_mib else (2, -resident)
+
+
+@pytest.mark.parametrize("calibrated", (False, True))
+@pytest.mark.parametrize("learned", (None, 3072))
+@pytest.mark.parametrize("quant", ("bf16",))
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_more_free_vram_never_trades_whole_module_offload_for_streaming(
+    monkeypatch, family, quant, learned, calibrated
+):
+    """Below the streamed tiers' floor whole-module offload holds the whole denoiser; a few hundred MiB more used to
+    stream it every step instead (FLUX.2-klein-4B bf16 on B200: 0.34 s -> 0.60 s per 4-step 1024^2 image)."""
+    q8, dense, encoders, vae = FAMILIES[family]
+    eight, torchao, fp8_stored, compute = {**QUANTS, "bf16": (False, False, False, None)}[quant]
+    dit = q8 if eight else dense
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (dit, "dit"),
+        **{name: (mib, "text_encoder") for name, mib in encoders.items()},
+        "vae": (vae, "other"),
+    }
+    _patch_weights(
+        monkeypatch,
+        loaded,
+        torchao = torchao,
+        fp8_stored = fp8_stored,
+        compute = compute,
+        learned = learned,
+    )
+    flat = dict(
+        model_dense_mib = dit + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(width = None, height = None, family = family),
+    )
+    act = dm.calibrated_image_activation(family) if calibrated else None
+    if calibrated and act is None:
+        pytest.skip("no calibrated activation for this family")
+    previous = None
+    for free in range(4 * GIB, 24 * GIB + 1, STEP_MIB):
+        plan = _plan(
+            free, 24 * GIB, flat, family = family, torchao = torchao, calibrated = act, compute = compute
+        )
+        key = _speed_key(plan, dit)
+        if previous is not None:
+            assert key <= previous[1], (free, previous, key, plan.reasons)
+        previous = (free, key)
+
+
+def test_bf16_klein_keeps_whole_module_offload_past_the_streamed_floor(monkeypatch):
+    q8, dense, encoders, vae = FAMILIES["flux.2-klein"]
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (dense, "dit"),
+        "text_encoder": (te, "text_encoder"),
+        "vae": (vae, "other"),
+    }
+    _patch_weights(monkeypatch, loaded, torchao = False)
+    flat = dict(
+        model_dense_mib = dense + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "flux.2-klein"
+        ),
+    )
+    below = _plan(12288, 24 * GIB, flat, family = "flux.2-klein", torchao = False)
+    above = _plan(12544, 24 * GIB, flat, family = "flux.2-klein", torchao = False)
+    assert below.offload_policy == dm.OFFLOAD_MODEL
+    assert "whole_module_kept_below_floor_mib" not in below.estimates
+    assert above.offload_policy == dm.OFFLOAD_MODEL
+    assert above.estimates["whole_module_kept_below_floor_mib"] == 10400
+    assert any("uploading it once per call" in reason for reason in above.reasons)
+    # The resident-transformer tier still wins once it fits.
+    resident = _plan(20 * GIB, 24 * GIB, flat, family = "flux.2-klein", torchao = False)
+    assert resident.offload_policy == dm.OFFLOAD_GROUP and not resident.stream_transformer
+
+
+def test_streamed_plans_that_pin_the_whole_denoiser_or_hold_torchao_are_kept(monkeypatch):
+    """A refined group plan already holding the whole denoiser beats whole-module offload; a torchao denoiser's
+    whole-module tier is streaming, so its ladder is unchanged."""
+    q8, dense, encoders, vae = FAMILIES["flux.2-klein"]
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (q8, "dit"),
+        "text_encoder": (te, "text_encoder"),
+        "vae": (vae, "other"),
+    }
+    flat = dict(
+        model_dense_mib = q8 + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "flux.2-klein"
+        ),
+    )
+    _patch_weights(monkeypatch, loaded, torchao = False, fp8_stored = True, learned = 3072)
+    pinned = _plan(14 * GIB, 24 * GIB, flat, family = "flux.2-klein", torchao = False)
+    assert pinned.offload_policy == dm.OFFLOAD_GROUP and pinned.resident_transformer_mib == q8
+    _patch_weights(monkeypatch, loaded, torchao = True)
+    streamed = _plan(14 * GIB, 24 * GIB, flat, family = "flux.2-klein", torchao = True)
+    assert streamed.offload_policy == dm.OFFLOAD_GROUP
+    assert "whole_module_kept_below_floor_mib" not in streamed.estimates
+
+
+def test_bf16_partial_residency_gives_way_to_whole_module_offload(monkeypatch):
+    """A learned peak pins 4.7 of the 7.4 GB bf16 denoiser past the floor; whole-module offload still holds all of it
+    (B200, 12.25 GiB free: 0.37 s whole-module vs 0.73 s with 5.5 GB pinned)."""
+    q8, dense, encoders, vae = FAMILIES["flux.2-klein"]
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (dense, "dit"),
+        "text_encoder": (te, "text_encoder"),
+        "vae": (vae, "other"),
+    }
+    flat = dict(
+        model_dense_mib = dense + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "flux.2-klein"
+        ),
+    )
+    _patch_weights(monkeypatch, loaded, torchao = False, learned = 3072)
+    plan = _plan(12544, 24 * GIB, flat, family = "flux.2-klein", torchao = False)
+    assert plan.offload_policy == dm.OFFLOAD_MODEL
+    # the same learned peak on an fp16 denoiser (the T4 dtype) keeps its partial residency
+    _patch_weights(monkeypatch, loaded, torchao = False, compute = 2, learned = 3072)
+    fp16 = _plan(12544, 24 * GIB, flat, family = "flux.2-klein", torchao = False, compute = 2)
+    assert fp16.offload_policy == dm.OFFLOAD_GROUP and 0 < fp16.resident_transformer_mib < dense
+
+
+@pytest.mark.parametrize(
+    "family, quant",
+    [("flux.2-klein", "fp16"), ("flux.2-klein", "fp8_stored"), ("z-image", "fp8_stored")],
+)
+def test_unmeasured_denoisers_keep_the_streamed_plan(monkeypatch, family, quant):
+    """fp16 (the T4 dtype, where stock whole-module offload measured slower than streaming), fp8-stored and packed
+    denoisers keep the streamed group plan past the floor: only bf16 was measured faster whole-module."""
+    q8, dense, encoders, vae = FAMILIES[family]
+    eight, torchao, fp8_stored, compute = QUANTS[quant]
+    dit = q8 if eight else dense
+    te = sum(encoders.values())
+    loaded = {
+        "transformer": (dit, "dit"),
+        "text_encoder": (te, "text_encoder"),
+        "vae": (vae, "other"),
+    }
+    _patch_weights(monkeypatch, loaded, torchao = torchao, fp8_stored = fp8_stored, compute = compute)
+    flat = dict(
+        model_dense_mib = dit + te + vae,
+        companion_dense_mib = te + vae,
+        text_encoder_dense_mib = te,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(width = None, height = None, family = family),
+    )
+    plan = _plan(12544, 24 * GIB, flat, family = family, torchao = torchao, compute = compute)
+    assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_transformer
+    assert "whole_module_kept_below_floor_mib" not in plan.estimates
