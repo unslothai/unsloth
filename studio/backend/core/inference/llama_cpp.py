@@ -37696,6 +37696,11 @@ class LlamaCppBackend:
             # spec-off when the build lacks it. The drafter paths stay recorded, so
             # the UI still names the kind and a repeat Apply still dedupes.
             self._spec_fallback_reason = drafter_dropped_reason
+            # The planner priced the drafter at this depth, so report it like the
+            # partial-offload stand-down: status feeds it back to the UI, and a null
+            # would reset the user's depth and reload at the default on the next Apply.
+            if drafter_dropped_reason == "drafter_planner" and spec_draft_n_max is not None:
+                self._spec_draft_n_max = int(spec_draft_n_max)
             if caps.get("supports_ngram_mod"):
                 logger.info(
                     "Auto: the drafter does not fit in VRAM alongside the model at this "
