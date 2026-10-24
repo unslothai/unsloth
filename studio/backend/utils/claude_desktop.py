@@ -172,6 +172,21 @@ def _dedupe(paths: list) -> list:
     return out
 
 
+def user_home() -> Path:
+    """The home the OS records for this account, not $HOME.
+
+    Claude Desktop keeps its profile, and macOS the keychain it stores its key in, under the
+    account's real home. Studio can run with HOME pointed somewhere else (a sandbox, a service
+    wrapper), and following that would edit, or launch Claude against, a profile it never reads."""
+    if os.name == "posix":
+        with contextlib.suppress(ImportError, KeyError, OSError):
+            import pwd
+            home = pwd.getpwuid(os.getuid()).pw_dir
+            if home:
+                return Path(home)
+    return Path.home()
+
+
 def local_app_data(home: Optional[Path] = None) -> Path:
     if os.environ.get("LOCALAPPDATA", "").strip():
         return Path(os.environ["LOCALAPPDATA"].strip())
@@ -183,7 +198,7 @@ def local_app_data(home: Optional[Path] = None) -> Path:
 def profile_roots(platform: Optional[str] = None, home: Optional[Path] = None) -> tuple:
     """(normal roots, third-party roots). The 1p profile picks the mode; the 3p one holds ours."""
     platform = platform or sys.platform
-    home = home or Path.home()
+    home = home or user_home()
     if platform == "darwin":
         base = home / "Library" / "Application Support"
         return [base / "Claude"], [base / "Claude-3p"]
@@ -213,7 +228,7 @@ def target_paths(platform: Optional[str] = None, home: Optional[Path] = None) ->
 
 def app_candidates(platform: Optional[str] = None, home: Optional[Path] = None) -> list:
     platform = platform or sys.platform
-    home = home or Path.home()
+    home = home or user_home()
     if platform == "darwin":
         return [Path("/Applications/Claude.app"), home / "Applications" / "Claude.app"]
     if platform == "win32":
@@ -444,11 +459,44 @@ def quit_app(timeout: float = 30.0) -> None:
             ["osascript", "-e", 'tell application "Claude" to quit'],
             capture_output = True,
             timeout = timeout,
+            env = launch_env(),
         )
 
 
+# What a Dock launch would hand Claude anyway. Everything else in Studio's environment (its venv on
+# PATH, VIRTUAL_ENV, HF_HOME, UNSLOTH_*, a sandboxed HOME) must not reach Claude: `open` passes the
+# caller's environment to the app it starts, and Claude passes it on to the MCP servers and tools it
+# spawns. A wrong HOME also sends macOS looking for a keychain that is not there.
+LAUNCH_ENV_PASSTHROUGH = (
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SSH_AUTH_SOCK",
+    "__CF_USER_TEXT_ENCODING",
+)
+LAUNCH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def launch_env(environ: Optional[dict] = None, home: Optional[Path] = None) -> dict:
+    """A clean user environment for starting Claude Desktop, rooted at the account's real home."""
+    environ = os.environ if environ is None else environ
+    env = {name: environ[name] for name in LAUNCH_ENV_PASSTHROUGH if environ.get(name)}
+    env["HOME"] = str(home or user_home())
+    env["PATH"] = LAUNCH_PATH
+    if os.name == "posix":
+        with contextlib.suppress(ImportError, KeyError, OSError):
+            import pwd
+
+            entry = pwd.getpwuid(os.getuid())
+            env["USER"] = env["LOGNAME"] = entry.pw_name
+            if entry.pw_shell:
+                env["SHELL"] = entry.pw_shell
+    return env
+
+
 def open_app(path: Path) -> None:
-    subprocess.run(["/usr/bin/open", str(path)], capture_output = True, timeout = 30)
+    subprocess.run(["/usr/bin/open", str(path)], capture_output = True, timeout = 30, env = launch_env())
 
 
 def wait_for_exit(timeout: float = 30.0, poll: float = 0.2) -> bool:
@@ -561,6 +609,62 @@ def gateway_model(entry: dict) -> GatewayModel:
 
 
 NO_MODEL_MESSAGE = "No model is loaded in Unsloth Studio. Load a model in Studio, then try again."
+
+
+def no_model_reply(requested: str, stream: bool) -> tuple:
+    """(content type, body) of an assistant turn that says no model is loaded.
+
+    An error here reaches the user as Claude's opaque "provider rejected a test request" (its
+    connection check sends one) or a failed turn, never as our message. A short reply that ends the
+    turn tells them what to do, in the chat they are looking at, and nothing reaches a model."""
+    message_id = "msg_unsloth_no_model_" + secrets.token_hex(8)
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    message = {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "model": requested,
+        "content": [{"type": "text", "text": NO_MODEL_MESSAGE}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+    if not stream:
+        return "application/json", json.dumps(message).encode()
+    events = [
+        (
+            "message_start",
+            {"type": "message_start", "message": {**message, "content": [], "stop_reason": None}},
+        ),
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": NO_MODEL_MESSAGE},
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 0},
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    body = "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
+    return "text/event-stream", body.encode()
 
 
 def _placeholder_model() -> GatewayModel:
@@ -800,7 +904,12 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             return
         model = self.server.current_model()
         if model is None:
-            self._error(503, NO_MODEL_MESSAGE)
+            if path == "/v1/messages/count_tokens":
+                # A rough count keeps Claude's preflight from failing before the turn that explains.
+                self._send(200, json.dumps({"input_tokens": max(1, len(body) // 4)}).encode())
+                return
+            content_type, reply = no_model_reply(requested, payload.get("stream") is True)
+            self._send(200, reply, content_type, {"Cache-Control": "no-cache"})
             return
         if requested not in (model.route, model.model_id):
             self._error(400, f'unknown Claude model "{requested}"')

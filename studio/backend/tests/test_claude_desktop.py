@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -531,7 +533,9 @@ def test_a_following_gateway_routes_to_whatever_is_loaded_now(following_gateway)
     gw, upstream, loaded = following_gateway
     body = {"model": "claude-fable-5", "max_tokens": 8, "messages": []}
     status, _, reply = _call(gw, "POST", "/v1/messages", body)
-    assert status == 503 and json.loads(reply)["error"]["message"] == cda.NO_MODEL_MESSAGE
+    reply = json.loads(reply)
+    assert status == 200 and reply["content"][0]["text"] == cda.NO_MODEL_MESSAGE
+    assert reply["stop_reason"] == "end_turn" and reply["model"] == "claude-fable-5"
     assert upstream.requests == []
     status, _, catalog = _call(gw, "GET", "/v1/models")
     assert status == 200 and json.loads(catalog)["first_id"] == "claude-fable-5"
@@ -548,7 +552,9 @@ def test_a_broken_model_lookup_reads_as_no_model(following_gateway):
     gw, upstream, _ = following_gateway
     gw.model = lambda: 1 / 0
     body = {"model": "claude-fable-5", "max_tokens": 8, "messages": []}
-    assert _call(gw, "POST", "/v1/messages", body)[0] == 503
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and json.loads(reply)["content"][0]["text"] == cda.NO_MODEL_MESSAGE
+    assert upstream.requests == []
 
 
 def test_a_loopback_https_upstream_skips_certificate_checks():
@@ -650,3 +656,90 @@ def test_owner_alive_tells_a_reused_pid_apart():
         assert not cda.owner_alive({**me, "started": me["started"] - 3600})
     assert not cda.owner_alive({"pid": 2**22 + 12345, "started": None})
     assert not cda.owner_alive(None)
+
+
+def test_no_model_streams_a_turn_that_says_so(following_gateway):
+    gw, upstream, _ = following_gateway
+    body = {"model": "claude-fable-5", "max_tokens": 8, "messages": [], "stream": True}
+    status, headers, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and headers["Content-Type"] == "text/event-stream"
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in reply.decode().splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [e["type"] for e in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[2]["delta"]["text"] == cda.NO_MODEL_MESSAGE
+    assert events[4]["delta"]["stop_reason"] == "end_turn"
+    status, _, counted = _call(gw, "POST", "/v1/messages/count_tokens", body)
+    assert status == 200 and json.loads(counted)["input_tokens"] > 0
+    assert upstream.requests == []
+
+
+# -- launching Claude: the account's real home and a clean environment ---------------------------
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "pwd is POSIX-only")
+def test_user_home_ignores_a_redirected_home(monkeypatch, tmp_path):
+    import pwd
+
+    real = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert Path.home() == tmp_path
+    assert cda.user_home() == real
+    normal, third_party = cda.profile_roots("darwin")
+    assert normal == [real / "Library" / "Application Support" / "Claude"]
+    assert third_party == [real / "Library" / "Application Support" / "Claude-3p"]
+    assert cda.app_candidates("darwin")[1] == real / "Applications" / "Claude.app"
+
+
+def test_launch_env_keeps_only_what_a_dock_launch_has(tmp_path):
+    studio_env = {
+        "HOME": "/sandbox/home",
+        "PATH": "/studio/venv/bin:/usr/bin",
+        "VIRTUAL_ENV": "/studio/venv",
+        "HF_HOME": "/models",
+        "UNSLOTH_STUDIO_HOME": "/sandbox/studio",
+        "PYTHONPATH": "/studio",
+        "TMPDIR": "/var/folders/x/T/",
+        "LANG": "da_DK.UTF-8",
+        "SSH_AUTH_SOCK": "/private/tmp/agent.sock",
+    }
+    env = cda.launch_env(studio_env, home = tmp_path)
+    assert env["HOME"] == str(tmp_path)
+    assert env["PATH"] == cda.LAUNCH_PATH
+    assert env["TMPDIR"] == "/var/folders/x/T/" and env["LANG"] == "da_DK.UTF-8"
+    assert env["SSH_AUTH_SOCK"] == "/private/tmp/agent.sock"
+    leaked = (
+        set(env) - set(cda.LAUNCH_ENV_PASSTHROUGH) - {"HOME", "PATH", "USER", "LOGNAME", "SHELL"}
+    )
+    assert not leaked
+    assert not {"VIRTUAL_ENV", "HF_HOME", "UNSLOTH_STUDIO_HOME", "PYTHONPATH"} & set(env)
+
+
+def test_open_and_quit_do_not_pass_studios_environment(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(cda.subprocess, "run", fake_run)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VIRTUAL_ENV", "/studio/venv")
+    cda.open_app(Path("/Applications/Claude.app"))
+    cda.quit_app(timeout = 1)
+    assert [c[0][0] for c in calls] == ["/usr/bin/open", "osascript"]
+    for _, kwargs in calls:
+        env = kwargs["env"]
+        assert env["HOME"] == str(cda.user_home())
+        assert "VIRTUAL_ENV" not in env
+    if os.name == "posix":
+        assert all(kw["env"]["HOME"] != str(tmp_path) for _, kw in calls)
