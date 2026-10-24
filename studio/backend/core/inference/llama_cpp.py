@@ -585,6 +585,8 @@ from utils.first_token_timeout import (
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
+from utils import gguf_archs as _gguf_archs
+from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
@@ -3417,64 +3419,30 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
 _DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
-    """Drafter kind naming *path*: basename prefix, or exact parent dir for
-    ``_DRAFTER_DIR_KINDS``. Never a substring: the kind names double as family
-    names, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything
-    in a user's ``dflash/`` folder."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return None
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    for kind in _DRAFTER_KINDS:
-        if name.startswith(f"{kind}-"):
-            return kind
-    for kind in _DRAFTER_DIR_KINDS:
-        if kind in parents:
-            return kind
-    return None
+    return _gguf_names.drafter_path_kind(path)
 
 
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
-# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
-_IMATRIX_WEIGHTED_RE = re.compile(
-    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
-)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
-    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
-    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
-    hub.utils.gguf so variant resolution never picks a companion as the main model --
-    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
-    ahead of the real weight.
-
-    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
-    """
+    """Exclude companions from main-model selection; use _is_mtp_only_drafter_path for launch."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
-    # holding calibration statistics, so only the name rules it out.
-    stem = Path(p).stem
-    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
+    if _gguf_names.is_imatrix_filename(p):
         return True
-    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
-        return True
-    return _drafter_path_kind(path) is not None
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def _is_mtp_only_drafter_path(path: str) -> bool:
@@ -3531,22 +3499,8 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
-_GGUF_KNOWN_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
-# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_KNOWN_QUANT_RE = _gguf_names.GGUF_QUANT_RE
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
@@ -22462,79 +22416,16 @@ class LlamaCppBackend:
             return None
         return str(mtp_draft_path)
 
-    # ── Lifecycle ─────────────────────────────────────────────────
-
-    # GGUF ``general.architecture`` values for diffusion / image models.
-    # llama.cpp has no such architectures, so loading one as a chat model dies
-    # with "unknown model architecture: '<arch>'". These match the patched
-    # stable-diffusion.cpp / ComfyUI-GGUF enums. Unsloth publishes FLUX and
-    # Qwen-Image GGUFs under
-    # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
-    # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
-    # (e.g. "taiwan") isn't misrouted to Images.
-    _IMAGE_ARCHES = frozenset(
-        (
-            "qwen_image",
-            "qwen_image21",
-            "flux",
-            # Krea 2 GGUFs from some converters (molbal/krea2-gguf), #14474.
-            "krea2",
-        )
-    )
-    # Archs shared by more than one family, so the header alone does NOT say whether the
-    # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
-    # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
-    # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
-    # repo id and the filename and tags the rest ``image-diffusion-unsupported``, hiding
-    # them from the Images picker, so the refusal must run the SAME resolution before it
-    # names that page -- e.g. ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf``
-    # declares "lumina2" and resolves to no family ("lumina-2" is not aliased to bare
-    # "lumina"). Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
-    _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
-    # Text-to-video archs the Video page can offer. Split from the image set so the refusal
-    # names Video: sending a Wan / LTX-2 GGUF to Images is a second dead end.
-    _VIDEO_ARCHES = frozenset(
-        (
-            "ltxv",
-            "wan",
-        )
-    )
-    # Media archs Unsloth recognises but NO page can run, so the refusal must not promise
-    # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
-    # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
-    #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
-    #     every cosmos repo id and for override="cosmos"), and the published cosmos GGUFs
-    #     are Cosmos-Predict2-14B-Text2Image, which Images cannot assemble either.
-    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the 1.5 GGUFs that do map to
-    #     one are still tagged unsupported (that family ships no ``gguf_repo``).
-    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
-    #     the same reason, so "use the Images page" was always an empty promise.
-    # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
-    # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
-    _UNRUNNABLE_MEDIA_ARCHES = frozenset(
-        (
-            "cosmos",
-            "hyvid",
-            "sd1",
-            "sd3",
-            "sdxl",
-            "aura",
-            "hidream",
-        )
-    )
+    _IMAGE_ARCHES = _gguf_archs.DIFFUSION_IMAGE_GGUF_ARCHS
+    _AMBIGUOUS_IMAGE_ARCHES = _gguf_archs.AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+    _VIDEO_ARCHES = _gguf_archs.VIDEO_GGUF_ARCHS
+    _UNRUNNABLE_MEDIA_ARCHES = _gguf_archs.UNSUPPORTED_DIFFUSION_GGUF_ARCHS
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). One
-    # shared definition, so this gate and the listing classifier cannot drift.
     _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
-    # Not architectures: the literal placeholders gguf-connector writes into
-    # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
-    # calcuis/cosmos-predict2-gguf both declare "pig"); ComfyUI-GGUF special cases the same
-    # two. llama.cpp knows neither, so without this they slip past the arch sets and die in
-    # llama-server as the opaque failure this preflight exists to prevent.
-    _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
+    _PLACEHOLDER_ARCHES = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 
     @staticmethod
     def _video_arch_is_pickable(

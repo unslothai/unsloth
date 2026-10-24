@@ -11229,6 +11229,7 @@ async def _reject_unservable_model(
     from core.inference.local_model_resolver import (
         index_is_built,
         local_gguf_pinned_variant,
+        local_gguf_torn_only,
         local_gguf_withheld,
         recently_downloaded,
         resolve_local_gguf,
@@ -11256,7 +11257,7 @@ async def _reject_unservable_model(
             ),
         )
 
-    still_indexing = False
+    still_indexing = torn = False
     try:
         if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
@@ -11339,6 +11340,13 @@ async def _reject_unservable_model(
             or recently_downloaded(base)
             or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
         )
+        # Torn split sets are kept out of the index, but the name is still ours, not a foreign label.
+        torn = (
+            not here
+            and base.strip().count("/") == 1
+            and await asyncio.to_thread(local_gguf_torn_only, base)
+        )
+        here = here or torn
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
         # A refusal decided above is the answer, not a failure to decide: without this
@@ -11351,7 +11359,7 @@ async def _reject_unservable_model(
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
-        downloaded = here = switchable = False
+        downloaded = here = switchable = torn = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
     if gguf_hub_repo and not (quantified or here):
@@ -11380,6 +11388,12 @@ async def _reject_unservable_model(
         message = (
             f"The model '{requested_model}' is downloaded, but this server could not "
             "switch to it. Retry shortly, or load it in Unsloth Studio."
+        )
+    elif torn:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is only partly downloaded on this server, so it "
+            "cannot be served. Finish the download in Unsloth Studio."
         )
     elif downloaded:
         status_code, code = 404, "model_not_found"
