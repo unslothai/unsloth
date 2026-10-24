@@ -9306,7 +9306,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: CancellingAsyncClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9554,7 +9554,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             payload = ChatCompletionRequest(
@@ -9616,7 +9616,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             monitor_id = _monitor_entry(monitor)
