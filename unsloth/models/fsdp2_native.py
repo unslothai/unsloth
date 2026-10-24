@@ -745,6 +745,53 @@ def _ensure_process_group(
     return dist
 
 
+_NCCL2_WARNED = False
+# GPUs at or below this size are where nccl2's extra per-rank memory is worth a warning.
+_NCCL2_WARN_MAX_BYTES = 24 * 2**30
+
+
+def _uses_nccl2(dist, device):
+    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
+    try:
+        group = dist.distributed_c10d._get_default_group()
+        impl = type(group._get_backend(device)).__name__
+        return impl == "ProcessGroupNCCL2"
+    except Exception:
+        pass
+    try:
+        name = str(dist.get_backend()).lower()
+    except Exception:
+        return False
+    return name == "nccl2" or (
+        name == "nccl" and os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
+    )
+
+
+def _warn_nccl2_memory(dist, device):
+    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
+    per rank, plain nccl none), so small GPU 0 runs out first."""
+    global _NCCL2_WARNED
+    if _NCCL2_WARNED or device.type != "cuda":
+        return
+    try:
+        if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:
+            return
+        if torch.cuda.get_device_properties(device).total_memory > _NCCL2_WARN_MAX_BYTES:
+            return
+    except Exception:
+        return
+    if not _uses_nccl2(dist, device):
+        return
+    _NCCL2_WARNED = True
+    _print_rank0(
+        "Unsloth: the process group uses the nccl2 backend (backend = 'nccl2' or "
+        "TORCH_DIST_USE_NCCL2=1). Under nccl2 every other rank also builds a CUDA context on GPU 0 "
+        "(about 0.1 GiB each on 2 x T4, more on larger GPUs and grows with the number of ranks), so "
+        "GPU 0 has less memory than the others. On GPUs of 24 GB or less prefer the default 'nccl' "
+        "backend (unset TORCH_DIST_USE_NCCL2), or launch each rank with only its own GPU visible."
+    )
+
+
 def _default_mesh(device, dist):
     from torch.distributed.device_mesh import init_device_mesh
     return init_device_mesh(device.type, (dist.get_world_size(),))
@@ -1382,6 +1429,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
         torch.cuda.set_device(device)
+    _warn_nccl2_memory(dist, device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
