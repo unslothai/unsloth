@@ -904,7 +904,6 @@ class _QuantDen(torch.nn.Module):
 
 
 def _torchao_loads():
-    """bf16, INT8 and FP8 loads of one model, as ``_make_quant_config`` builds them."""
     import copy
 
     tq = pytest.importorskip("torchao.quantization")
