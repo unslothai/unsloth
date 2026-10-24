@@ -115,7 +115,7 @@ function SourceTabs({
           }}
           onClick={() => onValueChange(tab.value as SourceTab)}
           className={cn(
-            "flex h-8 shrink-0 items-center rounded-full px-3 text-ui-13 text-foreground/80 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
+            "flex h-7 shrink-0 items-center rounded-full px-2.5 text-ui-12p5 text-foreground/80 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
             value === tab.value &&
               cn(RAISED_SURFACE, "font-medium text-foreground"),
           )}
