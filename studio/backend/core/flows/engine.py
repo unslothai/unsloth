@@ -1282,10 +1282,16 @@ class FlowEngine:
 
         slot, repo = load
         try:
-            if slot == "llm":
-                await asyncio.wait_for(loading.unload_llm(rs.caller, repo), RESIDENT_PROBE_S * 4)
-            elif slot in ("image", "video"):
-                await asyncio.wait_for(loading.unload_media(rs.caller, slot), RESIDENT_PROBE_S * 4)
+            # Under the GPU lock, like the load was: a flow waiting for the GPU must not start on this slot first.
+            async with self.gpu_lock():
+                if slot == "llm":
+                    await asyncio.wait_for(
+                        loading.unload_llm(rs.caller, repo), RESIDENT_PROBE_S * 4
+                    )
+                elif slot in ("image", "video"):
+                    await asyncio.wait_for(
+                        loading.unload_media(rs.caller, slot), RESIDENT_PROBE_S * 4
+                    )
         except Exception:
             logger.debug("flows: stopping the early load of %s failed", repo, exc_info = True)
 

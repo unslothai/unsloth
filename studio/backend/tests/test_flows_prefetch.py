@@ -399,3 +399,53 @@ async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
     )
     rs = await _run(eng, d)
     assert rs.status == "completed" and studio["unloads"] == ["vis-m"]
+
+
+@run_async
+async def test_stopping_an_early_load_never_unloads_inside_another_flows_gpu_step(
+    studio, monkeypatch
+):
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        if choice["repo"] == "m2":
+            await asyncio.sleep(30)
+        studio["slots"]["llm"] = [choice["repo"]]
+        ctx.resident["llm"] = choice["repo"]
+        return {"repo": choice["repo"]}
+
+    inside = {"now": False, "seen": []}
+
+    async def unload_llm(
+        caller,
+        model,
+        kind = "llm",
+    ):
+        inside["seen"].append(inside["now"])
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    monkeypatch.setattr(loading, "unload_llm", unload_llm)
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    parsed, errors = parse_document(_chain("stop-early-load-locked"))
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
+    rs.caller = rs.caller or object()
+    for _ in range(100):
+        if rs.prefetch_load:
+            break
+        await asyncio.sleep(0.05)
+
+    async def other_flow_step():
+        async with eng.gpu_lock():
+            inside["now"] = True
+            await asyncio.sleep(0.5)
+            inside["now"] = False
+
+    other = asyncio.create_task(other_flow_step())
+    await asyncio.sleep(0)
+    await eng.cancel(rs.id)
+    await asyncio.wait_for(asyncio.gather(rs.task, other), timeout = 30)
+    assert inside["seen"] == [False]
