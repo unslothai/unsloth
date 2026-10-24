@@ -345,3 +345,57 @@ async def test_unload_after_the_run_leaves_a_slot_it_could_not_read(studio, monk
     eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
     rs = await _run(eng, _chain("unknown-slot", unload_after_run = True))
     assert rs.status == "completed" and studio["unloads"] == []
+
+
+@run_async
+async def test_unload_after_the_run_waits_for_the_gpu(studio, monkeypatch):
+    studio["slots"]["llm"] = []
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    d = _chain("unload-waits", unload_after_run = True)
+    # A CPU tail after the last GPU step, while which another flow takes the GPU.
+    d["nodes"].append(node("tail", "text.template", template = "{}"))
+    d["edges"].append(edge("g2", "text", "tail", "values"))
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    lock = eng.gpu_lock()
+    rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
+    for _ in range(200):
+        if rs.nodes["g2"].status in ("done", "cached"):
+            break
+        await asyncio.sleep(0.05)
+    # Another flow's GPU step holds the GPU: unloading now could cancel its generation.
+    await lock.acquire()
+    try:
+        # Past the 0.6 s tail: the run has ended its steps and is waiting to unload.
+        await asyncio.sleep(1.5)
+        assert studio["unloads"] == []
+    finally:
+        lock.release()
+    await asyncio.wait_for(rs.task, timeout = 30)
+    assert studio["unloads"] == ["m2"]
+
+
+@run_async
+async def test_unload_after_the_run_frees_an_agents_vision_model(studio):
+    studio["keep"] = True
+    studio["slots"]["llm"] = []
+
+    async def agent(ctx):
+        await ctx.ensure_model("vision", ctx.params.get("vision_model"))
+        return {"text": "seen"}
+
+    eng = _engine({"input.text": _text, "llm.generate": agent})
+    d = doc(
+        [
+            node(
+                "g",
+                "llm.generate",
+                prompt = "look",
+                model = {"repo": "chat-m"},
+                vision_model = {"repo": "vis-m"},
+            )
+        ],
+        meta = {"unload_after_run": True},
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed" and studio["unloads"] == ["vis-m"]

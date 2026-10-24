@@ -1294,39 +1294,49 @@ class FlowEngine:
         """The flow's "Unload models when the run ends": free what this run loaded, never what was loaded before."""
         if not (rs.doc.get("meta") or {}).get("unload_after_run") or rs.caller is None:
             return
-        from studio_mcp import loading
-
         # Repo -> the first step that uses it, whose log says the model was let go.
         wanted: dict[str, str] = {}
         for n in rs.plan.gpu_nodes():
             wanted.setdefault(self._model_of(rs.plan, n)[1], n)
+            # An Agent given an image loads its vision model instead.
+            vision = (rs.plan.nodes[n].get("params") or {}).get("vision_model")
+            if isinstance(vision, dict) and vision.get("repo"):
+                wanted.setdefault(str(vision["repo"]).lower(), n)
         wanted.pop("", None)
+        if not wanted:
+            return
         try:
-            slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
-            for slot, names in (slots or {}).items():
-                # A slot the start-of-run probe could not read may hold a model the user loaded: leave it.
-                if slot not in rs.initial_resident:
-                    continue
-                before = {n.lower() for n in rs.initial_resident[slot]}
-                for name in names or []:
-                    if name.lower() in before or name.lower() not in wanted:
-                        continue
-                    if slot == "llm":
-                        await loading.unload_llm(rs.caller, name)
-                    elif slot in ("image", "video"):
-                        await loading.unload_media(rs.caller, slot)
-                    else:
-                        continue
-                    rs.emit(
-                        "node.log",
-                        wanted[name.lower()],
-                        {
-                            "level": "info",
-                            "message": f"Unloaded {name}: the run that loaded it ended",
-                        },
-                    )
+            # Under the GPU lock: unloading a media model cancels a generation another flow runs on it.
+            async with self.gpu_lock():
+                await self._unload_loaded(rs, wanted)
         except Exception:
             logger.debug("flows: unload after the run failed", exc_info = True)
+
+    async def _unload_loaded(self, rs: RunState, wanted: dict[str, str]) -> None:
+        from studio_mcp import loading
+        slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
+        for slot, names in (slots or {}).items():
+            # A slot the start-of-run probe could not read may hold a model the user loaded: leave it.
+            if slot not in rs.initial_resident:
+                continue
+            before = {n.lower() for n in rs.initial_resident[slot]}
+            for name in names or []:
+                if name.lower() in before or name.lower() not in wanted:
+                    continue
+                if slot == "llm":
+                    await loading.unload_llm(rs.caller, name)
+                elif slot in ("image", "video"):
+                    await loading.unload_media(rs.caller, slot)
+                else:
+                    continue
+                rs.emit(
+                    "node.log",
+                    wanted[name.lower()],
+                    {
+                        "level": "info",
+                        "message": f"Unloaded {name}: the run that loaded it ended",
+                    },
+                )
 
     @staticmethod
     def _model_of(plan: Plan, nid: str) -> tuple[str, str]:
