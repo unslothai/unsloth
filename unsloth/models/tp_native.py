@@ -708,6 +708,12 @@ def _refuse_adapter(path, proj):
     if variants:
         raise ValueError(f"Unsloth: tensor parallelism v1 does not support LoRA variants ({path}).")
     for name in names:
+        dropout = proj.lora_dropout[name] if "lora_dropout" in proj._modules else None
+        if getattr(dropout, "p", 0) > 0:
+            # Masks must match across ranks for replicated inputs and differ for sharded ones.
+            raise ValueError(
+                f"Unsloth: tensor parallelism v1 does not support lora_dropout > 0 ({path}); use lora_dropout = 0."
+            )
         if proj.lora_B[name].bias is not None:
             raise ValueError(f"Unsloth: tensor parallelism v1 does not support lora_bias ({path}).")
         if type(proj.lora_A[name]) is not nn.Linear:

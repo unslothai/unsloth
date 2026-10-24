@@ -457,7 +457,11 @@ def test_refusals_plan(repo, overrides, tp, match):
 
 
 def test_refuses_dora_and_lora_bias():
-    for kwargs, match in (({"use_dora": True}, "DoRA"), ({"lora_bias": True}, "lora_bias")):
+    for kwargs, match in (
+        ({"use_dora": True}, "DoRA"),
+        ({"lora_bias": True}, "lora_bias"),
+        ({"lora_dropout": 0.1}, "lora_dropout"),
+    ):
         model = build(LLAMA, **kwargs)
         region = tpn.derive_tp_plan(model, 2).regions[0]
         with pytest.raises(ValueError, match = match):
