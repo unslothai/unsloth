@@ -769,7 +769,12 @@ class CfgBatchRouter:
         if not card:
             return None
         compiled = "compiled" if self.render_compiled is not None else "eager"
-        return f"{self.identity}|{card}|{compiled}|{shape.key}"
+        module = self.module_ref()
+        # Read live: set_attention_backend() changes neither the module classes nor the config.
+        attention = (
+            getattr(module, "_unsloth_attention_backend", None) if module is not None else None
+        )
+        return f"{self.identity}|{card}|{compiled}|{attention}|{shape.key}"
 
     def _stored_verdict(self, shape: _Shape, latent: Any) -> Optional[dict]:
         key = self._verdict_key(shape, latent)

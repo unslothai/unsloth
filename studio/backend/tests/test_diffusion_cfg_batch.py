@@ -967,6 +967,20 @@ def test_install_keys_the_router_on_the_engaged_quant(monkeypatch):
     assert len(ids) == 2 and None not in ids
 
 
+def test_the_verdict_key_follows_the_live_attention_backend(monkeypatch):
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
+    monkeypatch.setattr(cb, "_card_name", lambda latent: "card")
+    pipe = _Pipe(_quiet_flux())
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    router = cb.router_for(pipe)
+    shape = cb._Shape("s")
+    keys = set()
+    for backend in (None, "native", "flash"):
+        pipe.transformer._unsloth_attention_backend = backend
+        keys.add(router._verdict_key(shape, None))
+    assert len(keys) == 3 and None not in keys
+
+
 def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
     import json
 
