@@ -11806,10 +11806,15 @@ async def _maybe_auto_switch_model(
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
-    if _auto_switch_opted_out(fastapi_request) or (
-        isinstance(getattr(fastapi_request, "scope", None), dict)
-        and fastapi_request.scope.get(LOADED_MODELS_ONLY_SCOPE_KEY)
-    ):
+    if _auto_switch_opted_out(fastapi_request):
+        return
+    if isinstance(_swap_scope, dict) and _swap_scope.get(LOADED_MODELS_ONLY_SCOPE_KEY):
+        # Not routed to a kept slot: only the resident may answer, under the same access check.
+        if not await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        await _refuse_foreign_resident()
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
     auto_switch_on = get_openai_auto_switch_enabled()
 

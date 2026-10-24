@@ -263,9 +263,8 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         except HTTPException as exc:
             # A named kept model answered for itself, so its refusal is not "nothing loaded",
             # unless it was unloaded before the request reached it.
-            if not _chat_model_loaded() and (
-                "model" not in payload.model_fields_set or _sole_kept_model() is None
-            ):
+            named = "model" in payload.model_fields_set
+            if (not named and not _chat_model_loaded()) or (named and _sole_kept_model() is None):
                 raise RunFailed("no_model") from None
             raise RunFailed(None, _error_text(exc.detail)) from None
         except GpuBusyForAnotherAccountError as exc:

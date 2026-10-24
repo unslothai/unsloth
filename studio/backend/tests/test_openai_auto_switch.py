@@ -3907,14 +3907,47 @@ def test_loaded_models_only_scope_routes_but_never_loads(monkeypatch):
         def __init__(self, scope):
             self.scope = scope
 
-    asyncio.run(
-        inference_route._maybe_auto_switch_model(
-            "org/B-GGUF", _Req({inference_route.LOADED_MODELS_ONLY_SCOPE_KEY: True}), "tester"
-        )
-    )
+    def only():
+        return _Req({inference_route.LOADED_MODELS_ONLY_SCOPE_KEY: True})
+
+    def switch(req):
+        asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", req, "tester"))
+
+    with pytest.raises(HTTPException) as gone:
+        switch(only())
+    assert gone.value.status_code == 404
     assert routed == ["org/B-GGUF"] and rec.calls == []
 
+    # A resident answering to the name serves it, but only under the resident access check:
+    # an account's request never lands on another account's hidden primary.
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", lambda name: True)
+    switch(only())
+    assert rec.calls == []
+
+    async def allowed(*_):
+        return None
+
+    monkeypatch.setattr(inference_route, "_require_named_model_access", allowed)
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inference_route.account_access, "resident_hidden", lambda *a: True)
+    monkeypatch.setattr(
+        inference_route.account_access,
+        "require_model_access",
+        lambda ref: (_ for _ in ()).throw(HTTPException(status_code = 404, detail = "Model not found")),
+    )
+    monkeypatch.setattr(inference_route.account_access, "cached_model_repo", lambda ref: None)
+
+    async def no_token(*_):
+        return False
+
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", no_token)
+    with pytest.raises(HTTPException) as hidden:
+        switch(only())
+    assert hidden.value.status_code == 404 and rec.calls == []
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: False)
+
     # Control: without the flag the same request loads it.
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", lambda name: False)
     asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", _Req({}), "tester"))
     assert len(rec.calls) == 1
 
