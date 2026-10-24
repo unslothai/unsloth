@@ -4543,9 +4543,13 @@ def test_the_resident_expert_share():
 @pytest.mark.parametrize(
     "resident_share, admitted",
     [
+        (0.0, True),
         # L4, gemma-4-26B-A4B UD-Q4_K_XL under the --fit split at 8 / 12 / 16 GB.
-        (0.197, False),
-        (0.23, False),
+        (0.197, True),
+        (0.23, True),
+        # Qwen3.8-Flash-Next UD-IQ4_XS on a 32 GB card: the split computes 34 of 49 expert
+        # layers on the CPU (decode 72 vs 106 t/s on 48 cores, 41 vs 107 on 8 threads).
+        (0.32, True),
         (0.35, True),
         (0.494, True),
         (0.527, True),
@@ -4584,9 +4588,12 @@ def test_the_drafter_gate_is_one_constant(monkeypatch):
         (0.23, 0.197, False),
         (0.527, 0.494, True),
         (0.824, 0.791, True),
-        # Nothing spills at the default micro-batch: the raise would only push experts off.
-        (1.0, 0.95, False),
-        (1.0, 1.0, False),
+        # Nothing spills at the default micro-batch: the same 10% loss rule applies, and
+        # a raise that keeps every expert is free prompt speed.
+        (1.0, 0.95, True),
+        (1.0, 0.85, False),
+        (1.0, 1.0, True),
+        (1.0, None, False),
         # Unpriceable keeps today's raise.
         (None, None, True),
         (0.5, None, True),
@@ -4625,9 +4632,9 @@ def test_the_moe_switches(raw, switch):
 @pytest.mark.parametrize(
     "free_mib, cached",
     # 20 GiB model, 15 GiB of experts, 32 GiB card: the share of experts the --fit split
-    # would keep resident is ~14% / ~53% / ~79%.
-    [(14_000, False), (20_000, True), (24_000, False)],
-    ids = ["below_band_split", "in_band_cache", "above_band_split"],
+    # would keep resident is ~14% / ~53% / ~79%. No lower bound: a low share caches too.
+    [(14_000, True), (20_000, True), (24_000, False)],
+    ids = ["low_share_cache", "in_band_cache", "above_band_split"],
 )
 def test_the_resident_share_picks_cache_or_split(tmp_path, _moe_cache_host, free_mib, cached):
     backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
@@ -4703,7 +4710,9 @@ def test_a_fit_ctx_equal_to_studios_still_prices_the_share(tmp_path, _moe_cache_
     "switch, free_mib, cached",
     [
         ("on", 24_000, True),
-        ("on", 14_000, True),
+        # ~14% resident: auto takes the cache below the old 0.35 floor, off still refuses it.
+        ("auto", 14_000, True),
+        ("off", 14_000, False),
         ("off", 20_000, False),
         ("auto", 20_000, True),
         ("bogus", 24_000, False),
@@ -4753,26 +4762,50 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
 @pytest.mark.parametrize(
     "free_mib, raised, cached",
     [
-        # ~25% resident, raise costs ~27%: default micro-batch, split.
-        (11_000, False, False),
+        # ~25% resident, raise costs ~27%: the cache at the default micro-batch.
+        (11_000, False, True),
         # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
         (14_000, False, True),
         # ~70% resident, the raise costs ~10% or less: raised, and 63% is in the band.
         (18_000, True, True),
         # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
         (20_000, True, False),
+        # Every expert resident before the raise, ~4% pushed off by it: inside the 10%
+        # rule, raised; ~96% resident is above the band, so split.
+        (23_000, True, False),
     ],
-    ids = ["tight_split", "tight_cache", "roomy_cache", "roomy_split"],
+    ids = [
+        "low_share_cache",
+        "tight_cache",
+        "roomy_cache",
+        "roomy_split",
+        "full_resident_small_loss_raised",
+    ],
 )
 def test_the_spill_raise_is_priced_against_the_resident_experts(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
-    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+    # A 48 GB card: its 3% pin reserve exceeds the fit target, so every cell takes --fit.
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 48_000)])
 
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
     assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
     assert (backend._moe_spill_batch_restore is not None) is raised
     assert _has_moe_cache(cmd) is cached, cmd
+
+
+def test_a_fully_resident_raise_that_pushes_experts_off_is_skipped(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """Every expert resident at the default micro-batch, but a 4 GiB raise would push
+    ~27% of them off (over the 10% rule): the default micro-batch stays."""
+    _ubatch_sized_compute_buffer(monkeypatch, 4.0)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 23_000, 48_000)])
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == [], cmd
+    assert backend._moe_spill_batch_restore is None
 
 
 @pytest.mark.parametrize(
@@ -4797,7 +4830,7 @@ def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
 @pytest.mark.parametrize(
     "free_mib, ubatch",
     [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
-    ids = ["tight_split", "tight_cache", "roomy"],
+    ids = ["low_share_cache", "tight_cache", "roomy"],
 )
 def test_a_skipped_raise_keeps_the_projector_micro_batch(
     tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
@@ -4834,11 +4867,15 @@ def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
 
 def test_both_switches_on_restore_the_ungated_launch(tmp_path, _moe_cache_host, monkeypatch):
     """v0.1.906: the cache and the 2048 micro-batch on any eligible spill."""
-    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    _ubatch_sized_compute_buffer(monkeypatch, 2.0)
+    memory = [(0, 21_000, 32_000)]
+    # Auto launches neither here (~90% resident, above the band; the raise costs ~15%).
+    _backend, cmd = _cache_launch(tmp_path, memory = memory)
+    assert not _has_moe_cache(cmd) and _ubatch_values(cmd) == [], cmd
+
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    # Auto launches neither here (25% resident, a costly raise).
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+    _backend, cmd = _cache_launch(tmp_path, memory = memory)
 
     assert _has_moe_cache(cmd) and _ubatch_values(cmd) == ["2048"], cmd
 
@@ -5233,9 +5270,8 @@ def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
     """Qwen3.8-Flash-Next IQ1_S on one 16 GiB card, end to end with the real host-RAM
     preflight. The fit leaves the 26.82 GiB lazy table out and picks "none"; the
     preflight charged the whole 67.55 GiB file, read a shortfall, and the pageable
-    rewrite took the pinned mode (and with it the cache) back out. Forced on: ~13% of
-    the experts stay resident, below the band, so auto keeps the split here."""
-    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    rewrite took the pinned mode (and with it the cache) back out. ~13% of the experts
+    stay resident, and auto takes the cache there."""
     backend, cmd = _cache_launch(
         tmp_path,
         size_gib = _QWEN38_TOTAL / _GIB,
@@ -5250,6 +5286,24 @@ def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
     assert _load_mode(cmd) == "none", cmd
     assert _has_moe_cache(cmd) is cached, cmd
     assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_qwen38_fully_resident_keeps_the_micro_batch_raise(tmp_path, _moe_cache_host):
+    """Qwen3.8-Flash-Next UD-IQ4_XS (87.25 GiB, 26.82 GiB lazy table) on a 96 GB card
+    with 80 GB free: the file needs --fit, but only the lazy table stays on the host and
+    every routed expert is resident before and after the raise, so the 2048 micro-batch
+    is kept (2k prompt 3201 -> 4373 tok/s measured) and no cache is added."""
+    backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = 87.25,
+        memory = [(0, 80_000, 98_000)],
+        expert_gib = 52.0,
+        lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
+        arch = "qwen4exp",
+    )
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert not _has_moe_cache(cmd), cmd
 
 
 def test_the_host_guard_still_charges_a_table_read_in_full(tmp_path, _moe_cache_host):
