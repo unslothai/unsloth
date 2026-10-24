@@ -1376,7 +1376,8 @@ export function ApiMonitorPage(): ReactElement {
             </span>
             <div className="flex min-w-0 flex-col">
               <span className="text-ui-11 text-muted-foreground">Base URL</span>
-              <div className="group/copy flex min-w-0 items-center gap-1">
+              {/* Text height, not the copy button's: a 28px row left the chip sitting below the text. */}
+              <div className="group/copy flex h-5 min-w-0 items-center gap-1">
                 <span className="truncate font-mono text-ui-13 text-foreground">
                   {baseUrl}
                 </span>

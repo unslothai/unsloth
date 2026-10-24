@@ -74,7 +74,6 @@ import {
 import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
-import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
@@ -86,7 +85,6 @@ import {
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
-import { EngineVersionsSection } from "../components/engine-versions-section";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
@@ -650,8 +648,6 @@ export function GeneralTab() {
       {/* Owner-only like the installation-wide block below: its routes are. */}
       {isOwner ? <DocumentsRagSection /> : null}
 
-      <EngineVersionsSection />
-
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.notifications.showLoadedModels")}
@@ -815,7 +811,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <DeveloperModeSection />
         </>
       ) : null}
 

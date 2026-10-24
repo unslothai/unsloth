@@ -50,7 +50,10 @@ import {
 } from "../api/hugging-face-cache";
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { useIsAccountOwner } from "@/features/auth";
 import { CacheStorageRows } from "../components/cache-storage-rows";
+import { DeveloperModeSection } from "../components/developer-mode-section";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -267,6 +270,7 @@ type GpuPhysicalInventory = SystemGpuInfo & {
 
 export function ResourcesTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
@@ -1057,6 +1061,7 @@ export function ResourcesTab() {
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
       <InferenceEnginesSection />
+      <EngineVersionsSection />
 
       <ModelMemorySection ref={modelMemoryRef} />
 
@@ -1207,6 +1212,9 @@ export function ResourcesTab() {
           value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
         />
       </SettingsSection>
+
+      {/* Owner-only: its settings apply to the whole installation. */}
+      {isOwner ? <DeveloperModeSection /> : null}
     </div>
   );
 }

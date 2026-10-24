@@ -5209,12 +5209,11 @@ export function ImagesPage({
           type="button"
           variant="secondary"
           size="sm"
-          className="w-full"
+          className="w-fit self-start"
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-          Add image {numberOf(referenceImages.length)}
+          Add image
         </Button>
       )}
     </>

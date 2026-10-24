@@ -12,8 +12,8 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  FolderAddIcon,
   FolderSyncIcon,
-  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -151,7 +151,7 @@ export function ProjectFolderPicker({
             <Spinner className="size-4 shrink-0" />
           ) : (
             <HugeiconsIcon
-              icon={PlusSignIcon}
+              icon={FolderAddIcon}
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />
