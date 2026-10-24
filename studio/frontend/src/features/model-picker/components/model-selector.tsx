@@ -446,6 +446,7 @@ function ModelSelectorContent({
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
+
   );
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
   const npu =
@@ -468,6 +469,7 @@ function ModelSelectorContent({
           ]
         : HUB_SECTION_TABS,
     [hasExternal],
+
   );
   const wantsConnectedDefault = Boolean(
     value && externalModels.some((model) => model.id === value),
@@ -970,9 +972,7 @@ export function ModelSelector({
         tab: "discover",
         capability: hubCapability,
         audioTask:
-          hubCapability === "audio" && linkedTask
-            ? [linkedTask].flat()
-            : undefined,
+          hubCapability === "audio" && linkedTask ? [linkedTask].flat() : undefined,
       },
     });
   }
