@@ -1145,6 +1145,13 @@ def install_environment() -> dict[str, str]:
     }
     from utils.paths.storage_roots import cache_root
 
+    # Docker replaces the app tree (and /root) on update while engine venvs persist on the
+    # home volume, so their uv-managed interpreters must live beside them.
+    app = os.environ.get("UNSLOTH_STUDIO_APP")
+    python_home = env.get("UV_PYTHON_INSTALL_DIR")
+    if app and (not python_home or Path(python_home).resolve().is_relative_to(Path(app).resolve())):
+        env["UV_PYTHON_INSTALL_DIR"] = str(engine_root() / "python")
+
     recorded_cache = None
     try:
         raw = (cache_root() / "uv-cache-dir").read_bytes().decode("utf-8-sig")

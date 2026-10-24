@@ -64,6 +64,12 @@ _FP4_VALUES = (
     -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 )  # fmt: skip
 _LUT_CACHE = {}
+# torch < 2.12's ldexp forms 2^e in the input dtype: in fp16 2^16 is inf (0 * 2^16 -> NaN, 2^-10 * 2^20 -> inf)
+# and 2^-25 is 0. Decode fp16 in fp32 there, then round once.
+_LDEXP_IN_INPUT_DTYPE = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (
+    2,
+    12,
+)
 
 
 def mxfp4_keep_packed_enabled() -> bool:
@@ -71,12 +77,13 @@ def mxfp4_keep_packed_enabled() -> bool:
 
 
 def _dequantize_torch(blocks, scales, dtype):
-    key = (blocks.device, dtype)
+    work = torch.float32 if dtype == torch.float16 and _LDEXP_IN_INPUT_DTYPE else dtype
+    key = (blocks.device, work)
     lut = _LUT_CACHE.get(key)
     if lut is None:
-        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = dtype, device = blocks.device)
+        lut = _LUT_CACHE[key] = torch.tensor(_FP4_VALUES, dtype = work, device = blocks.device)
     *prefix, G, B = blocks.shape
-    out = torch.empty(*prefix, G, B * 2, dtype = dtype, device = blocks.device)
+    out = torch.empty(*prefix, G, B * 2, dtype = work, device = blocks.device)
     out[..., 0::2] = lut[(blocks & 0x0F).long()]
     out[..., 1::2] = lut[(blocks >> 4).long()]
     out = torch.ldexp(out, (scales.to(torch.int32) - 127).unsqueeze(-1)).to(dtype)

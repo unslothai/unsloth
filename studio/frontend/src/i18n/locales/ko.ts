@@ -72,7 +72,7 @@ export const ko = {
       cursorDescription: "모델이 페이지에서 클릭, 입력, 드래그하는 위치에 포인터를 표시합니다",
       askEveryTime: "매번 묻기",
       permissionsTitle: "에이전트 권한",
-      permissionsDescription: "기본값을 선택하고 특정 사이트에 대한 예외를 추가합니다. 비밀번호와 결제 정보 입력란은 이 설정과 관계없이 채우지 않습니다.",
+      permissionsDescription: "기본값과 사이트별 예외를 설정합니다. 비밀번호와 결제 정보 입력란은 채우지 않습니다.",
       site: "사이트 또는 패턴",
       sitePlaceholder: "example.com 또는 *.example.com",
       default: "기본값",

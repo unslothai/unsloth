@@ -72,7 +72,7 @@ export const de = {
       cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
-      permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
+      permissionsDescription: "Standardwerte und Ausnahmen pro Website festlegen. Passwort- und Zahlungsfelder werden nie ausgefüllt.",
       site: "Website oder Muster",
       sitePlaceholder: "example.com oder *.example.com",
       default: "Standard",
