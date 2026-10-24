@@ -8,9 +8,8 @@ guard and CUDA-graph wrapper); ``kick`` replays them through the compiled callab
 capture suppressed, so the next render pays only the capture. A render arriving mid-compile waits for it: a render
 beside the compile was starved to 49-62 s on a B200. Any failure ends the attempt and the next render compiles inline.
 
-Dense denoisers only: torchao ones are ~30x slower eager. An offloaded denoiser (group / block streamed, whole-module
-offload) compiles in the background too: no render runs beside the compile, so its offload hooks see one forward at a
-time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0 keeps those compiling inline, as before). By default only the deferred
+Dense denoisers only: torchao ones are ~30x slower eager. Offloaded ones too: no render runs beside the compile,
+so offload hooks see one forward at a time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0 opts out). By default only the deferred
 profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's
 first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
 """
@@ -49,8 +48,6 @@ def enabled() -> bool:
 
 
 def offloaded_enabled() -> bool:
-    """An offloaded denoiser's deferred compile moves off the render too (on unless ``=0``). Before, FLUX.1 bf16 on an
-    L4 (57 streamed groups) paid it inside the 3rd image: 58 s against 9 s."""
     raw = (os.environ.get(OFFLOADED_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
@@ -167,12 +164,10 @@ def _cuda_graph_helpers() -> tuple[Callable, Callable, Callable]:
     return _flatten_sample, _rebuild_sample, graph_key
 
 
-# Plain state objects in a denoiser call (Qwen-Image-2.1's prefix ``QwenImage21KVCache``, filled by the step-0 prefill
-# and read by every later step) are recorded as a fresh instance holding cloned tensors: before this the recording
-# raised on them, the compile silently stayed on the render and the 4th Qwen-Image-2.1 image paid it (87 s on an L4).
+# Plain state objects in a call (Qwen-Image-2.1's ``QwenImage21KVCache``) are recorded as fresh instances of cloned tensors.
 OBJECTS_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OBJECTS"
 _OBJECT_DEPTH = 3
-# A prefix holding a condition image is ~2.2 GiB at 32 blocks: such a call keeps compiling on the render.
+# A prefix holding a condition image is ~2.2 GiB: such a call keeps compiling on the render.
 _OBJECT_MAX_BYTES = 1 << 30
 
 
@@ -182,7 +177,6 @@ def _objects_enabled() -> bool:
 
 
 def _plain_state(obj: Any) -> Optional[dict]:
-    """``vars(obj)`` for a plain Python state holder (no slots, not a module / tensor / class), else None."""
     import torch
 
     if isinstance(obj, (torch.nn.Module, torch.Tensor, type)) or callable(obj):
@@ -200,7 +194,6 @@ def _flatten_sample(
     depth: int = 0,
     budget: Optional[list] = None,
 ) -> tuple:
-    """``diffusion_cuda_graph._flatten`` plus plain state objects (``_plain_state``), rebuilt as new instances."""
     import torch
 
     if budget is None:

@@ -26,7 +26,6 @@ from typing import Any, Optional
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 
-# "0": a background compile replays planned steps through the plain forward, as before.
 BG_PLANNED_REPLAY_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_PLANNED"
 
 
@@ -1560,9 +1559,7 @@ class GraphedForward:
         return self._eager(args, kwargs)
 
     def _background_call(self, args: tuple, kwargs: dict) -> Any:
-        """A background compile's replay, through the call a render would capture: a planned step (Qwen-Image-2.1's
-        cached decode) runs on fresh statics like the capture's warm-up, else the compiled code the render then calls
-        guards on other layouts and recompiles inline."""
+        """Replay through the call a render captures: otherwise the render's compiled code guards on other layouts and recompiles."""
         if (
             self.plan is not None
             and self.enabled
