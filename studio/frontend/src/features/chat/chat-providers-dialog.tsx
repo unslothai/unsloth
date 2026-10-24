@@ -64,7 +64,6 @@ import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
-import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -102,6 +101,7 @@ import {
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
+import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
