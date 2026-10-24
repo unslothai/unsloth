@@ -148,8 +148,6 @@ def test_capability_probe_reports_api_key_file_and_fails_open():
 
 
 def test_inference_routes_reach_llama_server_only_through_one_owner():
-    """A route that builds its own llama-server URL also has to remember the key and the
-    respawn; #13011 found four routes that had not. Only _LlamaUpstream may build either."""
     src = (BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     owner = next(

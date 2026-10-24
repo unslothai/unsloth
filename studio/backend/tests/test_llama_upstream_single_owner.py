@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every route that proxies to llama-server goes through one owner, so a crashed server, a
-rotated key and a cancel are handled the same way on all of them."""
-
 import asyncio
 import json
 import os
@@ -26,8 +23,6 @@ from state import active_generations  # noqa: E402
 _DEAD = "http://127.0.0.1:57953"
 _FRESH = "http://127.0.0.1:62933"
 
-# A killed server refuses the connection; a crash before headers drops it before the
-# status line. Both are lost connections, and every route must treat them alike.
 _CRASHES = [
     pytest.param(httpx.ConnectError, id = "refused"),
     pytest.param(httpx.RemoteProtocolError, id = "dropped-before-headers"),
@@ -35,8 +30,6 @@ _CRASHES = [
 
 
 class _Backend:
-    """A loaded GGUF whose relaunch moves to a new port with a new per-launch key."""
-
     is_loaded = True
     is_vision = False
     context_length = 4096
@@ -99,7 +92,6 @@ def _reply(request: httpx.Request) -> httpx.Response:
 
 @pytest.fixture
 def llama(monkeypatch):
-    """Route every httpx client at a fake llama-server that is dead on the pre-crash port."""
     active_generations.reset_for_tests()
     state = SimpleNamespace(crash = httpx.ConnectError, calls = [], backend = _Backend())
 
@@ -234,7 +226,6 @@ def test_every_route_recovers_from_a_crashed_llama_server(llama, call, path, cra
 
     assert "33" in body
     assert llama.backend.respawn_calls == 1
-    # The relaunch minted a new key, so the retry must carry it to the new port.
     assert llama.calls == [
         (f"{_DEAD}{path}", "Bearer before-crash"),
         (f"{_FRESH}{path}", "Bearer after-crash"),
@@ -267,7 +258,6 @@ def test_a_request_respawns_at_most_once(llama):
     [httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow"), httpx.PoolTimeout("slow")],
 )
 def test_a_slow_server_is_never_respawned(exc):
-    # A long generation on a healthy server times out; replaying it would decode it twice.
     upstream = _upstream()
 
     assert not asyncio.run(upstream.retarget_after_respawn(exc))
@@ -283,8 +273,6 @@ class _ClosedClient:
 
 
 def test_a_post_on_a_client_the_cancel_closed_reports_the_cancel(monkeypatch):
-    # Embeddings' /tokenize and the nudge retry post again after the first answer, by which
-    # time a Stop may have closed the client: that is a cancel (499), not a server error.
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", _ClosedClient)
     cancel = threading.Event()
     cancel.set()

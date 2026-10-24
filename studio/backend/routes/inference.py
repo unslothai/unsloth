@@ -3505,8 +3505,7 @@ async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]
         return
     if not task.done():
         task.cancel()
-    # Bounded: Request.is_disconnected() can swallow cancel(). The caller closes
-    # its client next; the callback closes any response produced after that. #7617
+    # Bound cancellation swallowed by Request.is_disconnected(); close late responses too. #7617
     done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
     if not done:
         task.add_done_callback(_discard_task_outcome)
@@ -6025,8 +6024,6 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
 
 
 def _llama_stream_client() -> httpx.AsyncClient:
-    """A streamed llama-server request's own client. Every request sends Connection: close,
-    so nothing is kept alive."""
     return gated_async_client(
         timeout = _llama_streaming_generation_timeout(),
         limits = httpx.Limits(max_keepalive_connections = 0),
@@ -6100,19 +6097,7 @@ async def _stop_local_disconnect_cancel_watcher(
 
 
 def _is_lost_upstream_connection(exc) -> bool:
-    """True only for errors that mean the connection died, not that it was slow.
-
-    ``httpx.RequestError`` also covers ``TimeoutException`` (ConnectTimeout,
-    ReadTimeout, WriteTimeout, PoolTimeout), and a long generation on a HEALTHY
-    llama-server surfaces as ``ReadTimeout``. ``_respawn_if_dead`` reports a live
-    process healthy, so a respawn retry on a timeout resubmits the same prompt to
-    a server that is still decoding the first copy: double the wall clock and two
-    slots burnt. ``NetworkError`` (Connect/Read/Write/CloseError) plus
-    ``RemoteProtocolError`` (a FIN before the response line) are the dead-server
-    set, and they are exactly what ``_open_chat_stream_with_respawn_retry`` retries
-    on. RemoteProtocolError is a sibling of NetworkError, not a subclass, so both
-    have to be named.
-    """
+    # Timeouts can leave a healthy server decoding; retrying would duplicate that work.
     return isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError))
 
 
@@ -6121,18 +6106,10 @@ async def _passthrough_retry_url(
     exc,
     path: str = "/v1/chat/completions",
 ):
-    """Fresh upstream URL after respawning a dead llama-server, else None.
-
-    A crashed server relaunches on a NEW ephemeral port, so a request still
-    holding the old base_url keeps failing until the next load. Mirrors the
-    respawn-and-retry in generate_chat_completion. None when an MTP crash
-    already scheduled its own recovery, or when nothing needed respawning.
-    """
     recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
     if recover is not None and recover(exc):
         return None
-    # Only the first caller gets True above; the rest must not respawn the same
-    # MTP config underneath the fallback that is already reloading without it.
+    # Other callers must also defer to the MTP fallback already reloading without MTP.
     if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
         return None
     respawn = getattr(llama_backend, "_respawn_if_dead", None)
@@ -6142,24 +6119,12 @@ async def _passthrough_retry_url(
     return f"{llama_backend.base_url}{path}"
 
 
-# A request can leave during a reload. Retain its independent recovery task until
-# the backend's serialized worker finishes, and always retrieve its outcome.
+# Retain recovery tasks after their requests leave; asyncio holds only weak references.
 _LLAMA_RESPAWN_TASKS: set = set()
 
 
 class _LlamaUpstream:
-    """One request's calls to the loaded llama-server, shared by every route that proxies to it.
-
-    Each route used to carry its own copy of this, so fixes landed one route at a time: the
-    per-launch Bearer header (#13011) and the dead-server respawn (#8999) both reached some
-    routes and not others. A crashed server relaunches on a new port with a new key, so
-    ``url`` and ``headers`` move together, at most once per request: a second lost connection
-    after a successful relaunch is a real failure, not a stale port.
-
-    Streaming routes own their client and pump ``stream_response`` or ``dispatch_stream``.
-    Non-streaming routes use ``async with``, which gives the request a client that a Stop
-    or a disconnect closes, so a blocked POST ends at once instead of generating for nobody.
-    """
+    """Per-request transport: one respawn, with URL and key refreshed together."""
 
     def __init__(
         self,
@@ -6172,8 +6137,6 @@ class _LlamaUpstream:
         self._backend = llama_backend
         self._path = path
         self._request = request
-        # The watcher closes the client under a blocked POST on disconnect; the event is how
-        # post() tells that close from a transport failure.
         if cancel_event is None and request is not None:
             cancel_event = threading.Event()
         self.cancel_event = cancel_event
@@ -6207,8 +6170,7 @@ class _LlamaUpstream:
         _LLAMA_RESPAWN_TASKS.add(recovery)
         recovery.add_done_callback(_LLAMA_RESPAWN_TASKS.discard)
         recovery.add_done_callback(_discard_task_outcome)
-        # Do not await the worker directly: cancelling this request must not cancel
-        # the independent backend reload or hold the request's registrations until it ends.
+        # Cancellation releases this request without cancelling or waiting for the reload.
         while True:
             if await _preheader_cancelled(cancel_event, request):
                 return None
@@ -6226,15 +6188,10 @@ class _LlamaUpstream:
         return client.build_request("POST", self.url, json = body, headers = self.headers)
 
     def dispatch_stream(self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs):
-        """Open and recover as one task, so callers can pump keepalives throughout."""
         return asyncio.create_task(self.send_stream(client, body, cancel_event, request, **kwargs))
 
     async def stream_response(self, client: httpx.AsyncClient, body, cancel_event, request):
-        """Yield heartbeat sentinels during recovery, then the response (None on cancel).
-
-        The route serializes the heartbeat for its protocol and owns the response.
-        Close this iterator before the client when the route exits early.
-        """
+        """Yield recovery heartbeats, then the caller-owned response; close before the client."""
         send_task = self.dispatch_stream(client, body, cancel_event, request)
         try:
             while not send_task.done():
@@ -6252,8 +6209,6 @@ class _LlamaUpstream:
     async def send_stream(
         self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs
     ) -> Optional[httpx.Response]:
-        """Open a streamed POST; None when cancelled before headers. Nothing has reached the
-        client before headers, so the respawn retry duplicates no output."""
         while True:
             self.first_token_deadline = start_first_token_wait(_first_token_timeout_s())
             try:
@@ -6289,7 +6244,6 @@ class _LlamaUpstream:
         # Re-enterable: a later ``async with`` gets a fresh client but keeps the spent respawn.
         client, watcher, self.client, self._watcher = self.client, self._watcher, None, None
         if watcher is not None:
-            # Bounded: the watcher polls Request.is_disconnected(), which can swallow cancel(). #7617
             try:
                 await _stop_local_disconnect_cancel_watcher(watcher)
             except (asyncio.CancelledError, Exception):
@@ -6307,8 +6261,6 @@ class _LlamaUpstream:
         timeout,
         path: Optional[str] = None,
     ) -> httpx.Response:
-        """POST inside ``async with``. A cancel raises ``_NonStreamingRequestCancelled``, not
-        the transport error the closed client caused. ``path`` reaches a sibling endpoint."""
         while True:
             _raise_if_nonstreaming_request_cancelled(self.cancel_event)
             url = self.url if path is None else f"{self._backend.base_url}{path}"
@@ -6330,12 +6282,6 @@ class _LlamaUpstream:
 
 @asynccontextmanager
 async def _monitored_llama_call(llama_backend, path: str, *, request, monitor_id, model, kind):
-    """A non-streaming proxy call to llama-server, registered with the swap gate.
-
-    Unregistered, a non-forced /unload counts zero generations and kills llama-server
-    mid-request, and force_cancel_active has no event to set. Post-process the response
-    after the block: an error raised inside it is recorded on the monitor as this call's.
-    """
     upstream = _LlamaUpstream(llama_backend, path, cancel_event = threading.Event(), request = request)
     tracker = _TrackedCancel(upstream.cancel_event, model = model, kind = kind)
     tracker.__enter__()
@@ -40854,7 +40800,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return _sse_streaming_response(_stream(), monitor_id = monitor_id)
     else:
-        # ``stream`` defaults to false, so this common shape needs the same swap-gate entry.
         async with _monitored_llama_call(
             llama_backend,
             "/v1/completions",
@@ -49246,11 +49191,6 @@ async def _anthropic_passthrough_non_streaming(
     parse_think = True,
     thinking_budget_tokens = None,
 ):
-    """Non-streaming client-side pass-through.
-
-    Both POSTs run on one per-request client so a Stop or a forced swap can close
-    it and interrupt them, and they share one respawn.
-    """
     body = _build_passthrough_payload(
         openai_messages,
         openai_tools,
