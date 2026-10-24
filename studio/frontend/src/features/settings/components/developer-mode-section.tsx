@@ -108,8 +108,6 @@ export function DeveloperModeSection() {
       <SettingsSection title={t("settings.general.developerMode.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.developerMode.videoCpu")}
-          // The note sits under the description, left-aligned: right-aligned under the switch it
-          // wrapped ragged against the row's edge.
           description={
             <>
               {t("settings.general.developerMode.videoCpuDescription")}

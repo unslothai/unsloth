@@ -9,7 +9,6 @@ import { readSrc } from "./helpers/kit.ts";
 test("Settings > Browser > Browser use links to its docs page in a new tab", () => {
   const settings = readSrc("features/settings/tabs/browser-agent-settings.tsx");
   assert.match(settings, /BROWSER_USE_DOCS_URL = "https:\/\/unsloth\.ai\/docs\/basics\/browser-use"/);
-  // Beside the tab's title, as on the Agents tab.
   const tab = readSrc("features/settings/tabs/browser-tab.tsx");
   assert.match(tab, /href=\{BROWSER_USE_DOCS_URL\}\s+target="_blank"\s+rel="noopener noreferrer"/);
 });

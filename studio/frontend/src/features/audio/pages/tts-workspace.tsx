@@ -94,8 +94,7 @@ export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
   );
 }
 
-/** One short line under Generate: the first fix as a link, the reason on a hover hint, and any
- *  suggested models in a menu. The reason stays in the text for screen readers. */
+/** Under Generate: first fix as a link, the reason on a hint (and sr-only), the rest in a menu. */
 export function BlockerNote({
   id,
   blocker,

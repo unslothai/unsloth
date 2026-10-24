@@ -27,8 +27,7 @@ export const UserMessageTime: FC = () => {
   });
   // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
   // cursor stays an arrow, even with pointer cursors on.
-  // The spacer takes the row's slack; the trigger is only as wide as the time, so the tooltip
-  // opens over the time and not anywhere left of the actions.
+  // The spacer takes the slack, so the tooltip opens only over the time itself.
   return (
     <div className="mr-2 flex min-w-8 flex-1 justify-end self-center">
       <Tooltip>

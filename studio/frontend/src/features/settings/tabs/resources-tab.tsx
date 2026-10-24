@@ -1213,7 +1213,6 @@ export function ResourcesTab() {
         />
       </SettingsSection>
 
-      {/* Owner-only: its settings apply to the whole installation. */}
       {isOwner ? <DeveloperModeSection /> : null}
     </div>
   );

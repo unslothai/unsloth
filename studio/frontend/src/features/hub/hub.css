@@ -800,7 +800,7 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
-  /* A code box's language and platform pills sit on the box, not the page: flat grey, no lift. */
+  /* Code box pills sit on the box, not the page: flat grey. */
   html:not(.dark) .example-pills .hub-tab-toggle-pill,
   html:not(.dark) .example-pills .hub-tab-toggle-pill:hover {
     background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), var(--background));

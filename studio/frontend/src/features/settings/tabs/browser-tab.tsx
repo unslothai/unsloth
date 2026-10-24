@@ -231,7 +231,7 @@ export function BrowserTab() {
       <header className="flex flex-col gap-1">
         <div className="flex min-w-0 items-baseline gap-2">
           <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
-          {/* Same docs link as the Agents tab; title, not aria-label, so the name stays the visible text. */}
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
           <a
             href={BROWSER_USE_DOCS_URL}
             target="_blank"

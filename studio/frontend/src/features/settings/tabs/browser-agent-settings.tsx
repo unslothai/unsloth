@@ -72,8 +72,7 @@ function RuleSelect({
   );
 }
 
-// Two by two where the card has room, one column where it does not: four choices in auto-fit columns
-// left the fourth alone on its own row. Each keeps its heading, so labels never get cut.
+// 2x2, not auto-fit: auto-fit left the fourth choice alone on its own row.
 const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2";
 
 function PermissionsTable() {
