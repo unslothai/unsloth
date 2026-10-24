@@ -24,9 +24,19 @@ def _cudnn_sdpa_available():
 needs_cudnn = pytest.mark.skipif(not _cudnn_sdpa_available(), reason = "no cuDNN SDPA on this device")
 
 
-def _qkv(bsz, n_heads, n_kv, q_len, head_dim, gqa, seed = 0):
+def _qkv(
+    bsz,
+    n_heads,
+    n_kv,
+    q_len,
+    head_dim,
+    gqa,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
-    mk = lambda h: torch.randn(bsz, h, q_len, head_dim, device = "cuda", dtype = torch.bfloat16, generator = g)
+    mk = lambda h: torch.randn(
+        bsz, h, q_len, head_dim, device = "cuda", dtype = torch.bfloat16, generator = g
+    )
     q = mk(n_heads)
     k, v = mk(n_kv), mk(n_kv)
     if not gqa:
@@ -47,7 +57,9 @@ def test_applies_only_to_causal_unmasked_square_cuda_calls(monkeypatch):
     k_short = torch.zeros(1, 2, 4, 16, device = "cuda", dtype = torch.bfloat16)
     assert ad._cudnn_length_bucket_applies(q, q, q, is_causal = True)
     assert not ad._cudnn_length_bucket_applies(q, q, q, is_causal = False)
-    assert not ad._cudnn_length_bucket_applies(q, q, q, attn_mask = torch.ones(8, 8, dtype = torch.bool, device = "cuda"), is_causal = True)
+    assert not ad._cudnn_length_bucket_applies(
+        q, q, q, attn_mask = torch.ones(8, 8, dtype = torch.bool, device = "cuda"), is_causal = True
+    )
     assert not ad._cudnn_length_bucket_applies(q, q, q, dropout_p = 0.1, is_causal = True)
     assert not ad._cudnn_length_bucket_applies(q, k_short, k_short, is_causal = True)
     assert not ad._cudnn_length_bucket_applies(q.float(), q.float(), q.float(), is_causal = True)

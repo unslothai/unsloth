@@ -128,7 +128,15 @@ except ValueError:
     _CUDNN_LENGTH_BUCKET = 128
 
 
-def _cudnn_length_bucket_applies(Q, K, V, attn_mask = None, dropout_p = 0.0, is_causal = False, **kwargs):
+def _cudnn_length_bucket_applies(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
     if not _CUDNN_LENGTH_BUCKET or _CUDNN_CHOICE is None:
         return False
     if attn_mask is not None or not is_causal or dropout_p:
@@ -149,7 +157,15 @@ def _cudnn_length_bucket_applies(Q, K, V, attn_mask = None, dropout_p = 0.0, is_
     return choice == _CUDNN_CHOICE
 
 
-def _cudnn_length_bucketed_sdpa(Q, K, V, attn_mask = None, dropout_p = 0.0, is_causal = False, **kwargs):
+def _cudnn_length_bucketed_sdpa(
+    Q,
+    K,
+    V,
+    attn_mask = None,
+    dropout_p = 0.0,
+    is_causal = False,
+    **kwargs,
+):
     # Always pad by 1..bucket rows and slice: a zero pad specialises under dynamo (a recompile when the
     # length becomes a bucket multiple), so an exact multiple carries one spare bucket instead.
     q_len = Q.shape[-2]
@@ -175,7 +191,9 @@ try:
         _SDPBackend.EFFICIENT_ATTENTION,
         _SDPBackend.MATH,
     ]
-    _CUDNN_CHOICE = int(_SDPBackend.CUDNN_ATTENTION) if hasattr(_SDPBackend, "CUDNN_ATTENTION") else None
+    _CUDNN_CHOICE = (
+        int(_SDPBackend.CUDNN_ATTENTION) if hasattr(_SDPBackend, "CUDNN_ATTENTION") else None
+    )
 except Exception:
     _rerouted_sdpa = scaled_dot_product_attention
     _CUDNN_CHOICE = None
