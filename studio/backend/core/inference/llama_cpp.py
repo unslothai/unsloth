@@ -37072,9 +37072,13 @@ class LlamaCppBackend:
                     _bounded_cmd = list(_last_spawn_cmd or cmd)
                     _bounded = None
                     # Apart from the figure: a host with no room bounds the budget to None too.
+                    # A child relaunched for its exact kernels anyway takes the bound as well, as
+                    # the retries dropping exact mode do; one the host holds is not relaunched
+                    # for the budget alone.
                     _rebounded = False
+                    _exact_off = bool(exact_running) and _exact.child_flag_set(env)
                     if (
-                        host_short is not None
+                        (host_short is not None or _exact_off)
                         and _exact_budget is not None
                         and _exact_wanted
                         and self._server_launched_parking
@@ -37086,7 +37090,6 @@ class LlamaCppBackend:
                             self._parking_reserving_mib = None
                         else:
                             _rebounded = True
-                    _exact_off = bool(exact_running) and _exact.child_flag_set(env)
                     if not _rebounded and not _exact_off:
                         return True
                     logger.info(

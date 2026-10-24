@@ -143,7 +143,9 @@ def test_a_child_still_running_exact_kernels_is_relaunched_without_them(host):
     relaunch, launched, namespace = _relaunch(backend)
     assert relaunch(None, True) is True
     assert backend.killed == 1 and len(launched) == 1, launched
-    assert launched[0][-2:] == ["--preempt-ram", "8192"]
+    bounded = llama_mod._host_bounded_parking_mib(8192, backend)
+    assert 0 < bounded < 8192
+    assert launched[0][-2:] == ["--preempt-ram", str(bounded)]
     assert llama_mod._exact.CHILD_ENV not in namespace["env"], namespace["env"]
 
 
