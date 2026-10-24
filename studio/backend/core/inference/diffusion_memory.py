@@ -1116,6 +1116,19 @@ def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
     return reclaimable - _graph_held_cache_bytes(pool_device)
 
 
+def cuda_reusable_cache_bytes(device: Any = None) -> int:
+    """``cuda_reclaimable_bytes`` (excludes CUDA graph pools) floored at 0 for any device form; resolved to an int
+    index because ``_graph_held_cache_bytes`` would silently skip the graph-pool count for a torch.device."""
+    index = None
+    if device is not None:
+        try:
+            import torch
+            index = device if isinstance(device, int) else torch.device(device).index
+        except Exception:  # noqa: BLE001 - unparseable: read the current card
+            index = None
+    return max(0, cuda_reclaimable_bytes(index) or 0)
+
+
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back as free,
     without flushing it.
@@ -2952,9 +2965,10 @@ def _calibrated_faster_tier(
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
-    A flat resident-transformer pick whose measured 2048 denoise does not fit beside the weights (the flat runtime
-    headroom undercounts it) is demoted to the fastest tier that does fit, as ComfyUI offloads weights against its
-    activation estimate. Every check grows with the budget, so more VRAM never picks a slower tier."""
+    A flat all-resident pick whose measured 2048 denoise does not fit is demoted to the fastest tier that does:
+    nothing it holds has offload hooks a request could release. A resident-transformer pick (encoders streamed) is
+    never demoted: like ComfyUI, which sizes residency per call, the generation guard handles an oversized request.
+    Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -3034,12 +3048,7 @@ def _calibrated_faster_tier(
         ),
     )
     # Only the 2048 denoise is checked here: it cannot tile, while an oversized decode is tiled by the generation guard.
-    denoise_fits = (
-        transformer + te + others <= room
-        if flat_rank == 0
-        else te > 0 and transformer + others <= room
-    )
-    if flat_rank <= 1 and not denoise_fits:
+    if flat_rank == 0 and transformer + te + others > room:
         for fits, (tier_policy, stream_te, stream_tr, tile, reason) in candidates[flat_rank + 1 :]:
             if fits:
                 return (
