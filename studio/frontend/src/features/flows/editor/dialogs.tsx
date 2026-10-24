@@ -213,7 +213,7 @@ export function PlanDialog({
   }, [open, flowId]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>What this flow needs</DialogTitle>
           <DialogDescription>
@@ -246,11 +246,12 @@ export function PlanDialog({
                 className="flex items-start gap-3 rounded-md border px-3 py-2 text-sm"
                 data-testid={`flow-plan-hint-${hint.id}`}
               >
-                <p className="flex-1 text-muted-foreground">{hint.message}</p>
+                <p className="min-w-0 flex-1 text-muted-foreground">{hint.message}</p>
                 {hint.id === "multi_model" && (
                   <Button
                     size="sm"
                     variant="outline"
+                    className="shrink-0"
                     onClick={() => {
                       onOpenChange(false);
                       useSettingsDialogStore
