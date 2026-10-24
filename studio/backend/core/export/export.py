@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import re
 import sys
 import shutil
 import contextlib
@@ -783,6 +784,24 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
     return None
 
 
+def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
+    """The commit of a Hub adapter's cached snapshot (the one its load just used), read from the
+    local cache only; None for a local folder or when it cannot be told."""
+    if not checkpoint_path or os.path.isdir(checkpoint_path):
+        return None
+    if os.path.isabs(checkpoint_path) or checkpoint_path.count("/") != 1:
+        return None
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        path = try_to_load_from_cache(checkpoint_path, "adapter_config.json")
+    except Exception:
+        return None
+    if not isinstance(path, str):
+        return None
+    commit = os.path.basename(os.path.dirname(path))
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -791,6 +810,7 @@ class ExportBackend:
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
         self._checkpoint_token = None
+        self._checkpoint_local_files_only = False
         self.current_model = None
         self.current_tokenizer = None
         self.is_vision = False
@@ -820,6 +840,7 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
             self._checkpoint_token = None
+            self._checkpoint_local_files_only = False
             self._audio_type = None
             self.decision = None
 
@@ -1126,6 +1147,14 @@ class ExportBackend:
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
             self._checkpoint_token = token
+            self._checkpoint_local_files_only = bool(local_files_only)
+            # The base config's _commit_hash names the base repo: a Hub adapter's own commit is the
+            # snapshot its adapter_config.json was just cached in.
+            self._adapter_commit = (
+                (checkpoint_path, _cached_hub_adapter_commit(checkpoint_path))
+                if self.is_peft
+                else None
+            )
             if not self.is_peft and not _IS_MLX:
                 self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
@@ -2166,19 +2195,71 @@ class ExportBackend:
         try:
             from core.export.drafter_export import training_manifest
 
-            if not os.path.isdir(checkpoint_path) or os.path.isfile(
-                os.path.join(checkpoint_path, "adapter_config.json")
-            ):
-                return
-            manifest = training_manifest(checkpoint_path)
+            token = getattr(self, "_checkpoint_token", None)
+            # A Hub id reads its manifest with the load's credential, at the commit the load
+            # resolved (the shards below come from it too), and stays offline when the load did.
+            manifest = training_manifest(
+                checkpoint_path,
+                token,
+                revision = self._loaded_commit(),
+                local_files_only = getattr(self, "_checkpoint_local_files_only", False),
+            )
             if not manifest or manifest.get("strategy") != "mtp":
+                return
+            source = checkpoint_path
+            if not os.path.isdir(source):
+                # The head's shards are in the snapshot the load just cached, at the loaded commit.
+                source = self._loaded_hub_snapshot(checkpoint_path, token)
+                if source is None:
+                    logger.warning(
+                        f"Could not find the cached files of {checkpoint_path} to attach its trained MTP head"
+                    )
+                    return
+            if os.path.isfile(os.path.join(source, "adapter_config.json")):
                 return
             from unsloth import FastModel
 
-            FastModel.get_mtp_head(self.current_model, source = checkpoint_path)
+            FastModel.get_mtp_head(self.current_model, source = source)
             logger.info(f"Attached the trained MTP head from {checkpoint_path}")
         except Exception as exception:
             logger.warning(f"Could not attach the trained MTP head: {exception}")
+
+    def _loaded_commit(self) -> Optional[str]:
+        """The Hub commit of the repo current_checkpoint names, as the load resolved it (None for a
+        local folder, or a Hub adapter whose commit is unknown: no pin beats the base's commit)."""
+        if getattr(self, "is_peft", False):
+            recorded = getattr(self, "_adapter_commit", None)
+            if recorded and recorded[0] == getattr(self, "current_checkpoint", None):
+                return recorded[1]
+            return None
+        return getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
+
+    def _loaded_manifest_kwargs(self) -> dict:
+        """The load's commit and offline decision, so a Hub id's drafter manifest is read where the
+        exported weights came from (only the ones that are set)."""
+        kwargs = {}
+        revision = self._loaded_commit()
+        if revision:
+            kwargs["revision"] = revision
+        if getattr(self, "_checkpoint_local_files_only", False):
+            kwargs["local_files_only"] = True
+        return kwargs
+
+    def _loaded_hub_snapshot(self, repo_id: str, token) -> Optional[str]:
+        """The local snapshot folder of a Hub checkpoint the current model was loaded from."""
+        revision = self._loaded_commit()
+        try:
+            from huggingface_hub import hf_hub_download
+
+            # Every load caches config.json beside the shards (a cached snapshot can still lack
+            # files the load never needed, which snapshot_download refuses offline).
+            config = hf_hub_download(
+                repo_id, "config.json", revision = revision, token = token, local_files_only = True
+            )
+        except Exception:
+            return None
+        path = os.path.dirname(config)
+        return path if os.path.isdir(path) else None
 
     def _package_drafter_merged(
         self,
@@ -2196,6 +2277,7 @@ class ExportBackend:
                 verifier = repo_id,
                 allow_mtp = allow_mtp,
                 token = self._checkpoint_token,
+                **self._loaded_manifest_kwargs(),
             )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
@@ -2211,7 +2293,11 @@ class ExportBackend:
             from core.export.drafter_export import package_lora
             return (
                 package_lora(
-                    self.current_checkpoint, adapter_dir, head_saved, token = self._checkpoint_token
+                    self.current_checkpoint,
+                    adapter_dir,
+                    head_saved,
+                    token = self._checkpoint_token,
+                    **self._loaded_manifest_kwargs(),
                 )
                 is not None
             )
@@ -2241,7 +2327,12 @@ class ExportBackend:
             from core.export.drafter_export import package_gguf
 
             info, files = package_gguf(
-                self.current_checkpoint, merged_dir, gguf_dir, ggufs, token = self._checkpoint_token
+                self.current_checkpoint,
+                merged_dir,
+                gguf_dir,
+                ggufs,
+                token = self._checkpoint_token,
+                **self._loaded_manifest_kwargs(),
             )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
