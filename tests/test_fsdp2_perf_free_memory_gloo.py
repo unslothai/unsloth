@@ -99,3 +99,19 @@ def test_device_free_bytes_reads_mem_get_info_plus_cache(monkeypatch):
     assert perf._device_free_bytes("cpu") is None
     fake.mem_get_info = lambda device = None: (_ for _ in ()).throw(RuntimeError("no driver"))
     assert perf._device_free_bytes("cuda:0") is None
+
+
+def test_raised_fit_fraction_keeps_an_idle_card_fit(monkeypatch):
+    # UNSLOTH_FSDP2_FIT_FRACTION = 0.6 and an idle card (85% usable): the free-memory rule scales with
+    # the fit fraction, so a model at 55% of the card stays in the fit layout.
+    pytest.importorskip("transformers")
+    perf = importlib.import_module("unsloth.models.fsdp2_perf")
+    model = _build(REPO_ID, "AutoModelForCausalLM")
+    probe = perf.plan_fsdp2_layout(model)
+    model_bytes = probe.frozen_bytes + probe.trainable_bytes
+    device = int(model_bytes / 0.55)
+    monkeypatch.setenv("UNSLOTH_FSDP2_FIT_FRACTION", "0.6")
+    monkeypatch.delenv("UNSLOTH_FSDP2_FREE_FIT_FRACTION", raising = False)
+    monkeypatch.setattr(perf, "_device_bytes", lambda device_ = None: device)
+    monkeypatch.setattr(perf, "_device_free_bytes", lambda device_ = None: int(device * 0.85))
+    assert perf.plan_fsdp2_layout(model).fits is True

@@ -24,7 +24,7 @@ shard, and gradients plus optimizer state are sharded.
 Env overrides (read only when native FSDP2 is used): ``UNSLOTH_FSDP2_REPLICATE_FROZEN`` = auto | 1 | 0,
 ``UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD`` = auto | 1 | 0, ``UNSLOTH_FSDP2_PREFETCH`` = 1 | 0,
 ``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory), ``UNSLOTH_FSDP2_FREE_FIT_FRACTION``
-(default 0.5 of free + cached + resident model memory, read after process group init).
+(default max(0.5, fit fraction / 0.8) of free + cached + resident model memory, read after process group init).
 """
 
 from dataclasses import dataclass, field
@@ -164,10 +164,14 @@ def plan_fsdp2_layout(
         fraction = float(os.environ.get("UNSLOTH_FSDP2_FIT_FRACTION", "0.4"))
     except ValueError:
         fraction = 0.4
+    # Scales with `fraction`, so the free-memory rule binds only once > 20% of the card is in use.
+    default_free_fraction = max(0.5, fraction / 0.8)
     try:
-        free_fraction = float(os.environ.get("UNSLOTH_FSDP2_FREE_FIT_FRACTION", "0.5"))
+        free_fraction = float(
+            os.environ.get("UNSLOTH_FSDP2_FREE_FIT_FRACTION", str(default_free_fraction))
+        )
     except ValueError:
-        free_fraction = 0.5
+        free_fraction = default_free_fraction
     model_bytes = layout.frozen_bytes + layout.trainable_bytes
     # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
     # leaving the rest for activations, gradients and optimizer state.
