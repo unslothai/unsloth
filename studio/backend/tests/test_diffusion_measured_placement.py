@@ -171,8 +171,7 @@ def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
 
 
 def test_whole_transformer_tier_streams_resident_encoders(q21_pipe, monkeypatch):
-    """A group plan whose encoders stay resident trades them for the DiT: the denoiser runs every step, the encoders
-    once per prompt, so the encoders stream when that keeps more of the DiT resident."""
+    """Resident encoders stream when that keeps more of the DiT resident (it runs every step, they once per prompt)."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = dm.replace(
         _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False

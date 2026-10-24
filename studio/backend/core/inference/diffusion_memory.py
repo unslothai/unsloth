@@ -3889,11 +3889,9 @@ def refine_plan_from_loaded_weights(
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights; the denoiser has priority over the text encoders.
 
-    The flat plan keeps the encoders resident once its companion floor fits (``_group_fits``), and their bytes then come
-    out of the denoiser's room: just past that budget fewer denoiser MiB stayed resident than one step below it. Like
-    ComfyUI, which loads the text encoder, runs it, and frees it for the sampler (``free_memory`` before the denoiser's
-    ``load_models_gpu``), a streamed-encoder placement is taken whenever it keeps more of the denoiser resident, so
-    more VRAM never keeps less of the denoiser. Plans where the encoders cost the denoiser nothing are unchanged."""
+    The flat plan keeps the encoders resident once their floor fits, and their bytes come out of the denoiser's room.
+    The encoders-streamed plan is taken only when it keeps strictly more of the denoiser resident; plans where the
+    encoders cost nothing are unchanged."""
     refined = _refine_plan_from_loaded_weights(
         pipe, plan, family = family, speed_mode = speed_mode, logger = logger, **labels
     )
