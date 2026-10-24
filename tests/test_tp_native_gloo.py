@@ -81,6 +81,8 @@ def _case_parity(rank, world, tmp, arch, overrides = None):
     tpn.apply_tensor_parallel(model, mesh["tp"])
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
+    with pytest.raises(RuntimeError, match = "generation is not supported"):
+        model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
     from test_fsdp2_native_units import _load_native
 
     try:

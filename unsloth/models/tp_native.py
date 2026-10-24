@@ -873,6 +873,13 @@ def _default_mesh(model):
     return init_device_mesh(device.type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
 
 
+def _refuse_generate(*args, **kwargs):
+    raise RuntimeError(
+        "Unsloth: generation is not supported on a tensor parallel model in v1; save the adapter "
+        "(save_tp_adapter) and generate on one GPU."
+    )
+
+
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
 
@@ -963,6 +970,8 @@ def apply_tensor_parallel(model, tp_mesh = None, plan = None, config: Optional[T
             _set_local_heads(module, region, tp)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
+    # Unsloth's decode paths read config head counts and call the MLP kernels directly, outside the regions.
+    model.__dict__["generate"] = _refuse_generate
     setattr(
         model,
         _TP_FLAG,
