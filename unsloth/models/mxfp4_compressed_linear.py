@@ -611,6 +611,33 @@ def _full_finetuning() -> bool:
     return os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
 
+def _unwrap_offload_after_lazy_decompress(model) -> bool:
+    """A plain transformers load (e.g. reloading a checkpoint Unsloth saved, in the same process) keeps
+    the weights compressed and decompresses them in compressed-tensors' first-forward hook, which also
+    wraps every module's parameters in an OffloadCache. Unsloth's compiled forwards cannot trace that
+    cache ("Unsupported: Data pointer comparison"), so unwrap the same-device ones right after the
+    hook, as Unsloth's own loads do. Real CPU / disk offload is left alone."""
+    if not hasattr(model, "ct_decompress_hook") or hasattr(model, "_unsloth_ct_unwrap_hook"):
+        return False
+
+    def _unsloth_ct_unwrap_hook(module, args):
+        # Pre-hooks run in registration order: still present means the decompress hook did not run.
+        if hasattr(module, "ct_decompress_hook"):
+            return None
+        handle = module.__dict__.pop("_unsloth_ct_unwrap_hook", None)
+        if handle is not None:
+            handle.remove()
+        try:
+            from .loader_utils import _remove_same_device_compressed_tensors_offload
+            _remove_same_device_compressed_tensors_offload(module)
+        except Exception:
+            pass
+        return None
+
+    model._unsloth_ct_unwrap_hook = model.register_forward_pre_hook(_unsloth_ct_unwrap_hook)
+    return True
+
+
 def install_compressed_tensors_keep_packed() -> bool:
     """Stock compressed-tensors loader keeps MXFP4 packed (adopt, then stack experts) under the same
     all-or-nothing plan; declined, full finetuning or explicit dequantize = stock. Idempotent."""
@@ -678,6 +705,7 @@ def install_compressed_tensors_keep_packed() -> bool:
 
     def _process_model_after_weight_loading(self, model, **kwargs):
         result = original_after(self, model, **kwargs)
+        _unwrap_offload_after_lazy_decompress(model)
         blocks = getattr(self, "_unsloth_mxfp4_blocks", None)
         if blocks:
             self._unsloth_mxfp4_blocks = []
