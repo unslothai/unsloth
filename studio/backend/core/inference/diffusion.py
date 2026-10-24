@@ -13119,6 +13119,9 @@ class DiffusionBackend:
             bg = None
             bg_eager = False
             bg_token = None
+            # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
+            aux_pass = bg_compile.auxiliary()
+            restore_eager_gate: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -13154,6 +13157,7 @@ class DiffusionBackend:
                 if (
                     state.speed_deferred
                     and state.generation_count >= 2
+                    and not aux_pass
                     and not lora_requested
                     and not loras_attached
                 ):
@@ -13170,6 +13174,11 @@ class DiffusionBackend:
                 bg_eager = bg is not None and bg.pending()
                 if bg_eager:
                     bg_token = bg_compile._FORCE_EAGER.set(True)
+                if aux_pass:
+                    # The force-eager signal never reaches a whole-module compiled U-Net on its own.
+                    restore_eager_gate = bg_compile.gate_compiled_eager(
+                        cuda_graph._denoiser_modules(state.pipe)
+                    )
 
                 # Apply/adjust LoRA before picking the workflow pipe; from_pipe pipes share the transformer.
                 self._apply_loras(state, loras, cancel)
@@ -14148,7 +14157,9 @@ class DiffusionBackend:
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
                 # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
                 # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
-                if bg_eager:
+                if aux_pass:
+                    pass
+                elif bg_eager:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
                     if _hires_pass is None or not _hires_pass.defer_bg_kick:
@@ -14197,7 +14208,7 @@ class DiffusionBackend:
                 # Components are offloaded and transfer copies dropped; return the pages now.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
-                if _hires_pass is None or not _hires_pass.refine:
+                if (_hires_pass is None or not _hires_pass.refine) and not aux_pass:
                     object.__setattr__(state, "generation_count", state.generation_count + 1)
                 result = {
                     "images": list(images),
@@ -14272,6 +14283,8 @@ class DiffusionBackend:
                     applied_embeddings.restore()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
+                if restore_eager_gate is not None:
+                    restore_eager_gate()
                 if static_skip_pipe is not None:
                     try:
                         reset_static_step_skip(static_skip_pipe, None)
