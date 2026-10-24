@@ -20,8 +20,8 @@ pair >= ``_RESIDENT_MAX_PAIR_S`` stays plain untried. Otherwise a discarded tria
 calls) batches steps 3+ only if the fastest batched step (predict, merge, snapshot, doubled call, split, verify) beats the
 fastest plain pair by ``_MEASURED_FRACTION``, so every render of a shape takes one path (same seed, same image). The
 verdict is latched for the load (memory pressure never re-times it) and stored per (model, weight tensor classes and
-quant scheme, speed tier, offload policy, card, compiled or eager, request shape, runtimes) next to the learned peaks
-(a compute-bound plain verdict, one sample, is not stored), first writer wins: a borderline shape
+quant scheme, speed tier, offload policy, card, compiled or eager, request shape, runtimes) next to the learned peaks,
+first writer wins: a borderline shape
 cannot land on a different path in another process (``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS=0`` keeps it per load;
 ``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE`` names the file). The doubled call needs room for twice a plain call's
 activations; no room, or an OOM, turns the shape plain for the rest of that render.
@@ -265,8 +265,7 @@ VERDICTS_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS"
 VERDICTS_FILE_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE"
 _VERDICTS_FILE = "diffusion_cfg_batch_verdicts.json"
 _VERDICTS_MAX = 512
-# 2: the load identity hashes the weight tensor classes and the transformer quant scheme (version 1 keyed a bf16 load
-# and its torchao INT8 / FP8 load alike); a store of another version reads as empty
+# v1 keyed a bf16 load and its torchao INT8 / FP8 load alike
 _VERDICTS_VERSION = 2
 _BATCH = "batch"
 _PLAIN = "plain"
@@ -301,7 +300,7 @@ def _read_verdicts(path: Any) -> dict:
         or data.get("version") != _VERDICTS_VERSION
         or data.get("runtime") != peaks.runtime_stamp()
     ):
-        return {}  # another key format, or written under other kernels: their timings do not apply
+        return {}
     entries = data.get("entries")
     return entries if isinstance(entries, dict) else {}
 
@@ -378,8 +377,7 @@ def _card_name(latent: Any) -> Optional[str]:
 
 
 def _weight_kind(p: Any) -> str:
-    """A parameter's tensor class and, for a torchao subclass, its non-tensor attributes (fp8 ``mm_config`` carries
-    fast accumulate). torchao ``quantize_`` keeps ``nn.Linear`` and a bf16 ``.dtype``: only this tells the loads apart."""
+    """torchao ``quantize_`` keeps ``nn.Linear`` and a bf16 ``.dtype``: only the tensor class tells the loads apart."""
     data = getattr(p, "data", p)
     kind = type(data) if type(p).__name__ == "Parameter" else type(p)
     names = list(getattr(kind, "tensor_attribute_names", None) or ()) + list(
@@ -395,8 +393,7 @@ def _load_identity(
     speed_mode: Optional[str],
     transformer_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """What a doubled call's timing depends on in the load: class, config, weight dtypes / tensor classes / layer
-    classes, the transformer quant scheme, offload policy and speed tier. Hashed: it is a store key, never read back."""
+    """What a doubled call's timing depends on in the load. Hashed: it is a store key, never read back."""
     import hashlib
     import json
 
@@ -1090,8 +1087,7 @@ def install_cfg_batch(
     logger: Any = None,
 ) -> Optional[str]:
     """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; the decline reason, or None when armed. An optional lever:
-    it never fails a load. ``speed_mode`` is the request's value (None = unset); ``transformer_quant`` the scheme the
-    load engaged (None = bf16), part of the verdict store key."""
+    it never fails a load. ``speed_mode`` is the request's value (None = unset)."""
     try:
         return _install(
             pipe,

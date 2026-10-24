@@ -904,8 +904,7 @@ class _QuantDen(torch.nn.Module):
 
 
 def _torchao_loads():
-    """bf16, INT8-dynamic and FP8-dynamic (PerRow, fast accumulate on and off) loads of one model: the configs
-    ``_make_quant_config`` builds. Same layer classes and the same bf16 ``.dtype`` on every weight."""
+    """bf16, INT8 and FP8 loads of one model, as ``_make_quant_config`` builds them."""
     import copy
 
     tq = pytest.importorskip("torchao.quantization")
@@ -925,7 +924,7 @@ def _torchao_loads():
                 ),
             )
             loads[f"fp8_fast{int(fast)}"] = fp8
-    except Exception:  # noqa: BLE001 - an fp8 quantize_ this torchao cannot run on CPU: int8 still checks the key
+    except Exception:  # noqa: BLE001
         pass
     assert {str(m.a.weight.dtype) for m in loads.values()} == {"torch.bfloat16"}
     return loads
@@ -935,9 +934,7 @@ def test_the_verdict_key_tells_bf16_from_torchao_int8_and_fp8_loads():
     loads = _torchao_loads()
     keys = {name: cb._load_identity(m, "none", None) for name, m in loads.items()}
     assert None not in keys.values()
-    assert len(set(keys.values())) == len(
-        keys
-    ), keys  # a bf16 timing is never reused on a quantized load
+    assert len(set(keys.values())) == len(keys), keys
 
 
 def test_the_verdict_key_includes_the_engaged_transformer_quant():
@@ -979,9 +976,7 @@ def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(path))
     entry = {"k": {"verdict": "plain", "reason": "old key"}}
     path.write_text(json.dumps({"version": 1, "runtime": peaks.runtime_stamp(), "entries": entry}))
-    assert (
-        cb.stored_verdict("k") is None
-    )  # old keys could not tell a bf16 load from its INT8 / FP8 load
+    assert cb.stored_verdict("k") is None
     path.write_text(
         json.dumps(
             {"version": cb._VERDICTS_VERSION, "runtime": peaks.runtime_stamp(), "entries": entry}
