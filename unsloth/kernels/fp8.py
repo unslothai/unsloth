@@ -114,21 +114,23 @@ except:
         "Unsloth: Could not find fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm.triton_quantize_fp8_block"
     )
 
-# torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
-_TORCHAO_BLOCKWISE_GEMM_MODULES = (
-    "torchao.prototype.blockwise_fp8_inference.blockwise_quantization",
-    "torchao.kernel.blockwise_quantization",
-)
-
 
 def _import_torchao_blockwise_gemm():
-    import importlib
+    # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    try:
+        from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
+            blockwise_fp8_gemm,
+        )
 
-    for name in _TORCHAO_BLOCKWISE_GEMM_MODULES:
-        try:
-            return importlib.import_module(name).blockwise_fp8_gemm
-        except Exception:
-            continue
+        return blockwise_fp8_gemm
+    except Exception:
+        pass
+    try:
+        from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
+
+        return blockwise_fp8_gemm
+    except Exception:
+        pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
     return None
 

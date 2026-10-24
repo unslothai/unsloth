@@ -11,19 +11,15 @@ import torch
 
 from unsloth.kernels import fp8 as F8
 
-OLD, NEW = F8._TORCHAO_BLOCKWISE_GEMM_MODULES
+OLD = "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
+NEW = "torchao.kernel.blockwise_quantization"
 
 
 def _stub(monkeypatch, name, fn):
     if fn is None:
-        monkeypatch.setitem(sys.modules, name, None)  # import_module raises ModuleNotFoundError
+        monkeypatch.setitem(sys.modules, name, None)  # the import raises ModuleNotFoundError
     else:
         monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(blockwise_fp8_gemm = fn))
-
-
-def test_module_paths():
-    assert OLD == "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
-    assert NEW == "torchao.kernel.blockwise_quantization"
 
 
 @pytest.mark.parametrize(
