@@ -409,6 +409,18 @@ def test_resume_payload_from_stored_config_keeps_rl_settings():
     assert TrainingStartRequest.model_validate({**stored, "rl_beta": 0.5}).rl_beta == 0.5
 
 
+def test_resume_payload_keeps_python_reward_isolation():
+    stored = {
+        **BASE,
+        "objective": "grpo",
+        "rl_settings": {"python_reward_isolation": "auto"},
+        "reward_specs": [{"name": "exact-answer", "weight": 1.0}],
+    }
+    assert TrainingStartRequest.model_validate(stored).grpo_python_reward_isolation == "auto"
+    explicit = {**stored, "grpo_python_reward_isolation": "required"}
+    assert TrainingStartRequest.model_validate(explicit).grpo_python_reward_isolation == "required"
+
+
 def test_grpo_reward_column_kept_when_it_also_fills_a_role():
     ds = Dataset.from_list([{"question": "2+2?", "solution": "4"}])
     out, roles = format_rl_dataset(
