@@ -432,20 +432,30 @@ def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, t
 
 
 @pytest.mark.parametrize(
-    "version, profile, selected",
+    "reported, profile, selected",
     [
-        ((2026, 10, 7), "work", ".openclaw"),
+        ("{home}/.openclaw/openclaw.json", "work", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "work", ".openclaw-work"),
         (None, "work", ".openclaw"),
-        ((2026, 10, 8), "work", ".openclaw-work"),
-        ((2026, 10, 8), "Default", ".openclaw"),
-        ((2026, 10, 8), "bad/name", ".openclaw"),
+        ("not a path", "work", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "Default", ".openclaw"),
+        ("{home}/.openclaw-work/openclaw.json", "bad/name", ".openclaw"),
     ],
 )
-def test_openclaw_profile_environment_alone(studio, monkeypatch, version, profile, selected):
+def test_openclaw_profile_environment_alone(studio, monkeypatch, reported, profile, selected):
+    home = studio["home"]
+    asked = []
+
+    def check_output(command, **kwargs):
+        asked.append(command[1:])
+        if reported is None:
+            raise start.subprocess.CalledProcessError(1, command)
+        return "[plugins] ready\n" + reported.format(home = home) + "\n"
+
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/bin/" + name)
-    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
     monkeypatch.setenv("OPENCLAW_PROFILE", profile)
-    config = studio["home"] / selected / "openclaw.json"
+    config = home / selected / "openclaw.json"
     config.parent.mkdir()
     config.write_text('{"marker": "active"}\n')
 
@@ -456,7 +466,14 @@ def test_openclaw_profile_environment_alone(studio, monkeypatch, version, profil
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
     assert data["marker"] == "active"
     other = ".openclaw-work" if selected == ".openclaw" else ".openclaw"
-    assert not (studio["home"] / other / "openclaw.json").exists()
+    assert not (home / other / "openclaw.json").exists()
+    assert asked == ([] if profile != "work" else [["config", "file"]])
+
+
+@pytest.mark.parametrize("sentinel", ["null", " undefined "])
+def test_openclaw_home_sentinel_is_unset(studio, monkeypatch, sentinel):
+    monkeypatch.setenv("OPENCLAW_HOME", sentinel)
+    assert start._openclaw_app_target().path == studio["home"] / ".openclaw" / "openclaw.json"
 
 
 def test_openclaw_app_creates_no_allowlist(studio):
