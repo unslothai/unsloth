@@ -27,6 +27,7 @@ from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 from core.inference.llama_admission import (
     LlamaAdmissionLease,
     llama_admission_config_from_env,
+    peek_llama_admission_snapshot,
 )
 from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
 
@@ -2087,11 +2088,22 @@ def get_preemption_controller(key: str) -> PreemptionController:
             controller = PreemptionController(key)
             _CONTROLLERS[key] = controller
             # base_url changes every load. is_idle takes each controller's lock, so the list is
-            # built first.
-            stale = [k for k, c in _CONTROLLERS.items() if k != key and c.is_idle()]
+            # built first. A controller is idle between being fetched for an enrolment and its
+            # register, while that chat already holds a lease on its key's queue: dropped then, the
+            # chat registered on an orphan and later lookups found an empty controller.
+            stale = [
+                k
+                for k, c in _CONTROLLERS.items()
+                if k != key and c.is_idle() and not _admission_in_flight(k)
+            ]
             for k in stale:
                 del _CONTROLLERS[k]
         return controller
+
+
+def _admission_in_flight(key: str) -> bool:
+    snapshot = peek_llama_admission_snapshot(key)
+    return snapshot is not None and (snapshot.active > 0 or snapshot.queued > 0)
 
 
 def reset_preemption_controllers() -> None:
