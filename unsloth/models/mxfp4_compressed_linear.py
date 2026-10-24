@@ -128,7 +128,10 @@ def mxfp4_packed_matmul(
         x.requires_grad or (bias is not None and not transpose and bias.requires_grad)
     ):
         y = _Mxfp4PackedMatmulFunction.apply(x, packed, scale, transpose, bias)
-        return y if out is None else out.copy_(y)
+        # As _linear: a used bias never writes out.
+        if out is None or (bias is not None and not transpose):
+            return y
+        return out.copy_(y)
     return _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias)
 
 

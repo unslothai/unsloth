@@ -310,3 +310,25 @@ def test_compiled_direct_helper_backward(sm75):
     f(x).float().sum().backward()
     want, _ = _grad_oracle(x, packed, scale, None, False)
     _assert_grad_close(x.grad, want)
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_direct_helper_with_grad_keeps_the_out_contract(sm75, bias):
+    # As without grad: a bias returns a new tensor and leaves ``out`` alone; no bias fills ``out``.
+    device = sm75
+    N, K = 512, 256
+    packed, scale = _weight(N, K, device, seed = 11)
+    x = torch.randn(3, K, dtype = torch.float16, device = device).requires_grad_()
+    b = torch.randn(N, dtype = torch.float16, device = device) if bias else None
+    mcl._DENSE_BUDGET[device.index] = [128 * K * x.element_size(), 1024]
+    out = torch.full((3, N), 7.0, dtype = torch.float16, device = device)
+    got = mcl.mxfp4_packed_matmul(x, packed, scale, out = out, bias = b)
+    want = _single_shot(x.detach(), packed, scale, b)
+    torch.testing.assert_close(got.detach(), want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+    if bias:
+        assert got.data_ptr() != out.data_ptr() and bool((out == 7.0).all())
+    else:
+        assert got.data_ptr() == out.data_ptr()
+    got.float().sum().backward()
+    want_x, _ = _grad_oracle(x, packed, scale, b, False)
+    _assert_grad_close(x.grad, want_x)
