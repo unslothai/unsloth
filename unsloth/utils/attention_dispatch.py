@@ -139,6 +139,10 @@ def _cudnn_length_bucket_applies(
 ):
     if not _CUDNN_LENGTH_BUCKET or _CUDNN_CHOICE is None:
         return False
+    # Under context parallelism the tensors can be sequence shards: padding a shard would put unmasked
+    # zero keys inside the global sequence.
+    if get_cp_manager() is not None:
+        return False
     if attn_mask is not None or not is_causal or dropout_p:
         return False
     if not (isinstance(Q, Tensor) and Q.is_cuda and Q.dim() == 4 and K.dim() == 4 and V.dim() == 4):

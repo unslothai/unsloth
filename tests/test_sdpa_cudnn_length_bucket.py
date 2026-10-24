@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Training SDPA on cuDNN attention pads the sequence to a length bucket (bounded cuDNN plans)."""
 
+import types
+
 import pytest
 import torch
 
@@ -64,6 +66,17 @@ def test_applies_only_to_causal_unmasked_square_cuda_calls(monkeypatch):
     assert not ad._cudnn_length_bucket_applies(q, k_short, k_short, is_causal = True)
     assert not ad._cudnn_length_bucket_applies(q.float(), q.float(), q.float(), is_causal = True)
     monkeypatch.setattr(ad, "_CUDNN_LENGTH_BUCKET", 0)
+    assert not ad._cudnn_length_bucket_applies(q, q, q, is_causal = True)
+
+
+@pytest.mark.parametrize("backend", ["ring", "ulysses"])
+def test_not_applied_under_context_parallelism(monkeypatch, backend):
+    # Sequence shards: padding a shard would add unmasked zero keys inside the global sequence.
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    monkeypatch.setattr(ad, "_sdpa_backend_state", lambda *a, **k: (True, ad._CUDNN_CHOICE))
+    monkeypatch.setattr(ad, "get_cp_manager", lambda: types.SimpleNamespace(backend = backend))
+    q = torch.randn(1, 2, 200, 64, device = "cuda", dtype = torch.bfloat16)
     assert not ad._cudnn_length_bucket_applies(q, q, q, is_causal = True)
 
 
