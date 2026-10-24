@@ -5698,6 +5698,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            _refuse_tensor_parallel_for_trainer(model)
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
@@ -5772,6 +5773,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # model_init rebuilds the model when training starts: the new instance needs the same
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
+            _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
             return model
 
@@ -5780,6 +5782,35 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
+
+
+def _is_unsloth_tensor_parallel(model):
+    """Walk the wrapper levels for apply_tensor_parallel's marker (dict lookups, no tp_native import)."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get("_unsloth_tp"):
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = modules.get("base_model") or modules.get("model"), depth + 1
+    return False
+
+
+def _refuse_tensor_parallel_for_trainer(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
+            "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
+            "training loop (unsloth/models/tp_native.py)."
+        )
+
+
+def _refuse_tensor_parallel_for_inference(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
+            "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
+            "save the adapter (save_tp_adapter) and generate on one GPU."
+        )
 
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
