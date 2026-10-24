@@ -258,7 +258,7 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
             <button
               type="button"
               onClick={run(reveal)}
-              className="h-8 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] px-3.5 text-ui-13 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]"
+              className="h-9 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] px-3 text-ui-13 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]"
             >
               {t(revealLabelKey())}
             </button>
@@ -267,7 +267,7 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
             <button
               type="button"
               onClick={run(open)}
-              className="h-8 cursor-pointer rounded-full bg-action px-3.5 text-ui-13 text-background transition-opacity hover:opacity-85"
+              className="h-9 cursor-pointer rounded-full bg-action px-3 text-ui-13 text-background transition-opacity hover:opacity-85"
             >
               {t("browser.downloads.open")}
             </button>

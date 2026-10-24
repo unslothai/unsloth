@@ -807,7 +807,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         >
           <Button
             variant="outline"
-            className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
               // Already on All, the view would keep its search and filters.

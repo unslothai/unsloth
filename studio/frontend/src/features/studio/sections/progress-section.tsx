@@ -295,7 +295,7 @@ export function ProgressSection({
             <Button
               size="sm"
               variant="outline"
-              className="h-8 gap-1.5 text-xs"
+              className="gap-1.5 text-xs"
               onClick={handleExportGguf}
             >
               <HugeiconsIcon icon={FolderExportIcon} className="size-3.5" />
@@ -306,7 +306,7 @@ export function ProgressSection({
             <Button
               size="sm"
               variant="outline"
-              className="h-8 gap-1.5 text-xs"
+              className="gap-1.5 text-xs"
               disabled={enablingDecisionApi}
               onClick={handleUseInDecisionApi}
             >
@@ -682,7 +682,7 @@ function TrainingHeaderActions({
           variant="destructive"
           size="sm"
           className={cn(
-            "h-8 rounded-full px-3.5 text-xs shadow-sm",
+            "rounded-full text-xs shadow-sm",
             stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer",
           )}
           onClick={() => onOpenStopDialog(true)}

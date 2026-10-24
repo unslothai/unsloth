@@ -1203,7 +1203,7 @@ export function ChatSettingsPanel({
                   {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
-                      className="corner-squircle mt-2 h-7 text-ui-12"
+                      className="corner-squircle mt-2 text-ui-12"
                       onClick={handleMtpUpdate}
                       disabled={llamaUpdating}
                       data-test-id="mtp-update-button"

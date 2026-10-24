@@ -111,7 +111,7 @@ function UseModelScopeButton() {
             .catch(() => setFailed(true))
             .finally(() => setSwitching(false));
         }}
-        className="h-8 rounded-full"
+        className="rounded-full"
       >
         {t("picker.useModelScope")}
       </Button>
@@ -131,7 +131,7 @@ function UpdateTokenButton() {
     <Button
       size="sm"
       onClick={() => openSettings("general")}
-      className="h-8 rounded-full"
+      className="rounded-full"
     >
       {t("picker.updateToken")}
     </Button>

@@ -267,7 +267,7 @@ export function CloneFooter({
             <Button
               type="button"
               variant="outline"
-              className="h-10 px-4 text-ui-13"
+              className="text-ui-13"
               disabled={!canSave}
               onClick={() => setSaving(true)}
             >

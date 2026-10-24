@@ -1160,7 +1160,6 @@ export function ResourcesTab() {
             <Button
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!hfCache?.editable || cacheSaving}
               onClick={() => void changeCacheFolder()}
             >
