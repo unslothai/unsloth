@@ -156,7 +156,9 @@ def notices(
     ours = studio_version if studio_version is not None else _studio_version()
     if isinstance(theirs, str) and ours and theirs != ours:
         out.append(f"Made with Unsloth Studio {theirs[:40]}; you have {ours[:40]}.")
-    for model in (stamp_.get("models") or [])[:MAX_PINS]:
+    # Imported metadata is free-form: anything but a list of objects names no models.
+    models = stamp_.get("models")
+    for model in (models if isinstance(models, list) else [])[:MAX_PINS]:
         if not isinstance(model, dict) or not isinstance(model.get("repo"), str):
             continue
         made = model.get("revision")
@@ -169,7 +171,8 @@ def notices(
                 f"Made with {name} revision {made[:12]}; you have {have[:12]}. Outputs may differ."
             )
         elif have and isinstance(model.get("file"), str):
-            mine = cached_gguf(cache, model["repo"], have, model.get("variant"))
+            variant = model.get("variant") if isinstance(model.get("variant"), str) else None
+            mine = cached_gguf(cache, model["repo"], have, variant)
             if mine and mine != model["file"]:
                 out.append(f"Made with {name} file {model['file'][:200]}; you have {mine[:200]}.")
     return out

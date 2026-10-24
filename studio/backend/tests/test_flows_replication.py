@@ -88,6 +88,22 @@ def test_files_without_a_stamp_import_as_before(tmp_path):
     assert replication.notices({"meta": {"replication": "junk"}}, tmp_path, "x") == []
 
 
+def test_malformed_replication_metadata_imports_without_notices(tmp_path):
+    cache = _cache(tmp_path, QWEN, SHA_B, ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])
+    for models in ({"a": 1}, 7, "junk", [None, 3]):
+        d = {"meta": {"replication": {"models": models}}}
+        assert replication.notices(d, cache, "x") == []
+    # Same revision, so the file is compared: a variant that is not text names no file.
+    d = {
+        "meta": {
+            "replication": {
+                "models": [{"repo": QWEN, "revision": SHA_B, "file": "x.gguf", "variant": 5}]
+            }
+        }
+    }
+    assert replication.notices(d, cache, "x") == []
+
+
 @run_async
 async def test_every_export_mode_is_stamped_and_still_imports(tmp_path, monkeypatch):
     cache = _cache(tmp_path, QWEN, SHA_A, ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])
