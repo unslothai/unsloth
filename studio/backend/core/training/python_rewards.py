@@ -315,6 +315,8 @@ class RewardWorker:
 
     def close(self) -> None:
         self._closed.set()
+        # The hook holds this worker (and its reward code) until exit; Try it starts many.
+        atexit.unregister(self.close)
         proc, self._proc = self._proc, None
         if proc is not None and self._workdir:
             try:

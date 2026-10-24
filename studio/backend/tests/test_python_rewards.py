@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import gc
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -68,6 +70,20 @@ def worker_factory():
     yield make
     for worker in started:
         worker.close()
+
+
+def test_a_closed_worker_is_not_kept_alive_by_its_atexit_hook():
+    # Studio is long-lived: a hook per Try it worker would keep every closed worker and its code.
+    specs = [_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")]
+    worker = RewardWorker(specs, mode = "full").start()
+    worker.close()
+    ref = weakref.ref(worker)
+    del worker
+    deadline = time.monotonic() + 5
+    while ref() is not None and time.monotonic() < deadline:
+        gc.collect()
+        time.sleep(0.05)
+    assert ref() is None
 
 
 def test_python_reward_round_trips_through_markdown():
