@@ -104,3 +104,43 @@ def test_named_resident_explicit_automatic_context_wins(monkeypatch):
         BASE, "key", MODEL, start.LoadOptions(supplied = frozenset({"max_seq_length"}))
     )
     assert payloads == [{"model_path": MODEL, "max_seq_length": 0, "n_batch": 128}]
+
+
+def _named_reload_payload(monkeypatch, status, options):
+    monkeypatch.setattr(start, "_loaded_models", lambda *a: [{"id": MODEL, "loaded": True}])
+    monkeypatch.setattr(start, "_model_status", lambda *a: status)
+    payloads = []
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: payloads.append(payload)
+        or {"status": "loaded", "model": model},
+    )
+    start._resolve_model(BASE, "key", MODEL, options)
+    return payloads[0]
+
+
+def test_named_resident_extras_left_to_server_inheritance(monkeypatch):
+    status = {
+        "is_gguf": True,
+        "gguf_variant": "Q8_0",
+        "requested_context_length": 4096,
+        "requested_llama_extra_args": ["--ctx-size", "8192", "--top-k", "20"],
+        "requested_n_batch": 128,
+    }
+    payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(max_seq_length = 32768))
+    assert "llama_extra_args" not in payload
+    assert payload["max_seq_length"] == 32768
+    assert payload["n_batch"] == 128
+
+
+@pytest.mark.parametrize("effective, carried", [(2, False), (4, True)])
+def test_named_resident_slots_cut_for_drafter_stay_defaulted(monkeypatch, effective, carried):
+    status = {
+        "is_gguf": True,
+        "gguf_variant": "Q4_K_M",
+        "requested_parallel_slots": 4,
+        "parallel_slots": effective,
+    }
+    payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(gguf_variant = "Q4_K_M"))
+    assert ("n_parallel" in payload) is carried

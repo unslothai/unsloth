@@ -2462,7 +2462,18 @@ def _resolve_model(
             )
         if attach_public_id is not None or loaded_match is not None:
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
-            payload.update(_resident_runtime_payload(status_snapshot, payload))
+            carried = _resident_runtime_payload(status_snapshot, payload)
+            if attach_public_id is None:
+                # Omitted extras are inherited server-side with flags shadowing these overrides stripped; a copy would let its --ctx-size beat --context-length.
+                carried.pop("llama_extra_args", None)
+                # Slots Auto cut to keep a drafter must stay defaulted: an explicit count makes the same command reload (_runtime_matches_intent).
+                slots, effective = (
+                    status_snapshot.get("requested_parallel_slots"),
+                    status_snapshot.get("parallel_slots"),
+                )
+                if slots is not None and effective is not None and effective < slots:
+                    carried.pop("n_parallel", None)
+            payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
