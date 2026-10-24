@@ -798,21 +798,11 @@ def _sync_replicated_grads(
     mesh = None,
     buffers = None,
 ):
-    """One all_reduce per (device, reduce dtype) over the fixed parameter list, in its order, issued
-    by every rank: a gradient this rank did not produce counts as zeros, and a per-parameter
-    "has a gradient" flag rides along so a parameter no rank used keeps grad None (as with DDP).
-    Sums in float32 (float64 stays float64), as FSDP2's reduce_dtype does: two fp16 gradients of
-    40000 overflow an fp16 sum although their mean is finite. Linear, so averaging the running
-    accumulation after each micro-step equals averaging the accumulated sum once. Over the ranks of
-    `mesh`, the model's own (mesh_all_reduce), not the whole world.
-
-    No host sync when this rank holds a gradient for every parameter of a group (the usual case,
-    e.g. fp32 norms in full fine-tuning): its own flag already proves each was used, so the summed
-    flags are only read (one device sync) when some local gradient is None. Flags are set with
-    fill_, not item assignment (`t[i] = 1` on CUDA copies a host scalar, one sync per parameter).
-    `buffers`, a dict kept by the caller, holds one flat buffer per (device, dtype), reused while
-    the group's parameters and sizes are unchanged. Gradients never alias it: they are written by
-    copy_ or a fresh copy, so the next sync (the next micro-step) may overwrite it."""
+    """Average gradients over `mesh` (DDP-style), one all_reduce per (device, reduce dtype), entered
+    by every rank: a missing local gradient counts as zeros, and a "has a gradient" flag keeps grad
+    None for a parameter no rank used. Sums in float32 (fp16 sums overflow). The summed flags are
+    read (a host sync) only when some local gradient is None. `buffers` caches one flat buffer per
+    (device, dtype); gradients never alias it."""
     groups = {}
     for p in params:
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
@@ -840,15 +830,13 @@ def _sync_replicated_grads(
             if g is not None:
                 flat[offset : offset + n].copy_(g.detach().reshape(-1))
                 if not local_all:
-                    # Not flags[i] = 1: on CUDA that copies a host scalar (a sync).
+                    # Not flags[i] = 1: that is a host sync on CUDA.
                     flags[i].fill_(1)
             else:
                 flat[offset : offset + n].zero_()
             offset += n
         world = mesh_all_reduce(flat, mesh, dist)
         flat[:total].div_(world)
-        # A local gradient proves the parameter was used, so the summed flags (a device to host
-        # sync) are read only when some local gradient is None.
         used = None if local_all else flags.tolist()
         offset = 0
         for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
@@ -862,10 +850,8 @@ def _sync_replicated_grads(
 
 
 def _fsdp_grad_sync_deferred(model, cache):
-    """True when every FSDP2 parameter group under `model` has gradient reduction turned off
-    (set_requires_gradient_sync(False): fsdp2_native._no_grad_sync in the GA modes skip / defer,
-    accelerate's no_sync), i.e. this backward is a non-final micro-batch whose sharded gradients
-    are only accumulated. False when no group is found (nothing to follow: sync every backward)."""
+    """True when every FSDP2 param group has set_requires_gradient_sync(False), i.e. a non-final
+    micro-batch. False when no group is found (sync every backward)."""
     states = cache.get("fsdp_states")
     if states is None:
         states = []
@@ -901,17 +887,11 @@ def _fsdp_grad_sync_deferred(model, cache):
 
 
 def reduce_unsharded_trainable_grads(model):
-    """Trainable parameters FSDP2 does not manage (e.g. in `ignored_modules`) get no gradient
-    reduction, so every rank would step on its own gradient and the replicas drift apart. Average
-    their gradients over the model's mesh ranks like DDP, once per backward, at its end, on every
-    rank: a per-parameter hook would make a rank that did not use the parameter (a branch, a routed
-    MoE expert) skip the collective the others enter, and hang. The sync is queued as an autograd
-    engine callback from a hook on `model`'s forward outputs (and, as a fallback, on each of these
-    parameters), so it runs after all gradients are accumulated and before the optimizer step /
-    clip. Like DDP's no_sync, it follows FSDP2's own gradient sync flag: a backward run with
-    set_requires_gradient_sync(False) (the GA modes skip / defer) only accumulates locally, and the
-    first synced backward averages the accumulated sum once (the mean of the sums equals the sum of
-    the means; same divide by the mesh size). Returns the names."""
+    """Average gradients of trainable params FSDP2 does not manage (e.g. `ignored_modules`) over the
+    mesh, else replicas drift. Runs once per backward as an autograd engine callback on every rank;
+    a per-parameter hook would hang when a rank skips the parameter (branch, routed MoE expert).
+    Skipped while FSDP2 grad sync is off (GA); the first synced backward averages the accumulated
+    sum. Returns the names."""
     dist = _dist()
     DTensor = _dtensor_class()
     if dist is None or DTensor is None:
