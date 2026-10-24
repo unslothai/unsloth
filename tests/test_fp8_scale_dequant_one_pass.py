@@ -199,3 +199,17 @@ def test_compiled_dequant_reads_no_device_capability(F, monkeypatch):
     out, ops = _compiled_graph_ops(lambda x, y: F.weight_dequant(x, y, torch.float16), q, s)
     assert any("fp8_scale_dequant" in op for op in ops), ops
     _assert_same_bits(out, _reference(q, s, torch.float16))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("layout", ["row", "tensor"])
+def test_inductor_fullgraph_dequant_matches_eager(F, dtype, layout):
+    # Real Inductor, no forced gate. On T4, bf16 graphs are skipped by Inductor, so routing them to the
+    # opaque op made Dynamo trace its body and fail fullgraph (device_count()); fp16 must stay one graph.
+    q, s = _weight(96, 160)
+    if layout == "tensor":
+        s = s[5:6]
+    ref = _reference(q, s.view(1, 1) if layout == "tensor" else s, dtype)
+    torch._dynamo.reset()
+    out = torch.compile(lambda a, b: F.weight_dequant(a, b, dtype), fullgraph = True)(q, s)
+    _assert_same_bits(out, ref)
