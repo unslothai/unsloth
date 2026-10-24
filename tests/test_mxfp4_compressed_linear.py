@@ -85,6 +85,8 @@ DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
 def _cuda_amp_dtype():
     # CUDA autocast refuses bf16 below sm_80 (T4), where Unsloth trains in fp16.
     return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
+
+
 _E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
 
@@ -215,7 +217,7 @@ def test_autocast_runs_the_matmul_in_the_autocast_dtype():
     module.weight_packed.data.copy_(packed)
     module.weight_scale.data.copy_(scale)
     if amp == torch.float16:
-        module.weight_scale.data.clamp_(118, 126)   # fp16's range: the decode stays finite and exact
+        module.weight_scale.data.clamp_(118, 126)  # fp16's range: the decode stays finite and exact
     ref = nn.Linear(64, 64, bias = False, device = "cuda", dtype = torch.float32)
     ref.weight.data.copy_(module.dequantize_weight(torch.float32))
     x = torch.randn(4, 64, device = "cuda", requires_grad = True)
@@ -489,7 +491,11 @@ def test_fast_lora_paths_get_the_packed_bytes_and_a_decoder_not_a_16bit_weight()
     assert not has_mxfp4_base(proj) and not has_mxfp4_base(model.base_model.model.dense)
 
 
-def _mlp_lora_pair(hidden, inter, dtype = torch.bfloat16):
+def _mlp_lora_pair(
+    hidden,
+    inter,
+    dtype = torch.bfloat16,
+):
     peft = pytest.importorskip("peft")
 
     class MLP(nn.Module):
@@ -506,9 +512,7 @@ def _mlp_lora_pair(hidden, inter, dtype = torch.bfloat16):
         module.weight_scale.data.clamp_(118, 126)
     dense = []
     for module in packed:
-        linear = nn.Linear(
-            module.in_features, module.out_features, bias = False, dtype = dtype
-        )
+        linear = nn.Linear(module.in_features, module.out_features, bias = False, dtype = dtype)
         linear.weight.data.copy_(module.dequantize_weight())
         dense.append(linear)
     models = []
@@ -548,7 +552,7 @@ def test_fused_lora_mlp_on_a_packed_base_matches_the_dense_base(rows):
                 type("O", (), {"o_proj": mlp.down_proj})(), y.new_ones(1, rows, 128) * 0.01
             )
         # fp16 grads of this loss pass 65504; a power-of-two seed scale is exact and keeps them finite.
-        (y.float().square().sum() * (2.0 ** -14 if amp == torch.float16 else 1.0)).backward()
+        (y.float().square().sum() * (2.0**-14 if amp == torch.float16 else 1.0)).backward()
         lora_grads = [p.grad.float() for n, p in sorted(mlp.named_parameters()) if "lora_" in n]
         results.append((y.float(), xa.grad.float(), lora_grads))
     (ya, ga, la), (yb, gb, lb) = results
