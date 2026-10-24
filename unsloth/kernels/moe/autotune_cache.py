@@ -572,8 +572,7 @@ def _fit_config_to_smem(
     # Halving a power-of-two tile keeps it dividing N / K.
     def fits():
         return (
-            _estimate_smem(kind, config, act_bytes, weight_bytes, capability, pipelined_dW)
-            <= smem
+            _estimate_smem(kind, config, act_bytes, weight_bytes, capability, pipelined_dW) <= smem
         )
 
     before = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)

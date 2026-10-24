@@ -587,7 +587,13 @@ def _card_smem(index):
 
 
 def _per_expert_dW_stages(
-    device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined = False
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
 ):
     """Largest num_stages <= the requested one at which the per-expert dW kernel fits ``device`` shared memory, or
     None (use the legacy kernel). Unpermuted operands (``pipelined``) multi-buffer X per stage, so 4 stages of the
@@ -634,7 +640,13 @@ def _per_expert_dW_stages(
 
 
 def _per_expert_dW_fits(
-    device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined = False
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
 ):
     """False when this tile overflows ``device`` shared memory in the per-expert dW kernel at every stage count.
 
@@ -647,7 +659,9 @@ def _per_expert_dW_fits(
     )
 
 
-def _fit_dW_tiles_to_card(device, act_bytes, pipelined, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+def _fit_dW_tiles_to_card(
+    device, act_bytes, pipelined, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
     """Shrunk copy of a dW tile that raised OutOfResources on ``device`` (an explicit tile sized for a bigger card,
     e.g. 128x256x256 on a 64 KiB T4, where the legacy kernel overflows too). Only called after a launch failed, so a
     tile the estimate over-counts but that launches is never touched."""

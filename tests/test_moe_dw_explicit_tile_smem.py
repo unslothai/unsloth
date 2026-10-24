@@ -154,7 +154,6 @@ PIPELINED_SHARED = {
 @pytest.mark.parametrize("capability", list(PIPELINED_SHARED))
 def test_pipelined_estimate_covers_compiled_shared_memory(gg, capability):
     from unsloth.kernels.moe.autotune_cache import _estimate_smem
-
     for (M, N, K, stages), shared in PIPELINED_SHARED[capability].items():
         tile = types.SimpleNamespace(
             BLOCK_SIZE_M = M, BLOCK_SIZE_N = N, BLOCK_SIZE_K = K, num_stages = stages
