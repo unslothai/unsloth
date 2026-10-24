@@ -35,6 +35,9 @@ _NO_CAPTURE: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_no_record", default = False
 )
+_AUXILIARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_diffusion_auxiliary_pass", default = False
+)
 
 
 def enabled() -> bool:
@@ -65,6 +68,67 @@ def no_record():
         yield
     finally:
         _NO_RECORD.reset(token)
+
+
+def auxiliary() -> bool:
+    """True inside an ``auxiliary_pass`` (a Detailer crop inpaint)."""
+    return _AUXILIARY.get()
+
+
+@contextlib.contextmanager
+def auxiliary_pass():
+    """A follow-up generation at a data-dependent size (the Detailer's crop inpaints): eager, no CUDA-graph capture,
+    nothing recorded for the background compile, not counted as a generation. Each face box is its own size, so on a
+    static compile (SDXL U-Net) every detection was a fresh whole-module compile, and its graphs used up the per-module
+    cap the main render's resolutions need. ComfyUI's FaceDetailer runs these crops eager too."""
+    tokens = (_AUXILIARY.set(True), _NO_RECORD.set(True), _FORCE_EAGER.set(True))
+    try:
+        yield
+    finally:
+        _FORCE_EAGER.reset(tokens[2])
+        _NO_RECORD.reset(tokens[1])
+        _AUXILIARY.reset(tokens[0])
+
+
+def gate_compiled_eager(modules: Any) -> Callable[[], None]:
+    """Route each ``Module.compile``d module (a whole-compiled U-Net) to its eager ``_call_impl`` while
+    ``force_eager`` is set; returns the restore. Without it ``force_eager`` only reaches guarded regional blocks and
+    graph wrappers, whose eager path still calls the compiled U-Net."""
+    installed: list = []
+    for module in modules or ():
+        inner = getattr(module, "_compiled_call_impl", None)
+        if inner is None:
+            continue
+        eager = getattr(module, "_call_impl", None)
+        if eager is None:
+            continue
+
+        def gate(
+            *args: Any,
+            _inner: Any = inner,
+            _eager: Any = eager,
+            **kwargs: Any,
+        ) -> Any:
+            if _FORCE_EAGER.get():
+                return _eager(*args, **kwargs)
+            return _inner(*args, **kwargs)
+
+        try:
+            module._compiled_call_impl = gate
+        except Exception:  # noqa: BLE001 - not a settable module
+            continue
+        installed.append((module, gate, inner))
+
+    def restore() -> None:
+        for module, gate, inner in installed:
+            try:
+                if getattr(module, "_compiled_call_impl", None) is gate:
+                    module._compiled_call_impl = inner
+            except Exception:  # noqa: BLE001
+                pass
+        installed.clear()
+
+    return restore
 
 
 @contextlib.contextmanager

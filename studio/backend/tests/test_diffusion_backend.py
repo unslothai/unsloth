@@ -1206,6 +1206,35 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
     assert len(engaged) == 1
 
 
+def test_detailer_passes_neither_count_nor_engage_deferred_speed(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_bg_compile as bg
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    with bg.auxiliary_pass():
+        for _ in range(3):
+            backend.generate(prompt = "face")
+    assert engaged == [], "a Detailer crop engaged the compile mid-pass"
+    assert backend._state.generation_count == 2
+    backend.generate(prompt = "three")
+    assert engaged == [2]
+
+
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
     from core.inference import diffusion as dmod
 
