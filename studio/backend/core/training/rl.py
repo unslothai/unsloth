@@ -157,6 +157,14 @@ def _as_messages(value: Any, role: str) -> list[dict]:
     return [{"role": role, "content": "" if value is None else str(value)}]
 
 
+def prompt_turns(value: Any, system_prompt: Optional[str] = None) -> list[dict]:
+    """A row's prompt as the reward sees it in training: its turns, the system prompt first."""
+    prompt = _as_messages(value, "user")
+    if system_prompt and not any(m["role"] == "system" for m in prompt):
+        prompt = [{"role": "system", "content": str(system_prompt)}] + prompt
+    return prompt
+
+
 def _assistant_turns(value: Any) -> list[dict]:
     # Preference datasets often store chosen/rejected as the whole conversation; keep only the reply.
     messages = _as_messages(value, "assistant")
@@ -186,12 +194,10 @@ def format_rl_dataset(
     ]
 
     def convert(row: dict) -> dict:
-        prompt = _as_messages(row[roles["prompt"]], "user")
         system = row.get(roles["system"]) if "system" in roles else None
-        system = system or system_prompt
-        if system and not any(m["role"] == "system" for m in prompt):
-            prompt = [{"role": "system", "content": str(system)}] + prompt
-        out: dict[str, Any] = {"prompt": prompt}
+        out: dict[str, Any] = {
+            "prompt": prompt_turns(row[roles["prompt"]], system or system_prompt)
+        }
         if objective == "grpo":
             if "answer" in roles:
                 answer = row[roles["answer"]]

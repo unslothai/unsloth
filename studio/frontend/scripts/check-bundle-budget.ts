@@ -417,8 +417,10 @@ export const BUDGET = {
   // 6,961,142 B raw, 2,088,616 -> 2,097,596 B transfer against d4dab132e0, one machine and build, Node 24,
   // 99 -> 101 chunks). Lazy-loading the four RL wizard sections measured worse (+1,761 B raw, +4,380 B
   // transfer, 105 chunks): their shared imports split into extra startup chunks. Raised by the growth.
-  transferBytes: 2_097_628,
-  rawBytes: 6_961_284,
+  // Its Try it box sending row 1's prompt turns and the system prompt (#12995) adds 120 B raw / 42 B
+  // transfer (6,961,142 -> 6,961,262 B raw, 2,097,596 -> 2,097,638 B transfer, same machine and build).
+  transferBytes: 2_097_670,
+  rawBytes: 6_961_404,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

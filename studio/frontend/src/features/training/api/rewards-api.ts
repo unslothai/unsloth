@@ -77,13 +77,21 @@ export async function previewRewards(
   completion: string,
   reference: string | null,
   row: Record<string, unknown> | null = null,
-  prompt: string | null = null,
+  prompt: string | Record<string, unknown>[] | null = null,
+  systemPrompt: string | null = null,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rewards, completion, reference, row, prompt }),
+      body: JSON.stringify({
+        rewards,
+        completion,
+        reference,
+        row,
+        prompt,
+        system_prompt: systemPrompt,
+      }),
     }),
   );
 }

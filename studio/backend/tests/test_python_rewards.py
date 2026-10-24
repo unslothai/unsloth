@@ -597,3 +597,25 @@ def test_reward_workers_start_under_file_size_and_descriptor_limits():
     ).stdout.split()
     assert int(out[0]) == python_rewards.REWARD_FSIZE_BYTES
     assert int(out[1]) <= python_rewards.REWARD_NOFILE
+
+
+def test_a_preview_prompt_has_the_turns_training_gives_the_reward(client):
+    # Training hands rewards the formatted prompt: the row's own turns, the system prompt first.
+    md = _python_md(
+        "roles",
+        "def reward(prompts, completions, **kw):\n"
+        "    return [float(len(prompts[0]) * 10 + (prompts[0][0]['role'] == 'system'))]\n",
+    )
+    turns = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    payload = {
+        "rewards": [{"markdown": md}],
+        "completion": "x",
+        "prompt": turns,
+        "system_prompt": "be brief",
+    }
+    trained = rl.format_rl_dataset(
+        __import__("datasets").Dataset.from_list([{"question": turns, "answer": "a"}]),
+        "grpo",
+        system_prompt = "be brief",
+    )[0][0]["prompt"]
+    assert _preview_as(client, "acct-a", payload) == len(trained) * 10 + 1 == 31

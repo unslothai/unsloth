@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictStr
@@ -67,7 +67,15 @@ class RewardPreviewRequest(BaseModel):
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
     # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
     row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 64)
-    prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # The mapped prompt cell as the dataset holds it (text or chat turns), plus the system prompt
+    # the run adds, so a reward sees the same turns as in training.
+    prompt: Optional[
+        Union[
+            Annotated[StrictStr, Field(max_length = 16 * 1024)],
+            Annotated[list[dict[StrictStr, JsonValue]], Field(max_length = 64)],
+        ]
+    ] = None
+    system_prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
     # Same choice as a run's grpo_python_reward_isolation: no OS sandbox, no Python preview.
     python_reward_isolation: Literal["required", "auto"] = "required"
 
@@ -136,6 +144,7 @@ def preview_rewards(
             payload.prompt,
             owner = current_account_id(),
             python_isolation = payload.python_reward_isolation,
+            system_prompt = payload.system_prompt,
         )
     except RewardError as exc:
         raise _http_error(exc) from exc

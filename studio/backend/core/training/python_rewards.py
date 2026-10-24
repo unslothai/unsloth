@@ -401,9 +401,10 @@ def preview_python_scores(
     specs: list[dict],
     text: str,
     row: dict[str, Any],
-    prompt: Optional[str] = None,
+    prompt: Any = None,
     owner: Optional[str] = None,
     mode: str = "required",
+    system_prompt: Optional[str] = None,
 ) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
     since the box re-scores on every edit. ``mode`` is the os_sandbox mode, as in training:
@@ -434,9 +435,12 @@ def preview_python_scores(
             other["timer"].cancel()
         if other["worker"] is not None:
             other["worker"].close()
-    prompts = [[{"role": "user", "content": prompt or ""}]]
+    from core.training.rl import _REWARD_CALL_KEYS, prompt_turns
+
+    prompts = [prompt_turns(prompt, system_prompt)]
     completions = [[{"role": "assistant", "content": text}]]
-    kwargs = {k: [v] for k, v in (row or {}).items()}
+    # As format_rl_dataset drops them: TRL passes these names to the reward itself.
+    kwargs = {k: [v] for k, v in (row or {}).items() if k not in _REWARD_CALL_KEYS}
     failed = True
     try:
         with entry["start"]:

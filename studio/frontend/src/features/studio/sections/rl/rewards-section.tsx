@@ -329,15 +329,44 @@ function CodeDialog({
   );
 }
 
+/** Row 1's prompt cell as stored (chat turns stay turns) and the system prompt training adds
+ *  (rl.py prompt_turns), so a reward that reads prompts scores the same as in a run. */
+function previewPrompt(
+  row: Record<string, unknown> | null,
+  mapping: Record<string, string>,
+  configured: string,
+): {
+  prompt: string | Record<string, unknown>[] | null;
+  systemPrompt: string | null;
+} {
+  const column = (role: string) =>
+    Object.entries(mapping).find(([, r]) => r === role)?.[0];
+  const promptColumn = column("prompt");
+  const systemColumn = column("system");
+  const cell = promptColumn ? row?.[promptColumn] : undefined;
+  const turns =
+    Array.isArray(cell) &&
+    cell.every((m) => typeof m === "object" && m !== null);
+  const own = systemColumn ? previewCell(row?.[systemColumn]) : "";
+  return {
+    prompt: turns
+      ? (cell as Record<string, unknown>[])
+      : previewCell(cell) || null,
+    systemPrompt: own || configured.trim() || null,
+  };
+}
+
 export function RewardsSection(): ReactElement {
   const t = useT();
-  const { rewards, setRewards, mapping } = useTrainingConfigStore(
-    useShallow((s) => ({
-      rewards: s.grpoRewards,
-      setRewards: s.setGrpoRewards,
-      mapping: s.rlRoleMapping,
-    })),
-  );
+  const { rewards, setRewards, mapping, grpoSystemPrompt } =
+    useTrainingConfigStore(
+      useShallow((s) => ({
+        rewards: s.grpoRewards,
+        setRewards: s.setGrpoRewards,
+        mapping: s.rlRoleMapping,
+        grpoSystemPrompt: s.grpoSystemPrompt,
+      })),
+    );
   const { library, libraryError, refreshLibrary, previewRow } =
     useRlWorkspaceStore(
       useShallow((s) => ({
@@ -372,9 +401,6 @@ export function RewardsSection(): ReactElement {
     ? previewCell(previewRow?.[answerColumn])
     : "";
   const reference = referenceEdit ?? (rowReference || "72");
-  const promptColumn = Object.entries(mapping).find(
-    ([, role]) => role === "prompt",
-  )?.[0];
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -396,15 +422,18 @@ export function RewardsSection(): ReactElement {
         previewRow ?? {},
         answerColumn || !previewRow ? reference : null,
       );
-      const prompt = promptColumn
-        ? previewCell(previewRow?.[promptColumn])
-        : "";
+      const { prompt, systemPrompt } = previewPrompt(
+        previewRow,
+        mapping,
+        grpoSystemPrompt,
+      );
       const res = await previewRewards(
         rewards,
         completion,
         reference || null,
         row,
-        prompt || null,
+        prompt,
+        systemPrompt,
       );
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
@@ -419,7 +448,15 @@ export function RewardsSection(): ReactElement {
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-  }, [rewards, completion, reference, previewRow, promptColumn, answerColumn]);
+  }, [
+    rewards,
+    completion,
+    reference,
+    previewRow,
+    answerColumn,
+    mapping,
+    grpoSystemPrompt,
+  ]);
 
   // Score live, a beat after the last edit.
   useEffect(() => {
