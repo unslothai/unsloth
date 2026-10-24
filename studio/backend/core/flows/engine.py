@@ -61,6 +61,21 @@ MODEL_SLOT = {
 }
 JOIN_TYPES = ("logic.merge",)
 LOAD_KIND = {"chat": "llm", "vision": "llm", "tts": "tts", "audio": "audio"}
+# Model kinds a run may load ahead of the step that needs them, while CPU steps still run.
+PREFETCH_KINDS = ("chat", "vision", "tts", "audio", "image", "video")
+# Blocks whose untaken branch skips what follows: a step behind one may never run, so nothing loads for it early.
+BRANCH_TYPES = ("logic.if", "logic.switch")
+# Asking Studio what is loaded must never hold up a run start.
+RESIDENT_PROBE_S = 5.0
+
+
+def prefetch_enabled() -> bool:
+    return os.environ.get("UNSLOTH_FLOWS_PREFETCH", "1").strip().lower() not in (
+        "0",
+        "false",
+        "off",
+        "no",
+    )
 
 
 class _Skip:
@@ -192,6 +207,12 @@ class RunState:
     key_id: Optional[int] = None
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
+    # What each slot held when the run started, so "unload when the run ends" only frees models this run loaded.
+    initial_resident: dict[str, list[str]] = field(default_factory = dict)
+    # Cacheable nodes that computed this run: a step behind one will not be a cache hit, so loading ahead pays off.
+    fresh: set[str] = field(default_factory = set)
+    prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
+    prefetched: int = 0
     gpu_ops: int = 0
     # A Run Flow child counts its GPU steps against the run that called it.
     gpu_parent: Optional["RunState"] = field(default = None, repr = False)
@@ -583,6 +604,20 @@ class NodeContextImpl:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
+class _PrefetchContext(NodeContextImpl):
+    """A step's context for loading its model early: the step's status and progress stay untouched until it runs."""
+
+    def set_status(
+        self,
+        status: str,
+        message: Optional[str] = None,
+    ) -> None:
+        pass
+
+    def progress(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+
 class FlowEngine:
     def __init__(self) -> None:
         self.runs: dict[str, RunState] = {}
@@ -907,6 +942,7 @@ class FlowEngine:
             rs.key_id = key_id
             rs.status = "running"
             flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
+            await self._seed_resident(rs)
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
             # Re-rolling a For Each re-rolls what it runs: its body, nested loops included.
@@ -943,6 +979,7 @@ class FlowEngine:
                 if not scope.done():
                     scope.cancel()
                     await asyncio.gather(scope, return_exceptions = True)
+                await self._stop_prefetch(rs)
                 flusher.cancel()
                 rs.flush()
             if rs.options.get("bake") and not rs.cancelled:
@@ -964,6 +1001,8 @@ class FlowEngine:
             logger.exception("flows: run %s crashed", rs.id)
             rs.status, rs.error = "failed", f"The run stopped: {exc}"
         finally:
+            await self._stop_prefetch(rs)
+            await self._unload_after_run(rs)
             await asyncio.to_thread(self.revoke_key, rs.key_id)
             rs.finished_at = time.monotonic()
             flows_db.update_run(
@@ -1050,6 +1089,8 @@ class FlowEngine:
                     gpu_running += 1
                 else:
                     cpu_running += 1
+            if iteration is None and gpu_running == 0 and running and not rs.cancelled:
+                self._maybe_prefetch(rs, pending, running, env)
             if not running:
                 if pending:
                     # Nothing can start: the remaining nodes wait on nodes outside this scope that never ran.
@@ -1094,15 +1135,185 @@ class FlowEngine:
             return False
         return True
 
+    async def _seed_resident(self, rs: RunState) -> None:
+        """Start from what Studio already holds, so the first GPU step picked keeps a model the user had loaded."""
+        from studio_mcp import loading
+
+        try:
+            slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
+        except Exception:
+            logger.debug("flows: could not read the loaded models", exc_info = True)
+            return
+        for slot, names in (slots or {}).items():
+            names = [str(n) for n in names or [] if n]
+            rs.initial_resident[slot] = names
+            if names and slot not in rs.resident:
+                rs.resident[slot] = names[0]
+
+    def _will_compute(self, rs: RunState, nid: str) -> bool:
+        """True when the node will run its handler, not answer from the cache, a pin or baked output."""
+        options = rs.options
+        if nid in set(options.get("force_nodes") or []):
+            return True
+        if nid in (options.get("pinned") or {}):
+            return False
+        if (
+            nid in (rs.doc.get("baked") or {})
+            and not options.get("bake")
+            and not options.get("ignore_baked")
+        ):
+            return False
+        if not rs.plan.specs[nid]["cacheable"]:
+            return True
+        # A cacheable step is only certain to miss when something upstream computed fresh output this run.
+        return bool((rs.plan.ancestors([nid]) - {nid}) & rs.fresh)
+
+    def _prefetchable(self, rs: RunState, nid: str) -> bool:
+        """Loads the node would make anyway, with the default settings: not adapters, ControlNet or a vision swap."""
+        plan = rs.plan
+        spec = plan.specs[nid]
+        if spec.get("exclusive_gpu") or spec.get("model_kind") not in PREFETCH_KINDS:
+            return False
+        params = plan.nodes[nid].get("params") or {}
+        connected = set(plan.inputs.get(nid, {}))
+        if spec.get("model_kind") == "image" and (params.get("loras") or "control" in connected):
+            return False
+        if spec.get("model_kind") == "chat" and "image" in connected:
+            return False
+        return True
+
+    def _maybe_prefetch(
+        self, rs: RunState, pending: list[str], running: dict[asyncio.Task, str], env: Env
+    ) -> None:
+        """While only CPU steps run, start loading the model of the GPU step they feed (one load at a time)."""
+        if not prefetch_enabled() or rs.gpu_parent is not None:
+            return
+        if rs.prefetch_task is not None and not rs.prefetch_task.done():
+            return
+        plan = rs.plan
+        running_ids = set(running.values())
+        for nid in plan.order:
+            if nid not in pending or plan.specs[nid]["lane"] != "gpu":
+                continue
+            slot, repo = self._model_of(plan, nid)
+            if not repo or (rs.resident.get(slot) or "").lower() == repo:
+                continue
+            if not self._prefetchable(rs, nid) or not self._will_compute(rs, nid):
+                continue
+            if plan.owner.get(nid) is not None:
+                continue
+            overrides = rs.input_overrides.get(nid, {})
+            unmet = {
+                src
+                for port, sources in plan.inputs.get(nid, {}).items()
+                if port not in overrides
+                for src, _ in sources
+                if src in plan.executable and not env.has(src)
+            } | {
+                src
+                for src in plan.waits.get(nid, ())
+                if src in plan.executable and not env.has(src)
+            }
+            # Only one hop away: everything it still waits on is a CPU step already running, never a branch.
+            if not unmet or not all(
+                src in running_ids
+                and plan.specs[src]["lane"] != "gpu"
+                and plan.specs[src]["type"] not in BRANCH_TYPES
+                for src in unmet
+            ):
+                continue
+            ahead_of = ", ".join(sorted(plan.specs[src]["title"] for src in unmet))
+            rs.prefetch_task = asyncio.create_task(self._prefetch(rs, nid, ahead_of))
+            return
+
+    async def _prefetch(self, rs: RunState, nid: str, ahead_of: str) -> None:
+        from core.flows.nodes import _common
+
+        plan = rs.plan
+        spec = plan.specs[nid]
+        params = plan.nodes[nid].get("params") or {}
+        ctx = _PrefetchContext(self, rs, nid, spec, params, {}, 0, None)
+        try:
+            # Held for the load only: the step itself takes the lock again when its inputs arrive.
+            async with self.gpu_lock():
+                slot, repo = self._model_of(plan, nid)
+                if (
+                    rs.cancelled
+                    or nid in rs.executed
+                    or (rs.resident.get(slot) or "").lower() == repo
+                ):
+                    return
+                rs.emit(
+                    "node.log",
+                    nid,
+                    {
+                        "level": "info",
+                        "message": f"Loading {params['model']['repo']} ahead while {ahead_of} runs",
+                    },
+                )
+                await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
+                rs.prefetched += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The step loads its model itself when it starts; a failed early load only costs that wait.
+            logger.debug("flows: loading ahead for %s failed", nid, exc_info = True)
+
+    async def _stop_prefetch(self, rs: RunState) -> None:
+        task, rs.prefetch_task = rs.prefetch_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+
+    async def _unload_after_run(self, rs: RunState) -> None:
+        """The flow's "Unload models when the run ends": free what this run loaded, never what was loaded before."""
+        if not (rs.doc.get("meta") or {}).get("unload_after_run") or rs.caller is None:
+            return
+        from studio_mcp import loading
+
+        # Repo -> the first step that uses it, whose log says the model was let go.
+        wanted: dict[str, str] = {}
+        for n in rs.plan.gpu_nodes():
+            wanted.setdefault(self._model_of(rs.plan, n)[1], n)
+        wanted.pop("", None)
+        try:
+            slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
+            for slot, names in (slots or {}).items():
+                before = {n.lower() for n in rs.initial_resident.get(slot, [])}
+                for name in names or []:
+                    if name.lower() in before or name.lower() not in wanted:
+                        continue
+                    if slot == "llm":
+                        await loading.unload_llm(rs.caller, name)
+                    elif slot in ("image", "video"):
+                        await loading.unload_media(rs.caller, slot)
+                    else:
+                        continue
+                    rs.emit(
+                        "node.log",
+                        wanted[name.lower()],
+                        {
+                            "level": "info",
+                            "message": f"Unloaded {name}: the run that loaded it ended",
+                        },
+                    )
+        except Exception:
+            logger.debug("flows: unload after the run failed", exc_info = True)
+
+    @staticmethod
+    def _model_of(plan: Plan, nid: str) -> tuple[str, str]:
+        """(Studio slot, lower-cased repo) the node picks; repo is "" for "use the loaded model"."""
+        kind = plan.specs[nid].get("model_kind") or ""
+        choice = (plan.nodes[nid].get("params") or {}).get("model")
+        repo = choice.get("repo", "") if isinstance(choice, dict) else ""
+        return MODEL_SLOT.get(kind, kind), str(repo or "").lower()
+
     def _pick_gpu(self, rs: RunState, ready: list[str]) -> str:
         """The ready GPU node that keeps the resident model; else the model most ready nodes share; else data order."""
         plan = rs.plan
 
         def model_of(nid: str) -> tuple[str, str]:
-            kind = plan.specs[nid].get("model_kind") or ""
-            choice = (plan.nodes[nid].get("params") or {}).get("model")
-            repo = choice.get("repo", "") if isinstance(choice, dict) else ""
-            return MODEL_SLOT.get(kind, kind), repo.lower()
+            return self._model_of(plan, nid)
 
         for nid in ready:
             slot, repo = model_of(nid)
@@ -1355,6 +1566,8 @@ class FlowEngine:
             data["iteration"] = list(iteration)
         rs.emit("node.output", nid, data)
         rs.executed.add(nid)
+        if status == "done" and spec["cacheable"]:
+            rs.fresh.add(nid)
         rs.set_status(nid, status, message)
         self._record(rs, nid, status, outputs, None, iteration)
 
