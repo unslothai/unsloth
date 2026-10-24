@@ -545,6 +545,17 @@ def _is_dtensor(t):
     return isinstance(t, DTensor)
 
 
+def _local_complete(t):
+    """A local view whose gradient is already complete on every rank (computed after the all-reduce, such
+    as the row bias), so it must not be summed over tp again."""
+    DTensor, _, Replicate, _ = _dtensor_api()
+    if not isinstance(t, DTensor):
+        return t
+    if t.requires_grad and any(p.is_replicate() for p in t.placements):
+        return t.to_local(grad_placements = [Replicate()])
+    return t.to_local()
+
+
 def _local(t):
     """A local view of a DTensor for local compute; replicated trainable tensors return Partial grads."""
     DTensor, Partial, _, _ = _dtensor_api()
@@ -836,7 +847,7 @@ def _region_finish(module, y):
     for proj in module._unsloth_tp_row_projs:
         bias = _weight(proj)[1].bias
         if bias is not None:
-            y = y + _local(bias).to(y.dtype)
+            y = y + _local_complete(bias).to(y.dtype)
     return y
 
 
@@ -1144,12 +1155,25 @@ def _full(tensor, param = None):
 
 def tp_full_state_dict(model, adapters_only = False):
     """The model state dict with every DTensor gathered to its full 1-GPU tensor (collective: call on
-    every rank). adapters_only: only LoRA tensors and trainable parameters. 4-bit shards stay local."""
+    every rank). adapters_only: only LoRA tensors, trainable parameters and the embedding / lm_head weights
+    (PEFT's save filter decides whether to keep those). 4-bit shards stay local."""
     state = model.state_dict(keep_vars = True)
+    # PEFT picks embedding weights out of the given state dict (save_embedding_layers, resized vocab).
+    embeddings = set()
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        module = getattr(model, get, lambda: None)()
+        weight = getattr(module, "weight", None)
+        if weight is not None:
+            embeddings.add(id(weight))
     out = {}
     with torch.no_grad():
         for key, value in state.items():
-            if adapters_only and "lora_" not in key and not getattr(value, "requires_grad", False):
+            if (
+                adapters_only
+                and "lora_" not in key
+                and not getattr(value, "requires_grad", False)
+                and id(value) not in embeddings
+            ):
                 continue
             out[key] = _full(value, value).detach()
     return out

@@ -74,6 +74,8 @@ def _case_parity(
     tmp,
     arch,
     overrides = None,
+    lora_kwargs = None,
+    save_kwargs = None,
 ):
     from torch.distributed.device_mesh import init_device_mesh
     from safetensors.torch import load_file
@@ -81,8 +83,8 @@ def _case_parity(
     repo, base_overrides = ARCHS[arch]
     overrides = {**base_overrides, **(overrides or {})}
     train_norms = arch in ("qwen3", "gemma3")
-    ref = build(repo, overrides, train_norms = train_norms)
-    model = build(repo, overrides, train_norms = train_norms)
+    ref = build(repo, overrides, train_norms = train_norms, **(lora_kwargs or {}))
+    model = build(repo, overrides, train_norms = train_norms, **(lora_kwargs or {}))
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     tpn.apply_tensor_parallel(model, mesh["tp"])
     assert tpn.is_tensor_parallel(model)
@@ -100,8 +102,8 @@ def _case_parity(
     ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
     tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
     ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
-    ref.save_pretrained(ref_dir)
-    tpn.save_tp_adapter(model, tp_dir)
+    ref.save_pretrained(ref_dir, **(save_kwargs or {}))
+    tpn.save_tp_adapter(model, tp_dir, **(save_kwargs or {}))
     q = tpn._weight(model._unsloth_tp_plan.regions[0].projs[0].module)[0]
     return {
         "ref": ref_out,
@@ -339,6 +341,19 @@ def _check_parity(results, world):
 @pytest.mark.parametrize("arch", ["llama", "llama_bias", "qwen3", "phi3", "stablelm", "gemma2"])
 def test_tp2_matches_one_process(arch):
     _check_parity(_spawn("parity", 2, arch = arch), 2)
+
+
+def test_tp2_trainable_biases_match_one_process():
+    # bias = "all": the row bias is added after the all-reduce, so its gradient is complete on every rank.
+    results = _spawn("parity", 2, arch = "llama_bias", lora_kwargs = {"bias": "all"})
+    _check_parity(results, 2)
+    assert any("bias" in key for key in results[0]["saved_tp"])
+
+
+def test_tp2_adapter_save_keeps_requested_embeddings():
+    results = _spawn("parity", 2, arch = "llama", save_kwargs = {"save_embedding_layers": True})
+    _check_parity(results, 2)
+    assert any("embed_tokens" in key for key in results[0]["saved_tp"])
 
 
 @pytest.mark.parametrize("nested", [False, True])
