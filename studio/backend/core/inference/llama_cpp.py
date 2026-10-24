@@ -5456,6 +5456,34 @@ def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
     return None
 
 
+def _reasoning_preserve_from_args_or_env(
+    extra_args: Optional[Iterable[str]], env: Mapping[str, str]
+) -> Optional[bool]:
+    """The user's --reasoning-preserve / --no-reasoning-preserve choice, else None.
+
+    llama.cpp writes that flag to ``preserve_reasoning``, then applies
+    --chat-template-kwargs over it, so a launch-time ``preserve_thinking`` entry
+    always wins and the flag alone never reaches a Qwen-style template. Read it
+    here so the launch kwarg follows it instead. Last flag wins, as in llama.cpp's
+    parser; the extras beat the inherited LLAMA_ARG_REASONING_PRESERVE.
+    """
+    choice: Optional[bool] = None
+    for raw in extra_args or ():
+        flag = _flag_name(str(raw))
+        if flag == "--reasoning-preserve":
+            choice = True
+        elif flag == "--no-reasoning-preserve":
+            choice = False
+    if choice is not None:
+        return choice
+    value = env.get("LLAMA_ARG_REASONING_PRESERVE")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
 def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
     value = env.get("LLAMA_ARG_REASONING_EFFORT")
     return None if value == "default" else value
@@ -32085,7 +32113,17 @@ class LlamaCppBackend:
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
                     # frontend receives the same resolved value via load/status.
+                    # The Qwen3.8 on default follows Qwen's shipped template, so a
+                    # chat_template_override falls back to the off default every other
+                    # family uses, and an explicit --[no-]reasoning-preserve beats both:
+                    # this kwarg is applied after that flag, so it would otherwise
+                    # silently undo it (#15115).
                     if self._supports_preserve_thinking:
+                        if chat_template_override:
+                            self._preserve_thinking_default = False
+                        _preserve = _reasoning_preserve_from_args_or_env(extra_args, env)
+                        if _preserve is not None:
+                            self._preserve_thinking_default = _preserve
                         reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     _reasoning_args = _build_launch_reasoning_args(server_caps, reasoning_kw)
                     cmd.extend(_reasoning_args)
