@@ -4605,11 +4605,11 @@ function VideoGenerator({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {busy === "generating" ? (
               <Button
                 // Kept in step with the Images Stop control, which uses the same fill.
-                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 h-10 px-7 text-ui-13 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -4620,7 +4620,7 @@ function VideoGenerator({
               <>
                 <Button
                   variant="dark"
-                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  className="relative z-10 h-10 px-7 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}
                 >
@@ -4630,7 +4630,7 @@ function VideoGenerator({
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
-                        className="relative z-10 h-11 px-5"
+                        className="relative z-10 h-10 px-4 text-ui-13"
                         variant="secondary"
                         disabled={busy !== null}
                         onClick={handleReapply}

@@ -123,7 +123,7 @@ export function ExampleToggle<T extends string>({
         className={
           toggle
             ? "hub-tab-toggle flex h-9 w-fit max-w-full min-w-0 items-center rounded-full"
-            : "isolate flex min-w-0 flex-wrap items-center gap-0.5"
+            : "example-pills isolate flex min-w-0 flex-wrap items-center gap-0.5"
         }
       >
         {options.map((option) => (

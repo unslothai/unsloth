@@ -19,7 +19,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { EngineVersionsSection } from "../components/engine-versions-section";
+import { StandaloneEnvironmentSection } from "./resources-tab";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -174,6 +176,9 @@ export function AboutTab() {
       <StudioVersionSection desktopAppVersion={desktopAppVersion} />
 
       <EngineVersionsSection />
+      <InferenceEnginesSection />
+
+      <StandaloneEnvironmentSection />
 
       <div ref={updateSectionRef} className="scroll-mt-5">
         <SettingsSection title={t("settings.about.updates")}>
