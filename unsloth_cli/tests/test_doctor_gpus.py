@@ -484,6 +484,96 @@ def test_doctor_reports_a_gpu_enumeration_failure(monkeypatch):
     assert "GPU enumeration failed" in result.output and "PROBLEMS FOUND" in result.output
 
 
+def _run_spark_doctor(
+    monkeypatch,
+    args,
+    torch = None,
+    spark_rc = 0,
+):
+    """`unsloth doctor` on a (faked) DGX Spark: returns the result and spark_doctor's kwargs."""
+    import studio.spark_cluster as spark_cluster
+    import unsloth_cli.commands.spark_doctor as spark_doctor_mod
+
+    monkeypatch.setattr(spark_cluster, "is_dgx_spark", lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(doctor_mod, "_load_pynvml", lambda: None)
+    monkeypatch.setattr(doctor_mod, "driver_version", lambda pynvml = None: "580.1")
+    seen = []
+
+    def fake_spark_doctor(**kw):
+        seen.append(kw)
+        return spark_rc
+
+    monkeypatch.setattr(spark_doctor_mod, "spark_doctor", fake_spark_doctor)
+    cli = typer.Typer()
+    cli.command()(doctor_mod.doctor)
+    return CliRunner().invoke(cli, args), seen
+
+
+def test_spark_still_runs_the_local_gpu_check(monkeypatch):
+    # an unpaired Spark's link check passes trivially, so a broken torch must still fail the run
+    result, seen = _run_spark_doctor(monkeypatch, [], torch = None)
+    assert result.exit_code == 1
+    assert "torch is not installed" in result.output
+    assert len(seen) == 1 and seen[0]["parity_only"] is False
+
+
+def test_spark_healthy_local_gpu_defers_to_the_spark_checks(monkeypatch):
+    result, seen = _run_spark_doctor(monkeypatch, [], torch = _fake_torch(1), spark_rc = 1)
+    assert result.exit_code == 1 and len(seen) == 1
+    result, _ = _run_spark_doctor(monkeypatch, [], torch = _fake_torch(1), spark_rc = 0)
+    assert result.exit_code == 0
+
+
+def test_spark_no_gpus_does_no_gpu_work(monkeypatch):
+    result, seen = _run_spark_doctor(monkeypatch, ["--no-gpus", "--deep"], torch = None)
+    assert result.exit_code == 0
+    assert "torch is not installed" not in result.output
+    assert seen[0]["parity_only"] is True and seen[0]["deep"] is False
+
+
+def test_spark_parity_only_skips_the_local_gpu_check(monkeypatch):
+    result, seen = _run_spark_doctor(monkeypatch, ["--parity-only"], torch = None)
+    assert result.exit_code == 0 and seen[0]["parity_only"] is True
+
+
+def test_spark_timeout_reaches_the_nccl_probe(monkeypatch):
+    result, seen = _run_spark_doctor(monkeypatch, ["--timeout", "7"], torch = _fake_torch(1))
+    assert seen[0]["timeout"] == 7.0
+    result, seen = _run_spark_doctor(monkeypatch, [], torch = _fake_torch(1))
+    assert seen[0]["timeout"] is None
+
+
+def test_spark_cluster_doctor_passes_the_timeout_to_nccl_bandwidth(monkeypatch):
+    import studio.spark_cluster as spark_cluster
+
+    probes = []
+    monkeypatch.setattr(
+        spark_cluster, "_cmd_doctor", lambda nccl_timeout = None: probes.append(nccl_timeout) or 0
+    )
+    assert spark_cluster.main(["doctor", "--timeout", "7"]) == 0
+    assert spark_cluster.main(["doctor"]) == 0
+    assert probes == [7.0, None]
+
+
+def test_spark_plain_mcp_checks_only_mcp(monkeypatch):
+    import unsloth_cli.commands.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda env_var: 0)
+    result, seen = _run_spark_doctor(monkeypatch, ["--mcp"], torch = None)
+    assert result.exit_code == 0 and seen == []
+    assert "torch is not installed" not in result.output
+
+
+def test_spark_mcp_with_gpus_runs_every_check(monkeypatch):
+    import unsloth_cli.commands.mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "mcp_doctor", lambda env_var: 1)
+    result, seen = _run_spark_doctor(monkeypatch, ["--mcp", "--gpus"], torch = _fake_torch(1))
+    assert result.exit_code == 1
+    assert len(seen) == 1 and seen[0]["parity_only"] is False
+
+
 def _non_cuda_torch(
     mps = False,
     xpu = False,
