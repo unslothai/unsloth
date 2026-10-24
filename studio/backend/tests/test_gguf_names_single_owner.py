@@ -157,3 +157,22 @@ def test_a_whole_quant_keeps_the_row_complete(tmp_path):
     repo = _hf_cache_repo(tmp_path, {"m-Q8_0.gguf": 300, "m-Q4_K_M-00001-of-00003.gguf": 400})
     snapshot = repo / "snapshots" / "abc123"
     assert is_gguf_repo_partial("org/m-GGUF", repo, snapshot_dir = snapshot) is False
+
+
+def test_an_older_whole_revision_keeps_the_row_complete_beside_a_newer_torn_one(tmp_path):
+    import os
+
+    from hub.utils.inventory_scan import is_gguf_repo_partial
+
+    repo = tmp_path / "models--org--m-GGUF"
+    old = repo / "snapshots" / "old"
+    new = repo / "snapshots" / "new"
+    old.mkdir(parents = True)
+    new.mkdir(parents = True)
+    (old / "m-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (new / "m-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    os.utime(old, (1, 1))
+    assert is_gguf_repo_partial("org/m-GGUF", repo) is False
+    (old / "m-Q4_K_M.gguf").unlink()
+    os.utime(old, (1, 1))
+    assert is_gguf_repo_partial("org/m-GGUF", repo) is True
