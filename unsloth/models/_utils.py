@@ -8519,8 +8519,10 @@ def _mx_autocast_forward(self, x):
     return MXFakeQuantizedLinear.forward(self, x)
 
 
+@torch.compiler.disable
 def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs; vision layers see rank 4+.
+    # Kept out of Inductor: compiled MLPs (torch 2.13, torchao 0.18) shrink the gate / up weight grads ~19x.
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
 
     if x.dim() == 2:

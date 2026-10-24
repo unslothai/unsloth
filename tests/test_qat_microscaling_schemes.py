@@ -358,3 +358,61 @@ def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     for shape in [(6, 64), (2, 3, 64), (2, 3, 5, 64)]:
         out = model(torch.randn(*shape, dtype = torch.bfloat16))
         assert out.shape == (*shape[:-1], 128)
+
+
+def test_nvfp4_qat_forward_stays_out_of_compiled_graphs(monkeypatch):
+    linear_cls = _nvfp4_linear()
+    monkeypatch.setattr(linear_cls, "forward", lambda self, x: x @ self.weight.t())
+    _probe_ok(monkeypatch)
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 128, bias = False)
+
+        def forward(self, x):
+            return self.proj(x * 2) + 1
+
+    model = _prepare_model_for_qat(Block().to(torch.bfloat16), "nvfp4")
+    assert isinstance(model.proj, linear_cls)
+    torch._dynamo.reset()
+    explain = torch._dynamo.explain(model)(torch.randn(4, 64, dtype = torch.bfloat16))
+    assert explain.graph_break_count >= 1
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
+    reason = "needs an FP4 tensor core GPU",
+)
+def test_nvfp4_qat_weight_grads_match_eager_under_compile():
+    import torch.nn.functional as F
+
+    class MLP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(256, 512, bias = False)
+            self.up_proj = torch.nn.Linear(256, 512, bias = False)
+            self.down_proj = torch.nn.Linear(512, 256, bias = False)
+
+        def forward(self, x):
+            return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+    torch.manual_seed(0)
+    model = MLP().to("cuda", torch.bfloat16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(model.gate_proj, _nvfp4_linear())
+    x = torch.randn(2, 64, 256, device = "cuda", dtype = torch.bfloat16)
+
+    def grads(forward):
+        model.zero_grad(set_to_none = True)
+        forward(x).float().square().mean().backward()
+        return {n: p.grad.float().clone() for n, p in model.named_parameters()}
+
+    eager = grads(model)
+    torch._dynamo.reset()
+    compiled = grads(torch.compile(MLP.forward.__get__(model), dynamic = False))
+    for name, ref in eager.items():
+        rel = float((compiled[name] - ref).norm() / ref.norm())
+        assert rel < 0.05, (name, rel)
