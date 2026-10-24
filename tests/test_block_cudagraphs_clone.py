@@ -14,12 +14,16 @@ import sys
 
 import torch
 
-_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models")
+_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models"
+)
 
 
 def _load():
     # By file path: importing the unsloth package needs an accelerator.
-    spec = importlib.util.spec_from_file_location("_ublock_compile_cg", os.path.join(_DIR, "_block_compile.py"))
+    spec = importlib.util.spec_from_file_location(
+        "_ublock_compile_cg", os.path.join(_DIR, "_block_compile.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
