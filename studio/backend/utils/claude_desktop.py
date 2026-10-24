@@ -47,6 +47,7 @@ import glob
 import http.client
 import json
 import os
+import re
 import secrets
 import ssl
 import subprocess
@@ -913,6 +914,122 @@ def token_estimate(body_length: int) -> bytes:
     return json.dumps({"input_tokens": max(1, body_length // 4)}).encode()
 
 
+# Claude Desktop sends ~55-62k tokens of system prompt and tools with every message. A model loaded
+# with less than this can't answer it however short the chat, so its overflow gets its own message.
+CLAUDE_MIN_CONTEXT = 65_536
+# Every wording Studio and llama-server give a prompt that overflows the loaded window.
+_OVERFLOW_PATTERNS = (
+    re.compile(r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"),
+    re.compile(r"prompt is too long: (\d+) tokens? > (\d+) maximum", re.IGNORECASE),
+    re.compile(r"(\d+) tokens? exceeds? the (\d+)-token context window"),
+)
+
+
+def overflow_counts(text: str) -> Optional[tuple]:
+    """(prompt tokens, loaded context) from an over-context error message, or None."""
+    for pattern in _OVERFLOW_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def suggested_context(prompt_tokens: int, minimum: int) -> int:
+    """The next power of two that fits the prompt with room for a reply and a few turns."""
+    target = max(minimum, prompt_tokens + prompt_tokens // 4)
+    return 1 << (target - 1).bit_length()
+
+
+def small_context_message(
+    client: str,
+    model: Optional[str],
+    prompt_tokens: int,
+    context: int,
+    minimum: int,
+) -> str:
+    name = model or "The loaded model"
+    return (
+        f"{name} is loaded with a context of {context:,} tokens, but {client} needs "
+        f"{prompt_tokens:,} tokens for this message, so shortening the chat won't help. In "
+        f"Unsloth Studio, open Run settings, set Context Length to at least "
+        f"{suggested_context(prompt_tokens, minimum):,}, tick \"Remember for this model\", "
+        f"reload the model and send the message again."
+    )
+
+
+def rewrite_small_context(
+    data: object,
+    client: str,
+    model: Optional[str],
+    minimum: int,
+) -> bool:
+    """Replace, in place, any error ``message``/``detail`` in ``data`` that reports an overflow of
+    a window smaller than ``minimum``. True when something changed. A bigger window that overflowed
+    is a long chat, and its message (which clients key on to compact) passes through untouched."""
+    changed = False
+    if isinstance(data, list):
+        for item in data:
+            changed = rewrite_small_context(item, client, model, minimum) or changed
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            if key in ("message", "detail") and isinstance(value, str):
+                counts = overflow_counts(value)
+                if counts and counts[1] < minimum:
+                    data[key] = small_context_message(client, model, counts[0], counts[1], minimum)
+                    changed = True
+            else:
+                changed = rewrite_small_context(value, client, model, minimum) or changed
+    return changed
+
+
+def rewrite_small_context_body(
+    body: bytes,
+    client: str,
+    model: Optional[str],
+    minimum: int,
+) -> Optional[bytes]:
+    """A JSON error body with the small-context message, or None to send ``body`` as it is."""
+    if b"token" not in body:
+        return None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not rewrite_small_context(data, client, model, minimum):
+        return None
+    return json.dumps(data).encode()
+
+
+def rewrite_small_context_event(
+    event: bytes,
+    client: str,
+    model: Optional[str],
+    minimum: int,
+) -> Optional[bytes]:
+    """One server-sent event (without its blank-line terminator) with the small-context message,
+    or None to send it as it is."""
+    if b"token" not in event:
+        return None
+    lines = event.decode("utf-8", "replace").splitlines()
+    data_lines = [line[5:].lstrip(" ") for line in lines if line.startswith("data:")]
+    if not data_lines:
+        return None
+    try:
+        data = json.loads("\n".join(data_lines))
+    except ValueError:
+        return None
+    if not rewrite_small_context(data, client, model, minimum):
+        return None
+    kept = [line for line in lines if not line.startswith("data:")]
+    return ("\n".join(kept + ["data: " + json.dumps(data)])).encode()
+
+
+def _event_end(buffer: bytes) -> Optional[tuple]:
+    """(end of the first complete event, start of the next) in an SSE buffer, or None."""
+    ends = [(i, i + len(sep)) for sep in (b"\n\n", b"\r\n\r\n") if (i := buffer.find(sep)) >= 0]
+    return min(ends) if ends else None
+
+
 def upstream_error_message(status: int, body: bytes) -> str:
     """The human part of an error body from Studio (FastAPI ``detail``, OpenAI or Anthropic shape)."""
     try:
@@ -961,6 +1078,10 @@ def probe(base_url: str, timeout: float = 2.0) -> bool:
 
 
 class _GatewayHandler(BaseHTTPRequestHandler):
+    # Who the small-context message names, and the window below which it applies.
+    CLIENT_NAME = "Claude Desktop"
+    MIN_CONTEXT = CLAUDE_MIN_CONTEXT
+    served_model: Optional[str] = None
     protocol_version = "HTTP/1.1"
     server: Gateway
 
@@ -1021,12 +1142,55 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         prefix: bytes = b"",
     ) -> None:
         """Copy an upstream body into an already open chunked reply, as it arrives."""
-        self._chunk(prefix)
+        for data in self._body(response, prefix):
+            self._chunk(data)
+
+    def _small_context_body(self, body: bytes) -> Optional[bytes]:
+        return rewrite_small_context_body(
+            body, self.CLIENT_NAME, self.served_model, self.MIN_CONTEXT
+        )
+
+    def _small_context_text(self, message: str) -> str:
+        """``message`` (an upstream error, as a turn's text) in the small-context wording if it is one."""
+        counts = overflow_counts(message)
+        if counts and counts[1] < self.MIN_CONTEXT:
+            return small_context_message(
+                self.CLIENT_NAME, self.served_model, counts[0], counts[1], self.MIN_CONTEXT
+            )
+        return message
+
+    def _body(self, response: http.client.HTTPResponse, prefix: bytes = b""):
+        """The upstream body as it arrives. An event stream goes out event by event, so an
+        over-context error inside it (Studio's 200 streams report failures in-band) can be
+        reworded when the loaded window is too small for this client ever to fit."""
+        if "text/event-stream" not in (response.getheader("Content-Type") or ""):
+            if prefix:
+                yield prefix
+            while True:
+                data = response.read1(65536)
+                if not data:
+                    return
+                yield data
+        buffer = prefix
         while True:
             data = response.read1(65536)
+            buffer += data
+            out = []
+            while (bounds := _event_end(buffer)) is not None:
+                event, separator = buffer[: bounds[0]], buffer[bounds[0] : bounds[1]]
+                buffer = buffer[bounds[1] :]
+                fixed = rewrite_small_context_event(
+                    event, self.CLIENT_NAME, self.served_model, self.MIN_CONTEXT
+                )
+                out.append((fixed if fixed is not None else event) + separator)
+            if not data or len(buffer) > MAX_ERROR_BODY_BYTES:
+                # A huge event is no error: send what there is and keep going.
+                out.append(buffer)
+                buffer = b""
+            if out:
+                yield b"".join(out)
             if not data:
-                break
-            self._chunk(data)
+                return
 
     def _send(
         self,
@@ -1190,6 +1354,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                 self._load_then_forward(path, payload, model, pinned, requested, stream)
                 return
         payload["model"] = model.model_id
+        self.served_model = pinned or model.model_id
         self.server.routed += 1
         self._forward(path, payload, model)
 
@@ -1222,6 +1387,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             say(f"Unsloth Studio couldn't load {pinned} for this chat: {error}")
             return
         payload["model"] = model.model_id
+        self.served_model = pinned
         self.server.routed += 1
         try:
             conn, response, prefix = self._upstream(path, payload, model)
@@ -1234,10 +1400,9 @@ class _GatewayHandler(BaseHTTPRequestHandler):
                 self._end_chunks()
                 return
             detail = prefix + response.read(max(0, MAX_ERROR_BODY_BYTES - len(prefix)))
-            say(
-                f"Unsloth Studio couldn't answer with {pinned}: "
-                + upstream_error_message(response.status, detail)
-            )
+            message = upstream_error_message(response.status, detail)
+            small = self._small_context_text(message)
+            say(small if small != message else f"Unsloth Studio couldn't answer with {pinned}: {message}")
         finally:
             conn.close()
 
@@ -1314,12 +1479,23 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             conn.close()
 
     def _relay(self, response: http.client.HTTPResponse, prefix: bytes) -> None:
+        if response.status >= 400 and len(prefix) <= MAX_ERROR_BODY_BYTES:
+            prefix += response.read(MAX_ERROR_BODY_BYTES + 1 - len(prefix))
+            fixed = self._small_context_body(prefix) if len(prefix) <= MAX_ERROR_BODY_BYTES else None
+            if fixed is not None:
+                self._send(
+                    response.status,
+                    fixed,
+                    response.getheader("Content-Type") or "application/json",
+                )
+                return
         self.send_response(response.status, response.reason)
         length = response.getheader("Content-Length")
         for name, value in response.getheaders():
-            if name.lower() not in _HOP_BY_HOP:
+            if name.lower() not in _HOP_BY_HOP | {"content-length"}:
                 self.send_header(name, value)
-        chunked = length is None
+        # An event stream may be reworded on the way (see _body), so its length can change.
+        chunked = length is None or "text/event-stream" in (response.getheader("Content-Type") or "")
         if chunked:
             self.send_header("Transfer-Encoding", "chunked")
         else:
@@ -1336,12 +1512,8 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            write(prefix)
-            while True:
-                # read1 returns what has arrived, so server-sent events stream through.
-                data = response.read1(65536)
-                if not data:
-                    break
+            # read1 returns what has arrived, so server-sent events stream through.
+            for data in self._body(response, prefix):
                 write(data)
             if chunked:
                 self.wfile.write(b"0\r\n\r\n")

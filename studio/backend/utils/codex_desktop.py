@@ -362,6 +362,8 @@ def openai_error(
 
 # An SSE comment: every event-stream parser skips it, and it keeps the connection busy while a model loads.
 KEEPALIVE_COMMENT = b": keep-alive\n\n"
+# Codex sends ~25k tokens of instructions and tools with every turn; see CLAUDE_MIN_CONTEXT.
+CODEX_MIN_CONTEXT = 32_768
 
 
 def response_failed_event(message: str) -> bytes:
@@ -453,6 +455,8 @@ class Gateway(ThreadingHTTPServer):
 
 class _GatewayHandler(_cd._GatewayHandler):
     server: Gateway
+    CLIENT_NAME = "Codex"
+    MIN_CONTEXT = CODEX_MIN_CONTEXT
 
     def _error(self, status: int, message: str) -> None:
         self._send(status, openai_error(status, message))
@@ -497,6 +501,7 @@ class _GatewayHandler(_cd._GatewayHandler):
                 requested = payload["model"]
                 stream = payload.get("stream") is True
         model_id = self.server.listed(requested) if requested else None
+        self.served_model = model_id or requested
         if model_id is not None and not self.server.is_loaded(model_id):
             if stream:
                 self._load_then_proxy(body, model_id)
@@ -534,10 +539,9 @@ class _GatewayHandler(_cd._GatewayHandler):
                 self._end_chunks()
                 return
             detail = response.read(_cd.MAX_ERROR_BODY_BYTES)
-            fail(
-                f"Unsloth Studio couldn't answer with {model_id}: "
-                + _cd.upstream_error_message(response.status, detail)
-            )
+            message = _cd.upstream_error_message(response.status, detail)
+            small = self._small_context_text(message)
+            fail(small if small != message else f"Unsloth Studio couldn't answer with {model_id}: {message}")
         finally:
             conn.close()
 

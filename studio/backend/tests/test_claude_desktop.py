@@ -303,6 +303,15 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         self.server.requests.append((self.path, dict(self.headers), json.loads(body)))
         status, reply = self.server.replies.pop(0) if self.server.replies else (200, {"ok": 1})
+        if status == "raw-sse":
+            # Events given verbatim, so a test can send Studio's in-band error shapes.
+            data = b"".join(reply)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if status == "sse":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1078,3 +1087,109 @@ def test_load_model_posts_to_studios_models_load(reply, error):
 def test_load_model_reports_studio_down():
     with pytest.raises(RuntimeError, match = "didn't answer"):
         cda.load_model("http://127.0.0.1:9", "k", "m", timeout = 2)
+
+
+# -- a model loaded with too small a window for Claude Desktop ---------------------------------
+
+STUDIO_OVERFLOW = (
+    "Prompt is too long: 61493 tokens > 8192 maximum. Even with every earlier turn dropped, this "
+    "prompt would still be too long, so shortening the conversation will not help."
+)
+LLAMA_OVERFLOW = {
+    "error": {
+        "code": 400,
+        "message": "request (55317 tokens) exceeds the available context size (8192 tokens), try increasing it",
+        "type": "exceed_context_size_error",
+        "n_prompt_tokens": 55317,
+        "n_ctx": 8192,
+    }
+}
+
+
+@pytest.mark.parametrize(
+    "text, counts",
+    [
+        (STUDIO_OVERFLOW, (61493, 8192)),
+        (LLAMA_OVERFLOW["error"]["message"], (55317, 8192)),
+        ("Message too long: 25988 tokens exceeds the 8192-token context window. Try", (25988, 8192)),
+        ("CUDA out of memory", None),
+    ],
+)
+def test_overflow_counts_reads_every_wording(text, counts):
+    assert cda.overflow_counts(text) == counts
+
+
+def test_the_suggested_context_fits_the_prompt_with_room_to_spare():
+    assert cda.suggested_context(61493, cda.CLAUDE_MIN_CONTEXT) == 131072
+    assert cda.suggested_context(20000, cda.CLAUDE_MIN_CONTEXT) == 65536
+    assert cda.suggested_context(25988, 32768) == 32768
+
+
+def test_a_window_too_small_for_claude_is_a_400_that_says_how_to_fix_it(gateway):
+    gw, upstream = gateway
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW}}
+    upstream.replies.append((400, error))
+    status, _, body = _call(gw, "POST", "/v1/messages", {"model": "claude-fable-5", "messages": []})
+    reply = json.loads(body)
+    assert status == 400 and reply["error"]["type"] == "invalid_request_error"
+    message = reply["error"]["message"]
+    assert "context of 8,192 tokens" in message and "Claude Desktop needs 61,493 tokens" in message
+    assert "at least 131,072" in message and "Remember for this model" in message
+    assert MODEL_ID in message
+    # Not Anthropic's "Prompt is too long" head: compacting cannot fit a window this small.
+    assert not message.lower().startswith("prompt is too long")
+
+
+def test_a_long_chat_overflowing_a_big_window_passes_through_untouched(gateway):
+    gw, upstream = gateway
+    long_chat = "Prompt is too long: 270000 tokens > 262144 maximum. Try increasing the Context Length"
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": long_chat}}
+    upstream.replies.append((400, error))
+    status, _, body = _call(gw, "POST", "/v1/messages", {"model": "claude-fable-5", "messages": []})
+    assert status == 400 and json.loads(body) == error
+
+
+def test_an_in_band_overflow_in_a_studio_stream_is_reworded(gateway):
+    gw, upstream = gateway
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW}}
+    upstream.replies.append(
+        (
+            "raw-sse",
+            [
+                b'event: ping\ndata: {"type": "ping"}\n\n',
+                b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n",
+            ],
+        )
+    )
+    status, _, body = _call(
+        gw, "POST", "/v1/messages", {"model": "claude-fable-5", "stream": True, "messages": []}
+    )
+    assert status == 200
+    assert body.startswith(b'event: ping\ndata: {"type": "ping"}\n\n')
+    event = body.split(b"event: error\ndata: ", 1)[1].split(b"\n\n", 1)[0]
+    assert "at least 131,072" in json.loads(event)["error"]["message"]
+
+
+def test_other_stream_events_are_relayed_byte_for_byte(gateway):
+    gw, upstream = gateway
+    events = [
+        b'event: message_start\ndata: {"type": "message_start", "message": {"id": "m"}}\n\n',
+        b'event: content_block_delta\ndata: {"delta": {"text": "61493 tokens > 8192 maximum"}}\n\n',
+        b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+    ]
+    upstream.replies.append(("raw-sse", events))
+    _, _, body = _call(
+        gw, "POST", "/v1/messages", {"model": "claude-fable-5", "stream": True, "messages": []}
+    )
+    assert body == b"".join(events)
+
+
+def test_a_model_loaded_too_small_for_the_turn_says_how_to_fix_it(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    _slow_loads(gw, 0.05)
+    upstream.replies.append((400, LLAMA_OVERFLOW))
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": [], "stream": True}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 200 and b"event: message_stop" in reply
+    assert b"unsloth/big-GGUF is loaded with a context of 8,192 tokens" in reply
+    assert b"at least 131,072" in reply

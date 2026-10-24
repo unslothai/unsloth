@@ -573,6 +573,7 @@ class _Upstream:
         import threading
 
         seen = self.seen = []
+        replies = self.replies = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -594,6 +595,14 @@ class _Upstream:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 seen.append(("POST", self.path, dict(self.headers), body))
+                if replies:
+                    status, content_type, reply = replies.pop(0)
+                    self.send_response(status)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(reply)))
+                    self.end_headers()
+                    self.wfile.write(reply)
+                    return
                 self._reply(b'data: {"type": "response.completed"}\n\n', "text/event-stream")
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -757,3 +766,47 @@ def test_gateway_is_quiet_when_codex_hangs_up_during_a_load(gateway, capfd):
     threading.Event().wait(0.2)
     assert gateway["upstream"].seen == []
     assert "Traceback" not in capfd.readouterr().err
+
+
+CODEX_OVERFLOW = "Message too long: 25988 tokens exceeds the 8192-token context window. Try increasing"
+
+
+def _failed_event(message: str) -> bytes:
+    failed = {
+        "type": "response.failed",
+        "response": {"status": "failed", "error": {"code": "context_length_exceeded", "message": message}},
+    }
+    return b"event: response.failed\ndata: " + json.dumps(failed).encode() + b"\n\n"
+
+
+def test_gateway_rewords_an_overflow_of_a_window_too_small_for_codex(gateway):
+    created = b'event: response.created\ndata: {"type": "response.created"}\n\n'
+    gateway["upstream"].replies.append(
+        (200, "text/event-stream", created + _failed_event(CODEX_OVERFLOW))
+    )
+    payload = {"model": "unsloth/a", "input": "hi", "stream": True}
+    status, data = _call(gateway["gw"], "POST", "/v1/responses", payload)
+    assert status == 200 and data.startswith(created)
+    event = json.loads(data.split(b"event: response.failed\ndata: ", 1)[1].split(b"\n\n", 1)[0])
+    error = event["response"]["error"]
+    # The code stays, so Codex still knows what kind of failure it was.
+    assert error["code"] == "context_length_exceeded"
+    assert "unsloth/a is loaded with a context of 8,192 tokens" in error["message"]
+    assert "Codex needs 25,988 tokens" in error["message"] and "at least 32,768" in error["message"]
+
+
+def test_gateway_leaves_a_long_codex_session_overflow_alone(gateway):
+    long_session = "Message too long: 300000 tokens exceeds the 262144-token context window."
+    gateway["upstream"].replies.append((200, "text/event-stream", _failed_event(long_session)))
+    payload = {"model": "unsloth/a", "input": "hi", "stream": True}
+    _, data = _call(gateway["gw"], "POST", "/v1/responses", payload)
+    assert data == _failed_event(long_session)
+
+
+def test_gateway_rewords_a_plain_400_overflow_for_codex(gateway):
+    error = {"error": {"message": CODEX_OVERFLOW, "type": "invalid_request_error", "code": "context_length_exceeded"}}
+    gateway["upstream"].replies.append((400, "application/json", json.dumps(error).encode()))
+    status, data = _call(gateway["gw"], "POST", "/v1/responses", {"model": "unsloth/a", "input": "hi"})
+    reply = json.loads(data)
+    assert status == 400 and reply["error"]["code"] == "context_length_exceeded"
+    assert "at least 32,768" in reply["error"]["message"]
