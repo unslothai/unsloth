@@ -4151,9 +4151,10 @@ export function ModelConfigPage({
         className={cn(
           "mt-5",
           // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
-          // The negative margins cover the scroller's padding with the panel's own fill.
+          // Sticky offsets start inside the scroller's 16px bottom padding: -bottom-4 puts the footer on
+          // the panel's edge, and the negative margins cover that padding with the panel's own fill.
           variant === "page" &&
-            "sticky bottom-0 z-10 -mx-4 -mb-4 bg-popover px-4 pb-4 dark:bg-sidebar",
+            "sticky -bottom-4 z-10 -mx-4 -mb-4 bg-popover px-4 pb-4 dark:bg-sidebar",
         )}
       >
       <div className="flex flex-col gap-3.5 border-t border-border pt-5">

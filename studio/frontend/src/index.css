@@ -3119,21 +3119,6 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
-	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
-	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
-	.unsloth-model-selector-menu {
-		--radius: 1.1rem;
-		--radius-sm: calc(1.25rem - 4px);
-		--radius-md: calc(1.25rem - 2px);
-		--radius-lg: 1.25rem;
-		--radius-xl: calc(1.25rem + 4px);
-		--radius-2xl: calc(1.25rem + 8px);
-		--radius-3xl: calc(1.25rem + 12px);
-		--radius-4xl: calc(1.25rem + 16px);
-	}
-	.unsloth-model-selector-menu[data-slot] {
-		border-radius: 1.25rem !important;
-	}
 	/* Its outline buttons keep their border. */
 	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
 		border-color: var(--border);
