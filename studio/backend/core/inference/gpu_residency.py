@@ -724,12 +724,20 @@ def refuse_unless_fits(
     policy: str = "off",
     gpu_ids: Optional[Iterable[int]] = None,
     need_mib: Optional[dict] = None,
+    cancel: Any = None,
 ) -> None:
     """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
 
-    For loads inside a generation (MLX diffusers fallback), which must not unload another model."""
+    For loads inside a generation (MLX diffusers fallback), which must not unload another model. ``cancel``: an
+    evictor holding the arbiter lock waits for this generation to drain, so the wait for the lock gives up once the
+    drain sets it."""
     from utils.account_context import current_account_id
-    with arb._lock:
+
+    while not arb._lock.acquire(timeout = 0.05):
+        if cancel is not None and cancel.is_set():
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+    try:
         arb._sync_from_view()
         others = [name for name in arb._residents if name != owner]
         if not others:
@@ -747,6 +755,8 @@ def refuse_unless_fits(
             )
             return
         raise arb.GpuOwnerBusyError(others[-1])
+    finally:
+        arb._lock.release()
 
 
 def free_for(

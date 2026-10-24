@@ -1174,7 +1174,7 @@ def _gated_rig(rig, gate):
 def test_the_fallback_gate_wraps_the_diffusers_load_and_never_reaches_an_engine(rig):
     seen = []
 
-    def _gate(start):
+    def _gate(start, cancel = None):
         seen.append("gate")
         return start()
 
@@ -1191,7 +1191,7 @@ def test_a_refusing_fallback_gate_leaves_mlx_loaded_and_keeps_the_refusal(rig):
 
     refusal = HTTPException(status_code = 409, detail = "training is running")
 
-    def _gate(start):
+    def _gate(start, cancel = None):
         raise routing.FallbackLoadRefusedError(refusal)
 
     _gated_rig(rig, _gate)
@@ -1204,7 +1204,7 @@ def test_a_refusing_fallback_gate_leaves_mlx_loaded_and_keeps_the_refusal(rig):
 
 
 def test_a_new_load_and_unload_drop_the_old_fallback_gate(rig):
-    _gated_rig(rig, lambda start: (_ for _ in ()).throw(AssertionError("stale gate")))
+    _gated_rig(rig, lambda start, cancel = None: (_ for _ in ()).throw(AssertionError("stale gate")))
     rig.engine.unload()
     rig.engine.begin_load("unsloth/Z-Image-Turbo-GGUF", model_kind = "gguf", hf_token = None)
     rig.log.clear()
@@ -1347,3 +1347,21 @@ def test_only_an_engine_that_takes_a_fallback_gate_is_handed_one():
         "fallback_gate": gate
     }
     assert inference._fallback_gate_kwarg(lambda repo_id, **kw: None, gate) == {}
+
+
+def test_the_fallback_fit_check_stops_waiting_for_the_arbiter_once_cancelled():
+    # An evictor holding the arbiter lock drains this generation: the wait must end on its cancel, not at the drain timeout.
+    import threading
+    import time
+
+    from core.inference import gpu_arbiter as arb
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.gpu_residency import refuse_unless_fits
+
+    cancel = threading.Event()
+    with arb._lock:
+        threading.Timer(0.2, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match = DIFFUSION_CANCELLED_MSG):
+            refuse_unless_fits(arb.DIFFUSION, cancel = cancel)
+    assert time.monotonic() - started < 5

@@ -408,7 +408,7 @@ class RoutedMlxEngine:
         self._route_lock = threading.Lock()
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
-        self._fallback_gate: Optional[Callable[[Callable[[], Any]], Any]] = None
+        self._fallback_gate: Optional[Callable[..., Any]] = None
         self._epoch = 0
         # Replacement loads between their first epoch bump and registering their options: no fallback registers.
         self._replacing = 0
@@ -513,7 +513,7 @@ class RoutedMlxEngine:
         self,
         repo_id: str,
         *,
-        fallback_gate: Optional[Callable[[Callable[[], Any]], Any]] = None,
+        fallback_gate: Optional[Callable[..., Any]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         # Fenced until this load's options are saved, so no request routes on the old model's options.
@@ -588,7 +588,7 @@ class RoutedMlxEngine:
             if gate is None:
                 _start()
             else:
-                gate(_start)
+                gate(_start, cancel = cancel)
             while True:
                 if cancel.is_set() or self._epoch != epoch:
                     diffusers.unload()

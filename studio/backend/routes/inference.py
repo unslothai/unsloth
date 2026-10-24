@@ -51450,7 +51450,7 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
     )
     from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
 
-    def gate(start):
+    def gate(start, cancel = None):
         with ExitStack() as stack:
             try:
                 account_access.require_live_account()
@@ -51462,8 +51462,11 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
                     policy = fit.get("policy", "off"),
                     gpu_ids = fit.get("gpu_ids"),
                     need_mib = fit.get("need_mib"),
+                    cancel = cancel,
                 )
             except (HTTPException, ChatLoadInFlightRefusal, RuntimeError) as exc:
+                if cancel is not None and cancel.is_set():
+                    raise
                 raise FallbackLoadRefusedError(_fallback_refusal_http(exc)) from exc
             for ref in (
                 request.model_path,
