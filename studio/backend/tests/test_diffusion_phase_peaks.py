@@ -420,7 +420,7 @@ def test_decode_release_keeps_the_vram_budget_reserve_free(monkeypatch):
     )
     pipe = types.SimpleNamespace()
     pipe._unsloth_decode_lend = (4040, 5900, 1024 * 1024, False)
-    # 7500 MiB free covers the decode alone, not with a 2 GiB budget reserve kept free
+    # 7500 MiB covers the decode, but not plus a 2 GiB reserve
     monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 2048 << 20)
     monkeypatch.setitem(sys.modules, "torch", _GuardTorch(free_mib = 7500))
     assert dm.release_for_decode(pipe, width = 1024, height = 1024, device = "cuda:0") is not None
