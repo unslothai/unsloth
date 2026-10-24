@@ -53926,7 +53926,6 @@ async def unload_diffusion_model(
         # Load POSTs still in preflight for this account (all, when the unload is not account scoped).
         # A token unload ends only the load it names, and refuses that one if it has not started.
         from core.inference.chat_swap_kv import cancel_preparing_loads
-
         await asyncio.to_thread(
             cancel_preparing_loads,
             "image",
