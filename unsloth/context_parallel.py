@@ -110,6 +110,10 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks.
+_ULYSSES_OWN_MASK_MODEL_TYPES = ("deepseek_v32", "deepseek_v4")
+
+
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
@@ -119,6 +123,8 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
         configs.append(text_config)
     for c in configs:
         if c is None:
+            continue
+        if backend == "ulysses" and getattr(c, "model_type", None) in _ULYSSES_OWN_MASK_MODEL_TYPES:
             continue
         layer_types = getattr(c, "layer_types", None)
         if layer_types and any(t not in allowed for t in layer_types):
@@ -154,6 +160,10 @@ def _unregister_cp_sharding_rules() -> None:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_deepseek import (
+    DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+    wrap_deepseek_attention_forward,
+)
 from .utils.ulysses_hybrid import (
     ULYSSES_ATTENTION_CLASSES,
     check_ulysses_mixer_heads,
@@ -211,6 +221,9 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     return None
 
 
+_ULYSSES_CLASSES = ULYSSES_ATTENTION_CLASSES + DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+
+
 def _runs_every_expert(block) -> bool:
     # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP.
     return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
@@ -229,11 +242,7 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
         and bool(modules)
         and all(is_ulysses_mixer(m) for m, _ in mixers)
         # Kimi-Linear and MiniMax name their linear attention layers self_attn too.
-        and all(
-            type(m).__name__ in ULYSSES_ATTENTION_CLASSES
-            for m in modules
-            if not is_ulysses_mixer(m)
-        )
+        and all(type(m).__name__ in _ULYSSES_CLASSES for m in modules if not is_ulysses_mixer(m))
         and _hybrid_config_blocker(model) is None
     )
 
@@ -302,6 +311,11 @@ class ContextParallelManager:
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
             for name, module in model.named_modules():
                 if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+                ):
+                    wrap_deepseek_attention_forward(module, get_cp_manager)
+                elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in ULYSSES_ATTENTION_CLASSES
                 ):
@@ -769,11 +783,11 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 size,
             )
         _check_stateful_mixers(self.model, backend, size)
-        # MiniMax-M2 has no stateful mixer but runs on the same Ulysses attention path.
+        # MiniMax-M2 and DeepSeek have no stateful mixer but run on the same Ulysses path.
         hf_ulysses = (
             backend == "ulysses"
             and isinstance(self.model, torch.nn.Module)
-            and any(type(m).__name__ in ULYSSES_ATTENTION_CLASSES for m in self.model.modules())
+            and any(type(m).__name__ in _ULYSSES_CLASSES for m in self.model.modules())
         )
         blocker = (
             _hybrid_config_blocker(self.model)
@@ -787,8 +801,8 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if not _supports_context_parallel(self.model, backend):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention "
-                "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear and "
-                "MiniMax (M1 hybrids, M2)."
+                "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear, "
+                "MiniMax (M1 hybrids, M2) and DeepSeek (V2 / V3 MLA, V3.2, V4)."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")

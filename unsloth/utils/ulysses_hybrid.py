@@ -50,7 +50,12 @@ HYBRID_ATTENTION_CLASSES = (
     GATED_DELTA_ATTENTION_CLASSES + KIMI_DELTA_ATTENTION_CLASSES + ("MiniMaxAttention",)
 )
 # Attention-only models whose Hugging Face attention runs under Ulysses without a stateful mixer.
-ULYSSES_ATTENTION_CLASSES = HYBRID_ATTENTION_CLASSES + ("MiniMaxM2Attention",)
+# DeepSeek V2 / V3 MLA (Moonlight) pass a YaRN-scaled softmax scale and narrower value heads.
+ULYSSES_ATTENTION_CLASSES = HYBRID_ATTENTION_CLASSES + (
+    "MiniMaxM2Attention",
+    "DeepseekV2Attention",
+    "DeepseekV3Attention",
+)
 
 
 def is_ulysses_gated_delta(module) -> bool:
@@ -535,10 +540,9 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
 
     bsz, n_heads, q_len, head_dim = query.shape
     scaling = kwargs.get("scaling")
-    if scaling is not None and abs(scaling * head_dim**0.5 - 1) > 1e-6:
-        raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism needs the default attention scale 1/sqrt(head_dim)."
-        )
+    # DeepSeek MLA folds YaRN's mscale into the scale; every backend below takes an explicit one.
+    custom_scale = scaling is not None and abs(scaling * head_dim**0.5 - 1) > 1e-6
+    scale_kwargs = {"softmax_scale": scaling} if custom_scale else {}
     if module.training and kwargs.get("dropout"):
         raise NotImplementedError(
             "Unsloth: Ulysses context parallelism does not support attention dropout."
@@ -550,15 +554,17 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
             "Unsloth: Ulysses context parallelism needs value heads no wider than query heads."
         )
     if v_dim < head_dim:
-        # MLA (Kimi-Linear): pad value heads to the query width like HF's flash path, slice after.
+        # MLA (Kimi-Linear, DeepSeek): pad value heads to the query width like HF's flash path.
         value = F.pad(value, (0, head_dim - v_dim))
     n_kv_heads = key.shape[1]
     config = AttentionConfig(
         backend = select_attention_backend(use_varlen = seq_info is not None),
         n_kv_heads = n_kv_heads,
         n_groups = n_heads // n_kv_heads,
-        flash_dense_kwargs = {"causal": True},
-        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True},
+        flash_dense_kwargs = {"causal": True, **scale_kwargs},
+        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True, **scale_kwargs},
+        sdpa_kwargs = {"scale": scaling} if custom_scale else None,
+        xformers_kwargs = {"scale": scaling} if custom_scale else None,
     )
     context = AttentionContext(
         bsz = bsz,
