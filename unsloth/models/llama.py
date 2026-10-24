@@ -3105,10 +3105,8 @@ def _record_pre_patch_changes(snapshot):
 
 
 def _gate_pre_patch_to_unsloth_models(snapshot):
-    """pre_patch swaps forwards on the transformers classes, so a plain transformers model built later
-    in the same process ran Unsloth's fast paths without the state they need (max_seq_length, the
-    attention setup). Patched methods now run only on modules Unsloth loaded and marked; any other
-    instance gets the method the class held before the first patch."""
+    """pre_patch edits transformers classes; run patched methods only on Unsloth-marked modules, else
+    the pre-patch original (a plain model built later lacks the state the fast paths need)."""
     for modeling in snapshot:
         record = vars(modeling).get("_unsloth_pre_patch_originals")
         if record is None:
