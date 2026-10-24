@@ -71,6 +71,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { buildApiExample } from "./api-sampling-example";
+import {
+  ApiExampleBox,
+  useApiExampleChoices,
+} from "./components/api-example-box";
 import { ApiExampleDialog } from "./components/api-example-dialog";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
@@ -209,17 +214,6 @@ function compactEndpoint(endpoint: string): string {
   return endpoint
     .replace(API_INFERENCE_PREFIX_RE, "/api")
     .replace(V1_PREFIX_RE, "/");
-}
-
-function quickStartSnippet(baseUrl: string, model: string): string {
-  const body = JSON.stringify({
-    model,
-    messages: [{ role: "user", content: "Hello!" }],
-  }).replace(/'/g, "'\\''");
-  return `curl ${baseUrl}/chat/completions \\
-  -H "Authorization: Bearer $UNSLOTH_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '${body}'`;
 }
 
 function statusDotClass(status: ApiMonitorEntry["status"]): string {
@@ -840,7 +834,7 @@ function QuickStart({
   baseUrl: string;
   model: string | null;
 }): ReactElement {
-  const snippet = quickStartSnippet(baseUrl, model ?? "MODEL_ID");
+  const choices = useApiExampleChoices(baseUrl, "curl");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span
@@ -865,18 +859,17 @@ function QuickStart({
             : "Load a model, then send a request to the base URL. It appears here as it streams."}
         </p>
       </div>
-      <div className="relative w-full max-w-2xl text-left">
-        <pre
-          className={cn(
-            "overflow-x-auto scroll-rounded rounded-lg py-3 pr-11 pl-3.5 font-mono text-ui-11 leading-[1.6] text-foreground",
-            INSET,
-          )}
-        >
-          {snippet}
-        </pre>
-        <div className="absolute top-1.5 right-1.5">
-          <CopyButton value={snippet} label="Copy example request" />
-        </div>
+      <div className="w-full max-w-2xl text-left">
+        <ApiExampleBox
+          choices={choices}
+          code={buildApiExample({
+            baseUrl,
+            model: model ?? "MODEL_ID",
+            sampling: {},
+            language: choices.language,
+            os: choices.os,
+          })}
+        />
       </div>
       <Button
         type="button"
@@ -1245,7 +1238,7 @@ export function ApiMonitorPage(): ReactElement {
         <HugeiconsIcon
           icon={CodeIcon}
           strokeWidth={1.75}
-          className="size-3.5"
+          className="size-4"
         />
       </Button>
     </ToolbarTooltip>
