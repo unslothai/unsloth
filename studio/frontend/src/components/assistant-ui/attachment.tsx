@@ -4,6 +4,7 @@
 "use client";
 
 // Avatar removed — caused circular crop on image thumbnails
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   AttachmentCardPreview,
   attachmentPreview,
@@ -26,6 +27,7 @@ import {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentFileKind,
   attachmentKindLabel,
+  COMPOSER_ATTACHMENT_MAX_ROWS,
   composerAttachmentsOverflow,
   sentAttachmentLayout,
   type AttachmentFileKind,
@@ -42,6 +44,7 @@ import {
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useAppearanceCustomStore } from "@/features/settings";
+import { ComposerAttachmentByIdProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import { cn } from "@/lib/utils";
 import { useShallow } from "zustand/shallow";
 import {
@@ -58,7 +61,7 @@ import {
   TextAlignLeft01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
+import { PlusIcon, XIcon } from "lucide-react";
 import {
   createContext,
   type FC,
@@ -75,8 +78,11 @@ import {
 import { ScrollPane } from "./scroll-pane";
 
 export const CARD_SLOT =
-  "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
+  "shrink-0 w-[calc((100%_-_var(--spacing)*6)/4.15)] min-w-[calc(7.5rem*var(--ui-space-scale,1))]";
 export const CARD_SIZE = "h-[calc(7rem*var(--ui-space-scale,1))] w-full";
+// The Library's thumbnail bounds; an image card keeps the row's height, past these it is cropped.
+const MIN_IMAGE_RATIO = 2 / 3;
+const MAX_IMAGE_RATIO = 3 / 2;
 const SENT_IMAGE_SIZE = "size-[calc(9rem*var(--ui-space-scale,1))]";
 const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
 const SENT_ROW_WIDTH = "w-[calc(18rem*var(--ui-space-scale,1))]";
@@ -135,7 +141,7 @@ const FileCardBody: FC<{
     ) : (
       <CardCenter>{center}</CardCenter>
     )}
-    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-0.5px)]", preview && "pt-1.25")}>
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-1px)]", preview && "pt-[calc(var(--spacing)*1.75-3px)]")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
       <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
@@ -144,18 +150,24 @@ const FileCardBody: FC<{
   </span>
 );
 
-const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string | undefined }> = ({
-  name,
-  kind,
-  src,
-}) => {
+const CardImageOrBody: FC<{
+  name: string;
+  kind: AttachmentFileKind;
+  src: string | undefined;
+  /** Width over height, once the image has decoded. */
+  onRatio?: (ratio: number) => void;
+}> = ({ name, kind, src, onRatio }) => {
   const file = useAuiState(({ attachment }) => (attachment as { file?: File }).file);
   if (src) {
     return (
       <img
         src={src}
         alt={name || "Attachment preview"}
-        className="h-full w-full object-cover"
+        onLoad={(event) => {
+          const { naturalWidth, naturalHeight } = event.currentTarget;
+          if (naturalWidth > 0 && naturalHeight > 0) onRatio?.(naturalWidth / naturalHeight);
+        }}
+        className="h-full w-full object-cover object-top"
       />
     );
   }
@@ -256,7 +268,7 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
         <HoverCardContent
           side="top"
           align="start"
-          className="w-[min(26rem,calc(100vw-2rem))] rounded-[14px] p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
+          className="w-[min(26rem,calc(100vw-2rem))] rounded-xl p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
         >
           <div className="flex max-h-80 flex-col divide-y divide-border/60 overflow-y-auto">
             {annotations.items.map((item, index) => (
@@ -397,7 +409,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -421,7 +433,7 @@ const PastedTextAttachmentUI: FC<{
               {canInline ? (
                 <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
                   Show in text field
-                  <ChevronRightIcon className="size-3" />
+                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                 </span>
               ) : null}
             </span>
@@ -431,7 +443,7 @@ const PastedTextAttachmentUI: FC<{
     ) : variant === "row" ? (
       <button
         className={cn(
-          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-[18px] px-4 py-3 text-left transition-colors",
+          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
           SENT_ROW_WIDTH,
           CARD_EDGE,
           "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -505,6 +517,7 @@ const ComposerAttachmentCard: FC = () => {
   const src = useAttachmentImageSrc();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
+  const [ratio, setRatio] = useState<number | null>(null);
 
   if (annotations) {
     return (
@@ -530,12 +543,22 @@ const ComposerAttachmentCard: FC = () => {
   return (
     <AttachmentPrimitive.Root
       key={attachmentId}
-      className={cn("aui-attachment-root aui-attachment-card group/attachment-card relative", CARD_SLOT)}
+      className={cn(
+        "aui-attachment-root aui-attachment-card group/attachment-card relative",
+        src ? "shrink-0" : CARD_SLOT,
+      )}
+      style={
+        src
+          ? {
+              width: `calc(7rem * var(--ui-space-scale, 1) * ${Math.min(Math.max(ratio ?? 1, MIN_IMAGE_RATIO), MAX_IMAGE_RATIO)})`,
+            }
+          : undefined
+      }
     >
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
             CARD_SIZE,
             CARD_EDGE,
             !src && CARD_SURFACE,
@@ -544,7 +567,7 @@ const ComposerAttachmentCard: FC = () => {
           title={name}
           aria-label={name ? `${label} attachment: ${name}` : `${label} attachment`}
         >
-          <CardImageOrBody name={name} kind={kind} src={src} />
+          <CardImageOrBody name={name} kind={kind} src={src} onRatio={setRatio} />
         </button>
       </AttachmentPreviewDialog>
       <AttachmentCardRemove />
@@ -565,7 +588,7 @@ const SentImageTile: FC = () => {
       <AttachmentPreviewDialog redactFromReload={false}>
         <button
           className={cn(
-            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-[18px] transition-opacity hover:opacity-85",
+            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-lg transition-opacity hover:opacity-85",
             layout === "list" ? SENT_IMAGE_SIZE : SENT_IMAGE_SIZE_COMPACT,
             CARD_EDGE,
           )}
@@ -635,7 +658,7 @@ const SentFileItem: FC = () => {
         {layout === "list" ? (
           <button
             className={cn(
-              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-[18px] px-4 py-3 text-left transition-colors",
+              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
               SENT_ROW_WIDTH,
               CARD_EDGE,
               "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -685,8 +708,6 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-const CARD_COMPONENTS = { Attachment: ComposerAttachmentCard };
-
 export const UserMessageAttachments: FC = () => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
@@ -718,8 +739,14 @@ export const UserMessageAttachments: FC = () => {
 };
 
 // The layout decision is a DOM data attribute, never state, so a resize or new card re-renders no card.
-export const ComposerAttachments: FC<{ className?: string }> = ({ className }) => {
+export const ComposerAttachments: FC<{
+  className?: string;
+  /** One scrolling row once the thread has messages, so the strip does not push the reply up. */
+  oneRowInChat?: boolean;
+}> = ({ className, oneRowInChat = false }) => {
   const count = useAuiState(({ composer }) => composer.attachments.length);
+  const inChat = useAuiState(({ thread }) => !thread.isEmpty);
+  const maxRows = oneRowInChat && inChat ? 1 : COMPOSER_ATTACHMENT_MAX_ROWS;
   const ref = useRef<HTMLDivElement | null>(null);
   const previousCount = useRef(count);
 
@@ -727,17 +754,16 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
     const el = ref.current;
     if (!el) return;
     const layout = () => {
-      const card = el.firstElementChild as HTMLElement | null;
       const style = getComputedStyle(el);
       const width =
         el.clientWidth -
         Number.parseFloat(style.paddingLeft) -
         Number.parseFloat(style.paddingRight);
       const strip = composerAttachmentsOverflow(
-        count,
+        [...el.children].map((card) => card.getBoundingClientRect().width),
         width,
-        card?.getBoundingClientRect().width ?? 0,
         Number.parseFloat(style.columnGap) || 0,
+        maxRows,
       );
       const next = strip ? "strip" : "wrap";
       if (el.dataset.layout !== next) el.dataset.layout = next;
@@ -747,8 +773,10 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
       el.scrollLeft = el.scrollWidth;
     }
     previousCount.current = count;
+    // An image card widens to its proportions once it decodes, without resizing the row.
     const observer = new ResizeObserver(layout);
     observer.observe(el);
+    for (const card of el.children) observer.observe(card);
     const onWheel = (event: WheelEvent) => {
       if (el.dataset.layout !== "strip") return;
       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
@@ -763,20 +791,35 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
       observer.disconnect();
       el.removeEventListener("wheel", onWheel);
     };
-  }, [count]);
+  }, [count, maxRows]);
 
   return (
     <div
       ref={ref}
       data-reload-snapshot-sensitive
       className={cn(
-        "aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
+        "aui-composer-attachments aui-composer-attachment-cards mb-[calc(0.5rem*var(--ui-space-scale,1))] flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
         className,
       )}
     >
-      <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
+      <ComposerAttachmentCardList />
     </div>
   );
+};
+
+// Not ComposerPrimitive.Attachments: its index keys remount every card after a removed one,
+// and each remount blanks its preview and decodes the image again.
+const ComposerAttachmentCardList: FC = () => {
+  const ids = useAuiState(
+    useShallow(({ composer }) =>
+      composer.attachments.map((attachment) => attachment.id),
+    ),
+  );
+  return ids.map((id) => (
+    <ComposerAttachmentByIdProvider key={id} id={id}>
+      <ComposerAttachmentCard />
+    </ComposerAttachmentByIdProvider>
+  ));
 };
 
 export const ComposerAddAttachment: FC = () => {

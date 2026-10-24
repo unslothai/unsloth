@@ -96,9 +96,11 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import (
     canonical_model_repo_id,
     hf_dns_dead,
@@ -116,6 +118,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    _normalized_reward_name,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -137,6 +140,7 @@ from models.training import (
     DiffusionTrainingStopRequest,
     RlSamplesResponse,
     TRAINING_REQUEST_ID_PATTERN,
+    TokenPreviewRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import (
@@ -1258,6 +1262,9 @@ def _reject_untrainable_model_request(
                         "training_remote_model_not_decision",
                         f"{request.model_name} is not a decision model (Laya or Clef).",
                     )
+                if _is_decision_checkpoint(request) and managed_account():
+                    # A Hub decision adapter loads its base as well: authorize it like any adapter.
+                    _authorize_adapter_base(request.model_name, hf_token)
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(
@@ -1292,9 +1299,27 @@ def _reject_untrainable_model_request(
                 "needs joint_head.safetensors and joint_head_config.json beside config.json "
                 "(or LoRA adapters).",
             )
+        if managed_account() and _has_adapter_metadata(folder):
+            # FastDecisionModel loads the adapter's base: check and pin it like any adapter.
+            from core.export.decision import DecisionExportError, adapter_base
+
+            try:
+                adapter_base(folder)
+            except DecisionExportError as exc:
+                raise _training_start_error(400, "training_decision_adapter_base", str(exc))
+            base = _authorize_adapter_base(str(folder), hf_token)
+            # The worker re-reads the pin at the model root, so pin only a root adapter.
+            pin = None if request.model_subfolder else base or ""
+            return _ModelPreflightResult(model_name, model_local_path, None, adapter_base_pin = pin)
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
+        if managed_account() and _has_adapter_metadata(path):
+            # The loader still follows adapter_config.json to its base, so check and pin it.
+            adapter_base = _authorize_adapter_base(str(path), hf_token)
+            return _ModelPreflightResult(
+                model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
+            )
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path) or (
         model_format == "adapter" and _has_local_adapter_weights(path)
@@ -1397,7 +1422,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     if not is_owner_context():
         raise HTTPException(
             status_code = 403,
-            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            detail = "Only the Unsloth owner can fine-tune decision models, since only the "
             "owner's fine-tunes can be served by the Decision API.",
         )
     if sys.version_info < (3, 10):
@@ -1534,6 +1559,30 @@ _RESUME_CACHE_FIELDS = (
     "dataset_local_path",
     "dataset_snapshot_path",
 )
+
+
+def _stored_reward_specs(stored: dict) -> dict[str, dict]:
+    """name -> reward spec stored with a run. A resume scores with these, not the library's
+    current rules, which may have been edited or deleted since."""
+    specs = stored.get("reward_specs")
+    if not isinstance(specs, list):
+        return {}
+    return {
+        spec["name"]: spec
+        for spec in specs
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and spec.get("rule")
+    }
+
+
+def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
+    """A resumed GRPO run must keep the source run's rewards and weights: the checkpoint's
+    optimizer state belongs to that summed reward."""
+    if not stored_specs:
+        return False
+    stored = {name: float(spec.get("weight", 1.0)) for name, spec in stored_specs.items()}
+    return stored != {_normalized_reward_name(s.name): float(s.weight) for s in selections}
+
+
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
     "load_in_4bit",
     "use_lora",
@@ -1607,6 +1656,13 @@ def _prepare_resume_resource_provenance(
                 detail = "The training type does not match the source run.",
             )
         request.training_type = stored_training_type
+    # The checkpoint's optimizer and trainer state belong to one loss.
+    stored_objective = stored.get("objective") or "sft"
+    if request.objective != stored_objective:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The training objective does not match the source run.",
+        )
     for field in _RESUME_CHECKPOINT_STRUCTURE_FIELDS:
         if field not in stored:
             continue
@@ -1684,6 +1740,47 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+@router.get("/drafter-capability")
+async def get_drafter_capability(
+    model_name: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Which speculative-decoding drafter the Train tab can train for `model_name`: the native MTP head
+    when the checkpoint ships one, else an EAGLE-3 drafter where vLLM or llama.cpp can run it."""
+    from core.training.drafter import drafter_capability
+
+    from models.inference import resolve_inventory_handle
+
+    shown = (model_name or "").strip()
+    if not shown or len(shown) > 512:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    # A picker `ref:` handle resolves the way TrainingStartRequest resolves it; the answer keeps the handle.
+    name = resolve_inventory_handle(shown)
+    managed = managed_account()
+    if managed:
+        # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
+        try:
+            account_path(name, reference = True, shared_cache = True)
+            # A shared-cache snapshot is another tenant's unless this account may see that model.
+            await asyncio.to_thread(_authorize_cache_fallback, name)
+        except HTTPException:
+            return {
+                "model_name": shown,
+                "has_native_mtp": False,
+                "strategy": None,
+                "supported": False,
+                "reason": "This model is not available to this account.",
+                "vllm": False,
+                "llama_cpp": False,
+            }
+    # The caller's own token comes in the header; without one, ambient credentials for the owner
+    # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -1692,6 +1789,122 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     # route.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_visible_gpu_utilization)
+
+
+# As many head rows as prepare_raw_text_dataset scores to pick a column; the worker shows a few at random.
+_TOKEN_PREVIEW_POOL_ROWS = 100
+
+
+def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
+    from hub.schemas.datasets import CheckFormatRequest as HubCheckFormatRequest
+    from hub.services.datasets.formatting import load_preview_slice
+
+    from core.training.account_jobs import visible_cached_path
+
+    from hub.utils import download_registry
+    from hub.utils.hf_errors import hf_error_status
+
+    visible_cached_path(request.dataset_local_path, "dataset")
+    try:
+        rows, _ = load_preview_slice(
+            HubCheckFormatRequest(
+                dataset_name = request.dataset_name,
+                subset = request.subset,
+                train_split = request.train_split or "train",
+                prefer_local_cache = request.dataset_known_cached
+                and bool(request.dataset_local_path),
+                local_path = request.dataset_local_path,
+            ),
+            hf_token,
+            _TOKEN_PREVIEW_POOL_ROWS,
+            viewer_rows = True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code = hf_error_status(exc) or 400,
+            detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+        ) from exc
+    return rows.to_list()
+
+
+@router.post("/token-preview")
+async def token_preview(
+    request: TokenPreviewRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tokens and completion mask for a few rows of the selected dataset, or for ``text``, as
+    training would produce them. Loads the tokenizer only, in a GPU-free subprocess."""
+    from core.training.token_preview import (
+        TokenPreviewError,
+        run_token_preview,
+    )
+    from core.training.training import should_use_mlx_training_backend
+    from routes.models import _require_model_access_or_caller_token
+    from utils.account_context import current_account_id
+    from hub.utils.hf_tokens import recording_a_request_token_fetch
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+    from utils.paths import is_local_path
+    from utils.utils import anonymous_and_offline
+
+    if request.text is None and not request.dataset_name:
+        raise HTTPException(status_code = 400, detail = "Pick a dataset or type a text to preview.")
+    hf_token = account_hf_token(hf_token)
+    model_name = request.model_name.strip()
+    account_path(model_name, reference = True)
+    if request.dataset_name:
+        account_path(request.dataset_name, reference = True)
+    await _require_model_access_or_caller_token(model_name, hf_token)
+    # By repo id, not the picked cache folder: a cached repo still resolves from disk, and a folder
+    # path would skip the account checks above.
+    # Same repo the trainer reads: MLX loads the picked name as given (see _metadata_lookup_name).
+    source = model_name
+    if not should_use_mlx_training_backend():
+        source = unsloth_public_mirror(model_name, request.load_in_4bit) or model_name
+    remote = not is_local_path(source)
+    if remote and anonymous_and_offline(hf_token, repo_id = source):
+        raise HTTPException(status_code = 404, detail = "This model is not available offline.")
+
+    def _run() -> dict:
+        rows = None if request.text is not None else _token_preview_rows(request, hf_token)
+        payload = {
+            "rows": rows,
+            "text": request.text,
+            "final_format": request.final_format,
+            "dataset_name": request.dataset_name,
+            "format_type": request.format_type,
+            "custom_format_mapping": request.custom_format_mapping,
+            "raw_text": request.is_cpt or request.format_type == "raw",
+            "is_cpt": request.is_cpt,
+            # The trainer never masks audio models or DeepSeek OCR (it skips apply_completion_masking).
+            "train_on_completions": request.train_on_completions
+            and not request.is_cpt
+            and request.model_type != "audio"
+            and not ("deepseek" in model_name.lower() and "ocr" in model_name.lower()),
+            "max_seq_length": request.max_seq_length,
+            "num_samples": request.num_samples,
+            "seed": request.seed,
+        }
+        key = (current_account_id(), model_name, source, hf_token)
+        # The tokenizer is loaded only when a worker starts, and which files that load resolves is not
+        # known up front, so every load is recorded; a warm worker fetches nothing.
+        return run_token_preview(
+            key,
+            {"model_name": model_name, "tokenizer_source": source, "hf_token": hf_token},
+            payload,
+            (lambda: recording_a_request_token_fetch(hf_token, source, "model"))
+            if remote
+            else None,
+        )
+
+    try:
+        return await asyncio.to_thread(_run)
+    except TokenPreviewError as exc:
+        from hub.utils import download_registry
+        detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        raise HTTPException(status_code = 422, detail = detail) from exc
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
@@ -1796,6 +2009,17 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    if request.drafter is not None and request.drafter.enabled:
+        from core.training.training import should_use_mlx_training_backend
+        if should_use_mlx_training_backend():
+            raise HTTPException(
+                status_code = 400,
+                detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
+            )
+    from core.training.token_preview import stop_token_preview_worker
+
+    # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
+    threading.Thread(target = stop_token_preview_worker, daemon = True).start()
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -1856,14 +2080,15 @@ async def start_training(
                 detail = ("A transformers installation is in progress. Retry when it completes."),
             )
 
-        # S3 dataset loading needs the optional boto3 dependency.
+        # Install the optional SDK outside the event loop on the first S3 request.
         if request.s3_config is not None and not request.resume_from_checkpoint:
             from core.training.s3_dataset import boto3_available
+            from utils.s3_runtime import S3DependencyUnavailable, ensure_boto3
             if not boto3_available():
-                raise HTTPException(
-                    status_code = 501,
-                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
-                )
+                try:
+                    await asyncio.to_thread(ensure_boto3)
+                except S3DependencyUnavailable as exc:
+                    raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -2093,13 +2318,28 @@ async def start_training(
                 detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
             )
         if request.objective == "grpo":
-            from core.training.rewards import RewardError, RewardNotFoundError, get_reward
+            from core.training.rewards import (
+                RewardError,
+                RewardNotFoundError,
+                get_reward,
+                normalize_reward_name,
+            )
 
-            # Resolved here, under the caller's account, and stored with the run: later edits to a
-            # library reward do not change what this run says it trained with.
+            stored_specs = (
+                _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
+            )
+            if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "The GRPO rewards do not match the source run.",
+                )
+            # Stored with the run, so later library edits never change what it says it trained with.
             try:
                 for selection in request.grpo_rewards:
-                    reward_specs.append({**get_reward(selection.name), "weight": selection.weight})
+                    spec = stored_specs.get(normalize_reward_name(selection.name)) or get_reward(
+                        selection.name
+                    )
+                    reward_specs.append({**spec, "weight": selection.weight})
             except RewardNotFoundError as exc:
                 raise HTTPException(status_code = 404, detail = str(exc)) from exc
             except RewardError as exc:
@@ -2138,6 +2378,12 @@ async def start_training(
             "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
+            "early_stopping_patience": request.early_stopping_patience,
+            "drafter": (
+                request.drafter.model_dump()
+                if request.drafter is not None and request.drafter.enabled
+                else None
+            ),
             "dataset_slice_start": request.dataset_slice_start,
             "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,
@@ -2187,6 +2433,7 @@ async def start_training(
                 "system_prompt": (request.rl_system_prompt or "").strip() or None,
                 "mask_truncated_completions": request.grpo_mask_truncated_completions,
                 "epsilon_high": request.grpo_epsilon_high,
+                "python_reward_isolation": request.grpo_python_reward_isolation,
             },
             "reward_specs": reward_specs,
             "finetune_vision_layers": request.finetune_vision_layers,
@@ -2211,7 +2458,8 @@ async def start_training(
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
             "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
-            "trust_remote_code": request.trust_remote_code,
+            # A managed account never forwards remote code to the worker.
+            "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,
@@ -2294,6 +2542,8 @@ async def start_training(
 
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
+                # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+                gpu_arbiter.release_mask_segmenter("training start")
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -2304,6 +2554,8 @@ async def start_training(
                         )
                     diffusion.unload()
                     gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except gpu_arbiter.SegmenterStillRunningError:
+                raise
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -2359,6 +2611,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from core.inference.gpu_arbiter import SegmenterStillRunningError
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2375,6 +2628,7 @@ async def start_training(
                 SidecarSwapInProgress,
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
+                SegmenterStillRunningError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2432,7 +2686,11 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
+        except (
+            ExactResumeResourcesUnavailable,
+            ManagedEngineStillRunning,
+            SegmenterStillRunningError,
+        ) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2679,7 +2937,9 @@ def _build_training_status(
         phase = "error"
     elif is_active:
         msg_lower = status_message.lower()
-        if "loading" in msg_lower or "importing" in msg_lower:
+        if msg_lower.startswith("training drafter"):
+            phase = "training_drafter"
+        elif "loading" in msg_lower or "importing" in msg_lower:
             phase = "loading_model"
         elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
             phase = "configuring"
@@ -2702,7 +2962,11 @@ def _build_training_status(
             "total_steps": getattr(progress, "total_steps", 0),
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
+            "elapsed_seconds": getattr(progress, "elapsed_seconds", None),
+            # A stopped run keeps its last ETA; only a live run has time remaining.
+            "eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None,
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
                 getattr(backend, "_model_download_repo_id", None) if is_active else None
             ),
@@ -2908,6 +3172,7 @@ async def stream_training_progress(
             progress: Optional[Any] = None,
             grad_norm_override: Optional[float] = None,
             eval_loss_override: Optional[float] = None,
+            rl_metrics_override: Optional[dict] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -2925,7 +3190,10 @@ async def stream_training_progress(
             eval_loss = eval_loss_override
             if eval_loss is None and progress:
                 eval_loss = getattr(progress, "eval_loss", None)
-            rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
+            if rl_metrics_override is not None:
+                rl_metrics = rl_metrics_override or None
+            else:
+                rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
 
             return TrainingProgress(
                 job_id = job_id,
@@ -2974,6 +3242,12 @@ async def stream_training_progress(
                     getattr(backend, "grad_norm_history", []),
                 )
             }
+            # Each replayed step carries its own RL numbers, not the latest ones.
+            rl_by_step = {
+                entry["step"]: {k: v for k, v in entry.items() if k != "step"}
+                for entry in getattr(backend, "rl_metric_history", [])
+                if isinstance(entry, dict) and "step" in entry
+            }
             for i, step_val in enumerate(backend.step_history):
                 if not is_current_job():
                     return
@@ -2995,6 +3269,7 @@ async def stream_training_progress(
                         epoch_replay,
                         progress = tp_replay,
                         grad_norm_override = grad_norm_by_step.get(step_val),
+                        rl_metrics_override = rl_by_step.get(step_val, {}),
                     )
                     if not is_current_job():
                         return
@@ -3350,6 +3625,8 @@ def _free_gpu_for_diffusion_training() -> None:
 
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
+        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+        gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
             logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -3358,6 +3635,8 @@ def _free_gpu_for_diffusion_training() -> None:
                 logger.info("Unloading resident Images pipeline to free GPU memory for training")
             diffusion.unload()
             gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    except gpu_arbiter.SegmenterStillRunningError:
+        raise  # a RuntimeError: the start route answers 409
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
@@ -3443,6 +3722,11 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     from utils.paths import datasets_root
 
     value = str(raw or "").strip()
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before dataset resolution touches the disk: a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(value) and managed_account():
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
     if value and "\x00" not in value:
         p = Path(value)
         # A single component that is not "..", so joining under datasets_root() cannot escape it.
@@ -4273,7 +4557,7 @@ async def upload_diffusion_dataset(
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
         raise HTTPException(
             status_code = 400,
-            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+            detail = f"'{cleaned}' is reserved for Unsloth's internal dataset storage.",
         )
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here

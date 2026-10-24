@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The path resolver must work in a clean interpreter with only structlog, and
-# seeding must create no studio.db (get_app_setting CREATES one). Needs uv.
+# The path resolver must work with only structlog, and seeding must create no studio.db
+# (get_app_setting creates one). Needs uv.
 set -u
 REPO="${1:-$(CDPATH= cd -P -- "$(dirname "$0")/../.." && pwd -P)}"
 if ! command -v uv >/dev/null 2>&1; then
@@ -15,7 +15,6 @@ check() { if [ "$2" = 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1 ${3:-}"
 echo "[1] build an isolated venv (uv, no site packages from the workspace)"
 uv venv --python 3.13 "$WORK/venv" >/dev/null 2>&1 || { echo "FAIL: uv venv"; exit 1; }
 PY="$WORK/venv/bin/python"
-# structlog is the only thing storage_roots pulls in via loggers/path_utils.
 uv pip install --python "$PY" structlog >/dev/null 2>&1 || { echo "FAIL: pip install"; exit 1; }
 echo "  venv: $("$PY" -V), packages: $(uv pip list --python "$PY" 2>/dev/null | wc -l)"
 

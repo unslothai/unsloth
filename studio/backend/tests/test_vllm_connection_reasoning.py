@@ -145,9 +145,9 @@ def test_vllm_history_replays_reasoning_only_when_preserved(preserve):
 
 
 @pytest.mark.parametrize("value", [True, False, None])
-def test_vllm_tool_loop_keeps_reasoning_only_when_preserved(value):
+def test_vllm_tool_loop_keeps_the_current_turns_reasoning(value):
     client = ExternalProviderClient(
         provider_type = "vllm", base_url = "http://localhost:8000/v1", api_key = ""
     )
     transport = OAICompatTransport(client, model = "test", preserve_thinking = value)
-    assert transport.preserves_reasoning is (value is True)
+    assert transport.preserves_reasoning is True

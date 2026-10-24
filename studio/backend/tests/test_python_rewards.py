@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import gc
 import os
+import threading
+import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -10,8 +14,9 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 from core.training import python_rewards, rewards, rl
-from core.training.python_rewards import PythonRewardError, RewardWorker
+from core.training.python_rewards import PythonRewardError, RewardWorker, make_python_reward_funcs
 from routes.rewards import router
+from utils.account_context import AccountContext, bind_account
 
 NOTEBOOK = (Path(__file__).parent / "fixtures" / "notebook_rewards" / "qwen25_gsm8k.py").read_text(
     "utf-8"
@@ -67,6 +72,20 @@ def worker_factory():
         worker.close()
 
 
+def test_a_closed_worker_is_not_kept_alive_by_its_atexit_hook():
+    # Studio is long-lived: a hook per Try it worker would keep every closed worker and its code.
+    specs = [_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")]
+    worker = RewardWorker(specs, mode = "full").start()
+    worker.close()
+    ref = weakref.ref(worker)
+    del worker
+    deadline = time.monotonic() + 5
+    while ref() is not None and time.monotonic() < deadline:
+        gc.collect()
+        time.sleep(0.05)
+    assert ref() is None
+
+
 def test_python_reward_round_trips_through_markdown():
     spec = _spec(
         "counter", "def reward(completions, **kwargs):\n    return [1.0] * len(completions)\n"
@@ -88,6 +107,7 @@ def test_unfenced_and_crlf_python_bodies_parse():
         ("import os\n", "reward", "named 'reward'"),
         ("def other(completions): return []\n", "reward", "named 'reward'"),
         ("def reward(c): return []\n", "not an identifier", "entry must be"),
+        ("async def reward(completions): return []\n", "reward", "is async"),
     ],
 )
 def test_bad_python_rewards_are_refused(code, entry, message):
@@ -110,6 +130,32 @@ def test_notebook_rewards_score_the_same_in_the_worker(worker_factory):
         assert got[spec["name"]] == pytest.approx(expected), func
 
 
+def test_notebook_correctness_scores_a_raw_gsm8k_answer(worker_factory):
+    from datasets import Dataset
+
+    raw = Dataset.from_list(
+        [{"question": "q", "answer": "48 + 24 = <<48+24=72>>72 clips.\n#### 72"}]
+    )
+    row = rl.format_rl_dataset(raw, "grpo", keep_columns = ("*",))[0][0]
+    specs = [
+        _spec("correctness", NOTEBOOK, "correctness_reward_func"),
+        _spec(
+            "raw",
+            "def reward(completions, answer_raw, **kw):\n    return [float(len(answer_raw[0]))]\n",
+        ),
+    ]
+    got = make_python_reward_funcs(specs, worker_factory(specs))
+    prompts, completions = [row["prompt"]], [[{"role": "assistant", "content": GOOD}]]
+    kwargs = {"answer": [row["answer"]]}
+    assert got[0](prompts = prompts, completions = completions, **kwargs) == [2.0]
+    assert got[1](prompts = prompts, completions = completions, **kwargs) == [float(len(row["answer"]))]
+    # A bare answer passes through, and a real answer_raw column is not replaced.
+    worker = worker_factory(specs)
+    assert worker.score(
+        ["correctness", "raw"], prompts, completions, {"answer": ["72"], "answer_raw": ["abc"]}
+    ) == {"correctness": [2.0], "raw": [3.0]}
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
@@ -124,7 +170,7 @@ def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeyp
     ]
     created = []
 
-    def unstarted(python):
+    def unstarted(python, mode):
         created.append(RewardWorker(python, mode = "full"))
         return created[-1]
 
@@ -236,13 +282,25 @@ def test_worker_files_are_removed_on_close(worker_factory):
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     real = python_rewards.RewardWorker
-    monkeypatch.setattr(
-        python_rewards, "RewardWorker", lambda specs, **kw: real(specs, mode = "full", **kw)
-    )
+    modes = []
+
+    def worker(
+        specs,
+        *,
+        mode = "auto",
+        **kw,
+    ):
+        # The mode the preview asked for is recorded, then "full" so this runs on any host.
+        modes.append(mode)
+        return real(specs, mode = "full", **kw)
+
+    monkeypatch.setattr(python_rewards, "RewardWorker", worker)
     app = FastAPI()
     app.include_router(router, prefix = "/api/rewards")
     app.dependency_overrides[get_current_subject] = lambda: "test"
-    yield TestClient(app)
+    client = TestClient(app)
+    client.worker_modes = modes
+    yield client
     python_rewards._close_preview()
 
 
@@ -277,6 +335,104 @@ def test_preview_reports_a_broken_python_reward_as_a_400(client):
     )
     assert response.status_code == 400
     assert "ZeroDivisionError" in response.json()["detail"]
+
+
+def _preview_as(client, account_id, payload):
+    async def subject():
+        # Async, as the real dependency is: the binding has to reach the route's thread.
+        bind_account(AccountContext(account_id, "same-name"))
+        return "same-name"
+
+    client.app.dependency_overrides[get_current_subject] = subject
+    response = client.post("/api/rewards/preview", json = payload)
+    assert response.status_code == 200, response.text
+    return response.json()["scores"][0]["score"]
+
+
+def test_a_warm_preview_worker_is_not_shared_across_accounts(client):
+    # Module state survives between previews of one account; another account gets a fresh
+    # worker, even under the same username (a deleted and re-created user).
+    md = _python_md(
+        "calls",
+        "seen = []\n\n"
+        "def reward(completions, **kw):\n"
+        "    seen.append(1)\n"
+        "    return [float(len(seen))] * len(completions)\n",
+    )
+    payload = {"rewards": [{"markdown": md}], "completion": "x"}
+    scores = [_preview_as(client, a, payload) for a in ("acct-a", "acct-a", "acct-b")]
+    assert scores == [1.0, 2.0, 1.0]
+
+
+def test_another_accounts_preview_does_not_close_a_worker_mid_score(client):
+    slow = _python_md(
+        "slow",
+        "import time\n\ndef reward(completions, **kw):\n"
+        "    time.sleep(3)\n    return [1.0] * len(completions)\n",
+    )
+    fast = _python_md(
+        "fast", "def reward(completions, **kw):\n    return [2.0] * len(completions)\n"
+    )
+    first = {}
+    thread = threading.Thread(
+        target = lambda: first.update(
+            score = _preview_as(
+                client, "acct-a", {"rewards": [{"markdown": slow}], "completion": "x"}
+            )
+        )
+    )
+    thread.start()
+    time.sleep(1.5)
+    assert (
+        _preview_as(client, "acct-b", {"rewards": [{"markdown": fast}], "completion": "x"}) == 2.0
+    )
+    thread.join(30)
+    assert first == {"score": 1.0}
+
+
+def test_a_preview_row_keeps_its_value_types(client):
+    md = _python_md(
+        "typed",
+        "def reward(completions, level, meta, **kw):\n"
+        "    return [float(level[0] + meta[0]['bonus'])] * len(completions)\n",
+    )
+    payload = {
+        "rewards": [{"markdown": md}],
+        "completion": "x",
+        "row": {"level": 3, "meta": {"bonus": 2}},
+    }
+    assert _preview_as(client, "acct-a", payload) == 5.0
+
+
+ONE = "def reward(completions, **kw):\n    return [1.0] * len(completions)\n"
+
+
+def test_a_python_preview_needs_the_os_sandbox_unless_opted_out(client):
+    md = _python_md("one", ONE)
+    payload = {"rewards": [{"markdown": md}], "completion": "x"}
+    _preview_as(client, "acct-a", payload)
+    _preview_as(client, "acct-a", {**payload, "python_reward_isolation": "auto"})
+    assert client.worker_modes == ["required", "auto"]
+
+
+def test_a_python_preview_without_the_os_sandbox_is_a_400(client, monkeypatch):
+    from core.inference.os_sandbox import SandboxUnavailableError
+
+    class NoSandbox:
+        def __init__(self, specs, **kw):
+            pass
+
+        def start(self):
+            raise SandboxUnavailableError("no bubblewrap", remediation = "Install bubblewrap.")
+
+    monkeypatch.setattr(python_rewards, "RewardWorker", NoSandbox)
+    md = _python_md("one", ONE)
+    response = client.post(
+        "/api/rewards/preview", json = {"rewards": [{"markdown": md}], "completion": "x"}
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "no bubblewrap" in detail and "grpo_python_reward_isolation" in detail
 
 
 def _os_sandbox_available() -> bool:
@@ -328,4 +484,138 @@ def test_python_rewards_keep_every_dataset_column():
     shaped, _ = rl.format_rl_dataset(
         raw, "grpo", {"question": "prompt", "solution": "answer"}, keep_columns = ("*",)
     )
-    assert sorted(shaped.column_names) == ["answer", "board", "level", "prompt"]
+    assert sorted(shaped.column_names) == [
+        "answer",
+        "board",
+        "level",
+        "prompt",
+        "question",
+        "solution",
+    ]
+
+
+def test_a_rule_can_compare_to_the_column_mapped_as_answer():
+    from datasets import Dataset
+
+    raw = Dataset.from_list([{"question": "q", "solution": "72"}])
+    shaped, _ = rl.format_rl_dataset(
+        raw, "grpo", {"question": "prompt", "solution": "answer"}, keep_columns = ("solution",)
+    )
+    assert shaped[0]["solution"] == "72"
+    assert shaped[0]["answer"] == "72"
+
+
+@pytest.fixture
+def no_os_sandbox(monkeypatch):
+    # Stands in for a Linux host without bubblewrap (stock Colab, most containers), on any runner.
+    from core.inference import os_sandbox
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kw: os_sandbox.SandboxCapability(
+            backend = "bubblewrap",
+            available = False,
+            reason = "bubblewrap is not installed",
+            remediation = f"Install bubblewrap. {os_sandbox._FALLBACK_NOTE}",
+        ),
+    )
+
+
+LEN_REWARD = (
+    "def reward(completions, **kw):\n    return [len(c[0]['content']) for c in completions]\n"
+)
+
+
+def test_a_training_run_refuses_python_rewards_without_the_os_sandbox(no_os_sandbox):
+    specs = [{**_spec("py-len", LEN_REWARD), "weight": 1.0}]
+    with pytest.raises(PythonRewardError, match = "need the OS sandbox") as err:
+        rl._reward_funcs(
+            specs, RewardWorker, python_rewards.make_python_reward_funcs, rewards.make_reward_func
+        )
+    assert "Install bubblewrap." in str(err.value)
+    assert '"auto"' in str(err.value)
+    assert "still run" not in str(err.value)
+
+
+def test_opting_into_software_safeguards_runs_and_reports_it(no_os_sandbox):
+    specs = [{**_spec("py-len", LEN_REWARD), "weight": 1.0}]
+    isolation, created = {}, []
+
+    def tracked(python, mode):
+        created.append(RewardWorker(python, mode = mode))
+        return created[-1]
+
+    funcs = rl._reward_funcs(
+        specs,
+        tracked,
+        python_rewards.make_python_reward_funcs,
+        rewards.make_reward_func,
+        mode = "auto",
+        isolation = isolation,
+    )
+    try:
+        assert funcs[0](prompts = ["p"], completions = ["abc"]) == [3.0]
+    finally:
+        for worker in created:
+            worker.close()
+    assert isolation == {"backend": "software-safeguards", "os_isolation": False}
+    metrics = rl.with_reward_isolation({"reward": 1.0}, isolation)
+    assert metrics[rl.REWARD_ISOLATION_METRIC] == 0.0
+    # A summary log with no RL keys stays empty rather than becoming an isolation-only point.
+    assert rl.with_reward_isolation(None, isolation) is None
+    assert rl.with_reward_isolation({"reward": 1.0}, None) == {"reward": 1.0}
+
+
+def test_worker_log_stops_growing_at_its_cap(tmp_path):
+    from core.training.reward_worker_main import _BoundedLog
+
+    path = tmp_path / "worker.log"
+    log = _BoundedLog(str(path), 10)
+    assert log.write("x" * 25) == 25
+    assert log.write("more") == 4
+    log.flush()
+    text = path.read_text("utf-8")
+    assert text.startswith("x" * 10 + "\n[worker.log is full")
+    assert "more" not in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "rlimits are POSIX")
+def test_reward_workers_start_under_file_size_and_descriptor_limits():
+    import subprocess
+    import sys
+
+    probe = (
+        "import resource\n"
+        "print(resource.getrlimit(resource.RLIMIT_FSIZE)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0])\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        preexec_fn = python_rewards._reward_worker_preexec,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.split()
+    assert int(out[0]) == python_rewards.REWARD_FSIZE_BYTES
+    assert int(out[1]) <= python_rewards.REWARD_NOFILE
+
+
+def test_a_preview_prompt_has_the_turns_training_gives_the_reward(client):
+    # Training hands rewards the formatted prompt: the row's own turns, the system prompt first.
+    md = _python_md(
+        "roles",
+        "def reward(prompts, completions, **kw):\n"
+        "    return [float(len(prompts[0]) * 10 + (prompts[0][0]['role'] == 'system'))]\n",
+    )
+    turns = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+    payload = {
+        "rewards": [{"markdown": md}],
+        "completion": "x",
+        "prompt": turns,
+        "system_prompt": "be brief",
+    }
+    trained = rl.format_rl_dataset(
+        __import__("datasets").Dataset.from_list([{"question": turns, "answer": "a"}]),
+        "grpo",
+        system_prompt = "be brief",
+    )[0][0]["prompt"]
+    assert _preview_as(client, "acct-a", payload) == len(trained) * 10 + 1 == 31

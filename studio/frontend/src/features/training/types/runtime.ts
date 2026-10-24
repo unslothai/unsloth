@@ -11,6 +11,8 @@ export type TrainingPhase =
   | "training"
   // Steps done, worker still saving. Non-terminal: 100% is not success.
   | "finalizing"
+  // SFT saved; training the speculative-decoding drafter. Non-terminal.
+  | "training_drafter"
   | "completed"
   | "error"
   | "stopped";

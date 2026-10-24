@@ -1575,6 +1575,33 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         return False
 
 
+# Denoiser dirs where a lone shard index proves a user-started download: the GGUF companion prefetch fetches only
+# transformer/config.json there. Not unet/: a whole-pipeline single file's config prefetch (diffusion.py
+# ``_base_config_file_downloaded``) stages unet/*.index.json beside the configs, so only a weight file counts there.
+_INDEX_IS_EVIDENCE_DIRS = ("transformer",)
+
+
+def snapshot_denoiser_has_weights(snapshot: Optional[Path]) -> bool:
+    """Whether a weight file (whole or torn) sits under transformer/ or unet/, or a shard index under transformer/. A GGUF's companion prefetch lands only the config there (diffusion.py ``_base_file_downloaded``); a denoiser download that stopped part way leaves an index or a shard, and stays a partial the Hub can download again. Not the manifest's other denoiser dirs: the prefetch does fetch a ``transformer_2/``. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
+    if snapshot is None:
+        return False
+    try:
+        root = Path(snapshot)
+        for name in _DENOISER_DIRS:
+            if not (root / name).is_dir():
+                continue
+            evidence = (
+                (*_DENOISER_WEIGHT_SUFFIXES, ".index.json")
+                if name in _INDEX_IS_EVIDENCE_DIRS
+                else _DENOISER_WEIGHT_SUFFIXES
+            )
+            if any(entry.name.lower().endswith(evidence) for entry in (root / name).iterdir()):
+                return True
+        return False
+    except OSError:
+        return False
+
+
 def repo_has_pipeline_index(repo_info) -> bool:
     """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable as a full diffusers pipeline (from_pretrained reads only the repo root). A nested subdir/model_index.json does not count: loading the repo root still fails, so the row must keep its single_file flag. CachedFileInfo.file_name is the basename, so a name match alone would also claim nested copies; scope by file_path when the scan provides it."""
     try:
@@ -1679,6 +1706,20 @@ def is_variant_partial(
     )
 
 
+def _sibling_snapshot_has_complete_gguf(snapshot_dir: Optional[Path]) -> bool:
+    if snapshot_dir is None or snapshot_dir.parent.name != "snapshots":
+        return False
+    try:
+        siblings = [
+            entry
+            for entry in snapshot_dir.parent.iterdir()
+            if entry.name != snapshot_dir.name and entry.is_dir()
+        ]
+    except OSError:
+        return False
+    return any(snapshot_has_complete_variants(str(entry)) for entry in siblings)
+
+
 def is_gguf_repo_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
@@ -1748,9 +1789,11 @@ def is_gguf_repo_partial(
             ):
                 variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves only torn shards.
-        return has_legacy_partial or _recovered_snapshot_cannot_serve(
-            repo_cache_dir, snapshot_dir, quants = True
+        # No marker names a quant (an `hf download` stopped between shards), so the files decide;
+        # a sibling revision with a whole quant still serves the row, as the loader picks it.
+        return has_legacy_partial or (
+            _snapshot_cannot_serve_its_payload(snapshot_dir, quants = True)
+            and not _sibling_snapshot_has_complete_gguf(snapshot_dir)
         )
     has_clean = False
     has_broken = has_legacy_partial

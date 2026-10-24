@@ -219,7 +219,11 @@ test("a saved voice is made from an upload or a clip, within the limits", () => 
 });
 
 test("api.ts sends run and voice bodies only through the builders", () => {
-  assert.match(api, /body: JSON\.stringify\(buildAudioRunBody\(request\)\)/);
+  // Named for a speech model kept beside the chat model, which would otherwise get the request.
+  assert.match(
+    api,
+    /body: JSON\.stringify\(withAudioSlotModel\(buildAudioRunBody\(request\)\)\)/,
+  );
   assert.match(api, /body: JSON\.stringify\(buildVoiceCreateBody\(request\)\)/);
   assert.match(api, /"\/api\/inference\/audio\/run"/);
   assert.match(api, /xhr\.send\(blob\)/);

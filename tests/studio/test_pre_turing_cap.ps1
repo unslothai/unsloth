@@ -1,10 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Behavioural test for the pre-Turing cu126 cap (Get-NvidiaCu126Verdict,
-# Get-CudaFamilyCappedForPreTuring) in install.ps1 and studio/setup.ps1.
-# test_cross_platform_parity.py only greps for the call spelling, so a selector that
-# computes the verdict and discards it still passes there. This runs both copies.
+# Behavioural test for the pre-Turing cu126 cap in install.ps1 and studio/setup.ps1;
+# the parity test only greps the call spelling.
 # Run: pwsh -NoProfile -File tests/studio/test_pre_turing_cap.ps1
 
 $ErrorActionPreference = "Stop"
@@ -16,8 +14,7 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Returns the source text of each named function. The caller Invoke-Expression's it at
-# script scope; doing that inside a function would lose the helpers on return.
+# Invoke-Expression must run at script scope; inside a function the helpers are lost.
 function Get-HelperSources($path, $names) {
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
@@ -33,18 +30,14 @@ function Get-HelperSources($path, $names) {
     return $out
 }
 
-# Stubs for the installers' printers, so this file does not depend on the ANSI helpers.
-# Both use Write-Host, so neither can pollute a function's return value.
+# Printer stubs use Write-Host, so they cannot pollute return values.
 function substep { param([string]$Message, [string]$Color = "DarkGray") }
 function Write-StudioStdoutMirror { param([string]$Line) }
 
-# Drives Get-NvidiaCu126Verdict without spawning a process: $script:FakeSmiStdout is what
-# a -StdoutOnly probe returns, $script:FakeSmiRc its exit code.
 function Invoke-NvidiaSmiBounded {
     param([string]$Exe, [string[]]$SmiArgs = @(), [int]$TimeoutSec = 10, [switch]$StdoutOnly)
     $global:LASTEXITCODE = $script:FakeSmiRc
-    # The real helper appends stderr to stdout without -StdoutOnly. Reproducing that is
-    # the point: the caller MUST pass the switch.
+    # The real helper appends stderr without -StdoutOnly; the caller MUST pass the switch.
     if ($StdoutOnly) { return $script:FakeSmiStdout }
     return ($script:FakeSmiStdout + "`n" + $script:FakeSmiStderr)
 }
@@ -58,7 +51,6 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         Invoke-Expression $srcText
     }
 
-    # --- the verdict table -----------------------------------------------------
     $script:FakeSmiRc = 0
     $script:FakeSmiStderr = ""
     function Verdict($rows, $floor = 75) {
@@ -88,10 +80,8 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "non-zero exit -> no cap"                   ((Verdict @("7.0")) -eq '')
     $script:FakeSmiRc = 0
 
-    # --- -StdoutOnly is load-bearing ------------------------------------------
-    # A driver warning on stderr is ordinary (corrupted infoROM, ECC pending). Without the
-    # switch it lands in the CSV, the inventory reads as unparseable, and a V100 silently
-    # keeps cu130 -- issue #7765 all over again.
+    # A driver warning on stderr is ordinary; without -StdoutOnly it corrupts the CSV and a
+    # V100 silently keeps cu130.
     $script:FakeSmiStdout = "7.0"
     $script:FakeSmiStderr = "WARNING: infoROM is corrupted at gpu 0000:00:04.0"
     Check "stderr noise does not reach the CSV parse" ((Get-NvidiaCu126Verdict "nvidia-smi" 75) -eq 'cu126')
@@ -99,7 +89,6 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "the probe call passes -StdoutOnly"         ($src -match 'compute_cap.*-StdoutOnly')
     $script:FakeSmiStderr = ""
 
-    # --- the cap only rewrites the families it can replace ---------------------
     $script:FakeSmiStdout = "7.0"
     Check "cap cu130 on a V100 -> cu126"              ((Get-CudaFamilyCappedForPreTuring 'cu130' "nvidia-smi") -eq 'cu126')
     Check "cap cu128 on a V100 -> cu126 (floor 75)"   ((Get-CudaFamilyCappedForPreTuring 'cu128' "nvidia-smi") -eq 'cu126')

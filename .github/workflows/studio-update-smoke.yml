@@ -13,6 +13,9 @@ name: Unsloth Update CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
       - 'scripts/uninstall.sh'
@@ -28,8 +31,6 @@ on:
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
-      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -102,8 +103,6 @@ on:
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
-      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -163,11 +162,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -205,7 +203,7 @@ jobs:
       # Node 24 ships npm 11, which meets setup.sh's floor (Node ^20.19 || >=22.12 with
       # npm >= 11): this job takes the system-Node path, the developer one. Node 22
       # ships npm 10 and would take the bundled path, which the other two jobs cover.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
 
@@ -422,7 +420,7 @@ jobs:
         # Always upload so a green run still leaves the install + two
         # update logs + uninstall log reviewable.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-update-log
           path: |
@@ -437,6 +435,7 @@ jobs:
           retention-days: 7
 
   idempotency-macos:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (macOS)
     runs-on: macos-15
     # The install is the expensive half; the harness itself is three updates that are
@@ -452,7 +451,7 @@ jobs:
       # the harness's Node marker snapshot and its "nothing from nodejs.org" assertion
       # measure a managed Node rather than pass vacuously over a system one. The Linux
       # job keeps a qualifying system Node (Node 24, npm 11), the developer path.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '20.18.0'
 
@@ -487,7 +486,7 @@ jobs:
 
       - name: Upload macOS idempotency logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-update-idempotency-macos-log
           path: |
@@ -498,6 +497,7 @@ jobs:
           retention-days: 7
 
   idempotency-windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests (Windows)
     runs-on: windows-latest
     # Windows installs are 3x the Linux ones (268-292s against 88s in the API smoke),
@@ -510,7 +510,7 @@ jobs:
 
       # Node 22 ships npm 10, below setup.ps1's npm 11 floor, so this job takes the
       # bundled Node path as the macOS job does; the Linux job covers the system-Node one.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -574,7 +574,7 @@ jobs:
 
       - name: Upload Windows idempotency logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-update-idempotency-windows-log
           path: |

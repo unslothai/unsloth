@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for reusing a recorded macOS dyld probe.
-
-The probe may be skipped only when the runtime digests and host profile still match.
-"""
+"""Recorded macOS dyld probes are reused only while runtime digests and host profile match."""
 
 from __future__ import annotations
 
@@ -22,7 +19,6 @@ if str(TEST_DIR) not in sys.path:
 
 from _pr10648_helpers import POSIX_ONLY, llama_host, load_studio_module  # noqa: E402
 
-# Use an isolated module because tests monkeypatch its globals.
 ILP = load_studio_module(
     "studio_install_llama_prebuilt_macos_loader_record", "install_llama_prebuilt.py"
 )
@@ -41,8 +37,7 @@ _REAL_MACOS_PRODUCT_VERSION = ILP.macos_product_version
 @pytest.fixture(autouse = True)
 def _clear_full_check(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
-    # platform.mac_ver() is empty off macOS, so the probe record would never be written
-    # and every test here would read as "no evidence". Pin the host's own answer instead.
+    # platform.mac_ver() is empty off macOS, so pin the product version.
     monkeypatch.setattr(ILP, "macos_product_version", lambda: PRODUCT_VERSION)
 
 
@@ -98,13 +93,7 @@ def build_install(
     *,
     load_probe_passed: bool = True,
 ) -> Path:
-    """Build an install whose marker passes the real fingerprint checks.
-
-    *load_probe_passed* mirrors what the installer learned from its own preflight:
-    True is the normal install, where dyld resolved every binary. False is the
-    install whose probe timed out or could not spawn, which must not be remembered
-    as a pass.
-    """
+    """load_probe_passed=False: a timed-out or unspawnable probe, which must never be recorded as a pass."""
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True)
@@ -113,10 +102,7 @@ def build_install(
             binary = directory / name
             binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
             binary.chmod(0o755)
-    # The libraries a real macos-arm64 bundle carries, one per group in
-    # runtime_payload_health_groups: libllama-common and the split ggml libraries ship
-    # beside libllama, so a fixture with only three of them is thinner than any install
-    # this code grades. Verified against llama-b11030-mix-5ff778e-bin-macos-arm64.tar.gz.
+    # Matches the real llama-b11030 macos-arm64 bundle's libraries, one per health group.
     for dylib in (
         "libllama-common.0.dylib",
         "libllama.0.dylib",
@@ -124,9 +110,7 @@ def build_install(
         "libggml-base.0.dylib",
         "libggml-cpu.0.dylib",
         "libmtmd.0.dylib",
-        # The entrypoints carry no entry code of their own since the upstream split, and
-        # the release tag here does not parse as a build number, which is the strict side
-        # of the same gate Windows has used all along.
+        # The tag does not parse as a build number, so the strict side of the impl-split gate applies.
         "libllama-server-impl.dylib",
         "libllama-quantize-impl.dylib",
     ):
@@ -161,12 +145,7 @@ def write_marker(install_dir: Path, marker: dict) -> None:
 
 
 def count_spawns(monkeypatch) -> list[int]:
-    """Stand in for a probe that RAN and loaded every binary.
-
-    Reporting the load matters: the real probe fails open, so preflight treats an
-    empty *loaded* as "could not run" and refuses to record a pass. A stub that only
-    returned [] would silently test the no-evidence path instead.
-    """
+    """Stub a probe that ran and loaded every binary; an empty result tests the no-evidence path."""
     calls = [0]
 
     def _probe(
@@ -284,7 +263,6 @@ def test_a_same_size_dylib_rewrite_is_rejected(tmp_path: Path, monkeypatch):
 
     assert matches_choice(install_dir, host) is False
     assert fast_path(install_dir, host) is False
-    # Rejected on the record, before anything was started.
     assert calls[0] == 0
     # _existing_install_runs answers a different question, so it only loses the skip.
     assert ILP._existing_install_runs(install_dir, host) is True
@@ -307,7 +285,6 @@ def test_a_macos_upgrade_probes_again(tmp_path: Path, monkeypatch):
     install_dir = build_install(tmp_path, macos_host(macos_version = (15, 5)))
     upgraded = macos_host(macos_version = (26, 0))
     calls = count_spawns(monkeypatch)
-    # The minos read is the other half of the preflight and reads real Mach-O headers.
     monkeypatch.setattr(ILP, "macos_binary_minos_issues", lambda *a, **k: [])
 
     assert matches_choice(install_dir, upgraded) is True
@@ -345,7 +322,6 @@ def test_a_replaced_binary_is_still_rejected(tmp_path: Path, monkeypatch):
 
     assert matches_choice(install_dir, host) is False
     assert fast_path(install_dir, host) is False
-    # Rejected on the record, before anything was started.
     assert calls[0] == 0
 
 
@@ -431,14 +407,14 @@ def test_a_reuse_probe_that_passed_is_remembered(tmp_path: Path, monkeypatch):
 
     calls = count_spawns(monkeypatch)
     assert ILP._existing_install_runs(install_dir, host) is True
-    assert calls[0] == 1  # this update pays for the probe
+    assert calls[0] == 1
     assert marker_of(install_dir)[ILP.MACOS_LOAD_PROBE_KEY] == {
         "passed": True,
         "macos_product_version": PRODUCT_VERSION,
     }
 
     assert ILP._existing_install_runs(install_dir, host) is True
-    assert calls[0] == 1  # the next one does not
+    assert calls[0] == 1
 
 
 @POSIX_ONLY
@@ -472,7 +448,7 @@ def test_the_reuse_fast_paths_do_not_record_a_pass(tmp_path: Path, monkeypatch):
 
     assert matches_choice(install_dir, host) is True
     assert fast_path(install_dir, host) is True
-    assert calls[0] == 2  # both probed
+    assert calls[0] == 2
     assert ILP.MACOS_LOAD_PROBE_KEY not in marker_of(install_dir)
 
 
@@ -486,7 +462,7 @@ def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, mo
     host = macos_host()
     install_dir = build_install(tmp_path, host, load_probe_passed = False)
     marker = marker_of(install_dir)
-    for key, entry in marker["runtime_files"].items():  # the pre-change shape
+    for key, entry in marker["runtime_files"].items():
         if not key.endswith(("llama-server", "llama-quantize")):
             entry.pop("sha256", None)
     write_marker(install_dir, marker)
@@ -501,7 +477,6 @@ def test_a_broken_root_wrapper_is_not_blessed_into_the_record(tmp_path: Path, mo
     assert ILP._existing_install_runs(install_dir, host) is False
     marker = marker_of(install_dir)
     assert ILP.MACOS_LOAD_PROBE_KEY not in marker
-    # And the legacy size-only record was not upgraded on the strength of it either.
     assert not all(entry.get("sha256") for entry in marker["runtime_files"].values())
 
 

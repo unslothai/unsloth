@@ -68,6 +68,9 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
     cmd.env("UNSLOTH_PROGRESS_PERCENT_STEP", "5");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");

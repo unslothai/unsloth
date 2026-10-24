@@ -14,6 +14,7 @@ the timestamps and speakers a model produces.
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 import tempfile
@@ -55,6 +56,7 @@ from core.inference.audio_cpp_server import (
 )
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
+    QWEN3_ASR_LANGUAGE_NAMES,
     STT_KEEP_ALIVE_SECONDS,
     SttAudioDecodeError,
     SttLoadCancelledError,
@@ -94,6 +96,46 @@ _TIMESTAMP_OPTIONS = {
     "audio_chunk_mode": "fixed",
     "qwen3_asr.preserve_punctuation": "true",
 }
+
+# model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
+_NEMOTRON_ASR_LOCALES = (
+    "ar-AR", "bg-BG", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "es-US",
+    "et-EE", "fi-FI", "fr-CA", "fr-FR", "he-IL", "hi-IN", "hr-HR", "hu-HU", "it-IT", "ja-JP",
+    "ko-KR", "lt-LT", "lv-LV", "mt-MT", "nb-NO", "nl-NL", "nn-NO", "pl-PL", "pt-BR", "pt-PT",
+    "ro-RO", "ru-RU", "sk-SK", "sl-SI", "sv-SE", "th-TH", "tr-TR", "uk-UA", "vi-VN", "zh-CN",
+)  # fmt: skip
+
+
+@functools.lru_cache(maxsize = 256)
+def _nemotron_language(language: str, code: str) -> Optional[str]:
+    """The prompt key Nemotron takes for ``language``; any other string fails the request."""
+    tag = language.strip().replace("_", "-").lower()
+    primary = tag.split("-", 1)[0]
+    for matches in (
+        [locale for locale in _NEMOTRON_ASR_LOCALES if locale.lower() == tag],
+        [locale for locale in _NEMOTRON_ASR_LOCALES if locale.split("-", 1)[0].lower() == primary],
+        [locale for locale in _NEMOTRON_ASR_LOCALES if normalize_whisper_language(locale) == code],
+    ):
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return code
+    return None
+
+
+def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
+    """``language`` in the form ``family`` reads it, or None to let the model detect it."""
+    if family in ("owsm", "owsm_ctc"):
+        # OWSM takes ISO 639-3 codes ("<en>" fails) and defaults to English; detect instead.
+        return "auto"
+    code = normalize_whisper_language(language)
+    if not code:
+        return None
+    if family == "qwen3_asr":
+        return QWEN3_ASR_LANGUAGE_NAMES.get(code)
+    if family == "nemotron_asr":
+        return _nemotron_language(language, code)
+    return code
 
 
 class SttEngineUnavailableError(SttUnavailableError):
@@ -446,6 +488,11 @@ class _AudioCppDownloadState:
         repo = None
         try:
             model = resolve_audio_cpp_stt_model(model_id, network = True, hf_token = hf_token)
+            problem = audio_cpp_server.stale_runtime_download_problem(
+                model, None, hub_cache = hub_cache
+            )
+            if problem:
+                raise SttModelIdError(problem)
             repo = model.repo_id
             if not repo:
                 raise RuntimeError("a local model file has nothing to download")
@@ -807,6 +854,9 @@ class AudioCppSttSidecar:
         _notify(on_phase, "downloading_aligner")
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
+            problem = audio_cpp_server.stale_runtime_download_problem(aligner)
+            if problem:
+                raise audio_cpp_server.AudioCppRuntimeTooOldError(problem)
             audio_cpp_backend.AudioCppBackend._download_missing(aligner, None, cancel_event)
         except AudioCppRequestCancelledError:
             raise SttTranscriptionCancelledError("Transcription cancelled.") from None
@@ -997,8 +1047,18 @@ class AudioCppSttSidecar:
                     on_phase = on_phase,
                 )
                 _notify(on_phase, "transcribing")
+                # A strict spec without a language option (Hviske-v6) has no use for one.
+                keys = entry.request_keys
+                sent = (
+                    _runtime_language(entry.family, language)
+                    if keys is None or "language" in keys
+                    else None
+                )
                 payload = self._post_details(
-                    path, lang, cancel_event, dict(_TIMESTAMP_OPTIONS) if aligned else {}
+                    path,
+                    sent,
+                    cancel_event,
+                    dict(_TIMESTAMP_OPTIONS) if aligned else {},
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1009,9 +1069,13 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         details = stt_details.normalize(payload, entry.family, rate)
+        detected = details["language"]
+        if sent == "auto":
+            # OWSM reports what it heard, not the ignored choice; OWSM-CTC only echoes "auto" back.
+            detected = None if str(detected or "").lower() == "auto" else detected
         result = {
             "text": details["text"],
-            "language": lang or details["language"],
+            "language": (detected or lang) if sent == "auto" else (lang or detected),
             "duration": duration,
             "model": _reported_name(model, entry),
         }
@@ -1057,8 +1121,7 @@ class AudioCppSttSidecar:
             except AudioCppRequestError as exc:
                 if "language" not in body or not 400 <= exc.status < 500:
                     raise
-                # English-only families (Moonshine, Nemotron, Parakeet) reject a language option; a
-                # dictation language preference is a hint, so transcribe without it rather than fail.
+                # A dictation language is a hint: transcribe without it rather than fail.
                 logger.info(
                     "audio.cpp: %s rejected language %r (%s); retrying without it",
                     server.model.family,

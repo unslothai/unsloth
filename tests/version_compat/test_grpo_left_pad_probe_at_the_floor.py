@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The left-pad probe must survive every TRL in the declared window, including the floor.
-
-The name carrying "is this batch text only" moved twice inside `trl>=0.18.2,!=0.19.0`:
-`has_images` in 0.20.0-0.23.1, `images` in 0.24.0-1.13.0, NEITHER at 0.18.2/0.19.1, where the
-shipped two-branch probe raised NameError out of its own except handler and took GRPO down.
-`test_the_window_still_binds_what_this_probe_expects` re-derives that table from upstream, so a
-fourth spelling fails here rather than in a user's training loop.
-"""
+"""The text-only flag's name changes across TRL (has_images, images) and is absent at 0.18.2/0.19.1."""
 
 from __future__ import annotations
 
@@ -16,7 +9,6 @@ import re
 
 import pytest
 
-# Guarded import, as in the sibling floor test.
 try:
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
 except ImportError as exc:

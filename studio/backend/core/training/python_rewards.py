@@ -4,8 +4,8 @@
 """Python rewards: user code scored in one long-lived worker inside the OS sandbox.
 
 The worker is launched through the same ``os_sandbox`` path as the chat Python tool (MXC on
-Windows, bubblewrap on Linux, Seatbelt on macOS) in ``auto`` mode, so a host without OS
-isolation falls back to the software safeguards and the run records which one it got.
+Windows, bubblewrap on Linux, Seatbelt on macOS). A training run asks for ``required`` unless the
+user opted into ``auto`` (software safeguards), and records which one it got in its RL metrics.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -27,6 +28,11 @@ from typing import Any, Callable, Optional
 
 from core.training import reward_worker_main as _worker_io
 
+try:
+    import resource as _resource
+except ImportError:  # Windows
+    _resource = None
+
 logger = logging.getLogger(__name__)
 
 READY_TIMEOUT_SECONDS = 120.0
@@ -38,6 +44,8 @@ _WORKER_SOURCE = Path(__file__).with_name("reward_worker_main.py")
 _TRAINER_KWARGS = frozenset(
     {"trainer_state", "completion_ids", "log_extra", "log_metric", "environments"}
 )
+# The bundled exact-answer rule's reference_extract.
+_HASH_ANSWER = re.compile(r"####\s*(.+?)\s*$", re.DOTALL | re.MULTILINE)
 
 
 class PythonRewardError(RuntimeError):
@@ -57,6 +65,20 @@ def _jsonable(value: Any) -> Any:
     if callable(tolist):
         return _jsonable(tolist())
     return str(value)
+
+
+def _final_answers(kwargs: dict[str, Any]) -> dict[str, Any]:
+    # GSM8K answers end in "#### 72". The notebooks map them to the bare answer before TRL sees
+    # them and the bundled rules extract it, so Python rewards get it too; the full text stays
+    # under answer_raw.
+    answers = kwargs.get("answer")
+    if not isinstance(answers, (list, tuple)):
+        return kwargs
+    parsed = []
+    for value in answers:
+        match = _HASH_ANSWER.search(value) if isinstance(value, str) else None
+        parsed.append(match.group(1) if match else value)
+    return {"answer_raw": list(answers), **kwargs, "answer": parsed}
 
 
 def _safe_env(workdir: str) -> dict[str, str]:
@@ -117,6 +139,36 @@ def _kill_tree(proc) -> None:
         pass
 
 
+# Reward code is user code: one worker must not fill the disk or memory. No CPU cap, since one
+# worker scores a whole run; the batch timeout bounds a stuck call.
+REWARD_FSIZE_BYTES = 100 * 1024 * 1024
+REWARD_NOFILE = 4096
+REWARD_NPROC = 10000
+# Resolved before the fork: the settings store cannot be read in the child.
+_reward_as_bytes: Optional[int] = None
+
+
+def _reward_worker_preexec() -> None:
+    os.setsid()
+    if _resource is None:
+        return
+    limits = [
+        (_resource.RLIMIT_FSIZE, REWARD_FSIZE_BYTES),
+        (_resource.RLIMIT_NOFILE, REWARD_NOFILE),
+        (getattr(_resource, "RLIMIT_NPROC", None), REWARD_NPROC),
+        (_resource.RLIMIT_AS, _reward_as_bytes),
+    ]
+    for limit, value in limits:
+        if limit is None or value is None:
+            continue
+        try:
+            _soft, hard = _resource.getrlimit(limit)
+            target = value if hard == _resource.RLIM_INFINITY else min(value, hard)
+            _resource.setrlimit(limit, (target, target))
+        except (ValueError, OSError):
+            pass
+
+
 class RewardWorker:
     """One sandboxed process holding every Python reward of a run."""
 
@@ -156,13 +208,19 @@ class RewardWorker:
         shutil.copyfile(_WORKER_SOURCE, os.path.join(self._workdir, "worker.py"))
         with open(os.path.join(self._workdir, "rewards.json"), "w", encoding = "utf-8") as f:
             json.dump({"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()}, f)
+        global _reward_as_bytes
+        try:
+            from utils import sandbox_memory_limit
+            _reward_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+        except Exception:  # noqa: BLE001 - no memory cap rather than no worker
+            _reward_as_bytes = None
         try:
             self._prepared = os_sandbox.prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = (sys.executable, "-u", os.path.join(self._workdir, "worker.py")),
                     workdir = self._workdir,
                     env = _safe_env(self._workdir),
-                    preexec_fn = None if os.name == "nt" else os.setsid,
+                    preexec_fn = None if os.name == "nt" else _reward_worker_preexec,
                     requested_mode = self.mode,
                     execution_kind = "python",
                 )
@@ -229,7 +287,11 @@ class RewardWorker:
             "rewards": names,
             "prompts": _jsonable(prompts),
             "completions": _jsonable(completions),
-            "kwargs": {k: _jsonable(v) for k, v in kwargs.items() if k not in _TRAINER_KWARGS},
+            "kwargs": {
+                k: _jsonable(v)
+                for k, v in _final_answers(kwargs).items()
+                if k not in _TRAINER_KWARGS
+            },
         }
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
@@ -253,6 +315,8 @@ class RewardWorker:
 
     def close(self) -> None:
         self._closed.set()
+        # The hook holds this worker (and its reward code) until exit; Try it starts many.
+        atexit.unregister(self.close)
         proc, self._proc = self._proc, None
         if proc is not None and self._workdir:
             try:
@@ -296,52 +360,108 @@ def make_python_reward_funcs(
 
 
 _preview_lock = threading.Lock()
-_preview: dict[str, Any] = {"key": None, "worker": None, "timer": None}
+# Warm Try it workers by key: at most one idle per account, and none is closed while it scores.
+_previews: dict[str, dict[str, Any]] = {}
 PREVIEW_IDLE_SECONDS = 120.0
+
+
+def _drop_preview(key: str, entry: dict[str, Any]) -> None:
+    with _preview_lock:
+        if _previews.get(key) is not entry or entry["busy"]:
+            return
+        del _previews[key]
+    if entry["worker"] is not None:
+        entry["worker"].close()
 
 
 def _close_preview() -> None:
     with _preview_lock:
-        worker = _preview["worker"]
-        _preview.update(key = None, worker = None, timer = None)
-    if worker is not None:
-        worker.close()
+        entries = list(_previews.values())
+        _previews.clear()
+    for entry in entries:
+        if entry["timer"] is not None:
+            entry["timer"].cancel()
+        if entry["worker"] is not None:
+            entry["worker"].close()
+
+
+def _start_preview_worker(specs: list[dict], mode: str) -> RewardWorker:
+    from core.inference.os_sandbox import SandboxUnavailableError
+    try:
+        return RewardWorker(specs, mode = mode, batch_timeout = 30.0).start()
+    except SandboxUnavailableError as exc:
+        raise PythonRewardError(
+            f"Python rewards need the OS sandbox, and it is not available here ({exc}). "
+            f"{exc.remediation or ''} Training refuses them the same way unless the run sets "
+            'grpo_python_reward_isolation to "auto".'
+        ) from exc
 
 
 def preview_python_scores(
     specs: list[dict],
     text: str,
     row: dict[str, Any],
-    prompt: Optional[str] = None,
+    prompt: Any = None,
+    owner: Optional[str] = None,
+    mode: str = "required",
+    system_prompt: Optional[str] = None,
 ) -> tuple[dict[str, Optional[float]], dict[str, Any]]:
     """Score one reply for the Try it box. The worker is kept warm for a couple of minutes,
-    since the box re-scores on every edit."""
-    key = json.dumps([[s["name"], s["entry"], s["code"]] for s in specs], sort_keys = True)
+    since the box re-scores on every edit. ``mode`` is the os_sandbox mode, as in training:
+    ``required`` refuses a host without OS isolation, ``auto`` is the opt-in to software safeguards."""
+    # Keyed by account: a warm worker keeps the reward's module state, which must not carry one
+    # account's rows into another account's scores.
+    key = json.dumps(
+        [owner, mode, [[s["name"], s["entry"], s["code"]] for s in specs]], sort_keys = True
+    )
+    stale = []
     with _preview_lock:
-        if _preview["timer"] is not None:
-            _preview["timer"].cancel()
-        worker = _preview["worker"] if _preview["key"] == key else None
-        stale = _preview["worker"] if worker is None else None
-        if stale is not None:
-            _preview.update(key = None, worker = None)
-    if stale is not None:
-        stale.close()
-    if worker is None:
-        worker = RewardWorker(specs, batch_timeout = 30.0).start()
-        with _preview_lock:
-            _preview.update(key = key, worker = worker)
-    prompts = [[{"role": "user", "content": prompt or ""}]]
+        entry = _previews.get(key)
+        if entry is None:
+            # The account's other idle workers hold older code.
+            for other_key, other in list(_previews.items()):
+                if other["owner"] == owner and not other["busy"]:
+                    del _previews[other_key]
+                    stale.append(other)
+            entry = {"owner": owner, "worker": None, "timer": None, "busy": 0}
+            entry["start"] = threading.Lock()
+            _previews[key] = entry
+        if entry["timer"] is not None:
+            entry["timer"].cancel()
+            entry["timer"] = None
+        entry["busy"] += 1
+    for other in stale:
+        if other["timer"] is not None:
+            other["timer"].cancel()
+        if other["worker"] is not None:
+            other["worker"].close()
+    from core.training.rl import _REWARD_CALL_KEYS, prompt_turns
+
+    prompts = [prompt_turns(prompt, system_prompt)]
     completions = [[{"role": "assistant", "content": text}]]
-    kwargs = {k: [v] for k, v in (row or {}).items()}
+    # As format_rl_dataset drops them: TRL passes these names to the reward itself.
+    kwargs = {k: [v] for k, v in (row or {}).items() if k not in _REWARD_CALL_KEYS}
+    failed = True
     try:
+        with entry["start"]:
+            if entry["worker"] is None:
+                entry["worker"] = _start_preview_worker(specs, mode)
+        worker = entry["worker"]
         scores = worker.score([s["name"] for s in specs], prompts, completions, kwargs)
-    except PythonRewardError:
-        _close_preview()
-        raise
+        failed = False
     finally:
-        timer = threading.Timer(PREVIEW_IDLE_SECONDS, _close_preview)
-        timer.daemon = True
         with _preview_lock:
-            _preview["timer"] = timer
-        timer.start()
+            entry["busy"] -= 1
+            if failed and _previews.get(key) is entry:
+                # A failed worker is not reused; whoever finishes last closes it.
+                del _previews[key]
+            idle = not entry["busy"]
+            mapped = _previews.get(key) is entry
+            if idle and mapped:
+                timer = threading.Timer(PREVIEW_IDLE_SECONDS, _drop_preview, (key, entry))
+                timer.daemon = True
+                entry["timer"] = timer
+                timer.start()
+        if idle and not mapped and entry["worker"] is not None:
+            entry["worker"].close()
     return {name: values[0] for name, values in scores.items()}, worker.isolation

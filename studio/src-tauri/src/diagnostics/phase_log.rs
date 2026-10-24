@@ -429,7 +429,14 @@ struct PhaseLogMeta {
 }
 
 fn scan_phase_logs(warnings: &mut Vec<String>) -> Vec<PhaseLogMeta> {
-    scan_phase_logs_in_dir(&logs_dir(), warnings)
+    let mut found = scan_phase_logs_in_dir(&logs_dir(), warnings);
+    for root in super::log_roots().into_iter().skip(1) {
+        let dir = root.join("logs");
+        if dir.is_dir() {
+            found.extend(scan_phase_logs_in_dir(&dir, warnings));
+        }
+    }
+    found
 }
 
 fn scan_phase_logs_in_dir(dir: &Path, warnings: &mut Vec<String>) -> Vec<PhaseLogMeta> {

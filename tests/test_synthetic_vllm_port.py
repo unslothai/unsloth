@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""SyntheticDataKit's vLLM server port (#2494).
-
-The port was fixed at 8000 in the `vllm serve` call, the readiness probe and the
-synthetic-data-kit config, so a kit could neither take a `port` argument nor start
-where 8000 was already taken (Studio listens there in the Unsloth Docker image)."""
+"""vLLM port is no longer fixed at 8000, where Studio listens in the Unsloth Docker image."""
 
 import socket
 
@@ -67,6 +63,9 @@ def test_check_vllm_status_queries_the_given_port(monkeypatch):
     assert urls == ["http://localhost:8123/metrics", "http://localhost:8000/metrics"]
 
 
+_REAL_AWAIT_METRICS = SyntheticDataKit._await_metrics_endpoint
+
+
 def _built_kit(monkeypatch, tmp_path, **kwargs):
     """Run __init__ with the model download, vLLM and the waits stubbed out."""
     import transformers
@@ -119,3 +118,35 @@ def test_server_and_config_follow_a_moved_default(monkeypatch, tmp_path, busy_po
     assert kit.port != busy_port
     assert argv[argv.index("--port") + 1] == str(kit.port)
     assert f'api_base: "http://localhost:{kit.port}/v1"' in config
+
+
+def test_server_binds_loopback_by_default(monkeypatch, tmp_path):
+    _kit, argv, _config = _built_kit(monkeypatch, tmp_path, port = 8123)
+    # vLLM's own default is every interface, and the server runs with no API key.
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+
+
+def test_a_wider_bind_is_opt_in(monkeypatch, tmp_path):
+    _kit, argv, _config = _built_kit(monkeypatch, tmp_path, port = 8123, host = "0.0.0.0")
+    assert argv[argv.index("--host") + 1] == "0.0.0.0"
+    assert argv.count("--host") == 1
+
+
+@pytest.mark.parametrize(
+    "host, client",
+    [
+        ("127.0.0.1", "localhost"),
+        ("0.0.0.0", "localhost"),
+        ("::1", "[::1]"),
+        ("192.168.1.20", "192.168.1.20"),
+    ],
+)
+def test_the_kit_reaches_its_own_bind_address(monkeypatch, tmp_path, host, client):
+    kit, _argv, config = _built_kit(monkeypatch, tmp_path, port = 8123, host = host)
+    assert f'api_base: "http://{client}:8123/v1"' in config
+    seen = []
+    monkeypatch.setattr(
+        SyntheticDataKit, "check_vllm_status", staticmethod(lambda *a: seen.append(a) or True)
+    )
+    _REAL_AWAIT_METRICS(kit)
+    assert seen == [(8123, client)]

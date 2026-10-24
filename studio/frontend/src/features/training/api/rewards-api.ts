@@ -32,7 +32,7 @@ async function readJson<T>(res: Response): Promise<T> {
         detail = body.detail;
       }
     } catch {
-      // Non-JSON error body: keep the status code.
+      // Retain the HTTP status when an error response has no JSON detail.
     }
     throw new Error(detail);
   }
@@ -76,14 +76,22 @@ export async function previewRewards(
   rewards: GrpoRewardSelection[],
   completion: string,
   reference: string | null,
-  row: Record<string, string> | null = null,
-  prompt: string | null = null,
+  row: Record<string, unknown> | null = null,
+  prompt: string | Record<string, unknown>[] | null = null,
+  systemPrompt: string | null = null,
 ): Promise<RewardPreviewResponse> {
   return readJson(
     await authFetch("/api/rewards/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rewards, completion, reference, row, prompt }),
+      body: JSON.stringify({
+        rewards,
+        completion,
+        reference,
+        row,
+        prompt,
+        system_prompt: systemPrompt,
+      }),
     }),
   );
 }

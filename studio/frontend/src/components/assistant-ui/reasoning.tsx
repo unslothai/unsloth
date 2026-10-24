@@ -5,6 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { CodeHighlightModeContext } from "@/components/assistant-ui/code-highlight-context";
 import {
   MarkdownText,
@@ -32,6 +33,7 @@ import {
   clearReasoningRound,
   foldIsActive,
   reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -64,7 +66,6 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -245,7 +246,8 @@ function ReasoningTrigger({
           {foldedSummary}
         </span>
       ) : null}
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="reasoning-trigger-chevron"
         className={cn(
           "aui-reasoning-trigger-chevron size-3.5 shrink-0",
@@ -266,7 +268,7 @@ function ReasoningContent({
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   // Colour and size live on ReasoningText: the folded-round path skips this wrapper.
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden outline-none",
+    "aui-reasoning-content relative min-w-0 overflow-hidden supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -523,6 +525,15 @@ function ReasoningBody({
   );
 }
 
+function useTailFlexBox(capped: boolean, streaming: boolean): boolean {
+  const [flexBox, setFlexBox] = useState(capped);
+  const next = reasoningTailFlexBox({ capped, streaming, previous: flexBox });
+  if (next !== flexBox) {
+    setFlexBox(next);
+  }
+  return next;
+}
+
 // A fixed box (#11703): the newest lines while streaming, the start once finished. Clipped, not an inner
 // scroller, which split the reading anchor across two containers (#11704).
 function ReasoningTail({
@@ -558,6 +569,7 @@ function ReasoningTail({
     return () => observer.disconnect();
   }, [cappable, capped]);
   const clipped = capped && overflowing;
+  const flexBox = useTailFlexBox(capped, streaming);
   return (
     <>
       <div
@@ -576,8 +588,12 @@ function ReasoningTail({
             onExpandedChange(true);
         }}
         className={cn(
+          // The child rule stays on too: it is inert outside a flex box and toggling it restyles every row.
+          cappable && "[&>*]:shrink-0",
+          cappable && flexBox && "flex flex-col",
+          // A mask paints only inside its box: bleed into the side padding so list markers survive.
           capped &&
-            "flex max-h-[min(18rem,40vh)] flex-col overflow-hidden [&>*]:shrink-0",
+            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(18rem,40vh)] overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip",
           capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
             (streaming
@@ -596,11 +612,13 @@ function ReasoningTail({
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {expanded ? "Collapse thinking" : "Expand thinking"}
-          <ChevronDownIcon
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             aria-hidden={true}
             className={cn(
               "size-3.5 shrink-0 transition-transform duration-200 ease-out",
-              !expanded && "-rotate-90",
+              // Below the trace, so Collapse points up at what it folds away; -180, not 180, turns a quarter.
+              expanded ? "-rotate-180" : "-rotate-90",
             )}
           />
         </button>

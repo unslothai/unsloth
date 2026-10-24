@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The installer's `--no-deps` unsloth-zoo specs are a floor in their own right, so they must
-match pyproject.toml's.
-
-`uv pip install --no-deps` never reads unsloth's metadata, so on those paths the
-`unsloth-zoo>=...` written on the command line is the ONLY thing deciding which zoo the user
-ends up with. When pyproject.toml moves and the installers do not, a no-torch install happily
-resolves a zoo that pyproject.toml already rejects, and the defect the floor was raised for is
-still shipped. That is not hypothetical: main carried `unsloth-zoo>=2026.9.3` in the
-installers while pyproject.toml said `>=2026.9.4`.
-
-The with-deps sites are deliberately NOT checked. There the resolver intersects the
-command-line spec with unsloth's own metadata, so pyproject.toml is already the binding floor
-and a lower spec on the command line changes nothing.
-
-Reads files only, so this runs on the Windows and macOS runners too.
-"""
+"""Installer --no-deps unsloth-zoo floors must match pyproject.toml; uv never reads unsloth metadata."""
 
 from __future__ import annotations
 
@@ -34,14 +19,16 @@ PYPROJECT = REPO / "pyproject.toml"
 INSTALL_SH = REPO / "install.sh"
 INSTALL_PS1 = REPO / "install.ps1"
 
-# Every `--no-deps` site that names a zoo floor, one per installer branch:
-#   install.sh   migrated + SKIP_TORCH, fresh + SKIP_TORCH
-#   install.ps1  migrated + SkipTorch, fresh + SkipTorch
-# Pinned so that adding a fifth without thinking about the floor fails here rather than
-# shipping a path nothing checks.
+# One `--no-deps` zoo-floor site per installer branch (install.sh/ps1 x migrated/fresh);
+# pinned so a fifth site fails here instead of shipping unchecked.
 EXPECTED_NO_DEPS_SITES = 4
 
 _ZOO_SPEC = re.compile(r"""unsloth[-_]zoo\s*(?:>=|==)\s*[0-9][^"'\s]*""")
+_ZOO_VAR_ASSIGN = re.compile(
+    r"""^\s*\$?(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\s*=\s*"(unsloth-zoo>=[0-9][^"]*)"$""",
+    re.MULTILINE,
+)
+_ZOO_VAR_USE = re.compile(r"\$(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\b")
 
 
 def _logical_lines(path: Path) -> list[tuple[int, str]]:
@@ -103,9 +90,16 @@ def _installer_sites() -> list[tuple[str, int, str, bool]]:
             if path.suffix == ".sh"
             else list(enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1))
         )
+        # The install lines name the floor through one variable, which the lagging-index
+        # fallback may lower at run time (#14031); its assignment carries the shipped floor.
+        assigned = _ZOO_VAR_ASSIGN.findall(path.read_text(encoding = "utf-8"))
+        assert (
+            len(assigned) == 1
+        ), f"{path.name}: expected one zoo floor variable assignment, found {assigned}"
         for number, text in lines:
             if "pip install" not in text:
                 continue
+            text = _ZOO_VAR_USE.sub(assigned[0], text)
             no_deps = "--no-deps" in text
             for spec in _ZOO_SPEC.findall(text):
                 sites.append((path.name, number, spec, no_deps))

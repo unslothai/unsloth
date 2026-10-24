@@ -56,34 +56,33 @@ def test_sparse_moe_is_read_off_the_text_config():
 def test_a_config_without_text_config_is_read_directly():
     is_moe = _is_sparse_moe_config()
     assert is_moe(SimpleNamespace(num_experts = 128)) is True
+    assert is_moe(SimpleNamespace(num_local_experts = 8)) is True
+    assert is_moe(SimpleNamespace(n_routed_experts = 64)) is True
     assert is_moe(SimpleNamespace(enable_moe_block = True)) is True
     assert is_moe(SimpleNamespace()) is False
 
 
-def test_dense_gemma4_is_refused_at_the_gate():
-    """Dense Gemma-4 shares the gemma4 model type, so the allowlist alone would admit it."""
-    assert set(_module_constant("VLLM_MOE_ONLY_VLM")) == {"gemma4", "gemma4_text"}
-    gate, parents = _gate("not the dense ones yet")
+def test_dense_gemma4_is_refused_only_with_an_old_zoo():
+    """Dense Gemma-4 shares the gemma4 model type; an old zoo leaves vLLM profiling its audio encoder."""
+    assert set(_module_constant("VLLM_DENSE_NEEDS_ZOO_VLM")) == {"gemma4", "gemma4_text"}
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_dense_gemma4_fast_inference")
     # text_only = True sets is_vlm_config False, so the gate must not sit under it.
     assert not any("is_vlm_config" in test for test in parents)
-    only_moe = {"VLLM_MOE_ONLY_VLM": _module_constant("VLLM_MOE_ONLY_VLM"), "fast_inference": True}
-    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **only_moe)
+    base = {
+        "VLLM_DENSE_NEEDS_ZOO_VLM": _module_constant("VLLM_DENSE_NEEDS_ZOO_VLM"),
+        "fast_inference": True,
+    }
+    old = {**base, "_zoo_supports_dense_gemma4_fast_inference": lambda: False}
+    new = {**base, "_zoo_supports_dense_gemma4_fast_inference": lambda: True}
+    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **old)
     assert _evaluate(
-        gate,
-        model_types = ["gemma4_text", "gemma4"],
-        auto_config = GEMMA4_DENSE.text_config,
-        **only_moe,
+        gate, model_types = ["gemma4_text", "gemma4"], auto_config = GEMMA4_DENSE.text_config, **old
     )
-    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **only_moe)
+    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **new)
+    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **old)
+    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **old)
     assert not _evaluate(
-        gate, model_types = ["gemma4_text"], auto_config = GEMMA4_MOE.text_config, **only_moe
-    )
-    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **only_moe)
-    assert not _evaluate(
-        gate,
-        **{**only_moe, "fast_inference": False},
-        model_types = ["gemma4"],
-        auto_config = GEMMA4_DENSE,
+        gate, **{**old, "fast_inference": False}, model_types = ["gemma4"], auto_config = GEMMA4_DENSE
     )
 
 
@@ -205,3 +204,116 @@ def test_bnb_moe_loads_are_refused_without_load_in_4bit():
     assert not refused(False, "google/gemma-4-26B-A4B-it", None)
     assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
     assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
+
+
+def test_bnb_refusal_covers_text_sparse_moe():
+    """Qwen3-MoE 4-bit crashed in vLLM init ("output with shape [8, 1] ... [8, 768]"); vLLM serves no LoRA on bnb experts."""
+    gate, _ = _gate("does not support bitsandbytes weights")
+
+    def refused(
+        config,
+        model_types,
+        load_in_4bit = True,
+        method = None,
+    ):
+        return bool(
+            _evaluate(
+                gate,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = False,
+                model_name = "unsloth/Qwen3-30B-A3B-Instruct-2507",
+                get_quant_type = lambda config: method,
+                model_config = config,
+                model_types = list(model_types),
+            )
+        )
+
+    qwen3_moe = SimpleNamespace(num_experts = 128)
+    mixtral = SimpleNamespace(num_local_experts = 8)
+    deepseek = SimpleNamespace(n_routed_experts = 64)
+    for config, types in (
+        (qwen3_moe, ("qwen3_moe",)),
+        (mixtral, ("mixtral",)),
+        (deepseek, ("deepseek_v3",)),
+    ):
+        assert refused(config, types), types
+        assert not refused(config, types, load_in_4bit = False), types
+        assert refused(config, types, load_in_4bit = False, method = "bitsandbytes"), types
+    assert not refused(SimpleNamespace(num_experts = None), ("qwen3",))
+    assert not refused(SimpleNamespace(num_experts = 0), ("qwen3",))
+
+
+def _zoo_probe():
+    for node in TREE.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_zoo_supports_dense_gemma4_fast_inference"
+        ):
+            namespace = {}
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"),
+                namespace,
+            )
+            return namespace["_zoo_supports_dense_gemma4_fast_inference"]
+    raise AssertionError("_zoo_supports_dense_gemma4_fast_inference not found")
+
+
+def test_dense_gemma4_zoo_probe_reads_the_clamp_bound_templates(monkeypatch):
+    import sys
+    import types
+
+    probe = _zoo_probe()
+    bound = "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj.input_min"
+
+    def install(vision_layers):
+        module = types.ModuleType("unsloth_zoo.empty_model")
+        if vision_layers is not None:
+            module.get_model_layer_config = lambda: {"vision_layers": set(vision_layers)}
+        package = sys.modules.get("unsloth_zoo") or types.ModuleType("unsloth_zoo")
+        monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.empty_model", module)
+        monkeypatch.setattr(package, "empty_model", module, raising = False)
+
+    install({bound, "model.vision_tower.encoder.layers.{kk}.self_attn.q_proj"})
+    assert probe() is True
+    install({"model.vision_tower.encoder.layers.{kk}.self_attn.q_proj"})
+    assert probe() is False
+    install(None)
+    assert probe() is False
+
+
+def _new_vlm_probe():
+    for node in TREE.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_zoo_supports_new_vlm_fast_inference"
+        ):
+            namespace = {}
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"),
+                namespace,
+            )
+            return namespace["_zoo_supports_new_vlm_fast_inference"]
+    raise AssertionError("_zoo_supports_new_vlm_fast_inference not found")
+
+
+def test_new_vlm_zoo_gate_only_probes_unified_and_muse(monkeypatch):
+    import sys
+    import types
+
+    probe = _new_vlm_probe()
+    old_zoo = types.ModuleType("unsloth_zoo.empty_model")  # neither probed helper exists
+    package = sys.modules.get("unsloth_zoo") or types.ModuleType("unsloth_zoo")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.empty_model", old_zoo)
+    monkeypatch.setattr(package, "empty_model", old_zoo, raising = False)
+    # An older zoo must not refuse models it already rebuilds.
+    for model_types in (["qwen2_5_vl"], ["gemma4"], ["qwen3_5_moe"], ["llama"]):
+        assert probe(model_types) is True, model_types
+    for model_types in (["gemma4_unified"], ["gemma4_unified_text"], ["muse_glimmer_text"]):
+        assert probe(model_types) is False, model_types
+
+
+def test_new_vlm_zoo_gate_covers_text_only_loads():
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_new_vlm_fast_inference")
+    assert not any("is_vlm_config" in test for test in parents)

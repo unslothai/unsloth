@@ -113,10 +113,34 @@ def _score(fn, request):
     return scores
 
 
+LOG_LIMIT_CHARS = 1024 * 1024
+
+
+class _BoundedLog:
+    """worker.log up to a cap, then output is dropped: a reward printing in a loop must not fill
+    the disk. Only the tail is ever read back."""
+
+    def __init__(self, path: str, limit: int):
+        self._file = open(path, "a", encoding = "utf-8", buffering = 1)
+        self._left = limit
+
+    def write(self, text: str) -> int:
+        if self._left > 0:
+            kept = text[: self._left]
+            self._left -= len(kept)
+            self._file.write(kept)
+            if self._left <= 0:
+                self._file.write("\n[worker.log is full; later output is dropped]\n")
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self._file, name)
+
+
 def main():
     workdir = os.getcwd()
     # Notebook rewards print a lot; a pipe nobody drains would block them.
-    log = open(os.path.join(workdir, "worker.log"), "a", encoding = "utf-8", buffering = 1)
+    log = _BoundedLog(os.path.join(workdir, "worker.log"), LOG_LIMIT_CHARS)
     sys.stdout = sys.stderr = log
     with open(os.path.join(workdir, "rewards.json"), encoding = "utf-8") as f:
         setup = json.load(f)

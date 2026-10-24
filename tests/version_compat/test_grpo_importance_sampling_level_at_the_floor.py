@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The GRPO loss must resolve `importance_sampling_level` on every TRL in the declared window.
-
-GSPO added the knob in TRL 0.20.0 as a `GRPOConfig` field the trainer copies onto itself; at
-0.18.2/0.19.1 neither exists and the level is token by construction. Reading
-`self.importance_sampling_level` unconditionally therefore raised AttributeError at the bottom of
-`trl>=0.18.2,!=0.19.0`. `test_the_window_still_binds_what_this_loss_expects` re-derives that from
-upstream, so a TRL that moves the knob again fails here rather than in a user's training loop.
-"""
+"""importance_sampling_level only exists from TRL 0.20.0; reading it unconditionally breaks 0.18.2."""
 
 from __future__ import annotations
 
@@ -16,7 +9,7 @@ import re
 
 import pytest
 
-# Guarded import: `import unsloth` raises its own ImportError without torch, which importorskip re-raises.
+# `import unsloth` raises its own ImportError without torch, which importorskip re-raises.
 try:
     from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
 except ImportError as exc:
@@ -82,7 +75,6 @@ def _captured_level(
         captured["level"] = kwargs.get("importance_sampling_level", "<not passed>")
         raise _Stop
 
-    # Exec the real pre-item sources in rl_replacements globals; only the two loss entry points are stubbed.
     import unsloth.models.rl_replacements as _rl_replacements
 
     namespace = dict(vars(_rl_replacements))

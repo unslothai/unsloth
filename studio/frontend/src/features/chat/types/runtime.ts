@@ -10,6 +10,8 @@ export interface InferenceParams {
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
+  /** Default engine only: quantize an unquantized Hugging Face checkpoint to 4 bits on load. Unset means on. */
+  loadIn4bit?: boolean;
   temperature: number;
   topP: number;
   topK: number;
@@ -71,6 +73,7 @@ export type PersistedInferenceParams = Partial<
     | "engineKvCacheDtype"
     | "engineSeed"
     | "engineGpuMemoryUtilization"
+    | "loadIn4bit"
   >
 >;
 

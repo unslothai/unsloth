@@ -7,12 +7,10 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { parseYamlRlSettings, serializeConfigToYaml } = await import(
-  "../src/features/training/lib/yaml-config.ts"
-);
-const { DEFAULT_HYPERPARAMS, DEFAULT_RL_SETTINGS } = await import(
-  "../src/config/training.ts"
-);
+const { parseYamlRlSettings, serializeConfigToYaml } =
+  await import("../src/features/training/lib/yaml-config.ts");
+const { DEFAULT_HYPERPARAMS, DEFAULT_RL_SETTINGS } =
+  await import("../src/config/training.ts");
 
 const base = { ...DEFAULT_HYPERPARAMS, ...DEFAULT_RL_SETTINGS };
 
@@ -20,6 +18,16 @@ test("an SFT config writes no rl section and reads back as SFT", () => {
   const text = serializeConfigToYaml(base as never, false);
   assert.ok(!text.includes("rl:"));
   assert.deepEqual(parseYamlRlSettings(text), { trainingObjective: "sft" });
+});
+
+test("a model that forces SFT exports no rl section", () => {
+  for (const forced of [
+    { modelType: "embeddings", trainingObjective: "grpo" },
+    { isVisionModel: true, trainingObjective: "dpo" },
+  ]) {
+    const text = serializeConfigToYaml({ ...base, ...forced } as never, false);
+    assert.equal(parseYamlRlSettings(text).trainingObjective, "sft");
+  }
 });
 
 test("GRPO settings round-trip through the YAML file", () => {
@@ -76,5 +84,19 @@ test("an unknown objective or wrong-typed fields don't get applied", () => {
       "rl:\n  objective: grpo\n  variant: nope\n  num_generations: lots\n  rewards: [{weight: 1}, {name: x}]\n",
     ),
     { trainingObjective: "grpo", grpoRewards: [{ name: "x", weight: 1 }] },
+  );
+});
+
+test("fractional generation counts and token limits are dropped", () => {
+  const out = parseYamlRlSettings(
+    "rl:\n  objective: grpo\n  num_generations: 2.5\n  max_prompt_length: 100.5\n  max_completion_length: 64.2\n",
+  );
+  assert.equal(out.grpoNumGenerations, undefined);
+  assert.equal(out.rlMaxPromptLength, undefined);
+  assert.equal(out.grpoMaxCompletionLength, undefined);
+  assert.equal(
+    parseYamlRlSettings("rl:\n  objective: grpo\n  num_generations: 6\n")
+      .grpoNumGenerations,
+    6,
   );
 });

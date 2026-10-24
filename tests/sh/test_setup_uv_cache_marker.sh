@@ -1,13 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# studio/setup.sh (the `unsloth studio update` entry point) used to pick $STUDIO_HOME/cache/uv
-# unconditionally, the EMPTY one on a shared-mode install, and refetched every wheel. It now
-# reads install.sh's marker on the CLI's terms (unsloth_cli/commands/studio.py): an explicit
-# UV_CACHE_DIR wins and is never recorded, UV_NO_CACHE leaves it unset, the marker wins only
-# while its cache holds packages, otherwise the Studio path if writable. setup.sh never
-# WRITES the marker: a recorded inference outlives its install.
+# setup.sh reads install.sh's uv cache marker on the CLI's terms and never WRITES it.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -17,7 +11,6 @@ SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
-# The real helpers and selector, sliced out of setup.sh by their anchors (the selector is not a function).
 HELPERS=$(awk '
     /^_uv_is_bucket_name\(\) \{/ { grab = 1 }
     /^_uv_no_cache_requested\(\) \{/ { grab = 1 }
@@ -89,15 +82,12 @@ run() {  # run <shell> <state> <input> <no-cache-state> <no-cache> <studio home>
     "$1" "$PROBE" "$2" "$3" "$4" "$5" "$6"
 }
 
-# The same probe under setup.sh's own options (line 5): `set -o pipefail` turns a SIGPIPE inside
-# a command substitution into a failed pipeline, the difference between warm and refetched.
+# Under setup.sh's `set -o pipefail`, SIGPIPE in a substitution fails the pipeline.
 run_strict() {  # run_strict <state> <input> <no-cache-state> <no-cache> <studio home>
     bash -e -u -o pipefail "$PROBE" "$1" "$2" "$3" "$4" "$5"
 }
 
-# A bucket with more names than a 64K pipe holds, built once (touching it is the slow part).
-# `find ... -print | head -n 1` reads THIS cache as cold under pipefail; every other fixture is
-# a handful of files, which is why the suite stayed green while updates refetched warm caches.
+# More names than a 64K pipe holds: `find -print | head -n 1` reads this as cold under pipefail.
 BIG="$WORK/big cache/uv"
 mkdir -p "$BIG/archive-v0/pkg"
 awk -v d="$BIG/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
@@ -135,7 +125,6 @@ for shell in sh bash; do
         chmod 755 "$RO" 2>/dev/null || true
     fi
 
-    # A cache the user cleared: content, not the record, has the last word on emptiness.
     COLD="$CASE/emptied cache/uv"
     mkdir -p "$COLD"
     record "$HOME_DIR" "$COLD\\n"
@@ -153,8 +142,7 @@ for shell in sh bash; do
     assert_eq "$shell: package bytes beside metadata do count" \
         "$META" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A writable root is not a usable cache: uv unpacks into the buckets, so a root-only probe
-    # adopts a recorded cache uv then aborts on (uv 0.10.7: "failed to rename", exit 1).
+    # A writable root is not enough: uv unpacks into the buckets and aborts if they are blocked.
     BLOCKED="$CASE/bucket blocked/uv"
     warm "$BLOCKED"
     record "$HOME_DIR" "$BLOCKED\\n"
@@ -166,8 +154,7 @@ for shell in sh bash; do
     assert_eq "$shell: the same cache is adopted once its bucket is writable again" \
         "$BLOCKED" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # Store versions reach two digits (uv 0.12.1 ships simple-v24), and `*-v[0-9]*` is "a digit
-    # then anything", so it matches those too. This pins that against a narrower glob.
+    # uv 0.12.1 ships simple-v24; pins the `*-v[0-9]*` glob against a narrower one.
     MULTI="$CASE/multi-digit store/uv"
     warm "$MULTI"
     mkdir -p "$MULTI/simple-v24"
@@ -178,9 +165,7 @@ for shell in sh bash; do
         chmod 0755 "$MULTI/simple-v24" 2>/dev/null || true
     fi
 
-    # `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting them
-    # reads this cache as warm and then fails the offline update it was picked for (measured on
-    # uv 0.10.7: exit 1, "not found in the cache"). install.sh's scan rejects it the same way.
+    # `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot reuse offline.
     LOOKALIKE="$CASE/lookalike bucket/uv"
     mkdir -p "$LOOKALIKE/archive-v0.backup/pkg"
     : > "$LOOKALIKE/archive-v0.backup/pkg/torch.whl"
@@ -188,9 +173,7 @@ for shell in sh bash; do
     assert_eq "$shell: a lookalike bucket is not warmth" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A store path occupied by a FILE is an existing path to mkdir(2), so uv cannot create the
-    # store and aborts (measured: a plain file at archive-v0 exits 1, at interpreter-v4,
-    # sdists-v9, simple-v20 or wheels-v6 exits 2). Skipping it would call the cache usable.
+    # A FILE at a store path makes uv abort (exit 1 or 2), so it must not count as usable.
     BLOCKFILE="$CASE/store is a file/uv"
     warm "$BLOCKFILE"
     : > "$BLOCKFILE/interpreter-v4"
@@ -201,9 +184,7 @@ for shell in sh bash; do
     assert_eq "$shell: and the same cache is adopted once it is gone" \
         "$BLOCKFILE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # `*-v[0-9]*/.lock` also reaches `unused-v999`, a kind `_uv_is_bucket_name` rejects on
-    # purpose. A read-only control-looking file there condemned a cache real uv uses fine
-    # (measured: probe REJECT, uv exit 0), so the standalone update lost its warm cache.
+    # A read-only control-looking file in `unused-v999` does not break uv, so must not reject.
     STRAY_CTL="$CASE/stray control file/uv"
     warm "$STRAY_CTL"
     mkdir -p "$STRAY_CTL/unused-v999"
@@ -214,9 +195,7 @@ for shell in sh bash; do
             "$STRAY_CTL" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
         chmod 0644 "$STRAY_CTL/unused-v999/.lock" 2>/dev/null || true
     fi
-    # ...while a .git inside a store still does. Measured on uv 0.10.7: sdists-v9/.git at 0444
-    # aborts with "Permission denied", exit 2. uv creates no per-store control files itself, so
-    # this one is someone else's, and it is the one proven to break uv.
+    # ...while a read-only .git inside a store does (uv 0.10.7: Permission denied, exit 2).
     mkdir -p "$STRAY_CTL/sdists-v9"
     : > "$STRAY_CTL/sdists-v9/.git"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/sdists-v9/.git" 2>/dev/null; then
@@ -224,7 +203,6 @@ for shell in sh bash; do
             "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
         chmod 0644 "$STRAY_CTL/sdists-v9/.git" 2>/dev/null || true
     fi
-    # And the root .lock, the other one measured to abort (exit 2).
     : > "$STRAY_CTL/.lock"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/.lock" 2>/dev/null; then
         assert_eq "$shell: a read-only root .lock is not usable either" \
@@ -239,8 +217,7 @@ for shell in sh bash; do
         chmod 0644 "$STRAY_CTL/CACHEDIR.TAG" 2>/dev/null || true
     fi
 
-    # uv cannot open a `.lock` that is not a regular file. Measured on uv 0.10.7: a directory
-    # there, and a symlink to one, both exit 2 with "Could not acquire lock ... Is a directory".
+    # uv cannot open a `.lock` that is a directory or a link to one (exit 2).
     LOCKDIR="$CASE/lock is a directory/uv"
     warm "$LOCKDIR"
     mkdir -p "$LOCKDIR/.lock"
@@ -256,11 +233,9 @@ for shell in sh bash; do
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
     rm -f "$LOCKDIR/.lock"
 
-    # The fold, at the two call sites rather than only in the helper. ext4 does not fold, so the
-    # measurement is stubbed both ways and what is pinned is that each scan acts on the answer.
+    # ext4 does not fold, so case-folding is stubbed both ways at each scan's call site.
     fold_probe() {  # fold_probe <shell> <folds:0|1> <expr>
-        # _FOLDS, not $2: inside the stub $2 is the STUB's argument, not the script's, so the
-        # answer read as empty and every fold case passed for the wrong reason.
+        # _FOLDS, not $2: inside the stub $2 is the stub's own argument.
         "$1" -c '. "$1"
 _FOLDS=$2
 _uv_cache_folds_case() { [ "$_FOLDS" = 1 ]; }
@@ -274,8 +249,6 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: and does not where the filesystem is case-sensitive" \
         "no" "$(fold_probe "$shell" 0 '_uv_cache_warm "'"$FOLDED"'"')"
 
-    # Same for the control file: `Sdists-V9` passes the folded store test, so the .git inside it
-    # has to be probed under uv's spelling, not the raw one.
     FOLDCTL="$CASE/folded sdists/uv"
     mkdir -p "$FOLDCTL/archive-v0/pkg" "$FOLDCTL/Sdists-V9"
     : > "$FOLDCTL/archive-v0/pkg/torch.whl"
@@ -288,9 +261,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         chmod 0644 "$FOLDCTL/Sdists-V9/.git" 2>/dev/null || true
     fi
 
-    # A folding filesystem opens `Archive-V0` as the store uv writes at `archive-v0`, and a
-    # lowercase glob does not fold, so the warm scan read a full cache as cold and the offline
-    # update failed. Both scans go through _uv_store_key now, so they agree on the entry.
+    # On a folding filesystem `Archive-V0` is uv's `archive-v0`; both scans go through _uv_store_key.
     assert_eq "$shell: a folded store name resolves to uv's spelling" \
         "archive-v0" "$($shell -c '. "$1"; _uv_store_key "Archive-V0" 1' _ "$PROBE_HELPERS")"
     assert_eq "$shell: and is not claimed on a case-sensitive filesystem" \
@@ -298,9 +269,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: a lookalike is never a store, folding or not" \
         "" "$($shell -c '. "$1"; _uv_store_key "Archive-V0.backup" 1 || true' _ "$PROBE_HELPERS")"
 
-    # The FALLBACK Studio cache gets the same check as a recorded one. A root-only probe passes
-    # on a Studio cache whose archive-v0 went read-only, and uv then aborts (measured: exit 1,
-    # "Permission denied") instead of falling back to uv's own.
+    # The fallback Studio cache gets the same bucket check: a read-only archive-v0 makes uv abort.
     SICK="$CASE/sick studio/cache/uv"
     mkdir -p "$SICK/archive-v0/pkg"
     : > "$SICK/archive-v0/pkg/x.whl"
@@ -313,9 +282,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: and is used again once its store is writable" \
         "$SICK" "$(run "$shell" unset "" unset "" "$CASE/sick studio")"
 
-    # Only the stores `uv pip install` writes, since that is the one uv command this file runs.
-    # Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2, git-v0, osv-v0
-    # and python-v0 all install fine, so probing them only threw the warm cache away.
+    # Only stores `uv pip install` writes are probed; read-only others install fine.
     OFFSCOPE="$CASE/unrelated store/uv"
     warm "$OFFSCOPE"
     record "$HOME_DIR" "$OFFSCOPE\\n"
@@ -327,8 +294,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
             chmod 0755 "$OFFSCOPE/$store" 2>/dev/null || true
         fi
     done
-    # ...while a store pip install DOES write still does. git-v0 counts: a `git+` requirement
-    # writes it (measured: a git install creates git-v0 and builds-v0).
+    # git-v0 counts: a `git+` requirement writes it.
     for store in archive-v0 git-v0 builds-v0; do
         mkdir -p "$OFFSCOPE/$store"
         if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$OFFSCOPE/$store" 2>/dev/null; then
@@ -338,9 +304,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         fi
     done
 
-    # One level inside the INDEX stores, which uv rewrites on every resolve. Measured on uv
-    # 0.10.7: a 0555 shard under simple-v20 or wheels-v6 aborts with "Failed to write to the
-    # client cache", exit 2, while one under archive-v0 or interpreter-v4 installs fine.
+    # One level inside the index stores, which uv rewrites on every resolve (read-only aborts).
     SHARD="$CASE/nested shard/uv"
     warm "$SHARD"
     mkdir -p "$SHARD/simple-v20/pypi" "$SHARD/wheels-v6/pypi" "$SHARD/interpreter-v4/abcd"
@@ -352,8 +316,6 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
             chmod 0755 "$SHARD/$blocked" 2>/dev/null || true
         fi
     done
-    # ...and not deeper than that, nor in the content stores, where uv tolerates it and
-    # rejecting would throw away the warm cache over a shard it never rewrites.
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$SHARD/interpreter-v4/abcd" 2>/dev/null; then
         assert_eq "$shell: an unwritable interpreter shard does not" \
             "$SHARD" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
@@ -366,9 +328,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         chmod 0755 "$SHARD/simple-v20/pypi/deeper" 2>/dev/null || true
     fi
 
-    # A non-directory AT the index leaf. Measured on the pinned uv 0.12.1: a plain file and a
-    # dangling symlink at simple-*/pypi or wheels-*/pypi both abort with "Failed to write to
-    # the client cache", exit 2. A `*/` glob matched neither, so the cache read as usable.
+    # A file or dangling symlink at the index leaf aborts uv 0.12.1; a `*/` glob missed both.
     LEAFND="$CASE/leaf not a dir/uv"
     warm "$LEAFND"
     mkdir -p "$LEAFND/simple-v20"
@@ -380,9 +340,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     ln -s "$LEAFND/nowhere" "$LEAFND/simple-v20/pypi"
     assert_eq "$shell: nor a dangling symlink there" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
-    # A symlink TO a directory is not the same thing and must stay adopted: uv writes through
-    # it (measured on the pinned uv 0.12.1, installs fine), and rejecting every link here would
-    # discard a cache whose index leaf is deliberately relocated.
+    # A symlink to a directory is fine: uv writes through it, so it must stay adopted.
     rm -f "$LEAFND/simple-v20/pypi"
     mkdir -p "$CASE/relocated index"
     ln -s "$CASE/relocated index" "$LEAFND/simple-v20/pypi"
@@ -393,10 +351,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: and it is adopted once the leaf is a directory" \
         "$LEAFND" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A CUSTOM --index-url, which Studio uses for the torch wheels, puts metadata at
-    # `<store>/index/<hash>`, not `<store>/pypi`. Measured on the pinned uv 0.12.1: a 0555
-    # `simple-*/index/<hash>` was ADOPTED by a one-level probe and then aborted the install
-    # with "Failed to write to the client cache". The only unsafe direction found so far.
+    # A custom --index-url stores metadata at `<store>/index/<hash>`; a read-only one aborts uv.
     CIDX="$CASE/custom index/uv"
     warm "$CIDX"
     mkdir -p "$CIDX/simple-v20/index/e1d141a6ca947dff" "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna"
@@ -408,17 +363,13 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
             chmod 0755 "$CIDX/$blocked" 2>/dev/null || true
         fi
     done
-    # ...and no deeper: the level below the hash is one directory per package.
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna" 2>/dev/null; then
         assert_eq "$shell: a package directory under the hash does not" \
             "$CIDX" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
         chmod 0755 "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna" 2>/dev/null || true
     fi
 
-    # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
-    # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
-    # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one
-    # environment. Whitespace-only falls through to the marker, exactly as it does in install.sh.
+    # Whitespace-only UV_CACHE_DIR is not a caller choice; must match install.sh's selector.
     WS="$CASE/whitespace/uv"
     warm "$WS"
     record "$HOME_DIR" "$WS\\n"
@@ -426,7 +377,6 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         "$WS" "$(run "$shell" value "   " unset "" "$HOME_DIR")"
     assert_eq "$shell: a tab-only UV_CACHE_DIR is not a caller value" \
         "$WS" "$(run "$shell" value "$(printf '\t')" unset "" "$HOME_DIR")"
-    # ...while one real character in it still is.
     assert_eq "$shell: a caller value with surrounding space is still a caller value" \
         " /caller/uv " "$(run "$shell" value " /caller/uv " unset "" "$HOME_DIR")"
 
@@ -438,7 +388,6 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
             "$BUCKET_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
     done
 
-    # ...and one warm by thousands of files: the old `-print | head -n 1` scan read it as cold.
     record "$HOME_DIR" "$BIG\\n"
     assert_eq "$shell: a cache too big for one pipe buffer is still warm" \
         "$BIG" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
@@ -447,9 +396,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
             "$BIG" "$(run_strict unset "" unset "" "$HOME_DIR")"
     fi
 
-    # ...and one with a leaf this user cannot read, walked before the hit (find exits nonzero
-    # after it, even once the hit printed, and `|| _uvw_hit=""` threw the hit away). Denied
-    # leaves are created and named first, and added until `ls -f` shows one ahead of the hit.
+    # An unreadable leaf before the hit makes find exit nonzero even after printing the hit.
     DENIED="$CASE/denied leaf/uv"
     mkdir -p "$DENIED/archive-v0/hidden 1"
     : > "$DENIED/archive-v0/hidden 1/other.whl"
@@ -485,8 +432,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: an empty record is declined" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A pathname ending in a newline: the CLI writes one delimiter and removes exactly one; a
-    # reader that let substitution strip every trailing newline checked another directory.
+    # A path ending in newline: the reader must strip exactly one delimiter, not all.
     NLCACHE="$CASE/trailing newline"
     NLCACHE="$NLCACHE$(printf '\nx')"
     NLCACHE=${NLCACHE%x}
@@ -495,7 +441,6 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: a pathname ending in a newline round-trips" \
         "${NLCACHE}x" "$(run "$shell" unset "" unset "" "$HOME_DIR"; printf x)"
 
-    # A caller value outranks every inference, and is never written anywhere.
     record "$HOME_DIR" "$SHARED\\n"
     OVERRIDE="$CASE/caller cache"
     assert_eq "$shell: an explicit UV_CACHE_DIR wins over the marker" \
@@ -508,9 +453,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     # An exported EMPTY UV_CACHE_DIR is not a caller value; uv fails on it, so no-cache mode unsets it.
     assert_eq "$shell: an empty UV_CACHE_DIR under UV_NO_CACHE is unset, not kept" \
         "<unset>" "$(run "$shell" value "" value 1 "$HOME_DIR")"
-    # A padded value is not truthy: clap rejects ` on ` outright rather than reading it as
-    # true, so uv's cache stays ON and the selection must not stand down. install.sh and the
-    # CLI both strip nothing for the same reason.
+    # clap rejects ` on `, so uv's cache stays ON and selection must not stand down.
     for falsy in 0 false "" maybe " on "; do
         assert_eq "$shell: UV_NO_CACHE=[$falsy] changes nothing" \
             "$SHARED" "$(run "$shell" unset "" value "$falsy" "$HOME_DIR")"
@@ -522,14 +465,12 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: an uncreatable Studio cache is dropped, not exported" \
         "<unset>" "$(run "$shell" unset "" unset "" "$BLOCKED")"
 
-    # ...and the probe file does not survive into the cache uv then fills.
     PROBED="$CASE/probed home"
     run "$shell" unset "" unset "" "$PROBED" >/dev/null
     assert_eq "$shell: the write probe cleans up after itself" \
         "" "$(ls -A "$PROBED/cache/uv" 2>/dev/null)"
 done
 
-# setup.sh must never become a marker writer: only an installer's own choice is one.
 _writes=$(awk '
     /^_uv_is_bucket_name\(\) \{/ { grab = 1 }
     /^_uv_no_cache_requested\(\) \{/ { grab = 1 }

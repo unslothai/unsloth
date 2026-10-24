@@ -86,9 +86,7 @@ class MissingPrerequisite(Exception):
     """Something the run needs is not installed. Reported as a SKIP, never as a pass."""
 
 
-#: The bundle exposes the module's exports; this gives the page one entry point with the shape
-#: the driver wants. The gate and the serialiser are the shipped ones -- the only thing restated
-#: here is `scopeElement`, which is module-private.
+# The only thing restated here is `scopeElement`, which is module-private.
 SHIM = """
 window.__fastCopy = function () {
   const M = window.SBFastCopy;
@@ -116,8 +114,7 @@ PAGE = """<!doctype html><meta charset=utf-8>
 
 SELECT_ALL = "window.getSelection().selectAllChildren(document.getElementById('v'))"
 
-#: Partial selections, because a whole-element selection is the easy case and the range's
-#: boundaries are exactly what the alt-text insertion could disturb.
+# Partial selections: the range boundaries are what alt-text insertion could disturb.
 PARTIALS = """
   const v = document.getElementById('v');
   const walk = document.createTreeWalker(v, NodeFilter.SHOW_TEXT);
@@ -215,10 +212,7 @@ def compare(engine: str, label: str, verdict: dict, native: str) -> list[str]:
     return []
 
 
-#: The floor on how many selections a run has to actually reach a verdict on. A comparison is
-#: skipped when the engine copied nothing at all, and a driver that skipped every one of them
-#: would print CLEAN having proven nothing -- which is the failure mode this whole file exists to
-#: rule out for the unit tests.
+# A run that skipped every comparison would print CLEAN having proven nothing.
 EXPECTED_VERDICTS = len(CONSTRUCTS) - len(MUST_REFUSE) - len(NO_COPY)
 
 
@@ -227,11 +221,8 @@ class Tally:
 
     def __init__(self) -> None:
         self.problems: list[str] = []
-        #: Answered, and compared byte for byte against the real clipboard.
         self.compared = 0
-        #: Refused because this engine's clipboard mapping is not one the module has proven.
         self.refused = 0
-        #: Of those, how many really do differ from the engine's own `toString()`.
         self.diverged = 0
 
     def record(self, engine: str, label: str, verdict: dict, native: str) -> None:
@@ -255,10 +246,7 @@ def check(engine: str, candidate: str) -> Tally:
             page.add_script_tag(content = candidate)
             sentinel = f"__s{index}__"
             page.evaluate(f"() => {{ {SELECT_ALL} }}")
-            # THE SERIALISED DOM, not the computed style. The unit test asserted the computed value came back and
-            # passed while every copy was leaving `style=""` behind, because `removeAttribute` does not remove a
-            # style attribute whose declaration has been touched. The structural parity digest caught it; this keeps
-            # it caught.
+            # Check the serialised DOM: removeAttribute does not remove a touched style attribute, leaving `style=""`.
             dom_before = page.evaluate("() => document.getElementById('v').outerHTML")
             verdict = page.evaluate("() => window.__fastCopy()")
             dom_after = page.evaluate("() => document.getElementById('v').outerHTML")
@@ -273,15 +261,13 @@ def check(engine: str, candidate: str) -> Tally:
             if after != before:
                 problems.append(f"{engine}/{name}: the serialiser did not restore the selection")
 
-            # Both engines' clipboards fold a no-break space to a plain one and neither `toString()` does, so that
-            # difference is not evidence of a divergence.
+            # Both engines' clipboards fold no-break spaces and `toString()` does not.
             raw = before.replace("\u00a0", " ")
             prime_clipboard(page, sentinel)
             native = read_clipboard(page, sentinel, SELECT_ALL)
 
             if name in MUST_REFUSE:
-                # Not merely "did not answer": the gate has to refuse for the stated reason, or a form control
-                # could be passing only because the engine was unmapped.
+                # The gate must refuse for the stated reason, not just because the engine was unmapped.
                 if verdict["text"] is not None:
                     problems.append(f"{engine}/{name}: ANSWERED a construct measured as divergent")
                 elif verdict["reason"] not in (FORM_CONTROL, UNMAPPED):
@@ -292,17 +278,12 @@ def check(engine: str, candidate: str) -> Tally:
                 continue
             if name in NO_COPY or native is None:
                 continue
-            # An engine-wide refusal is only honest if this engine's clipboard really does disagree with its own
-            # `toString()`. Counted here, and asserted non-zero below.
+            # An engine-wide refusal is only honest if the clipboard really differs from `toString()`.
             if verdict["reason"] == UNMAPPED and native != raw:
                 tally.diverged += 1
             tally.record(engine, name, verdict, native)
 
-        # ---- ENDPOINTS EXPRESSED AS ELEMENT/CHILD OFFSETS ----
-        # The alt holders are inserted BEFORE their images, so a child offset in the same parent
-        # points at a different child afterwards. Restoring from raw offsets silently dropped the
-        # trailing text: the clipboard carried `first catsecond cattail text` and we produced
-        # `first catsecond cat`, then took the copy because the result was non-empty.
+        # Alt holders are inserted before their images, so raw child offsets point at different children.
         for label, selection_js in (
             ("element offsets forward", "s.setBaseAndExtent(p, 0, p, 3)"),
             ("element offsets backward", "s.setBaseAndExtent(p, 3, p, 0)"),
@@ -324,10 +305,7 @@ def check(engine: str, candidate: str) -> Tally:
                 continue
             tally.record(engine, label, verdict, native)
 
-        # ---- A BACKWARD SELECTION MUST COME BACK BACKWARD ----
-        # A cloned Range carries ordered boundaries and no direction, so rebuilding with `addRange` silently turns a
-        # selection dragged upwards into a forward one and the user's next Shift+Arrow moves the opposite edge. Only
-        # the patched path rebuilds, so the fixture needs an image in it.
+        # A cloned Range has no direction, so rebuilding with addRange turns a backward selection forward.
         page.set_content(
             PAGE.replace(
                 "__BODY__",
@@ -356,7 +334,6 @@ def check(engine: str, candidate: str) -> Tally:
                 "swapped, so the user's next Shift+Arrow would move the opposite edge"
             )
 
-        # ---- selections whose SCOPE is the diverging element itself ----
         for name, (body, target) in INSIDE_SCOPE.items():
             page.set_content(PAGE.replace("__BODY__", body))
             page.add_script_tag(content = candidate)
@@ -370,7 +347,6 @@ def check(engine: str, candidate: str) -> Tally:
                 continue
             tally.record(engine, name, verdict, native)
 
-        # ---- partial selections over the whole hostile document at once ----
         safe = "".join(
             body
             for name, body in CONSTRUCTS.items()

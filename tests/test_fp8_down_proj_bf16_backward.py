@@ -84,8 +84,10 @@ def _backward(downW, downW_quant):
             2.0,
             backward_function,
         ),
-        saved_tensors = (gateA, gateB, upA, upB, downA, downB, X, e, gg),
+        saved_tensors = (gateA, gateB, upA, upB, downA, downB, X, e, gg, None, None, None),
         inplace = False,
+        dropout_p = (0.0, 0.0, 0.0),
+        biases = (False, False, False),
         _fwd_used_autocast = False,
         _dtype = torch.float32,
     )

@@ -125,6 +125,8 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       prepareRepeatsAfterRestart: true,
       // An older server does not say which MXC tier runs.
       builtinContainer: null,
+      windowsBuild: null,
+      builtinContainerBuild: null,
     },
     memory: null,
     setup: null,
@@ -382,4 +384,24 @@ test("an unsupported Windows is passed through, anything unknown is dropped", as
       expected,
     );
   }
+});
+
+test("the build that adds the built-in container reaches the tab", async () => {
+  const { api } = loadApi(() =>
+    json({
+      ...WINDOWS_STATUS,
+      windows: {
+        ...WINDOWS_STATUS.windows,
+        windows_build: "26200.6584",
+        builtin_container_build: "26200.9278",
+      },
+    }),
+  );
+  const status = await api.loadSandboxStatus(false, "fallback");
+  const win = status.windows as {
+    windowsBuild: string | null;
+    builtinContainerBuild: string | null;
+  };
+  assert.equal(win.windowsBuild, "26200.6584");
+  assert.equal(win.builtinContainerBuild, "26200.9278");
 });

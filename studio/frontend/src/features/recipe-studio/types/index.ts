@@ -155,7 +155,7 @@ export type Score = {
   options: ScoreOption[];
 };
 
-export type McpProviderType = "stdio" | "streamable_http";
+export type McpProviderType = "stdio" | "sse" | "streamable_http";
 
 export type McpEnvVar = {
   key: string;
@@ -366,6 +366,8 @@ export type SeedConfig = {
   resolved_paths?: string[];
   // ui-only
   seed_preview_rows?: Record<string, unknown>[];
+  // ui-only
+  seed_total_rows?: number;
   // ui-only (string for input ergonomics)
   unstructured_chunk_size?: string;
   // ui-only (string for input ergonomics)

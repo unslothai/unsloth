@@ -108,6 +108,20 @@ def test_rule_types(body, text, reference, expected):
         (_md("t", "type: regex\npattern: x", kind = "shell"), "kind must be"),
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
         (_md("t", "type: numeric\nbands: []"), "bands"),
+        (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
+        (_md("t", "type: exact_match\ncompare_to: completions"), "TRL reserves"),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: [object]}"),
+            "schema.type",
+        ),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: objcet}"),
+            "schema.type",
+        ),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {required: [[a, b]]}"),
+            "schema.required",
+        ),
     ],
 )
 def test_invalid_rewards_are_refused(raw, message):
@@ -178,3 +192,378 @@ def test_preview_scores_and_weights(client):
 def test_bundled_root_is_packaged():
     pyproject = Path(rewards.__file__).parents[4] / "pyproject.toml"
     assert "backend/core/training/bundled_rewards/**/*.md" in pyproject.read_text("utf-8")
+
+
+def test_a_backtracking_regex_rule_gives_up_instead_of_pinning_the_thread(monkeypatch):
+    # (a+)+$ against a long near-match backtracks for minutes; a Try it request would hold a worker.
+    import time
+
+    monkeypatch.setattr(rewards, "MATCH_TIMEOUT_S", 0.2)
+    rule = rewards.validate_rule(
+        {"type": "regex", "pattern": "(a+)+$", "mode": "search", "score": {"match": 1, "miss": 0}}
+    )
+    started = time.monotonic()
+    assert rewards.score_rule(rule, "a" * 40 + "!") == 0
+    assert time.monotonic() - started < 5
+    assert rewards.score_rule(rule, "aaa") == 1
+
+
+def test_preview_reads_each_rules_compare_to_column_like_training():
+    rule = {
+        "type": "exact_match",
+        "extract": None,
+        "compare_to": "gold",
+        "score": {"match": 1, "miss": 0},
+    }
+    spec = {"name": "gold-match", "kind": "rule", "rule": rewards.validate_rule(rule)}
+    row = {"answer": "72", "gold": "yes"}
+    trained = rewards.make_reward_func(spec)(
+        completions = ["yes"], **{k: [v] for k, v in row.items()}
+    )
+    scores, _ = rewards.preview_scores([spec], "yes", reference = "72", row = row)
+    assert scores[0]["score"] == trained[0] == 1
+
+
+@pytest.mark.parametrize("bands", [[None], ["x"], [None, {"within": 1, "score": 1}]])
+def test_numeric_bands_must_all_be_mappings(bands):
+    with pytest.raises(rewards.RewardError, match = "band"):
+        rewards.validate_rule({"type": "numeric", "extract": None, "bands": bands})
+
+
+def test_a_backtracking_extract_regex_gives_up_too(monkeypatch):
+    import time
+
+    monkeypatch.setattr(rewards, "MATCH_TIMEOUT_S", 0.2)
+    rule = rewards.validate_rule(
+        {
+            "type": "exact_match",
+            "extract": {"regex": "((a+)+)$"},
+            "score": {"match": 1, "miss": 0},
+        }
+    )
+    started = time.monotonic()
+    assert rewards.score_rule(rule, "a" * 40 + "!", "aaa") == rule["missing"]
+    assert time.monotonic() - started < 5
+    assert rewards.score_rule(rule, "aaa", "aaa") == 1
+
+
+def test_json_schema_types_are_checked_or_refused():
+    def rule(kind):
+        return rewards.validate_rule(
+            {"type": "json_schema", "schema": {"type": kind}, "score": {"match": 1, "miss": 0}}
+        )
+
+    assert rewards.score_rule(rule("integer"), "3") == 1
+    assert rewards.score_rule(rule("integer"), '"three"') == 0
+    assert rewards.score_rule(rule("integer"), "3.5") == 0
+    assert rewards.score_rule(rule("boolean"), "true") == 1
+    assert rewards.score_rule(rule("boolean"), "1") == 0
+    assert rewards.score_rule(rule("number"), "true") == 0
+    assert rewards.score_rule(rule("null"), "null") == 1
+    with pytest.raises(rewards.RewardError, match = "schema.type"):
+        rule("objcet")
+
+
+def test_json_schema_refuses_nan_huge_ints_and_a_scalar_required():
+    def rule(kind, **schema):
+        return rewards.validate_rule(
+            {
+                "type": "json_schema",
+                "schema": {"type": kind, **schema},
+                "score": {"match": 1, "miss": 0},
+            }
+        )
+
+    # Python's json.loads takes NaN / Infinity, which are not JSON.
+    assert rewards.score_rule(rule("number"), "NaN") == 0
+    assert rewards.score_rule(rule("number"), "-Infinity") == 0
+    assert rewards.score_rule(rule("number"), "1e999") == 0
+    assert rewards.score_rule(rule("number"), "2.5") == 1
+    # A whole number past float range is still an integer, and must not raise.
+    assert rewards.score_rule(rule("integer"), "9" * 400) == 1
+    for bad in ("id", False, None, 0, ""):
+        with pytest.raises(rewards.RewardError, match = "required"):
+            rule("object", required = bad)
+
+
+def test_bundled_strict_format_scores_whitespace_runs_quickly(user_root):
+    import time
+
+    specs = {r["name"]: r for r in rewards.list_rewards()}
+    ws = "\n" * 150
+    text = (
+        f"<reasoning>\nSo 16 - 3 - 4 = 9.\n{ws}</reasoning>\n<answer>\n{ws}9{ws}</answer>\nThanks"
+    )
+    start = time.perf_counter()
+    assert rewards.score_rule(specs["strict-xml-format"]["rule"], text) == 0.0
+    assert time.perf_counter() - start < 0.5
+    assert (
+        rewards.score_rule(
+            specs["strict-xml-format"]["rule"], "<reasoning>a</reasoning>\n<answer>9</answer>"
+        )
+        == 0.5
+    )
+
+
+def test_catastrophic_user_regex_times_out_as_a_miss(monkeypatch):
+    import time
+
+    pytest.importorskip("regex")
+    monkeypatch.setattr(rewards, "MATCH_TIMEOUT_S", 0.2)
+    rule = rewards.parse_reward_markdown(_md("t", "type: regex\npattern: '(a+)+$'\nmode: search"))[
+        "rule"
+    ]
+    start = time.perf_counter()
+    assert rewards.score_rule(rule, "a" * 40 + "!") == rule["score"]["miss"]
+    assert time.perf_counter() - start < 5
+
+
+def test_regex_rule_is_refused_without_the_timeout_engine(monkeypatch):
+    monkeypatch.setattr(rewards, "_rx", None)
+    with pytest.raises(rewards.RewardError, match = "regex"):
+        rewards.parse_reward_markdown(_md("t", "type: regex\npattern: '(a+)+$'"))
+    with pytest.raises(rewards.RewardError, match = "regex"):
+        rewards._match("(a+)+$", "a" * 40 + "!")
+
+
+@pytest.mark.parametrize("pattern", ["a{10000000}", "((a{1000}){1000}){1000}"])
+def test_regex_repeats_that_unroll_huge_are_refused_before_compiling(pattern):
+    pytest.importorskip("regex")
+    with pytest.raises(rewards.RewardError, match = "repeat"):
+        rewards.parse_reward_markdown(_md("t", f"type: regex\npattern: '{pattern}'"))
+    with pytest.raises(rewards.RewardError, match = "repeat"):
+        rewards._match(pattern, "a")
+    assert rewards._match("[a-z]{2,64}", "ab")
+
+
+def test_yaml_aliases_and_merge_keys_are_refused_before_they_expand(user_root):
+    rewards.import_reward(_md("big", "type: length\nmax_chars: 9"))
+    marker = "x" * 17_000
+    aliased = (
+        "---\nname: big\ndescription: d\n---\ntype: numeric\n"
+        f"extract: {{between: [&s '{marker}', *s]}}\n"
+        "reference_extract: {between: [*s, *s]}\nbands: [{within: 0, score: 1}]\n"
+    )
+    with pytest.raises(rewards.RewardError, match = "alias"):
+        rewards.import_reward(aliased, overwrite = True)
+    assert rewards.get_reward("big")["rule"]["type"] == "length"
+    merges = "m0: &m0 {x: 1}\n" + "".join(
+        f"m{i}: &m{i} {{<<: [*m{i - 1}, *m{i - 1}]}}\n" for i in range(1, 25)
+    )
+    with pytest.raises(rewards.RewardError, match = "alias"):
+        rewards.parse_reward_markdown(f"---\nname: x\n{merges}---\ntype: length\nmax_chars: 9\n")
+
+
+def test_an_empty_extracted_reference_still_matches_an_empty_answer():
+    between = {"between": ["<answer>", "</answer>"]}
+    rule = rewards.validate_rule(
+        {
+            "type": "exact_match",
+            "extract": between,
+            "reference_extract": between,
+            "score": {"match": 2.0, "miss": 0.0},
+        }
+    )
+    assert rewards.score_rule(rule, "<answer></answer>", "<answer></answer>") == 2.0
+    assert rewards.score_rule(rule, "<answer>72</answer>", "72") == 2.0
+
+
+def test_import_refuses_a_reward_that_grows_past_the_limit_once_saved(user_root, monkeypatch):
+    rewards.import_reward(_md("big", "type: length\nmax_chars: 9"))
+    monkeypatch.setattr(rewards, "MAX_REWARD_MD_BYTES", 120)
+    with pytest.raises(rewards.RewardError, match = "once saved"):
+        rewards.import_reward(
+            "---\nname: big\ndescription: d\n---\ntype: exact_match\n", overwrite = True
+        )
+    monkeypatch.setattr(rewards, "MAX_REWARD_MD_BYTES", 64 * 1024)
+    assert rewards.get_reward("big")["rule"]["type"] == "length"
+
+
+def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = rewards._user_root()
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "linked").symlink_to(outside, target_is_directory = True)
+    with pytest.raises(rewards.RewardError, match = "link"):
+        rewards.import_reward(_md("linked", "type: regex\npattern: x"), overwrite = True)
+    assert not (outside / "REWARD.md").exists()
+
+
+def test_a_linked_library_cannot_delete_outside_the_account(tmp_path, monkeypatch):
+    from utils import paths
+    from utils.paths import storage_roots
+
+    account = tmp_path / "accounts" / "a1"
+    account.mkdir(parents = True)
+    outside = tmp_path / "elsewhere"
+    (outside / "victim").mkdir(parents = True)
+    (outside / "victim" / "REWARD.md").write_text("keep", encoding = "utf-8")
+    (account / "rewards").symlink_to(outside, target_is_directory = True)
+    monkeypatch.setattr(storage_roots, "is_owner_context", lambda: False)
+    monkeypatch.setattr(storage_roots, "workspace_root", lambda: account)
+    monkeypatch.setattr(paths, "workspace_root", lambda: account)
+    monkeypatch.setattr(storage_roots, "project_workspaces_root", lambda: tmp_path / "projects")
+    monkeypatch.setattr(storage_roots, "tmp_root", lambda: tmp_path / "tmp")
+
+    with pytest.raises(rewards.RewardError):
+        rewards.delete_reward("victim")
+    assert (outside / "victim" / "REWARD.md").read_text(encoding = "utf-8") == "keep"
+    assert all(r["source"] == "bundled" for r in rewards.list_rewards())
+
+
+def test_alias_tree_name_is_refused_before_expansion():
+    levels = ["l0: &l0 [xxxxxxxx, xxxxxxxx]"] + [
+        f"l{i}: &l{i} [*l{i - 1}, *l{i - 1}]" for i in range(1, 40)
+    ]
+    raw = "---\n" + "\n".join(levels) + "\nname: *l39\nkind: rule\n---\ntype: regex\npattern: a\n"
+    with pytest.raises(rewards.RewardError, match = "alias"):
+        rewards.parse_reward_markdown(raw)
+
+
+def test_import_refuses_a_full_library_but_still_replaces(user_root, monkeypatch):
+    monkeypatch.setattr(rewards, "MAX_REWARDS_PER_ROOT", 2)
+    for name in ("a-one", "a-two"):
+        rewards.import_reward(_md(name, "type: exact_match"))
+    with pytest.raises(rewards.RewardError, match = "library is full"):
+        rewards.import_reward(_md("z-three", "type: exact_match"))
+    rewards.import_reward(_md("a-two", "type: exact_match\nscore: {match: 3}"), overwrite = True)
+    assert rewards.get_reward("a-two")["rule"]["score"]["match"] == 3.0
+
+
+def test_failed_overwrite_keeps_the_saved_reward(user_root, monkeypatch):
+    rewards.import_reward(_md("keep-me", "type: exact_match\nscore: {match: 4}"))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rewards.os, "replace", boom)
+    with pytest.raises(OSError):
+        rewards.import_reward(
+            _md("keep-me", "type: exact_match\nscore: {match: 5}"), overwrite = True
+        )
+    assert rewards.get_reward("keep-me")["rule"]["score"]["match"] == 4.0
+    assert [p.name for p in (user_root / "keep-me").iterdir()] == ["REWARD.md"]
+
+
+def test_json_rule_misses_on_nan_and_infinity():
+    rule = rewards.validate_rule(
+        {
+            "type": "json_schema",
+            "schema": {"type": "object", "required": ["answer"]},
+            "score": {"match": 1, "miss": -1},
+        }
+    )
+    for text in ('{"answer": NaN}', '{"answer": Infinity}', '{"answer": -Infinity}'):
+        assert rewards.score_rule(rule, text, None) == -1.0
+    assert rewards.score_rule(rule, '{"answer": 1}', None) == 1.0
+
+
+def test_json_rule_misses_on_deeply_nested_output():
+    rule = rewards.validate_rule(
+        {
+            "type": "json_schema",
+            "schema": {"type": "array", "required": []},
+            "score": {"match": 1, "miss": -1},
+        }
+    )
+    assert rewards.score_rule(rule, "[" * 10_000, None) == -1.0
+
+
+@pytest.mark.parametrize("column", ["chosen", "rejected", "messages", "label"])
+def test_compare_to_refuses_trl_dataset_keys(column):
+    with pytest.raises(rewards.RewardError, match = "reserves that name"):
+        rewards.validate_rule({"type": "exact_match", "compare_to": column})
+
+
+def test_failed_first_save_leaves_no_folder_and_can_be_retried(user_root, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as m:
+        m.setattr(rewards.os, "replace", boom)
+        with pytest.raises(OSError):
+            rewards.import_reward(_md("fresh", "type: exact_match"))
+    assert not (user_root / "fresh").exists()
+    rewards.import_reward(_md("fresh", "type: exact_match"))
+    assert rewards.get_reward("fresh")["name"] == "fresh"
+
+
+def test_json_schema_refuses_keywords_it_does_not_enforce():
+    with pytest.raises(rewards.RewardError, match = "properties"):
+        rewards.validate_rule(
+            {
+                "type": "json_schema",
+                "schema": {"type": "object", "properties": {"answer": {"type": "number"}}},
+            }
+        )
+
+
+def test_regex_rules_keep_and_apply_their_extraction():
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "[0-9]+",
+            "mode": "fullmatch",
+            "extract": {"between": ["<answer>", "</answer>"]},
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert rule["extract"] == {"between": ["<answer>", "</answer>"]}
+    assert score_rule(rule, "<reasoning>2+2=4</reasoning><answer>4</answer>") == 1.0
+    assert score_rule(rule, "<answer>four</answer>") == 0.0
+    assert score_rule(rule, "4") == 0.0  # no answer tags: nothing to match
+    plain = validate_rule(
+        {"type": "regex", "pattern": "[0-9]+", "score": {"match": 1.0, "miss": 0.0}}
+    )
+    assert "extract" not in plain and score_rule(plain, "4") == 1.0
+
+
+def test_rules_that_score_the_whole_reply_refuse_an_extraction_step():
+    rule = {
+        "type": "length",
+        "max_chars": 10,
+        "score": {"over": -1, "under": 1},
+        "extract": {"between": ["<answer>", "</answer>"]},
+    }
+    with pytest.raises(rewards.RewardError, match = "length rules take no extract"):
+        rewards.validate_rule(rule)
+
+
+def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "<answer>\\n[0-9]+\\n</answer>\\n",
+            "mode": "fullmatch",
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert score_rule(rule, "<answer>\n4\n</answer>\n") == 1.0
+    loose = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "[0-9]+",
+            "mode": "fullmatch",
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert score_rule(loose, "  4\n") == 1.0  # stray padding still tolerated
+
+
+def test_json_schema_scoring_stays_fast_on_an_unclosed_fence():
+    import time
+
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {"type": "json_schema", "schema": {"type": "object"}, "score": {"match": 1.0, "miss": 0.0}}
+    )
+    assert score_rule(rule, '```json\n{"a": 1}\n```') == 1.0
+    start = time.perf_counter()
+    assert score_rule(rule, "```json\n" + " " * 65000) == 0.0
+    assert time.perf_counter() - start < 1.0

@@ -22,6 +22,8 @@ export type SandboxSetupView = {
   result: JobResult;
   outputLines: string[];
   note: string;
+  /** Why High is unavailable, shown only when the popup has nothing else to offer. */
+  reason: string;
 };
 
 export function sandboxSetupView({
@@ -53,6 +55,7 @@ export function sandboxSetupView({
       result,
       outputLines: jobOutputLines(job),
       note,
+      reason: "",
     };
   }
   const action = capability.canRunSetup ? capability.setupAction : null;
@@ -67,6 +70,21 @@ export function sandboxSetupView({
     (result === "failed" || result === "declined") && job?.manualCommand
       ? job.manualCommand
       : capability.manualCommand;
+  // Windows commands name this install's paths: owner only.
+  const showOwnerOnly =
+    install === null &&
+    (command !== "" ||
+      capability.setupBlocked === "not_owner" ||
+      capability.setupBlocked === "not_local") &&
+    capability.setupBlocked !== "no_elevation";
+  // A check that now passes (set up from another window) is not a reason to show here.
+  const deadEnd =
+    !(capability.pythonOsIsolated && capability.terminalOsIsolated) &&
+    install === null &&
+    command === "" &&
+    !showOwnerOnly &&
+    !running &&
+    result === null;
   return {
     checking: false,
     loadFailed: false,
@@ -74,13 +92,7 @@ export function sandboxSetupView({
     showConsent,
     installDisabled: running || (showConsent && !consent),
     command,
-    // Windows commands name this install's paths: owner only.
-    showOwnerOnly:
-      install === null &&
-      (command !== "" ||
-        capability.setupBlocked === "not_owner" ||
-        capability.setupBlocked === "not_local") &&
-      capability.setupBlocked !== "no_elevation",
+    showOwnerOnly,
     showRunInTerminal:
       install === null &&
       command !== "" &&
@@ -89,5 +101,6 @@ export function sandboxSetupView({
     result,
     outputLines: jobOutputLines(job),
     note,
+    reason: deadEnd ? capability.reason : "",
   };
 }

@@ -32,7 +32,11 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
+    gguf_listed_checkpoints,
+    group_gguf_variant_files,
+    gguf_variant_family,
     gguf_variant_key,
+    gguf_variant_keys_by_checkpoint,
     is_qualified_gguf_variant_key,
     quant_token_with_bpw,
     remove_appledouble_sidecar,
@@ -44,6 +48,7 @@ from hub.utils.hf_cache_state import (
     purge_partial_repo,
     purge_repo_cache_dirs,
     resolve_delete_target_root,
+    snapshot_selection_key,
 )
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -120,7 +125,7 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _unlink_snapshot_entry(snap: Path) -> int:
-    """Unlink one snapshot entry, plus any AppleDouble sidecar beside it. Returns the entries removed, which never counts the sidecar: it is metadata about a file the caller asked to remove, not a second file."""
+    """unlink a snapshot entry and its AppleDouble sidecar, counting only the entry."""
     removed = 0
     if _path_exists_or_symlink(snap):
         snap.unlink()
@@ -129,34 +134,40 @@ def _unlink_snapshot_entry(snap: Path) -> int:
     return removed
 
 
-def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
-    """Files whose snapshot-relative path satisfies *predicate*. Relative, not the bare ``file_name``: huggingface_hub sets that to ``file_path.name`` (and our own recovery scan to ``entry.name``), so a companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a root file. Every predicate below keys on the directory for at least one supported layout, and the quant labels they extract are unchanged by the prefix."""
+def _revision_file_matches(revision, predicate) -> list[tuple[Path, Optional[Path], str]]:
     matches: list[tuple[Path, Optional[Path], str]] = []
-    for rev in getattr(target_repo, "revisions", ()):
-        snapshot = getattr(rev, "snapshot_path", None)
-        for f in getattr(rev, "files", ()):
-            name = str(getattr(f, "file_name", ""))
-            file_path = getattr(f, "file_path", None)
-            if snapshot and file_path:
-                try:
-                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
-                except ValueError:
-                    pass
-            if not predicate(name):
-                continue
-            if not file_path:
-                continue
-            # Every predicate here keys on the name, which a sidecar answers exactly as its neighbour does. Proven metadata only: anything else carrying this key is a file to delete.
-            if is_appledouble_metadata(Path(file_path)):
-                continue
-            blob_path = getattr(f, "blob_path", None)
-            matches.append(
-                (
-                    Path(file_path),
-                    Path(blob_path) if blob_path else None,
-                    name,
-                )
+    snapshot = getattr(revision, "snapshot_path", None)
+    for f in getattr(revision, "files", ()):
+        name = str(getattr(f, "file_name", ""))
+        file_path = getattr(f, "file_path", None)
+        if snapshot and file_path:
+            try:
+                name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+            except ValueError:
+                pass
+        if not predicate(name):
+            continue
+        if not file_path:
+            continue
+        # skip only proven AppleDouble metadata; any other matching name is a deletion target.
+        if is_appledouble_metadata(Path(file_path)):
+            continue
+        blob_path = getattr(f, "blob_path", None)
+        matches.append(
+            (
+                Path(file_path),
+                Path(blob_path) if blob_path else None,
+                name,
             )
+        )
+    return matches
+
+
+def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    """match relative paths because bare names lose layouts such as ``dspark/`` and ``MTP/``."""
+    matches: list[tuple[Path, Optional[Path], str]] = []
+    for revision in getattr(target_repo, "revisions", ()):
+        matches.extend(_revision_file_matches(revision, predicate))
     return matches
 
 
@@ -171,8 +182,8 @@ def _has_remaining_main_gguf(target_repo) -> bool:
 
 
 def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
-    """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the quant label names the folder); only empty dirs go, so siblings are safe. Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified key names its own folder and must not reach for a <quant>/ dir it does not own; qualified means a path (distilled/...-Q6_K), an H3 root stem, or a bpw modifier (IQ4_XS-3.53bpw, whose token-only IQ4_XS/ folder is a different build's).
+    """remove empty variant folders and return their count plus non-concurrent failures."""
+    # qualified keys own only their exact folder because token-only folders can be another build.
     qualified = (
         is_qualified_gguf_variant_key(variant)
         or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
@@ -214,13 +225,15 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                     sub.rmdir()
                     removed += 1
                 except OSError as e:
-                    # A concurrent download refilling the dir (ENOTEMPTY) is not a failure; a read-only cache or locked dir is, so surface it.
+                    # ignore ENOTEMPTY from concurrent refills; surface locked or read-only directories.
                     if e.errno != errno.ENOTEMPTY:
                         failures.append(f"{sub.name}: {e}")
     return removed, failures
 
 
-def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+def _remove_empty_snapshot_dirs(
+    target_repos: list, protected_revisions: frozenset[str] = frozenset()
+) -> tuple[int, list[str]]:
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
@@ -235,6 +248,8 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in protected_revisions:
+                continue
             try:
                 snap.rmdir()
                 removed += 1
@@ -244,30 +259,90 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
-def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
-    """The variant keys in *target_repo* that *variant* names, lowercased. Its own key, always, plus the unambiguous bare-quant alias the download side already admits (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the path and cannot know the directory disambiguates nothing, so every stored pin and every explicit ``repo:Q4_K_M`` names it by quant alone, and admitting the alias for the download and not for the delete answered "not found" and left the weights on disk. Only when it is unambiguous, exactly as the download side decides it: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them and deleting the wrong one is unrecoverable."""
+def _revision_selection_key(revision) -> tuple[float, str]:
+    snapshot = getattr(revision, "snapshot_path", None)
+    return snapshot_selection_key(Path(snapshot)) if snapshot else (0.0, "")
+
+
+def _rank_complete_snapshots(
+    repo_id: str, revisions: list, complete: list[set[str]]
+) -> list[set[str]]:
+    from hub.utils.gguf_sources import _prefer_duplicate
+
+    selected: dict[str, tuple[int, Path]] = {}
+    for index, (revision, variants) in enumerate(zip(revisions, complete)):
+        snapshot_path = getattr(revision, "snapshot_path", None)
+        if not snapshot_path:
+            continue
+        snapshot = Path(snapshot_path)
+        for variant in variants:
+            key = variant.lower()
+            previous = selected.get(key)
+            if previous is None or _prefer_duplicate(repo_id, variant, previous[1], snapshot):
+                selected[key] = (index, snapshot)
+    return [
+        {variant for variant in variants if selected[variant.lower()][0] == index}
+        for index, variants in enumerate(complete)
+    ]
+
+
+def _main_gguf_variant_keys(target_repo, preferred_path: Optional[str] = None) -> dict[Path, str]:
+    """use the lister's cross-snapshot readiness ranking so unlisted builds cannot claim the row."""
+    revisions = sorted(
+        getattr(target_repo, "revisions", ()), key = _revision_selection_key, reverse = True
+    )
+    matches = [_revision_file_matches(revision, _is_main_gguf_filename) for revision in revisions]
+    names = [[name for _snap, _blob, name in revision] for revision in matches]
+    complete = []
+    for revision, revision_names in zip(revisions, names):
+        snapshot = getattr(revision, "snapshot_path", None)
+        snapshot_complete = (
+            hf_cache_scan.complete_snapshot_variants(str(snapshot)) if snapshot else set()
+        )
+        listed_rows = group_gguf_variant_files((name, 0) for name in revision_names)
+        complete.append({key for key in listed_rows if key in snapshot_complete})
+    repo_id = str(getattr(target_repo, "repo_id", ""))
+    if repo_id:
+        complete = _rank_complete_snapshots(repo_id, revisions, complete)
+    listed = gguf_listed_checkpoints(names, complete)
+    if preferred_path:
+        wanted_path = Path(preferred_path)
+        preferred_name = next(
+            (name for revision in matches for snap, _blob, name in revision if snap == wanted_path),
+            None,
+        )
+        if preferred_name is not None:
+            listed.update(gguf_listed_checkpoints(((preferred_name,),)))
+    keys: dict[Path, str] = {}
+    for revision, revision_names in zip(matches, names):
+        revision_keys = gguf_variant_keys_by_checkpoint(revision_names, listed)
+        keys.update({snap: revision_keys[name] for snap, _blob, name in revision})
+    return keys
+
+
+def _main_key(snap: Path, main_keys: dict[Path, str]) -> str:
+    return (main_keys.get(snap) or "").lower()
+
+
+def _variant_keys_to_delete(
+    target_repo,
+    variant: str,
+    preferred_path: Optional[str] = None,
+) -> set[str]:
+    """return lowercase keys, accepting a bare-quant alias only for one path-qualified key."""
     wanted = (variant or "").strip().lower()
     if not wanted or "/" in wanted:
         return {wanted}
-    keys = {
-        gguf_variant_key(name).lower()
-        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
-    }
+    keys = {key.lower() for key in _main_gguf_variant_keys(target_repo, preferred_path).values()}
     if wanted in keys:
         return {wanted}
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, so it must not delete either.
+    # use path-qualified keys, not is_qualified_gguf_variant_key; H3 bare quants span partitions.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
 
 def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
-    """``(own files, protected files)`` of an audio.cpp package mix being deleted.
-
-    A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
-    other mixes, so the quant key alone neither finds all of its files nor knows which a sibling
-    still needs. Own files are the mix's whole file list; protected files are every file of the
-    other mixes still fully on disk. Both empty for any other repo.
-    """
+    """return audio.cpp mix files and files protected by complete sibling mixes, else empty sets."""
     try:
         from core.inference.audio_cpp_models import package_variant_files
     except Exception:  # noqa: BLE001 - no audio.cpp support, no package layout
@@ -316,28 +391,35 @@ def _delete_gguf_variant_from_repos(
     *,
     sibling_active: bool = False,
     root: Optional[Path] = None,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     failures: list[str] = []
     removed_snapshots = 0
     deleted_bytes = 0
     deleted_blobs = 0
     completed_hashes: set[str] = set()
+    selected_families: set[str] = set()
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
-        wanted_keys = _variant_keys_to_delete(target_repo, variant)
+        wanted_keys = _variant_keys_to_delete(target_repo, variant, preferred_path)
+        main_keys = _main_gguf_variant_keys(target_repo, preferred_path)
         package_files, protected = _audio_cpp_package_scope(target_repo, variant)
         matched = [
             match
             for match in _repo_file_matches(
                 target_repo,
-                lambda name, keys = wanted_keys: name in package_files
-                or (_is_main_gguf_filename(name) and gguf_variant_key(name).lower() in keys),
+                lambda name: name in package_files or _is_main_gguf_filename(name),
             )
-            # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
-            # depth decoder) stays.
+            if match[2] in package_files or _main_key(match[0], main_keys) in wanted_keys
+            # keep components used by another downloaded mix, including MiniMax's shared decoder.
             if match[2] not in protected
         ]
+        selected_families.update(
+            gguf_variant_family(name).lower()
+            for _snap, _blob, name in matched
+            if _is_main_gguf_filename(name)
+        )
 
         for snap, _blob, name in matched:
             try:
@@ -349,7 +431,7 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # No main GGUF is left, so the companions cannot be launched; reclaim them with the last variant.
+                # no main GGUF remains, so its companions cannot be launched.
                 lambda name: _is_gguf_filename(name)
                 and (
                     _is_mmproj_filename(name)
@@ -400,14 +482,40 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
-        repo_id,
-        variant,
-        hf_token,
-        extra_hashes = frozenset(completed_hashes),
-        companions = not sibling_active,
-        root = root,
+    cleanup_variant: Optional[str] = variant
+    protected_revisions: set[str] = set()
+    manifest = download_manifest.read_manifest("model", repo_id, variant, hub_cache = root)
+    manifest_families = (
+        {
+            gguf_variant_family(expected.path).lower()
+            for expected in manifest.expected_files
+            if _is_main_gguf_filename(expected.path)
+        }
+        if manifest is not None
+        else set()
     )
+    # bare-quant state is safe to purge only when its readable manifest identifies this checkpoint.
+    if selected_families and not (
+        manifest_families and manifest_families.issubset(selected_families)
+    ):
+        exact_family = next(iter(selected_families)) if len(selected_families) == 1 else None
+        cleanup_variant = (
+            exact_family if exact_family is not None and exact_family != variant.lower() else None
+        )
+        if manifest is not None and manifest.commit_hash:
+            protected_revisions.add(manifest.commit_hash)
+
+    if cleanup_variant is None:
+        incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
+    else:
+        incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
+            repo_id,
+            cleanup_variant,
+            hf_token,
+            extra_hashes = frozenset(completed_hashes),
+            companions = not sibling_active,
+            root = root,
+        )
     if incomplete_result.unresolved:
         raise HTTPException(
             status_code = 409,
@@ -418,9 +526,19 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
-    removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    state_purged = (
+        download_manifest.purge_state("model", repo_id, cleanup_variant, hub_cache = root)
+        if cleanup_variant is not None
+        else False
+    )
+    removed_dirs, dir_failures = (
+        _remove_empty_variant_dirs(target_repos, cleanup_variant)
+        if cleanup_variant is not None
+        else (0, [])
+    )
+    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+        target_repos, frozenset(protected_revisions)
+    )
     removed_dirs += removed_snap_dirs
     dir_failures.extend(snap_dir_failures)
     if dir_failures:
@@ -549,13 +667,15 @@ def reclaim_replaced_gguf_variant(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
-        matches = _repo_file_matches(
-            target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() == variant_key,
-        )
+        # hashes from another build at this quant would look stale for this build.
+        main_keys = _main_gguf_variant_keys(target_repo)
+        matches = [
+            match
+            for match in _repo_file_matches(target_repo, _is_main_gguf_filename)
+            if _main_key(match[0], main_keys) == variant_key
+        ]
         for snap, blob, name in matches:
-            # Prune only a file we can identify as a real, stale cache blob: a no-symlink snapshot file has no identifiable blob hash, so keep it.
+            # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
             blob_hash = (
                 _blob_hash_from_path(blob)
                 if cache_inventory._is_real_cache_blob(blob, repo_dir)
@@ -1018,7 +1138,7 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer below: the first read ran before the reservation existed, so a load starting in between published its claim too late, and begin_delete misses it too.
+        # recheck after reserving the scope so a concurrent load claim is visible.
         try:
             blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
         except Exception as e:
@@ -1032,6 +1152,19 @@ async def delete_cached_model_response(
                 status_code = 400,
                 detail = blocks_detail,
             )
+        preferred_path = None
+        if variant is not None:
+            try:
+                preferred_path = await gguf_variants.cached_gguf_variant_source_path(
+                    repo_id, variant, hf_token
+                )
+            except Exception as exc:  # noqa: BLE001 -- local readiness is the offline fallback
+                logger.debug(
+                    "Could not resolve the scoped GGUF source for %s [%s]: %s",
+                    repo_id,
+                    variant,
+                    download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+                )
         result = await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,
@@ -1039,14 +1172,13 @@ async def delete_cached_model_response(
             hf_token,
             cache_path,
             only_if_orphan = only_if_orphan,
+            preferred_path = preferred_path,
         )
-        # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
-        # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
+        # prune stale audio.cpp hardlinks that retain deleted blobs; current farms are unchanged.
         from core.inference.audio_cpp_files import prune_link_farm
         from hub.utils.hf_cache_state import hf_cache_roots
 
-        # Every remembered root, not one recomputed from cache_path: an omitted path deletes from
-        # the sole owning cache, which need not be the active one. Pruning drops only stale entries.
+        # prune every remembered root because the owning cache may not be active.
         def _prune_all() -> None:
             for root in hf_cache_roots():
                 prune_link_farm(root)
@@ -1111,12 +1243,12 @@ def _delete_cached_model_blocking(
     cache_path: Optional[str] = None,
     *,
     only_if_orphan: bool = False,
+    preferred_path: Optional[str] = None,
 ) -> dict:
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
-    # Free up space's list can be minutes old, and a background download finishing turns that orphan
-    # into an installed checkpoint neither guard below catches.
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path, preferred_path)
+    # recheck orphan status because a download can finish after the free-space listing.
     if only_if_orphan:
         from hub.services.models import companion_cleanup
         from hub.utils import companion_assets
@@ -1125,7 +1257,7 @@ def _delete_cached_model_blocking(
             copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
                 repo_id.strip().lower(), []
             )
-            # Only the copy being removed: the orphan listing emits one row per cache root, so a full-pipeline copy in another remembered cache must not veto removing the companion-only copy listed.
+            # check only this root; a full copy elsewhere must not block deleting this orphan row.
             if cache_path:
                 wanted = Path(cache_path)
                 copies = [
@@ -1260,6 +1392,7 @@ def _delete_cached_model_blocking(
                 hf_token,
                 sibling_active = sibling_active,
                 root = target_root,
+                preferred_path = preferred_path,
             )
 
         deleted_revisions = False

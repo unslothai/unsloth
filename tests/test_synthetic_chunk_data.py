@@ -56,21 +56,18 @@ def _chunk(text, kit = None):
 
 
 def test_chunk_data_keeps_single_chunk_document():
-    # A short document fits in one chunk (n_chunks == 1) and must still produce one output file rather than silently
-    # vanishing.
+    # A one-chunk document must still produce one output file.
     out, contents = _chunk("word " * 50)
     assert len(out) == 1, f"single-chunk doc should yield 1 file, got {len(out)}"
     assert contents[0] != "", "the chunk file must contain the document text"
 
 
 def test_chunk_data_still_splits_long_document():
-    # A long document (n_chunks > 1) must still produce multiple chunks.
     out, _ = _chunk("word " * 5000)
     assert len(out) > 1, f"long doc should yield multiple chunks, got {len(out)}"
 
 
 def test_chunk_data_empty_document_yields_no_chunks():
-    # An empty document must not produce an (empty) chunk file.
     out, _ = _chunk("")
     assert out == [], f"empty doc should yield no files, got {len(out)}"
 
@@ -100,7 +97,6 @@ def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
 
 
 def test_chunk_data_uninitialized_error_names_real_class():
-    # Without max_seq_length the guard tells the user which method to call first.
     kit = SyntheticDataKit.__new__(SyntheticDataKit)
     kit.tokenizer = _MockTokenizer()
     with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
@@ -139,9 +135,8 @@ def test_chunk_data_chunks_do_not_exceed_max_tokens():
 
 
 def test_chunk_data_does_not_over_split():
-    # n_chunks must be the minimum count: ceil((length - overlap) / stride), not ceil(length / stride) which over-splits
-    # just past a stride multiple.
-    # At 673 tokens (max_tokens=400, overlap=64) the tight count gives 2 chunks (~369+368).
+    # n_chunks = ceil((length - overlap) / stride); ceil(length / stride) over-splits.
+    # 673 tokens (max_tokens=400, overlap=64) -> 2 chunks.
     kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
     max_tokens = 2048 - 760 * 2 - 128
     out, contents = _chunk("word " * 673, kit = kit)

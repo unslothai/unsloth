@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The all-sparse partial: a file sized before a single byte of it is transferred.
-
-A parallel Range writer sets the ``.incomplete`` to its final length up front and then fills
-blocks out of order. In between the file is its full logical size with nothing allocated behind
-it, and crediting ``st_size`` there reads "0 B left" on a download that has not moved.
-"""
+"""Progress must not credit st_size of a sparse partial, which reads as nearly done before any bytes."""
 
 import os
 from pathlib import Path

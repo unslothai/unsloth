@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The vision run, and the one way it goes green while testing nothing.
-
-A "vision run" that never puts an image on the GPU is a text run in a costume.
-It trains, its loss falls, its adapter updates, and every assertion a text leg
-makes passes. TRL will produce exactly that state if
-`remove_unused_columns=False` is dropped, because the image column is removed
-before the collator ever sees it.
-
-So the rules are read off a REAL collated batch, and the guards below are
-calibrated to catch the costume rather than the crash.
-"""
+"""Guards a vision run from quietly training on text; `remove_unused_columns=False` must stay set."""
 
 from __future__ import annotations
 
@@ -174,12 +164,8 @@ def test_the_pixel_evidence_is_read_before_training():
 def test_the_export_does_not_land_in_the_artifact_volume():
     """/kaggle/working is 21GB and a merged 2B is a meaningful fraction of it."""
     assert 'tempfile.mkdtemp(prefix = "vision_export_")' in SRC
-    # Scoped to the export BLOCK. A whole-file search matches args.outdir in
-    # main(), where it is correct, and the assertion would fail for a reason
-    # that has nothing to do with the export.
-    # Anchored on the mkdtemp rather than on `if args.export:`, because that
-    # string appears FIRST in vision_failures() and the naive split lands in
-    # the wrong function -- which is how this assertion failed the first time.
+    # Scoped to the export block, anchored on mkdtemp: `if args.export:` appears first in
+    # vision_failures(), and args.outdir is legitimately used in main().
     block = SRC.split("export_dir = tempfile.mkdtemp", 1)[1].split('result["export"] = record', 1)[
         0
     ]
@@ -188,20 +174,7 @@ def test_the_export_does_not_land_in_the_artifact_volume():
 
 
 def test_the_train_dataset_is_a_dataset_and_its_images_stay_pil():
-    """Two failures in one, both measured rather than guessed.
-
-    TRL 1.x rejects a plain list, which is what the notebook passes:
-
-        TypeError: `train_dataset` must be a `Dataset` or `IterableDataset`,
-        got `list`
-
-    And the obvious fix corrupts the data. `Dataset.from_list` Arrow-encodes a
-    nested PIL object into a `{bytes, path}` DICT on the way back out, so the
-    collator receives something that is not an image and nothing says so.
-
-    `with_transform` applies at access time, keeps the column's Image feature,
-    and still satisfies TRL's type check.
-    """
+    """Dataset.from_list turns PIL images into bytes dicts; `with_transform` keeps them as PIL images."""
     from datasets import Dataset as HFDataset
     from PIL import Image
 
@@ -236,16 +209,7 @@ def test_from_list_would_have_corrupted_the_images():
 
 
 def test_a_marker_that_matched_nothing_is_refused_rather_than_answered_no():
-    """Measured on `unsloth-probe-vision-train-r2-8ed253`, and it named the
-    wrong defect. PEFT calls these parameters `lora_B`, with a capital B; the
-    marker was matched against the raw name, so it matched none of the 864 of
-    them and summed to zero both before AND after. The run had trained
-    perfectly well -- loss 1.13 -> 0.56, a merged 4.3 GB export -- and the
-    report said the optimizer applied nothing.
-
-    Zero over zero tensors and zero over 864 tensors are opposite findings and
-    read identically, which is why the count is carried.
-    """
+    """A marker that matches no tensors must be refused; 0 over 0 and 0 over 864 read identically."""
     broken = vision_failures(
         _good(adapter_update = {"before": 0.0, "after": 0.0, "tensors": 0, "changed": False}),
         _args(),
@@ -268,7 +232,6 @@ def test_adapter_sum_finds_the_capital_b_peft_names():
 
     class _Stub:
         def named_parameters(self):
-            # The names PEFT actually emits, capitals and all.
             yield (
                 "base_model.model.visual.blocks.0.attn.qkv.lora_A.default.weight",
                 torch.ones(2, 2),
@@ -288,14 +251,7 @@ def test_adapter_sum_finds_the_capital_b_peft_names():
 
 
 def test_the_leg_actually_DRIVES_the_vision_run():
-    """The gap this closes was live for two rounds: `run_vision_t4.py` was in
-    the leg's `files` and nothing ever executed it, so Vision_FLA_compile
-    trained TEXT, asserted kernels, and shipped a payload it never ran.
-
-    A file that is copied and not run is the quietest kind of coverage there
-    is: every guard in this module passed, on a leg where the image path was
-    dead.
-    """
+    """Asserts the leg runs run_vision_t4.py: a file copied but never executed gives false coverage."""
     import sys as _sys
 
     _sys.path.insert(0, str(ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
@@ -335,10 +291,7 @@ def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]
-    # Whitespace-insensitive: the repo's formatter reflows this list to one
-    # argument per line, and a guard matching the unformatted spelling goes red
-    # on a reformat rather than on a regression. That has now happened twice in
-    # this payload, so it is worth doing by default.
+    # Whitespace-insensitive: the formatter reflows this list.
     flat = "".join(spawn.split())
     assert '"--max-steps","3",' in flat
     assert "args.max_steps" not in flat, "the text step count must not reach the vision run"

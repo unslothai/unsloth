@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import ast
+import builtins
 from math import sqrt
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,9 @@ def decoder(request):
         "torch_nn_functional_softmax": F.softmax,
         "scaled_dot_product_attention": F.scaled_dot_product_attention,
         "SDPA_HAS_GQA": True,
+        # The fused decode kernels are CUDA-only; on CPU they decline and the unfused path runs.
+        "decode_rope_inplace": lambda *args, **kwargs: False,
+        "decode_qk_norm_rope": lambda *args, **kwargs: None,
     }
     # The decode paths share llama.py's grouped KV helpers (qwen3 imports them from there).
     llama_source = source.with_name("llama.py")
@@ -71,6 +75,17 @@ def decoder(request):
         and node.name in ("_gqa_decode_scores", "_gqa_decode_values")
     ]
     exec(compile(ast.Module(body = helpers, type_ignores = []), str(llama_source), "exec"), namespace)
+    bound = {n.arg for n in ast.walk(function) if isinstance(n, ast.arg)}
+    bound |= {
+        n.id
+        for n in ast.walk(function)
+        if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
+    }
+    free = {
+        n.id for n in ast.walk(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    missing = sorted(free - bound - set(namespace) - set(dir(builtins)))
+    assert not missing, f"{name} now reads {missing}; give the harness a CPU stand-in for each"
     exec(compile(ast.Module(body = [function], type_ignores = []), str(source), "exec"), namespace)
     return namespace[name]
 

@@ -64,6 +64,7 @@ export function audioModelContextFor(
     audio_family?: string | null;
     audio_workflows?: readonly string[] | null;
     audio_required_inputs?: readonly string[] | null;
+    audio_request_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
     audio_convert?: AudioConvertCaps | null;
     audio_music?: unknown;
@@ -92,9 +93,23 @@ export function audioModelContextFor(
       REFERENCE_TEXT_MODES.has(referenceText)
         ? (referenceText as AudioReferenceTextMode)
         : null,
+    requestInputs: Array.isArray(status?.audio_request_inputs)
+      ? status.audio_request_inputs
+      : null,
     audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
     convert: convertCapsOf(status?.audio_convert),
   };
+}
+
+/** Whether the model reads one of these request inputs; unknown (null) counts as yes. */
+export function readsRequestInput(
+  ctx: Pick<AudioModelContext, "requestInputs">,
+  ...names: string[]
+): boolean {
+  return (
+    ctx.requestInputs == null ||
+    names.some((name) => ctx.requestInputs?.includes(name))
+  );
 }
 
 function convertCapsOf(value: unknown): AudioConvertCaps | null {

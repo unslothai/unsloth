@@ -88,9 +88,6 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       TooltipTrigger: Passthrough,
     },
     "@/components/ui/spinner": { Spinner: Nothing },
-    "./preview-store": {
-      useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
-    },
     "@/lib/chevron-icons": {},
     "@assistant-ui/react": {
       useAui: () => ({}),
@@ -104,6 +101,11 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       PENDING_CHAT_ATTACHMENT_KEY: "pending",
       readPendingAttachmentTargetClaim: () => null,
       useChatRuntimeStore,
+    },
+    "@/features/chat/stores/chat-preferences-store": {
+      useChatPreferencesStore: (
+        select: (s: { filesPanelCollapsed: boolean; setFilesPanelCollapsed: () => void }) => unknown,
+      ) => select({ filesPanelCollapsed: false, setFilesPanelCollapsed: () => {} }),
     },
     "@/features/chat/hooks/use-rag-tool-disabled": gate,
     "@/features/chat": chatStub,
@@ -147,6 +149,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },
+    "./rag-document-trigger": { RagDocumentTrigger: Passthrough },
     "./source-file": loadWithStubs(
       new URL("../src/features/rag/components/source-file.ts", import.meta.url),
       {
@@ -255,9 +258,8 @@ test("a linked folder's files collapse into one folder card", () => {
   }
 });
 
-// The source preview has text only for PDFs when opened without a chunk; other files open in the
-// attachment viewer, whatever their size, and a type it cannot draw is not offered at all.
-test("non-PDF cards open only when the attachment viewer can show them", () => {
+// Every indexed card opens: the browser, the attachment viewer or a new tab.
+test("indexed cards of any format open", () => {
   extraProjectDocs = [
     { id: "doc-2", filename: "notes.docx", status: "completed" },
     { id: "doc-3", filename: "book.epub", status: "completed" },
@@ -267,10 +269,10 @@ test("non-PDF cards open only when the attachment viewer can show them", () => {
       { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
       true,
     );
-    assert.match(html, /aria-label="Preview handbook\.pdf/);
-    assert.match(html, /aria-label="Preview notes\.docx/);
-    assert.doesNotMatch(html, /aria-label="Preview book\.epub/);
-    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
+    for (const name of ["handbook\\.pdf", "notes\\.docx", "book\\.epub"]) {
+      assert.match(html, new RegExp(`aria-label="Preview ${name}`));
+    }
+    assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
   } finally {
     extraProjectDocs = [];
   }

@@ -67,8 +67,6 @@ def _forwarded(tmp_path, **env_extra):
 def test_the_hub_pages_still_have_a_variable_table():
     assert len(DOCUMENTED) >= 10, DOCUMENTED
     assert "UNSLOTH_SKIP_GPU_CHECK" in ROCM_DOCUMENTED, ROCM_DOCUMENTED
-    # named one by one: a row reformatted out of the parser's reach would otherwise
-    # drop that variable's case silently, and the suite would still report all green
     for name in (
         "JUPYTER_PORT",
         "UNSLOTH_SKIP_NOTEBOOK_SYNC",

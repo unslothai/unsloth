@@ -173,12 +173,7 @@ def _component_body(tsx: str, name: str) -> str | None:
 
 
 def _assistant_bar_source(tsx: str) -> str:
-    """AssistantActionBar and every thread.tsx component it renders, transitively.
-
-    The scene acts on the last ASSISTANT message, so a control only counts if the assistant bar
-    renders it: `More` and `Delete` also exist in the user message's menu and as reusable
-    components, and a whole-file search would still find them after the assistant bar dropped them.
-    """
+    """Collects only what AssistantActionBar renders; a whole-file search would find the user's More too."""
     seen: dict[str, str] = {}
     queue = ["AssistantActionBar"]
     while queue:
@@ -204,8 +199,7 @@ def test_every_control_the_scene_asks_for_is_still_rendered():
         "Delete",
     } <= buttons, "parsed fewer control names than the scene uses; this check would pass on nothing"
     tooltips = set(re.findall(r"tooltip=\"([^\"]+)\"", tsx))
-    # An item's label is its last line of text before the closing tag. Its attributes can hold
-    # arrow functions, so the opening tag cannot be skipped with a `[^>]*` match.
+    # Attributes can hold arrow functions, so the opening tag cannot be skipped with [^>]*.
     rendered_items = set()
     for body in re.findall(
         r"<ActionBarMorePrimitive\.Item\b([\s\S]*?)</ActionBarMorePrimitive\.Item>", tsx

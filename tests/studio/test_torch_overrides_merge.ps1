@@ -1,17 +1,13 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
-# _build_unsloth_torch_overrides. It folds a caller's UV_OVERRIDE file into the frozen torch-trio
-# pins without corrupting it: non-ASCII lines must survive, and every relative reference must come
-# across REBASED, since uv resolves them against the file that contains them.
+# Tests New-UnslothTorchOverridesFile: non-ASCII lines survive and relative refs are rebased.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
 $ErrorActionPreference = "Stop"
 $installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1")
 $installPath = (Resolve-Path $installPath).Path
 
-# Parse install.ps1 (also a syntax gate) and extract the helper.
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
@@ -40,7 +36,6 @@ function Check($name, $cond) {
 # The helper reads $SkipTorch from its enclosing scope.
 $SkipTorch = $false
 
-# Stand-in interpreter: the helper only runs `& $PythonExe -c` and reads `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $onWindows = -not ($IsLinux -or $IsMacOS)
@@ -61,7 +56,7 @@ if ($onWindows) {
     & chmod +x $fakePy
 }
 
-$acute = [char]0x00E9   # e-acute, the cheapest non-ASCII requirement character
+$acute = [char]0x00E9
 $savedOverride = $env:UV_OVERRIDE
 $made = @()
 
@@ -89,7 +84,6 @@ try {
         ($mergedText -notmatch '(?m)^\s*-r\s')
     Check "and its contents come across instead" ($mergedText -match '(?m)^idna==3\.6$')
 
-    # Guards on the behaviour that already worked, so the fix cannot regress it.
     Check "frozen torch trio is pinned first" ($mergedText -match '^torch==2\.11\.0\+cu130')
     Check "caller's torch-trio lines are dropped" `
         ($mergedText -notmatch '(?m)^torch==1\.0$' -and $mergedText -notmatch '(?m)^torchvision==0\.1$')
@@ -115,14 +109,12 @@ try {
     Check "returns null under --no-torch" ($null -eq (New-UnslothTorchOverridesFile -PythonExe $fakePy))
     $SkipTorch = $false
 
-    # ── a temp path with a space never reaches uv (#10722) ────────────────────────
     # UV_OVERRIDE is space-separated itself, so only %TEMP% can hand the helper a spaced path.
     if ($onWindows) {
         $spacedTemp = Join-Path $work "John Doe"
         New-Item -ItemType Directory -Path $spacedTemp -Force | Out-Null
         $dirShort = $null
         try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($spacedTemp).ShortPath } catch { }
-        # Captures the no-8.3 warning.
         $script:substepCalls = @()
         function substep { param($Message, $Color) $script:substepCalls += $Message }
         Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
@@ -144,10 +136,7 @@ try {
         Write-Host "  SKIP  spaced-path checks need Windows 8.3 names"
     }
 
-    # ── the merged copy is tracked and locked down ────────────────────────────────
-    # The caller's non-torch lines land in this copy, one of which can be an authenticated URL.
-    # Three Windows-only hazards, so each is asserted behaviourally where it can be and
-    # structurally from the AST, which runs everywhere.
+    # The merged copy can hold an authenticated URL, so it must be tracked and locked down.
 
     $env:UV_OVERRIDE = $callerOv
     $script:TorchOverridesFile = $null
@@ -160,18 +149,13 @@ try {
     $iWrite = $src.IndexOf('[System.IO.File]::WriteAllText(')
     Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
     Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-UnslothTempFileQuietly -Path \$f')
-    # Space-free is not sufficient for an 8.3 alias: a volume can hand back a name that does not
-    # resolve, and this alias is both uv's --overrides argument and the caller's delete target, so
-    # an unresolvable one fails the install and then throws on the way out (#11290).
+    # An unresolvable 8.3 alias fails the install and then throws during cleanup.
     Check "the 8.3 alias is accepted only once it resolves" (
         $src -match 'Test-Path -LiteralPath \$short -PathType Leaf')
     Check "the give-up branch clears the path it just deleted" (
         ([regex]::Matches($src, '\$script:TorchOverridesFile = \$null')).Count -eq 2)
 
-    # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
-    # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
-    # even unfixed; the assertion holding the fix in place is the one on the reader.
-    # The reading moved into Get-WoaRequirementEntries; the non-ASCII check above holds it.
+    # PS 5.1 decodes BOM-less files as ANSI; pwsh on Linux cannot reproduce it, so check the reader.
     $scanSrc = ($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -eq "Get-WoaRequirementEntries"

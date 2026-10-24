@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An expected disagreement must not block a leg, and must not outlive itself.
-
-Batched greedy generation on `unsloth/gemma-4-E2B-it` and `unsloth/Qwen3.5-2B`
-disagrees at sizes 2, 4 and 8 with real left padding and demonstrably distinct
-prompt lengths, on both repeats, on a current stack. Per unsloth #9708 that is
-bf16 rounding that depends on batch shape, reproduced with plain transformers
-and gone in float32, so there is no fix coming from anywhere. Leaving it as a
-hard failure means those two legs put a red in front of every PR for a
-property no reader can act on, which is how a check gets switched off.
-
-So the entry is a STRICT expectation rather than a mute, and the difference is
-the whole point of this file. A model listed as broken that starts AGREEING
-FAILS, with a message saying to delete the entry. An excuse that can only ever
-excuse is indistinguishable from deleted coverage, and it outlives the bug it
-was written for by years.
-
-Everything else stays live for those models. The padding side, the distinct
-lengths, the empty-output check and the batch-size floor are what make the
-disagreement a real finding rather than an unpadded batch, and none of them is
-touched by the entry.
-"""
+"""Known-broken entries are strict: a model that starts agreeing fails, so the excuse expires."""
 
 from __future__ import annotations
 

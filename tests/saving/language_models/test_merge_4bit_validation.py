@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -214,7 +213,6 @@ try:
     model_4bit.save_pretrained_merged(
         save_directory = "./test_should_fail",
         tokenizer = tokenizer_4bit,
-        # No save_method specified, should default to regular merge
     )
     assert False, "Expected TypeError but merge succeeded!"
 except TypeError as e:

@@ -8,12 +8,21 @@ import { resolve as browserStoreResolve } from "./browser-store-resolver.mjs";
 const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true });
 
 const STUBS = {
-  "../page-frame": "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);",
-  "../capture": "export const screenshotPage = async () => null;",
-  "../native-view": "export const hasNativeView = () => false; export const nativeAction = () => {};",
+  "../page-frame":
+    "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);" +
+    " export const sendFrameCommand = (tabId, command) => globalThis.__frameCommand?.(tabId, command) ?? false;",
+  "../capture": "export const screenshotPage = async () => null; export const captureHiddenPage = async () => null;",
+  // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
+  "../native-view":
+    "export const hasNativeView = () => globalThis.__native === true; export const nativeAction = () => {};" +
+    " export const keepInBackground = (tabId) => globalThis.__keep?.(tabId);" +
+    " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);" +
+    " export const whenViewOpen = async () => true;",
   "../native-support":
-    "export const useNativeBrowser = { getState: () => ({ enabled: false }) }; export const callNative = async () => null;",
-  "../panel-availability": "export const browserPanelAvailable = () => true;",
+    "export const useNativeBrowser = { getState: () => ({ enabled: globalThis.__native === true }) };" +
+    " export const callNative = async (command, args) => (globalThis.__callNative ? globalThis.__callNative(command, args) : null);" +
+    " export const localOriginGranted = (tabId, url) => globalThis.__granted?.get(tabId) === new URL(url).origin;",
+  "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
 };
 

@@ -20,13 +20,22 @@ export function sentAttachmentLayout(
 }
 
 export function composerAttachmentsOverflow(
-  count: number,
+  cardWidths: readonly number[],
   width: number,
-  cardWidth: number,
   gap: number,
+  maxRows: number = COMPOSER_ATTACHMENT_MAX_ROWS,
 ): boolean {
-  if (count === 0 || cardWidth <= 0) return false;
-  // Cards sized to a fifth of the row divide it exactly; the slack absorbs subpixel rounding.
-  const perRow = Math.max(1, Math.floor((width + gap) / (cardWidth + gap) + 0.01));
-  return Math.ceil(count / perRow) > COMPOSER_ATTACHMENT_MAX_ROWS;
+  // Wraps as flex-wrap does; the slack absorbs subpixel rounding of cards that divide the row exactly.
+  let rows = 1;
+  let used = 0;
+  for (const card of cardWidths) {
+    if (card <= 0) continue;
+    if (used > 0 && used + gap + card > width + 0.5) {
+      rows += 1;
+      used = card;
+    } else {
+      used += (used > 0 ? gap : 0) + card;
+    }
+  }
+  return rows > maxRows;
 }

@@ -10,6 +10,8 @@ import {
 import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
+import { drafterRequestFrom } from "./drafter-config";
+import { effectiveTrainingObjective } from "./rl-roles";
 
 const EXPECTED_TOP_KEYS = new Set([
   "training",
@@ -100,6 +102,7 @@ export function serializeConfigToYaml(
     max_steps: state.maxSteps,
     save_steps: state.saveSteps,
     eval_steps: state.evalSteps,
+    early_stopping_patience: state.earlyStoppingPatience,
     weight_decay: state.weightDecay,
     random_seed: state.randomSeed,
     packing: state.packing,
@@ -112,6 +115,10 @@ export function serializeConfigToYaml(
     optim: state.optimizerType,
     lr_scheduler_type: state.lrSchedulerType,
   };
+  // Only when on, so a file exported without the feature reads exactly as before.
+  if (state.drafterEnabled) {
+    training.drafter = drafterRequestFrom(state);
+  }
 
   if (includeVisionImageSize) {
     training.vision_image_size = state.visionImageSize;
@@ -130,13 +137,14 @@ export function serializeConfigToYaml(
     },
   };
 
-  // SFT files stay exactly as before; the section only appears for RL objectives.
-  if (state.trainingObjective !== "sft") {
+  // What the run would train: a model that forces SFT exports no RL section.
+  const objective = effectiveTrainingObjective(state);
+  if (objective !== "sft") {
     config.rl = {
-      objective: state.trainingObjective,
+      objective,
       beta: state.rlBeta,
       max_prompt_length: state.rlMaxPromptLength,
-      ...(state.trainingObjective === "grpo"
+      ...(objective === "grpo"
         ? {
             variant: state.grpoVariant,
             num_generations: state.grpoNumGenerations,
@@ -179,7 +187,23 @@ const numOrNull = (v: unknown): number | null | undefined =>
  * fields with the wrong type are dropped so the current value stays. */
 export function parseYamlRlSettings(text: string): YamlRlSettings {
   const parsed = yaml.load(text) as Record<string, unknown> | null;
-  const rl = parsed?.rl;
+  return parseRlSection(parsed?.rl);
+}
+
+/** A saved run's objective and RL settings. The stored config keeps them as `objective`,
+ * `rl_settings` (the same keys as the YAML rl section) and `reward_specs`. */
+export function parseRunConfigRlSettings(
+  config: Record<string, unknown>,
+): YamlRlSettings {
+  const settings = config.rl_settings;
+  return parseRlSection({
+    ...(settings !== null && typeof settings === "object" ? settings : {}),
+    objective: config.objective,
+    rewards: config.reward_specs,
+  });
+}
+
+function parseRlSection(rl: unknown): YamlRlSettings {
   if (rl == null || typeof rl !== "object" || Array.isArray(rl)) {
     return { trainingObjective: "sft" };
   }
@@ -197,8 +221,19 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
       out[key] = value;
     }
   };
-  set("rlBeta", numOrNull(r.beta));
-  set("rlMaxPromptLength", numOrNull(r.max_prompt_length));
+  // Out-of-range values are dropped, matching the backend's TrainingStartRequest bounds.
+  const inRange = (v: unknown, lo: number, hi: number, loOpen = false) => {
+    const n = numOrNull(v);
+    return n == null || (n <= hi && (loOpen ? n > lo : n >= lo))
+      ? n
+      : undefined;
+  };
+  set("rlBeta", inRange(r.beta, 0, 10));
+  const intInRange = (v: unknown, lo: number, hi: number) => {
+    const n = inRange(v, lo, hi);
+    return n == null || Number.isInteger(n) ? n : undefined;
+  };
+  set("rlMaxPromptLength", intInRange(r.max_prompt_length, 16, Infinity));
   if (objective !== "grpo") {
     return out;
   }
@@ -206,13 +241,18 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
     "grpoVariant",
     GRPO_VARIANTS.find((v) => v === r.variant),
   );
+  set("grpoNumGenerations", intInRange(r.num_generations, 2, 16) ?? undefined);
   set(
-    "grpoNumGenerations",
-    isNum(r.num_generations) ? r.num_generations : undefined,
+    "grpoMaxCompletionLength",
+    intInRange(r.max_completion_length, 16, Infinity),
   );
-  set("grpoMaxCompletionLength", numOrNull(r.max_completion_length));
-  set("grpoTemperature", isNum(r.temperature) ? r.temperature : undefined);
-  set("grpoEpsilonHigh", numOrNull(r.epsilon_high));
+  set(
+    "grpoTemperature",
+    isNum(r.temperature) && r.temperature > 0 && r.temperature <= 2
+      ? r.temperature
+      : undefined,
+  );
+  set("grpoEpsilonHigh", inRange(r.epsilon_high, 0, 1, true));
   if (typeof r.mask_truncated_completions === "boolean") {
     out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
   }
@@ -221,12 +261,22 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
   }
   if (typeof r.system_prompt === "string") {
     out.grpoSystemPrompt = r.system_prompt;
+  } else if (r.system_prompt === null) {
+    out.grpoSystemPrompt = "";
   }
   if (Array.isArray(r.rewards)) {
     out.grpoRewards = r.rewards.flatMap((item) => {
       const x = item as Record<string, unknown> | null;
       return x && typeof x.name === "string" && x.name
-        ? [{ name: x.name, weight: isNum(x.weight) ? x.weight : 1 }]
+        ? [
+            {
+              name: x.name,
+              weight:
+                isNum(x.weight) && x.weight >= -10 && x.weight <= 10
+                  ? x.weight
+                  : 1,
+            },
+          ]
         : [];
     });
   }

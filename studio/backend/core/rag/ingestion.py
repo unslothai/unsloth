@@ -403,7 +403,7 @@ def _run(
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
-            max_tokens = config.CHUNK_TOKENS,
+            max_tokens = embeddings.chunk_tokens(model_name),
             overlap = config.CHUNK_OVERLAP,
             count = count,
         )

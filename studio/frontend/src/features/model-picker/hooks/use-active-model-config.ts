@@ -30,6 +30,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engineGpuMemoryUtilization = useChatRuntimeStore(
     (s) => s.params.engineGpuMemoryUtilization ?? null,
   );
+  const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -40,6 +41,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
+  const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
+  const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -86,11 +89,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     activeNativePathToken,
     checkpoint,
   });
-  const platform = usePlatformStore();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const isMlx = residentIsServedByMlx(
     isGguf,
-    platform.deviceType,
-    platform.chatOnlyReason,
+    deviceType,
+    chatOnlyReason,
     loadedIsMlx,
   );
 
@@ -98,6 +102,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   // over a field it cannot show.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
   const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
+  const effectiveMlxPleOffload = isMlx ? (mlxPleOffload ?? null) : null;
+  const effectiveMlxExpertOffload = isMlx ? (mlxExpertOffload ?? null) : null;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -115,6 +121,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       mlxInt8Prefill: effectiveMlxInt8Prefill,
+      mlxPleOffload: effectiveMlxPleOffload,
+      mlxExpertOffload: effectiveMlxExpertOffload,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -129,6 +137,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf || isMlx ? {} : { loadIn4bit }),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
@@ -166,10 +175,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engineKvCacheDtype,
     engineSeed,
     engineGpuMemoryUtilization,
+    loadIn4bit,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
     effectiveMlxInt8Prefill,
+    effectiveMlxPleOffload,
+    effectiveMlxExpertOffload,
     speculativeType,
     specDraftNMax,
     nParallel,

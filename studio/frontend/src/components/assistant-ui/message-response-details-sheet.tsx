@@ -109,6 +109,8 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   terminal: "Terminal",
   edit_file: "Edit",
   image_generation: "Images",
+  generate_image: "Images",
+  generate_video: "Video",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
 };
@@ -129,7 +131,13 @@ function toolCategoryFromCall(toolName: string): string | null {
   ) {
     return "code";
   }
-  if (normalized === "image_generation") return "images";
+  if (
+    normalized === "image_generation" ||
+    normalized === "generate_image" ||
+    normalized === "generate_video"
+  ) {
+    return "images";
+  }
   if (normalized === "search_knowledge_base") return "docs";
   if (normalized === "render_html") return "artifacts";
   if (normalized.startsWith("mcp__")) return "mcp";
@@ -222,7 +230,7 @@ function DetailSection({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-md bg-muted/45 p-3">
+    <section className="rounded-lg bg-muted/45 p-3">
       <h3 className="mb-2 font-heading text-foreground text-sm">{title}</h3>
       <div className="grid gap-2">{children}</div>
     </section>
@@ -422,7 +430,7 @@ const MessageResponseDetailsSheetContent: FC<{
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          <div className="min-w-0 rounded-md border border-border/70 bg-card p-3">
+          <div className="min-w-0 rounded-lg border border-border/70 bg-card p-3">
             <p className="min-w-0 break-words font-heading text-foreground text-sm">
               {summaryLabel}
             </p>

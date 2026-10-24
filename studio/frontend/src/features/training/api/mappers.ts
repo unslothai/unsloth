@@ -5,7 +5,9 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import { effectiveTrainingObjective } from "../lib/rl-roles";
 import type { SystemInfoResponse } from "@/hooks/use-system";
+import { drafterEligible, drafterRequestFrom } from "../lib/drafter-config";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -16,6 +18,12 @@ function parseSliceValue(value: string | null): number | null {
   const num = Number(trimmed);
   if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) return null;
   return num;
+}
+
+// The backend takes a whole number in [0, 1000]; a half-typed or out-of-range field must not 422 the Start.
+function normalizeEarlyStoppingPatience(value: number): number {
+  if (!Number.isFinite(value) || value < 1) return 0;
+  return Math.min(Math.floor(value), 1000);
 }
 
 function buildS3PayloadConfig(config: TrainingConfigState) {
@@ -192,8 +200,11 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
-  const objective = isCpt || isDecision ? "sft" : config.trainingObjective;
+  const objective =
+    isCpt || isDecision ? "sft" : effectiveTrainingObjective(config);
   const isRl = objective !== "sft";
+  // SFT-only toggles keep their stored value while RL is selected; the payload drops them.
+  const datasetStreaming = !isRl && config.datasetStreaming;
   // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
   const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;
   const customFormatMapping: Record<string, unknown> | undefined =
@@ -234,14 +245,13 @@ export function buildTrainingStartPayload(
       config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     dataset_known_cached:
-      hfDataset && !config.datasetStreaming ? config.datasetKnownCached : false,
+      hfDataset && !datasetStreaming ? config.datasetKnownCached : false,
     dataset_local_path:
-      hfDataset && !config.datasetStreaming ? config.datasetLocalPath : null,
+      hfDataset && !datasetStreaming ? config.datasetLocalPath : null,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_streaming:
-      hfDataset && !isDecision ? config.datasetStreaming : false,
+    dataset_streaming: hfDataset && !isDecision ? datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -265,13 +275,17 @@ export function buildTrainingStartPayload(
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
+    early_stopping_patience:
+      config.evalSteps > 0 && !isDecision && !isEmbedding
+        ? normalizeEarlyStoppingPatience(config.earlyStoppingPatience)
+        : 0,
     weight_decay: config.weightDecay,
     // max_grad_norm omitted on purpose: the backend now honors an explicit value,
     // so hardcoding 0 here would pin every UI run to "clipping off" and override
     // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
-    packing: isEmbedding || isDecision ? false : config.packing,
+    packing: isEmbedding || isDecision || isRl ? false : config.packing,
     // Laya's recipe needs torch AdamW; Clef keeps its recipe's (8-bit) optimizer.
     optim:
       isDecision && config.decisionLayout !== "clef"
@@ -296,14 +310,14 @@ export function buildTrainingStartPayload(
     objective,
     rl_beta: isRl ? config.rlBeta : null,
     rl_max_prompt_length: isRl ? config.rlMaxPromptLength : null,
-    grpo_num_generations: config.grpoNumGenerations,
+    grpo_num_generations: objective === "grpo" ? config.grpoNumGenerations : 4,
     grpo_max_completion_length:
       objective === "grpo" ? config.grpoMaxCompletionLength : null,
-    grpo_temperature: config.grpoTemperature,
+    grpo_temperature: objective === "grpo" ? config.grpoTemperature : 1,
     rl_system_prompt:
       objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
-    grpo_enable_thinking: config.grpoEnableThinking,
-    grpo_variant: config.grpoVariant,
+    grpo_enable_thinking: objective === "grpo" && config.grpoEnableThinking,
+    grpo_variant: objective === "grpo" ? config.grpoVariant : "dapo",
     grpo_mask_truncated_completions:
       objective === "grpo" && config.grpoMaskTruncatedCompletions,
     grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,
@@ -313,7 +327,8 @@ export function buildTrainingStartPayload(
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
-    is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
+    // The decision trainer reads its rows itself; this flag selects the chat audio path.
+    is_dataset_audio: isEmbedding || isDecision ? false : config.isDatasetAudio,
     is_embedding: isEmbedding && !isDecision,
     is_decision: isDecision,
     model_subfolder: isDecision ? config.modelSubfolder : null,
@@ -326,5 +341,30 @@ export function buildTrainingStartPayload(
     tensorboard_dir: config.enableTensorboard
       ? config.tensorboardDir.trim() || null
       : null,
+    // Spread only when sent: a run without a drafter posts exactly the fields it did before.
+    ...(sendsDrafter(config, system)
+      ? { drafter: drafterRequestFrom(config) }
+      : {}),
   };
+}
+
+/** On, a run type with a drafter phase, not MLX, and not a model the backend said cannot train one.
+ * A capability check still pending (or for a previous model) sends it: the backend re-checks the
+ * model before the drafter phase and reports a warning instead of dropping the request silently. */
+export function sendsDrafter(
+  config: TrainingConfigState,
+  system: SystemInfoResponse | null = null,
+): boolean {
+  const capability = config.drafterCapability;
+  const refused =
+    capability !== null &&
+    capability.model_name === config.selectedModel &&
+    !capability.supported &&
+    !capability.inconclusive;
+  return (
+    config.drafterEnabled &&
+    drafterEligible(config) &&
+    system?.device_backend !== "mlx" &&
+    !refused
+  );
 }

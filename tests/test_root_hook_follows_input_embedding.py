@@ -17,7 +17,6 @@ class _RemoteModel(SimpleNamespace):
     pass
 
 
-# The Teacher's model class comes from the checkpoint's own modeling file.
 _RemoteModel.__module__ = "transformers_modules.teacher.modeling_nemotron_h"
 
 

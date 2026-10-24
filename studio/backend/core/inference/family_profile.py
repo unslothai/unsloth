@@ -70,6 +70,10 @@ class FamilyProfile:
     # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
     # lever). Baked into published int8 artifacts.
     int8_exclude_tokens: tuple[str, ...] = ()
+    # Name tokens left dense for EVERY transformer-quant scheme (int8 / fp8 / mxfp8 / nvfp4), on top of the int8
+    # tokens above. For layers whose quantisation error is measured to dominate the image delta regardless of the
+    # scheme (FLUX.3: per-token modulations, the 20480-wide text projection, the text-stream per-mode blocks).
+    quant_exclude_tokens: tuple[str, ...] = ()
     # int8 name tokens whose small-M Linears get activation rows PADDED to the ``_int_mm`` floor instead of excluded.
     int8_pad_tokens: tuple[str, ...] = ()
     int8_convrot: Optional[ConvRotSpec] = None
@@ -81,8 +85,12 @@ class FamilyProfile:
     # Extra schemes denied for TRAINING on top of ``scheme_deny`` (nvfp4 is denied for training everywhere).
     train_scheme_deny: frozenset[str] = frozenset()
     auto_prefer: Optional[AutoPrefer] = None
+    # Schemes ``auto`` skips for this family (explicit requests still allowed).
+    auto_scheme_skip: frozenset[str] = frozenset()
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
+    # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
+    auto_prequant_when_resident: frozenset[str] = frozenset()
     # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) decoder blocks; None = int8 falls back to fp8.
     te_int8_skip: Optional[tuple[int, int]] = None
     untiled_vae: Optional[UntiledVae] = None
