@@ -408,10 +408,8 @@ def _unsloth_dataset_column_names(dataset):
 
 
 def _unsloth_non_blocking_batches(self):
-    """Copy pinned batches to the GPU with non_blocking=True. accelerate's default blocking .to(device)
-    drains the stream once per batch tensor per step (3 to 4 syncs a step for input_ids, labels,
-    attention_mask / position_ids / packed_seq_lengths). The copy stays stream-ordered and the pinned
-    block is held until it lands, so numerics are unchanged. UNSLOTH_NON_BLOCKING_BATCHES=0 opts out."""
+    """Copy pinned batches with non_blocking=True; accelerate's blocking .to() syncs once per batch
+    tensor. Stream-ordered, so numerics are unchanged. UNSLOTH_NON_BLOCKING_BATCHES=0 opts out."""
     import os
 
     if os.environ.get("UNSLOTH_NON_BLOCKING_BATCHES", "1") == "0":
@@ -421,7 +419,6 @@ def _unsloth_non_blocking_batches(self):
     config = getattr(accelerator, "dataloader_config", None)
     if args is None or config is None or not hasattr(config, "non_blocking"):
         return False
-    # Pageable memory gains nothing from non_blocking; pinning is what makes the copy asynchronous.
     if not getattr(args, "dataloader_pin_memory", False) or config.non_blocking:
         return False
     try:

@@ -53,8 +53,7 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
-# Host copy of the latest packed lengths per device: (lengths, cu_seqlens, host tuple), so mask builders
-# and cover_padded_cu_seqlens reuse the single D2H read get_packed_info_from_kwargs made
+# Per device: (lengths, cu_seqlens, host tuple) from the one D2H read in get_packed_info_from_kwargs
 _PACKED_HOST_LENGTHS_CACHE: dict = {}
 
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
@@ -1718,8 +1717,7 @@ def get_packed_info_from_kwargs(
         and seq_lengths.device.type == "cpu"
         and torch.device(device).type == "cuda"
     ):
-        # Host lengths: build the metadata on the host and send it in ONE pinned non_blocking copy.
-        # A pageable copy drains the stream, and lengths.max().item() would read it straight back.
+        # One pinned non_blocking H2D copy; pageable copies and .item() both drain the stream.
         staged, host = _stage_packed_metadata(seq_lengths)
         n = len(host)
         moved = staged.pin_memory().to(device = device, non_blocking = True)
@@ -1728,7 +1726,7 @@ def get_packed_info_from_kwargs(
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
         cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
-        # The one D2H read per batch: max, total and the segment lengths the mask builders need.
+        # The one D2H read per batch.
         host = tuple(lengths.tolist())
 
     max_seqlen = max(host)

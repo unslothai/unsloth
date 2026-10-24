@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Packed metadata computed on the host (one D2H read per batch, one pinned H2D copy) must equal the
-values the old per-call device reads produced, bit for bit, and the per-step paths must not sync."""
+"""Host-built packed metadata must match the old device reads bit for bit, without per-step syncs."""
 
 import math
 import warnings

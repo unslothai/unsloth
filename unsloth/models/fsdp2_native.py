@@ -1645,8 +1645,7 @@ def native_clip_grad_norm_(
             else:
                 # complex grads give real norms; every rank must gather the same dtype.
                 norm_dtype = dtype.to_real() if dtype.is_complex else dtype
-                # Interleave the norms with one shared identity scalar on the host side: indexing
-                # values with torch.tensor(live, device = cuda) was a blocking H2D copy per step.
+                # Host-side interleave: torch.tensor(live, device = cuda) was a blocking H2D copy per step.
                 fill = torch.full((), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype)
                 slots = [fill] * len(idx)
                 for k, n in zip(live, norms):
