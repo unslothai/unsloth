@@ -1274,6 +1274,69 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
     assert handle.stats["length_eager"] == 3
 
 
+def _planned_len_handle(stub_torch, monkeypatch):
+    """A Qwen-Image-2.1-like planned handle on the stub: every new prompt length after the first warms one step."""
+    import contextlib
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImage21Transformer2DModel"))
+    orig = handle.orig
+    handle.plan = lambda mod, args, kwargs: (orig, {"hidden_states": args[0], **kwargs})
+    monkeypatch.setattr(_FakeTensor, "is_inference", lambda self: False, raising = False)
+    monkeypatch.setattr(
+        stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
+    )
+    # A planned re-capture records without the cache flush; the stub records it as any capture.
+    monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
+    return handle
+
+
+def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_torch, monkeypatch):
+    """Qwen-Image-2.1's planned step: the positive key records first, so the negative is still in its warm-up when the
+    positive replays (which seals the scope). That warmed key still records; a later new length does not."""
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    for _ in range(2):
+        _render(handle, 3, steps = 4)
+        cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    assert handle.stats["captures"] == 2 and handle.stats["shape_warmups"] == 1
+    assert handle.stats["length_eager"] == 0
+    assert handle.stats["replays"] == 2 * 4 * 2 - 1
+    _render(handle, 15, steps = 2, negative_len = 3)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 2
+
+
+def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    """A length warmed before reset() (new weights) is not one of the scope's new first render: once that render
+    sealed the scope, it runs ungraphed like any other new length."""
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)  # the negative warms, then the weights change before it records
+    assert handle.stats["captures"] == 1 and handle.stats["shape_warmups"] == 1
+    handle.reset()
+    for i in range(3):
+        _step(handle, 3, value = float(i))
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    captures = handle.stats["captures"]
+    for i in range(3):
+        _step(handle, 7, value = float(i))
+    assert handle.stats["captures"] == captures
+    assert handle.stats["length_eager"] == 3
+
+
+def test_a_warmup_from_an_earlier_render_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    """The warm-up window closes when its render ends: a length that only warmed on a render that sealed the scope
+    does not record on a later one."""
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)  # a one-step render: the negative only warms
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    _render(handle, 3, steps = 2)
+    assert handle.stats["captures"] == 1 and handle.stats["length_eager"] == 2
+
+
 def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("ZImageTransformer2DModel"))
@@ -1622,6 +1685,44 @@ def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(mon
             got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
         assert seen == [True]
         assert torch.equal(got, hidden + txt.mean())
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_eager_as_recorded_retries_on_the_originals_when_the_step_beside_the_copies_does_not_fit():
+    """The copies fit but the step does not fit beside them (a near-capacity resident model): free the copies and run
+    the step on the caller's tensors, which it fitted beside before, instead of failing the render."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+    import weakref
+
+    seen: list = []
+    copy_refs: list = []
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            return_dict = True,
+        ):
+            inference = encoder_hidden_states.is_inference()
+            seen.append((inference, all(r() is None for r in copy_refs)))
+            if not inference:
+                copy_refs.append(weakref.ref(encoder_hidden_states))
+                raise torch.cuda.OutOfMemoryError("no room beside the copies")
+            return (hidden_states + encoder_hidden_states.mean(),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+    try:
+        with torch.inference_mode():
+            hidden, txt = torch.randn(1, 4, 8), torch.randn(1, 3, 8)
+            got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
+        # The copy first, then the originals with the copy already freed.
+        assert seen == [(False, True), (True, True)]
+        assert torch.equal(got, hidden + txt.mean())
+        assert handle.stats["eager_calls"] == 1
     finally:
         cg.uninstall_all([handle])
 
