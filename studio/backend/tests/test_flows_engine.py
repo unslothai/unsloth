@@ -567,8 +567,7 @@ async def test_an_error_outside_a_handler_fails_the_run():
 
 @run_async
 async def test_a_cancelled_invoke_stops_its_model_call_through_the_cancel_hooks():
-    # The player dropping a request (the sim pausing for a conversation) cancels the invoke: the model call's
-    # cancel hook must run, or llama-server keeps generating and holds the GPU in front of the player's reply.
+    # A dropped invoke must run the model call's cancel hook, or llama-server keeps generating.
     started = asyncio.Event()
     stopped = []
 

@@ -37,8 +37,7 @@ RECALL_K = 8
 # Village memories are short and repeat across calls, so vectors stay here instead of in every save and request.
 _VECTORS: "OrderedDict[str, list[float]]" = OrderedDict()
 _VECTORS_MAX = 20000
-# A live reply waits at most this long for the embedder; past it, this turn ranks memories by keywords and the vectors
-# land in the cache for the next turn (a busy CPU embedder can take seconds, and the player is waiting).
+# A live reply waits at most this long for the embedder; past it, memories rank by keywords and the vectors are cached.
 REPLY_RECALL_BUDGET_S = 0.6
 
 WORLD_SYSTEM = """You design a tiny cozy top-down RPG world.
@@ -255,7 +254,7 @@ async def _recall(
             ctx.log("Memories ranked by keywords this turn: the embedding model was slow to answer")
         if vectors:
             query_vec = vectors[0]
-            keep(pending)  # its done callback may not have run yet
+            keep(pending)
             for r in stream["records"]:
                 vec = _VECTORS.get(r["text"])
                 if vec is not None and len(vec) == len(query_vec):

@@ -731,8 +731,7 @@ class FlowEngine:
             try:
                 await asyncio.wait({scope})
             except asyncio.CancelledError:
-                # The caller left (a player that walked away, or the sim paused for a conversation): stop the
-                # model call through its hooks while they are registered, so it does not hold the GPU.
+                # The caller left: stop the model call through its hooks while they are registered.
                 rs.cancel_event.set()
                 await asyncio.shield(self._fire_cancel_hooks(rs))
                 scope.cancel()
