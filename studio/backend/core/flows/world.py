@@ -443,7 +443,13 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
     text = re.sub(r"\s+", " ", str(raw.get("text") or "")).strip()[:1200] or "..."
     out: dict[str, Any] = {"text": text}
     give = str(raw.get("give_item") or "").strip()
-    if give in item_ids and give not in inventory:
+    # A giver never hands over the item their own open quest asks the player to find.
+    wanted = {
+        q.get("requires_item")
+        for q in world.get("quests") or []
+        if q["giver"] == npc["id"] and q["id"] not in done
+    }
+    if give in item_ids and give not in inventory and give not in wanted:
         out["give_item"] = give
     take = str(raw.get("take_item") or "").strip()
     if take in inventory:

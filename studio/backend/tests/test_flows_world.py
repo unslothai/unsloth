@@ -126,6 +126,8 @@ def test_npc_reply_validation_only_allows_known_effects():
     assert "complete_quest" not in validate_npc_reply(
         {"text": "x"}, _state(npc_id = "baker_bea", inventory = ["rod"])
     )
+    # Nor can the giver hand over the very item their quest asks for, which would complete it on the next line.
+    assert "give_item" not in validate_npc_reply({"text": "Here.", "give_item": "rod"}, _state())
     assert "give_item" not in validate_npc_reply(
         {"text": "x", "give_item": "pie"}, _state(inventory = ["pie"])
     )
