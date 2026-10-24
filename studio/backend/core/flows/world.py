@@ -213,7 +213,65 @@ def normalize_world(
     sim = _simulation(raw.get("simulation"), width, height, regions)
     if sim is not None:
         world["simulation"] = sim
+    if raw.get("render") in ("2d", "3d"):
+        world["render"] = raw["render"]
+    view = _view3d(raw.get("view3d"))
+    if view:
+        world["view3d"] = view
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
+
+
+TIMES_OF_DAY = ("dawn", "day", "dusk", "night")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _view3d(raw: Any) -> dict:
+    """Clean the optional 3D view settings: out of range numbers are clamped, unknown values dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    if raw.get("time_of_day") in TIMES_OF_DAY:
+        out["time_of_day"] = raw["time_of_day"]
+    if isinstance(raw.get("sky"), str) and _HEX.match(raw["sky"].strip()):
+        out["sky"] = raw["sky"].strip().lower()
+    for key, lo, hi in (
+        ("fog", 0.0, 1.0),
+        ("camera_height", 0.3, 4.0),
+        ("walk_speed", 0.5, 20.0),
+        ("terrain", 0.0, 3.0),
+    ):
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            out[key] = round(max(lo, min(hi, float(v))), 3)
+    if isinstance(raw.get("ambient"), dict):
+        out["ambient"] = raw["ambient"]
+    return out
+
+
+def apply_play_view(
+    world: dict,
+    doc: dict,
+    node_outputs: Optional[dict] = None,
+) -> dict:
+    """The World Player node's view settings win over the world's own: they are read from the saved flow, so
+    switching to 3D or changing the time of day needs no rerun."""
+    for n in doc.get("nodes") or []:
+        if n["type"] != "world.play" or n.get("disabled"):
+            continue
+        p = n.get("params") or {}
+        if p.get("view") in ("2d", "3d"):
+            world["render"] = p["view"]
+        view = dict(world.get("view3d") or {})
+        if p.get("time_of_day") in TIMES_OF_DAY:
+            view["time_of_day"] = p["time_of_day"]
+        for a in input_values(doc, node_outputs or {}, n["id"], "ambient"):
+            if isinstance(a, dict):
+                view["ambient"] = a
+        view = _view3d(view)
+        if view:
+            world["view3d"] = view
+        break
+    return world
 
 
 def _memory_items(raw: Any) -> list[dict]:
@@ -662,6 +720,9 @@ def resolve_world_report(
         if name and name not in eps and not n.get("disabled"):
             eps[name] = n["id"]
     world["entry_points"] = eps
+    world = WorldSpec.model_validate(apply_play_view(world, doc, node_outputs)).model_dump(
+        exclude_none = True
+    )
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")
