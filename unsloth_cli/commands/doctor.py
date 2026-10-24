@@ -579,7 +579,7 @@ def mlx_backend_active() -> bool:
 
 
 def collect_mlx_info() -> dict:
-    """Everything the MLX preflight needs. Never imports torch, never raises."""
+    """Everything the MLX preflight needs. Never raises."""
     info = {
         "platform": f"{platform.system()} {platform.machine()}",
         "mlx": None,
@@ -590,6 +590,7 @@ def collect_mlx_info() -> dict:
         "working_set_gib": None,
         "zoo": None,
         "zoo_mlx": False,
+        "stack_blockers": None,
         "errors": [],
     }
     try:
@@ -636,19 +637,38 @@ def collect_mlx_info() -> dict:
         except Exception as e:
             info["errors"].append(f"{module}: {type(e).__name__}: {e}")
             info["zoo_mlx"] = False
+    # The gate Unsloth Studio uses for Train/Export: mlx-lm / mlx-vlm imports and minimum versions.
+    try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.mlx_repair import mlx_stack_blockers
+
+        info["stack_blockers"] = list(mlx_stack_blockers())
+    except Exception as e:
+        info["errors"].append(f"mlx stack check: {type(e).__name__}: {e}")
     return info
 
 
 def verdict_mlx(info: dict) -> Tuple[bool, List[str]]:
     """(healthy, hints). Pure, so every branch is testable without an Apple Silicon GPU."""
+    # `unsloth studio update` installs with the pins that keep Transformers where Unsloth
+    # expects it; a plain `pip install mlx-lm` can move it and leave Train/Export disabled.
     if not info.get("mlx"):
         return False, [
-            "mlx is not installed. On Apple Silicon install it with `pip install mlx mlx-lm`."
+            "mlx is not installed. Run `unsloth studio update` to install the Apple Silicon stack."
         ]
     if not info.get("zoo_mlx"):
         return False, [
-            "The installed unsloth_zoo has no `unsloth_zoo.mlx` backend. Upgrade with "
-            "`pip install -U unsloth_zoo` to train on Apple Silicon."
+            "The installed unsloth_zoo has no usable `unsloth_zoo.mlx` backend. Run "
+            "`unsloth studio update` to upgrade it."
+        ]
+    blockers = info.get("stack_blockers")
+    if blockers:
+        return False, [
+            "The MLX stack cannot train: "
+            + "; ".join(blockers)
+            + ". Run `unsloth studio update` to repair it."
         ]
     if not info.get("metal"):
         return False, [

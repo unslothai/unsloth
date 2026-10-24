@@ -36,6 +36,7 @@ def _healthy_info(**overrides):
         "working_set_gib": 24.96,
         "zoo": "2026.10.7",
         "zoo_mlx": True,
+        "stack_blockers": [],
         "errors": [],
     }
     info.update(overrides)
@@ -87,6 +88,58 @@ def _broken_studio_gate(monkeypatch):
     _fake_studio_gate(monkeypatch, True)
     # A None entry makes the import raise ImportError, like a studio backend missing a dependency.
     monkeypatch.setitem(sys.modules, "studio.backend.core.training.training", None)
+
+
+def test_verdict_mlx_reports_stack_blockers():
+    blocker = "mlx_lm does not import (ModuleNotFoundError: No module named 'mlx_lm')"
+    healthy, hints = doctor_mod.verdict_mlx(_healthy_info(stack_blockers = [blocker]))
+    assert healthy is False
+    assert blocker in hints[0]
+    assert "unsloth studio update" in hints[0]
+
+
+def test_verdict_mlx_healthy_when_stack_check_could_not_run():
+    healthy, _ = doctor_mod.verdict_mlx(_healthy_info(stack_blockers = None))
+    assert healthy is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"mlx": None}, {"zoo_mlx": False}, {"stack_blockers": ["mlx-vlm 0.4.0 is older than 0.4.4"]}],
+)
+def test_verdict_mlx_never_suggests_a_bare_pip_install(overrides):
+    # A plain pip resolve can move Transformers and leave Train/Export disabled.
+    _, hints = doctor_mod.verdict_mlx(_healthy_info(**overrides))
+    assert "unsloth studio update" in hints[0]
+    assert "pip install" not in hints[0]
+
+
+def _fake_mlx_repair(monkeypatch, blockers = None, broken = False):
+    import unsloth_cli._inference as inference
+
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda **kwargs: None)
+    if broken:
+        monkeypatch.setitem(sys.modules, "utils.mlx_repair", None)
+        return
+    utils = types.ModuleType("utils")
+    utils.__path__ = []
+    repair = types.ModuleType("utils.mlx_repair")
+    repair.mlx_stack_blockers = lambda: list(blockers or [])
+    monkeypatch.setitem(sys.modules, "utils", utils)
+    monkeypatch.setitem(sys.modules, "utils.mlx_repair", repair)
+
+
+def test_collect_mlx_info_reads_the_studio_mlx_gate(monkeypatch):
+    _fake_mlx_repair(monkeypatch, blockers = ["mlx_vlm does not import (ImportError: boom)"])
+    info = doctor_mod.collect_mlx_info()
+    assert info["stack_blockers"] == ["mlx_vlm does not import (ImportError: boom)"]
+
+
+def test_collect_mlx_info_notes_when_the_studio_mlx_gate_is_missing(monkeypatch):
+    _fake_mlx_repair(monkeypatch, broken = True)
+    info = doctor_mod.collect_mlx_info()
+    assert info["stack_blockers"] is None
+    assert any(e.startswith("mlx stack check:") for e in info["errors"])
 
 
 def test_mlx_backend_active_honours_force_gpu_path(monkeypatch):
