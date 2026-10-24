@@ -1565,7 +1565,13 @@ async def _with_lookup_tables(
         for index, v in enumerate(variants):
             if not str(v.filename or "").lower().endswith(".gguf"):
                 continue
-            path = await listing_thread(True, _local_variant_gguf, answer, repo_id, v, local_path)
+            # An update's cached file is the old revision: online, read the published header.
+            published = v.update_available and not offline and not prefer_local_cache
+            path = (
+                None
+                if published and not is_local_path(repo_id)
+                else await listing_thread(True, _local_variant_gguf, answer, repo_id, v, local_path)
+            )
             if path:
                 local_arch, table = await listing_thread(True, local_lookup_info, path, mode)
                 # Only a lazy one speaks for the repo: a repo can hold several families.

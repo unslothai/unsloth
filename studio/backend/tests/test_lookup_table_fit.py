@@ -627,6 +627,10 @@ def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
     assert got == FLASH_NEXT_PLE
 
 
+_RPC_LIST = ["--rpc", "10.0.0.2:50052", "--device", "Vulkan0,RPC0"]
+_ONE = _RPC_LIST + ["--split-mode", "none"]
+
+
 @pytest.mark.parametrize(
     "extra_args, env, off",
     [
@@ -635,6 +639,11 @@ def test_an_inherited_projector_on_a_mac_keeps_the_table_streamed(name):
         ([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}, True),
         (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0"], {}, False),
         ([], {}, False),
+        # Split mode none keeps only the main device, so an unused RPC entry is not a model device.
+        (_ONE + ["--main-gpu", "0"], {}, False),
+        (_ONE + ["--main-gpu", "1"], {}, True),
+        (_ONE + ["--main-gpu", "-1"], {}, False),
+        (_RPC_LIST, {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "0"}, False),
     ],
 )
 def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):

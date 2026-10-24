@@ -579,6 +579,41 @@ class TestListing:
         assert sorted(calls) == sorted(r.filename for r in rows)
         assert all(v.lookup_table_bytes for v in out.response.variants)
 
+    @pytest.mark.parametrize("offline, want", [(False, 10 * GIB), (True, 40 * GIB)])
+    def test_an_update_is_priced_from_the_published_header(
+        self, monkeypatch, tmp_path, offline, want
+    ):
+        """The cached file is the old revision: online, an update's table comes from the Hub's header."""
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        on_disk = tmp_path / "old.gguf"
+        on_disk.write_bytes(b"x")
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(gv, "_local_variant_gguf", lambda *a: str(on_disk))
+        monkeypatch.setattr(
+            glt, "local_lookup_info", lambda path, mode = "auto": ("qwen4exp", 40 * GIB)
+        )
+        monkeypatch.setattr(glt, "remote_lookup_info", lambda *a, **k: ("qwen4exp", 10 * GIB))
+        row = GgufVariantDetail(
+            filename = "u.gguf",
+            quant = "U",
+            size_bytes = 70 * GIB + offline,
+            downloaded = True,
+            update_available = True,
+        )
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer([row]),
+                f"o/updated-{offline}",
+                hf_token = None,
+                offline = offline,
+                prefer_local_cache = False,
+            )
+        )
+        assert out.response.variants[0].lookup_table_bytes == want
+
     def test_a_forced_lazy_mode_sizes_the_tables_it_streams(self, monkeypatch, tmp_path):
         from hub.schemas.inventory import GgufVariantDetail
         from hub.services.models import gguf_variants as gv

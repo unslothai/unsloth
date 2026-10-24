@@ -359,7 +359,10 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
-        lookup_table_bytes: variant.lookup_table_bytes || remoteVariant.lookup_table_bytes,
+        // An update's reading wins, even 0: the local header is the old revision.
+        lookup_table_bytes: remoteVariant.update_available
+          ? (remoteVariant.lookup_table_bytes ?? 0)
+          : variant.lookup_table_bytes || remoteVariant.lookup_table_bytes,
         // Both sides measure the same cache; keep the local reading and let the
         // remote one cover a row the local listing could not price.
         download_remaining_bytes:

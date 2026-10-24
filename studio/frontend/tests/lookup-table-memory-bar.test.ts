@@ -57,3 +57,12 @@ test("a pinned quant row hands the bar the same listing figures as the sole-quan
   assert.match(body, /lookupTableBytes: pinnedQuantValidation\.lookupTables\.get\(/);
   assert.match(pickers, /lookupTables: downloaded\.map\([\s\S]*?ggufVariantLookupTableBytes\(variant\)/);
 });
+
+test("the on-device card takes an update's table reading, a zero included", async () => {
+  // The same rule as the picker's withHubState: the cached file is the old revision.
+  const card = await readSrcAsync("features/hub/catalog/local-on-device-card.tsx");
+  assert.match(
+    card,
+    /lookup_table_bytes: remoteVariant\.update_available\s*\?\s*\(remoteVariant\.lookup_table_bytes \?\? 0\)\s*:\s*variant\.lookup_table_bytes \|\| remoteVariant\.lookup_table_bytes/,
+  );
+});

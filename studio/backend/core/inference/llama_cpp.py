@@ -11740,6 +11740,13 @@ class LlamaCppBackend:
         selected = None
         override = self._effective_device_ids(extra_args, env)
         _src_env = os.environ if env is None else env
+        one_device = not tensor and _split_mode_confines_to_one_device(extra_args, env)
+        if override is not None and one_device:
+            # Split mode none keeps only the main device; an unused RPC entry is not a model device.
+            main = self._effective_main_gpu(extra_args, env)
+            main = 0 if main is None else main
+            override = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
+            override = override[main : main + 1] if main >= 0 else []
         if (
             any(str(d).strip().lower().startswith("rpc") for d in override)
             if override is not None
@@ -11762,7 +11769,7 @@ class LlamaCppBackend:
             if selected is None and tensor:
                 selected = [row[0] for row in (detected_gpus or ())] or None
         if selected is not None:
-            if selected and not tensor and _split_mode_confines_to_one_device(extra_args, env):
+            if selected and override is None and one_device:
                 main = self._effective_main_gpu(extra_args, env)
                 main = 0 if main is None else main
                 selected = selected[main : main + 1] if main >= 0 else []
