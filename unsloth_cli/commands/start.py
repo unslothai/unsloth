@@ -6248,8 +6248,7 @@ def _load_app_config(
     if allow_json5:
         import json5
 
-        # Parse the raw document: JSONC's comment stripping does not recognize
-        # single-quoted JSON5 strings containing // or /* ... */.
+        # Raw text: the JSONC stripper below misreads // inside single-quoted JSON5 strings.
         data = json5.loads(text)
     elif path.suffix == ".toml":
         try:
@@ -6264,7 +6263,6 @@ def _load_app_config(
         import yaml
         data = yaml.safe_load(text)
     else:
-        # OpenCode reads JSONC; OpenClaw explicitly opts into JSON5 above.
         text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
         data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
     if not isinstance(data, dict):
