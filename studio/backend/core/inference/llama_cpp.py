@@ -21227,6 +21227,11 @@ class LlamaCppBackend:
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
         self._idle_slot_clearing_active = False
+        # The runner never verifies sampled drafts, so the completions gate must not see
+        # the previous llama-server's.
+        self._spec_draft_sampling_emitted = False
+        self._spec_draft_probabilistic = False
+        self._launch_adaptive_target = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
@@ -26812,6 +26817,11 @@ class LlamaCppBackend:
                 # drafter it was never going to carry.
                 self._spec_fallback_reason = None
                 self._spec_drafter_kind = None
+                # Likewise for the sampled-draft marker: a previous MTP launch's would
+                # have /v1/completions refuse Mirostat and adaptive-p on this server.
+                self._spec_draft_sampling_emitted = False
+                self._spec_draft_probabilistic = False
+                self._launch_adaptive_target = None
                 # Discovery runs before the metadata read that says diffusion, so a
                 # transient sidecar failure can set this for a drafterless server.
                 self._dflash_retry_needed = False
@@ -33492,7 +33502,7 @@ class LlamaCppBackend:
                             == "probabilistic"
                         )
                         self._launch_adaptive_target = (
-                            _launch_adaptive_target(run_cmd)
+                            _launch_adaptive_target(run_cmd, env)
                             if self._spec_draft_probabilistic
                             else None
                         )
@@ -36645,6 +36655,7 @@ class LlamaCppBackend:
             self._speculative_type = None
             self._spec_draft_sampling_emitted = False
             self._spec_draft_probabilistic = False
+            self._launch_adaptive_target = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
             self._n_layers = None

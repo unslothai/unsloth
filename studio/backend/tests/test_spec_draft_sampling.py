@@ -847,3 +847,84 @@ def test_launch_adaptive_target_reads_config_then_the_command(tmp_path):
     cmd = ["llama-server", "--adaptive-target", "-0.25"]
     assert _launch_adaptive_target(cmd, env, "linux") == -0.25
     assert _launch_adaptive_target(["llama-server", "--adaptive-target", "x"], env, "linux") is None
+
+
+def _sampled_draft_state(backend):
+    return {
+        "emitted": backend._spec_draft_sampling_emitted,
+        "probabilistic": backend._spec_draft_probabilistic,
+        "target": backend._launch_adaptive_target,
+    }
+
+
+_CLEARED = {"emitted": False, "probabilistic": False, "target": None}
+
+
+def test_unload_clears_the_launchs_adaptive_target(tmp_path):
+    placement, backend, gguf = _spec_prob_mtp_backend(tmp_path)
+    placement._launch_auto_spec(backend, gguf, extra_args = ["--adaptive-target", "0.5"])
+    assert _sampled_draft_state(backend) == {"emitted": True, "probabilistic": True, "target": 0.5}
+    backend.unload_model()
+    assert _sampled_draft_state(backend) == _CLEARED
+
+
+def test_a_diffusion_load_after_sampled_drafts_clears_the_marker_before_the_runner(tmp_path):
+    """load_model kills the previous server without unload_model and returns before the
+    command builder, so the diffusion branch itself must drop the MTP launch's marker."""
+    placement, backend, gguf = _spec_prob_mtp_backend(tmp_path)
+    placement._launch_auto_spec(backend, gguf, extra_args = ["--adaptive-target", "0.5"])
+    assert backend._spec_draft_probabilistic is True
+    diffusion = placement._write_gguf(tmp_path / "diffusion.gguf", "diffusion-gemma")
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    seen = {}
+
+    def start_diffusion_server(**_kwargs):
+        seen.update(_sampled_draft_state(backend))
+        return True
+
+    backend._start_diffusion_server = start_diffusion_server
+    assert backend.load_model(
+        placement.GgufLoadIntent(
+            gguf_path = str(diffusion),
+            model_identifier = "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+            speculative_type = "off",
+        )
+    )
+    assert seen == _CLEARED
+
+
+def test_the_diffusion_runner_clears_a_previous_sampled_draft_marker(monkeypatch, tmp_path):
+    import test_diffusion_auto_fit_ngl as dfit
+
+    fit_host = dfit._fit_host
+
+    def stale_fit_host(*args, **kwargs):
+        backend = fit_host(*args, **kwargs)
+        backend._spec_draft_sampling_emitted = True
+        backend._spec_draft_probabilistic = True
+        backend._launch_adaptive_target = 0.5
+        return backend
+
+    monkeypatch.setattr(dfit, "_fit_host", stale_fit_host)
+    _cmd, backend = dfit._launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)])
+    assert _sampled_draft_state(backend) == _CLEARED
+
+
+def test_the_adaptive_target_is_read_with_the_childs_env(tmp_path, monkeypatch):
+    """config.ini is located from the env the child is spawned with, as its other argv reads are."""
+    seen = {}
+    real = _llama_cpp_mod._launch_adaptive_target
+
+    def spy(
+        cmd,
+        env = None,
+        platform = None,
+    ):
+        seen["env"] = env
+        return real(cmd, env, platform)
+
+    monkeypatch.setattr(_llama_cpp_mod, "_launch_adaptive_target", spy)
+    placement, backend, gguf = _spec_prob_mtp_backend(tmp_path)
+    captured = placement._launch_auto_spec(backend, gguf)
+    assert backend._spec_draft_probabilistic is True
+    assert seen["env"] is not None and seen["env"] == captured["env"]
