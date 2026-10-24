@@ -58,7 +58,6 @@ import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
-  STORAGE_BUTTON,
   STORAGE_COLORS,
   SettingsCard,
   SettingsCardRow,
@@ -1132,7 +1131,6 @@ export function ResourcesTab() {
             <Button
               variant="outline"
               size="sm"
-              className={STORAGE_BUTTON}
               disabled={cache.loading || cache.clearing}
               onClick={() => void cache.refresh({ refresh: true })}
             >
@@ -1173,7 +1171,6 @@ export function ResourcesTab() {
               <Button
                 variant="ghost"
                 size="sm"
-                className={STORAGE_BUTTON}
                 disabled={cacheSaving}
                 onClick={() => void saveCacheFolder(null)}
               >
@@ -1183,7 +1180,6 @@ export function ResourcesTab() {
             <Button
               variant="outline"
               size="sm"
-              className={STORAGE_BUTTON}
               disabled={!hfCache}
               onClick={() => void handleCacheFolder()}
             >
@@ -1194,7 +1190,6 @@ export function ResourcesTab() {
             <Button
               variant="outline"
               size="sm"
-              className={STORAGE_BUTTON}
               disabled={!hfCache?.editable || cacheSaving}
               onClick={() => void changeCacheFolder()}
             >

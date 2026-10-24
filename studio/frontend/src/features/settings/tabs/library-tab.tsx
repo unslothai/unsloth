@@ -53,7 +53,6 @@ import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
-  STORAGE_BUTTON,
   STORAGE_COLORS,
   SettingsCard,
   SettingsCardRow,
@@ -189,7 +188,7 @@ function StorageSection() {
           <StorageOverview
             heading={t("settings.library.storageUsed", { size: size(storage.totalBytes) })}
             action={
-              <Button variant="outline" size="sm" className={STORAGE_BUTTON} onClick={refreshLibraryStorage}>
+              <Button variant="outline" size="sm" onClick={refreshLibraryStorage}>
                 {t("settings.library.storageRefresh")}
               </Button>
             }
@@ -237,7 +236,7 @@ function StorageSection() {
                       : t("settings.library.itemCount", { count: entry.count.toLocaleString() })
                   }`}
                 >
-                  <Button variant="outline" size="sm" className={STORAGE_BUTTON} onClick={() => open(entry.link)}>
+                  <Button variant="outline" size="sm" onClick={() => open(entry.link)}>
                     {t("settings.library.storageOpen")}
                   </Button>
                 </SettingsCardRow>

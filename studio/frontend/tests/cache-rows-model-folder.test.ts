@@ -46,7 +46,7 @@ function loadRows(): Rows {
       loadCacheInventory: async () => null,
       purgeCaches: async () => null,
     },
-    "./storage-overview": { SettingsCardRow: noop, STORAGE_BUTTON: "" },
+    "./storage-overview": { SettingsCardRow: noop },
   });
 }
 
@@ -167,7 +167,7 @@ function driveRows(options: {
       loadCacheInventory: options.load,
       purgeCaches: options.purge ?? (async () => ({})),
     },
-    "./storage-overview": { SettingsCardRow: "SettingsCardRow", STORAGE_BUTTON: "" },
+    "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
   });
 
   return () => {

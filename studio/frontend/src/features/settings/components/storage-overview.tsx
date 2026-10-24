@@ -22,9 +22,6 @@ export const STORAGE_COLORS = {
   free: "bg-muted-foreground/15",
 } as const;
 
-/** Rounded rectangle, not a pill, for the buttons in a storage section. */
-export const STORAGE_BUTTON = "rounded-[10px]";
-
 export interface StorageSegment {
   key: string;
   label: string;
@@ -63,7 +60,7 @@ export function StorageOverview({
         <p className="text-sm font-semibold text-foreground">{heading}</p>
         {action}
       </div>
-      <div className="flex h-6 overflow-hidden rounded-[8px] bg-muted">
+      <div className="flex h-6 overflow-hidden rounded-full bg-muted">
         {scale > 0
           ? segments.map((segment) =>
               segment.bytes > 0 ? (
@@ -106,7 +103,7 @@ export function SettingsCard({
   return (
     <div
       className={cn(
-        "my-2 flex flex-col rounded-2xl border border-border/60 px-4",
+        "my-2 flex flex-col rounded-xl border border-border/60 px-3 sm:px-4",
         className,
       )}
     >

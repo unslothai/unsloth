@@ -28,7 +28,7 @@ import {
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
-import { STORAGE_BUTTON, SettingsCardRow } from "./storage-overview";
+import { SettingsCardRow } from "./storage-overview";
 
 /** Decimal units, matching the disk readings the Storage section already shows. */
 export function formatCacheSize(bytes: number): string {
@@ -260,7 +260,6 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
         <Button
           variant="outline"
           size="sm"
-          className={STORAGE_BUTTON}
           disabled={loading || clearing}
           onClick={() => setExpanded((open) => !open)}
         >
@@ -271,7 +270,6 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
         <Button
           variant="destructive"
           size="sm"
-          className={STORAGE_BUTTON}
           disabled={
             loading || clearing || loadError !== null || bulkKeys.length === 0
           }
