@@ -427,8 +427,13 @@ export const BUDGET = {
   // raw, 2,088,616 -> 2,088,672 B transfer against cfc593f0bd, Node 26, unchanged at 99 chunks). Raised by that.
   // Its "System and Engine" page title adds 11 B raw / 34 B transfer to the eager en locale (6,933,189 -> 6,933,200 B
   // raw, 2,088,699 -> 2,088,733 B transfer merged with f49cbdf535, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_091_207,
-  rawBytes: 6_942_431,
+  // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
+  // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
+  // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
+  // 8f8eaee609, one machine and build, Node 26.8.2, unchanged at 99 chunks). Lazy-loading the cards cost more
+  // (+2.4 KB transfer, 7 extra startup chunks), so they are imported statically and the budget raised by that growth.
+  transferBytes: 2_093_702,
+  rawBytes: 6_950_520,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

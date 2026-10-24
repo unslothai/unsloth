@@ -1235,6 +1235,38 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
     assert seen == [(2, "q8_0", 20)]
 
 
+def test_a_gateway_load_asks_for_the_full_trained_context_unless_one_is_remembered(
+    monkeypatch, _no_local_gguf
+):
+    """Claude/Codex Desktop auto-load through /models/load: no remembered Context Length sends 0, the
+    model's full trained context (fitted only by the memory guard); a remembered one is sent as set."""
+    import utils.openai_auto_switch_settings as overrides
+
+    monkeypatch.setattr(
+        _no_local_gguf,
+        "resolve_local_gguf",
+        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", QWEN),
+    )
+    remembered = [{}, {"custom_context_length": 65536}]
+    monkeypatch.setattr(
+        overrides, "resolve_override_for_load", lambda *a, **k: (None, remembered.pop(0))
+    )
+    mod, _ = _management()
+    seen = []
+    double = mod._inference()
+    original = double.load_model_gated
+
+    async def _capture(request, *args, **kwargs):
+        seen.append(request.max_seq_length)
+        return await original(request, *args, **kwargs)
+
+    double.load_model_gated = _capture
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert seen == [0, 65536]
+
+
 def test_management_unload_maps_the_advertised_alias_to_the_resident(_no_local_gguf):
     """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
     mod, calls = _management()
