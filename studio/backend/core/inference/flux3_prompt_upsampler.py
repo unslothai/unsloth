@@ -54,7 +54,10 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
-# Cached earlier defaults, best first, used when UPSAMPLER_MODEL_FILE is absent (fresh installs still download it).
+# What a run reads, in order: the default, else an earlier default of the same repo already downloaded, best first.
+# An install that fetched an earlier default (Q4_K_M until the UD-Q4_K_XL switch, or Q8_0) keeps enhancing from it,
+# offline included, instead of running prompts as typed until another ~6 GB arrives. The download still fetches the
+# default, and status() keeps offering it (current_downloaded) while an earlier quant serves.
 UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
 UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
     UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
@@ -729,14 +732,18 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
     return None
 
 
-def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
+def _cached_pair(
+    hub_cache: Optional[Path] = None, model_files: tuple = UPSAMPLER_MODEL_FILE_PREFERENCE
+) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both. Files tried in UPSAMPLER_MODEL_FILE_PREFERENCE order."""
+    with no projector at its revision when no revision holds both. ``model_files`` in preference order
+    (UPSAMPLER_MODEL_FILE_PREFERENCE by default): a complete pair of any of them beats a model alone (an interrupted
+    default download must not cost edits their reference images), and among models alone the first cached one wins."""
     revisions = _candidate_revisions(hub_cache)
     model_only = None
-    for filename in UPSAMPLER_MODEL_FILE_PREFERENCE:
+    for model_file in model_files:
         for revision in revisions:
-            model = _cached_file(filename, hub_cache = hub_cache, revision = revision)
+            model = _cached_file(model_file, hub_cache = hub_cache, revision = revision)
             if model is None:
                 continue
             mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
@@ -765,7 +772,7 @@ def _cached_download_paths(
 
 
 def model_path() -> Optional[str]:
-    """The upsampler GGUF: the env override, else the downloaded repo file."""
+    """The upsampler GGUF: the env override, else the downloaded repo file (``UPSAMPLER_MODEL_FILE_PREFERENCE``)."""
     if (os.environ.get(ENV_MODEL_OVERRIDE) or "").strip():
         # An override that does not exist is a typo, not a reason to read the cache instead.
         return _env_path(ENV_MODEL_OVERRIDE)
@@ -835,11 +842,26 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
+    # The file a run reads: the override, or an earlier default still serving until the current one is downloaded.
     model_name = Path(model).name if model else UPSAMPLER_MODEL_FILE
     size = None
     if model:
         with suppress(OSError):
             size = os.path.getsize(model)
+    overridden = _overridden()
+    # The current default pair at one revision. Not the unpinned _cached_download_paths, which any cached quant
+    # completes so that the earlier one serves; the Download control still fetches the default.
+    current_downloaded = overridden or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
+    # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
+    missing = (
+        []
+        if current_downloaded
+        else [
+            name
+            for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE)
+            if _cached_at_any_revision(name) is None
+        ]
+    )
     return {
         "supported": find_llama_server_binary() is not None,
         "downloaded": model is not None,
@@ -852,8 +874,13 @@ def status() -> dict:
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
+        # Download completion, apart from what can run: an earlier quant serving leaves the current default (what
+        # the Download control fetches) still to download.
+        "current_filename": UPSAMPLER_MODEL_FILE,
+        "current_downloaded": current_downloaded,
+        "current_missing_bytes": sum(UPSAMPLER_FILE_SIZES.get(name, 0) for name in missing),
         # Local files from the env overrides: the repo download is not offered beside them.
-        "override": _overridden(),
+        "override": overridden,
         "download": download_status(),
     }
 
