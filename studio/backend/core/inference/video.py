@@ -9844,9 +9844,9 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            # Untiled when it fits (free memory read at decode time); not on SPEED_OFF (bit-identical) or sequential offload.
             if (
-                offload_policy == "none"
+                offload_policy in (OFFLOAD_NONE, OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING)
                 and target.device == "cuda"
                 and effective_speed != SPEED_OFF
             ):
