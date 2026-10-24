@@ -24,6 +24,7 @@ pygments>=2.0
 # to the exact version pydantic's _ensure_pydantic_core_version check
 # expects. Pinning both under --no-deps used to drift them apart.
 pyyaml==6.0.3
+json5>=0.9.25
 nest-asyncio==1.6.0
 
 # HF ecosystem (from [huggingfacenotorch] extras in pyproject.toml)
