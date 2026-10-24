@@ -648,8 +648,14 @@ function ModelSelectorContent({
             // any machine set to show scrollbars always. The padding moves in with the scroller so
             // the bar sits beside the content instead of on the edge. !px-0: the list view's padding,
             // snapped to whole pixels as an inline style when the panel opened, would otherwise stay
-            // and hold the scrollbar 8px off the edge.
-            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0 !px-0"
+            // and hold the scrollbar 8px off the edge. Same width as the list, so the panel keeps its
+            // size going in and out of Run settings.
+            cn(
+              "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0",
+              hasExternal
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))]"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))]",
+            )
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
