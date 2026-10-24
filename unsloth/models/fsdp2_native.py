@@ -1702,13 +1702,44 @@ def native_fsdp2_unsharded(model):
                 _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
+def _ga_mode(model = None):
+    """What non-final gradient accumulation micro-batches (Trainer / accelerate no_sync) do,
+    `UNSLOTH_FSDP2_GA_SYNC`:
+    "skip" = no reduce-scatter; units resharded after each backward and gathered again next micro-batch;
+    "defer" = no reduce-scatter and units kept unsharded until the last micro-batch (torchtitan
+      fsdp_defer_gradient_reduction): no re-all-gather, gradients bitwise equal to "skip", the gathered
+      weights stay resident (sharded layout: + one compute-dtype copy of the trainable weights);
+    "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
+      accumulators held across micro-batches, the leanest and the slowest;
+    "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
+      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
+    if mode in ("skip", "defer", "each"):
+        return mode
+    layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
+    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
+    mode = _ga_mode(model)
+    if mode == "each":
+        yield
+        return
+    defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if defer:
+        model.set_reshard_after_backward(False)
+        if hasattr(model, "set_is_last_backward"):
+            model.set_is_last_backward(False)
     try:
         yield
     finally:
         model.set_requires_gradient_sync(True)
+        if defer:
+            model.set_reshard_after_backward(True)
+            if hasattr(model, "set_is_last_backward"):
+                model.set_is_last_backward(True)
 
 
 def _native_models(accelerator):
