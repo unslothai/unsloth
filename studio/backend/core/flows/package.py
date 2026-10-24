@@ -25,6 +25,7 @@ from urllib.parse import unquote_plus
 from core.flows import assets as asset_store
 from core.flows import schema
 from core.flows.compiler import parse_document
+from core.flows import replication
 from core.flows.specs import SPECS_BY_TYPE
 
 MAX_ENTRIES = schema.MAX_ASSETS + 8
@@ -207,6 +208,7 @@ async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[byte
     meta.setdefault("license", DEFAULT_LICENSE)
     meta.setdefault("ai_generated", _uses_models(doc))
     doc["meta"] = meta
+    replication.stamp(doc)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", doc.get("name") or "flow").strip("-").lower() or "flow"
     if mode == "json":
         doc["baked"] = {}

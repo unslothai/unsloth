@@ -61,3 +61,21 @@ test("a streamed answer that fails or stops early is an error", async () => {
     /stopped before it finished/,
   );
 });
+
+test("with no chat model a villager answers offline in their own words", () => {
+  for (const msg of [
+    "No chat model is loaded. Pick a model on this node, or load one first.",
+    "Could not load unsloth/Qwen3-4B-Instruct-2507-GGUF: not downloaded",
+  ])
+    assert.equal(L.isNoChatModelError(msg), true, msg);
+  assert.equal(
+    L.isNoChatModelError("Could not load org/m: We couldn't connect to 'https://huggingface.co' to load the files"),
+    true,
+  );
+  // A real failure (timeout, bad JSON, a load that ran out of memory) still shows as an error.
+  assert.equal(L.isNoChatModelError("The reply was not valid JSON"), false);
+  assert.equal(L.isNoChatModelError("Could not load org/m: CUDA out of memory. Tried to allocate 2.00 GiB"), false);
+  assert.equal(L.offlineLine("Welcome to the village!", 0), "Welcome to the village!");
+  assert.notEqual(L.offlineLine("Welcome to the village!", 1), "Welcome to the village!");
+  assert.ok(L.offlineLine("", 0).length > 0);
+});

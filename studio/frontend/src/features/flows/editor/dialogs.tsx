@@ -265,20 +265,20 @@ const EXPORT_OPTIONS: {
     mode: "json",
     title: "Flow only (.json)",
     description:
-      "The graph and settings. Small; the receiver generates everything with their own models.",
+      "The recipe only: blocks, settings and seeds. The receiver makes everything with their own models.",
     ext: "json",
   },
   {
     mode: "package",
     title: "Flow + files (.unslothflow)",
-    description: "Includes uploaded images and audio the flow uses.",
+    description: "The recipe plus the images, audio and documents you added to it.",
     ext: "unslothflow",
   },
   {
     mode: "baked",
     title: "Playable (.unslothflow, baked)",
     description:
-      "Also embeds every generated output, so it plays on a computer with no models.",
+      "Also every output it made, so it plays with no models. Parts made while playing, like characters' replies, still need one.",
     ext: "unslothflow",
   },
 ];
@@ -297,7 +297,8 @@ export function ShareDialog({
           <DialogTitle>Share this flow</DialogTitle>
           <DialogDescription>
             API keys, provider settings and local file paths are never included.
-            Anyone with Unsloth can import the file.
+            Anyone with Unsloth can import the file; it records the Studio version and
+            model revisions so they can see if theirs differ.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-2">
