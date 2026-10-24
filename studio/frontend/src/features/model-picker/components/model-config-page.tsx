@@ -4150,7 +4150,7 @@ export function ModelConfigPage({
           // Sticky offsets start inside the scroller's 16px bottom padding: -bottom-4 puts the footer on
           // the panel's edge, and the negative margins cover that padding with the panel's own fill.
           variant === "page" &&
-            "sticky -bottom-4 z-10 -mb-4 -ml-4 -mr-[calc(var(--spacing)*2+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4 pl-4 pr-[calc(var(--spacing)*2+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-4 z-10 -mb-4 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-4 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
         )}
       >
       <div className="flex flex-col gap-3.5 border-t border-border pt-3.5">
