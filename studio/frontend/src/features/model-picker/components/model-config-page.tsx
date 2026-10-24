@@ -255,10 +255,9 @@ const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
+// Width is the label plus the shared button padding, so a pill is never wider than what it says.
 const FOOTER_BUTTON_CLASS =
-  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
+  "w-auto rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
