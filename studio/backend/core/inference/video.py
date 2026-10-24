@@ -228,6 +228,7 @@ from .diffusion import (
 from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_block_graph import compile_pipe_below_offload_hooks
+from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_precision import (
     effective_te_quant,
     normalize_te_quant,
@@ -3310,6 +3311,12 @@ def _video_seed_stays_resident(
     if scheme is None:
         return _auto_keeps_resident_bf16(planned, target)
     return plan_keeps_transformer_resident(planned)
+
+
+def _carried_call(pipe: Any, kwargs: dict, has_step_callback: bool) -> Any:
+    """Armed on the render thread (the interleave check is per thread); needs the step callback to stop before decode."""
+    with cross_forward_render(pipe, enabled = has_step_callback):
+        return pipe(**kwargs)
 
 
 def _render_under_no_grad(state: Any) -> bool:
@@ -12538,12 +12545,14 @@ class VideoBackend:
                     # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
                         p._interrupt = True
+                        cross_forward_step(p, step_index, timestep = timestep)
                         return callback_kwargs
                     _tick(step_index + 1)
                     if previewer is not None:
                         previewer.on_step(
                             callback_kwargs.get("latents"), getattr(p, "scheduler", None)
                         )
+                    cross_forward_step(p, step_index, timestep = timestep)
                     return callback_kwargs
 
                 def _on_scheduler_step_cancel(done: int) -> None:
@@ -12676,7 +12685,7 @@ class VideoBackend:
                             "video",
                             ltx25_render_call
                             if ltx25_render_call is not None
-                            else (lambda: pipe(**kwargs)),
+                            else (lambda: _carried_call(pipe, kwargs, has_step_callback)),
                         )
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
