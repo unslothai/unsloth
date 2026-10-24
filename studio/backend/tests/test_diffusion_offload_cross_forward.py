@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-forward carry: the next forward's first groups are copied in the current forward's tail, inside the window,
-only while a render arms it, and never into the decode, a step graph, or another prefetcher's forward."""
+"""Cross-forward carry of the next forward's first groups."""
 
 from __future__ import annotations
 
@@ -118,7 +117,6 @@ def _render(
     forwards_per_step = 1,
     pipe = None,
 ):
-    """A pipeline call: forwards, then the step callback after each step (as callback_on_step_end)."""
     pipe = pipe or _pipe(pf)
     with op.cross_forward_render(pipe):
         for i in range(steps):
@@ -145,7 +143,6 @@ def test_carry_wraps_onto_the_next_forwards_first_groups():
     log.clear()
     pf.begin()
     pf.onload(groups[0])
-    # a and b are not copied again: the first onload only queues c
     assert _copies(log) == ["c"]
     assert pf.stats["carried_hits"] == 1
     for g in groups:
@@ -274,7 +271,6 @@ def test_cfg_double_forward_reads_every_carry(forwards_per_step):
     steps = 4
     _render(pf, groups, steps, forwards_per_step)
     forwards = steps * forwards_per_step
-    # every forward after the render's first starts on two carried groups, except the last step's second forward:
     # the last step carries nothing (the callback cannot tell its forwards apart)
     assert pf.stats["carried_hits"] == 2 * (forwards - forwards_per_step)
     assert pf.stats["carried"] == 2 * (forwards - forwards_per_step)

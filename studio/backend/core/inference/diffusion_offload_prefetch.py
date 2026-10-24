@@ -15,11 +15,9 @@ freed block goes to the next prefetch only after the compute that read it. Bytes
 Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
 Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
 
-Cross-forward carry: once a forward's lookahead runs past the last recorded group, the first groups of the NEXT
-forward (same order every denoise step) are copied into the free window bytes, so that forward starts on resident
-weights instead of waiting for its first block. Only while a render arms it (``cross_forward_render`` /
-``cross_forward_step``: never into the last step's decode), never under a slot ring or a step graph, never across a
-forward of another prefetcher in the same thread. ``UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD=0`` turns it off.
+Cross-forward carry: past the last recorded group, the NEXT forward's first groups are copied into free window
+bytes. Only while a render arms it (never into the last step's decode); held off under a slot ring, step graph,
+capture, or another prefetcher's forward in between (its copies would not be read next).
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ from typing import Any, Iterator, Optional
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
-# Groups carried while the forward's last streamed block still runs (see GroupPrefetcher._carry).
+# Groups carried while the last streamed block still runs (see GroupPrefetcher._carry).
 TAIL_CARRY_GROUPS = 1
 DEFAULT_PREFETCH_DEPTH = 2
 MAX_PREFETCH_DEPTH = 8
@@ -74,8 +72,7 @@ def cross_forward_enabled() -> bool:
     )
 
 
-# Per thread: the prefetcher whose forward began last. Another one beginning in between (a second-stage denoiser)
-# means carried copies would not be read next: they are dropped and that prefetcher stops carrying for the render.
+# Per thread: the prefetcher whose forward began last (detects interleaved prefetchers).
 _LAST_BEGUN = threading.local()
 
 
@@ -365,12 +362,10 @@ class GroupPrefetcher:
         # the capture at begin() and back at end(), so the copies become graph nodes refilling the same buffers.
         self.capturing = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
-        # Cross-forward carry (module docstring): gids copied for the next forward, still in ``ready``.
         self.carried: set = set()
-        self.armed = False  # set by the render (cross_forward_render / cross_forward_step)
-        # another prefetcher's forward ran between two of this one's in this render
+        self.armed = False
         self.interleaved = False
-        self.graph_hold = False  # a whole-step graph is installed over this module's forward
+        self.graph_hold = False
         # Slot ring (``enable_slots``): group id -> slot index; a streamed group's copy lands in place in that slot,
         # always at the same offsets, so the blocks a CUDA graph recorded read the same addresses every step.
         self.slot_of: dict = {}
@@ -608,7 +603,6 @@ class GroupPrefetcher:
             self._carry(ahead)
 
     def carry_usable(self) -> bool:
-        """Whether copies carried into the next forward would be read by it (no graph replays over this forward)."""
         return bool(
             not getattr(self, "interleaved", False)
             and not getattr(self, "graph_hold", False)
@@ -617,7 +611,6 @@ class GroupPrefetcher:
         )
 
     def may_carry(self) -> bool:
-        """Whether copies for the next forward may be queued now (module docstring)."""
         return bool(
             getattr(self, "armed", False)
             and not getattr(self, "capturing", False)
@@ -625,13 +618,9 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """Past the last onload of the order: copy the next forward's first groups, under the same depth and window.
-
-        While the last block still runs, at most ``TAIL_CARRY_GROUPS``: its activations are allocated, and a carried
-        group beside them can lift the step's peak above the forward's (FLUX: a double block beside the larger
-        single-block activations at 32k tokens). Once it is offloaded the forward's activations are freed (host
-        order, which is what the allocator's peak follows), so the rest of the depth adds no peak; the copies still
-        overlap the tail on the GPU."""
+        """While the last block runs, at most ``TAIL_CARRY_GROUPS``: its activations are live and the allocator's peak
+        follows host order, so a second group beside them lifts the peak (FLUX at 32k tokens); after it frees, the
+        rest of the depth follows."""
         carried = self.__dict__.setdefault("carried", set())
         running = any(gid not in carried for gid in self.ready)
         limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth
@@ -655,7 +644,7 @@ class GroupPrefetcher:
             ahead += 1
 
     def drop_carried(self) -> int:
-        """Release the copies queued for a next forward that will not read them. Outside a capture. Returns how many."""
+        """Release carried copies (outside a capture). Returns how many."""
         carried = getattr(self, "carried", None)
         if not carried:
             return 0
@@ -801,7 +790,6 @@ class GroupPrefetcher:
             capturing = bool(torch.cuda.is_current_stream_capturing())
         if getattr(self, "carried", None):
             if capturing:
-                # a capture must record every copy; the outer (uncaptured) begin drops these first
                 raise RuntimeError(
                     "copies carried from the previous forward are still on the device"
                 )
@@ -815,7 +803,6 @@ class GroupPrefetcher:
         self.pending = True
         self.capturing = False
         if capturing:
-            # fork the copy stream into the capture before anything is queued on it
             self.capturing = True
             self.stream.wait_stream(self._compute())
 
@@ -823,7 +810,6 @@ class GroupPrefetcher:
         prev_ref = getattr(_LAST_BEGUN, "pf", None)
         prev = prev_ref() if prev_ref is not None else None
         if prev is not None and prev is not self and getattr(prev, "armed", False):
-            # another prefetcher's forward between two of prev's: its carried copies would not be read next
             prev.interleaved = True
             if not getattr(prev, "active", False):
                 prev.drop_carried()
@@ -847,8 +833,7 @@ class GroupPrefetcher:
     def end(self) -> None:
         if not self.active:
             return
-        # carried copies stay for the next forward only after one that ran exactly the recorded order (or no block:
-        # a skipped step)
+        # carried copies survive only an on-order (or skipped) forward: otherwise the next may read other groups
         finished = bool(self.on_order and self.pos == len(self.order)) or not self.seen
         self.active = False
         self.on_order = False
@@ -1196,10 +1181,7 @@ def _disarm(pf: Any) -> None:
 
 @contextmanager
 def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
-    """Arm cross-forward carry on ``pipe``'s prefetchers for one pipeline call; on exit nothing carried stays.
-
-    Not armed beside a ControlNet: it runs between two denoiser forwards with the carried copies still on the device.
-    """
+    """Arm carry for one pipeline call; nothing carried stays on exit. Not beside a ControlNet (runs between forwards)."""
     comps = getattr(pipe, "components", None)
     beside = isinstance(comps, dict) and any(
         "controlnet" in str(name).lower() and value is not None for name, value in comps.items()
@@ -1225,8 +1207,8 @@ def cross_forward_step(
     step_index: int,
     total: Optional[int] = None,
 ) -> None:
-    """From ``callback_on_step_end`` (after step ``step_index``): the last step carries nothing into the decode, nor
-    does an interrupted render or one whose step count is unknown."""
+    """From ``callback_on_step_end``: the final step drops carried copies so nothing is on the card at decode (also
+    interrupted or unknown-length renders)."""
     pfs = [
         pf
         for pf in _pipe_prefetchers(pipe)

@@ -13861,7 +13861,6 @@ class DiffusionBackend:
                             _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
-                    # After the interrupt flag: an interrupted render carries no copies into its decode.
                     cross_forward_step(pipe, step_index)
                     return callback_kwargs
 
