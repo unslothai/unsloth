@@ -112,6 +112,20 @@ def _direct_llama_slot(*, prompt: str = "", max_tokens: int = 0):
         return contextlib.nullcontext()
 
 
+def _vision_park_grace(base_url: str):
+    """The chat backend's park probe when this call goes to it and its server may park, else
+    None: the server parks the smallest slot first, which is usually a caption's."""
+    try:
+        from routes.inference import _raw_park_grace, get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        if str(getattr(backend, "base_url", "") or "").rstrip("/") != base_url.rstrip("/"):
+            return None
+        return _raw_park_grace(backend, streaming = False)
+    except Exception:  # noqa: BLE001 - accounting must never break ingestion
+        return None
+
+
 def _vision_complete(
     base_url: str,
     model: str,
@@ -147,14 +161,27 @@ def _vision_complete(
     }
     try:
         with _direct_llama_slot(prompt = prompt, max_tokens = max_tokens):
-            r = httpx.post(
-                f"{base_url}/v1/chat/completions",
-                json = payload,
-                timeout = timeout,
-                headers = _vision_auth_headers(),
-                # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
-                trust_env = False,
-            )
+            park_grace = _vision_park_grace(base_url)
+            if park_grace is None:
+                r = httpx.post(
+                    f"{base_url}/v1/chat/completions",
+                    json = payload,
+                    timeout = timeout,
+                    headers = _vision_auth_headers(),
+                    # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
+                    trust_env = False,
+                )
+            else:
+                from core.inference.llama_cpp import _post_through_park
+
+                with httpx.Client(headers = _vision_auth_headers(), trust_env = False) as client:
+                    r = _post_through_park(
+                        client,
+                        f"{base_url}/v1/chat/completions",
+                        json = payload,
+                        window = timeout,
+                        stall_grace = park_grace,
+                    )
             r.raise_for_status()
             text = r.json()["choices"][0]["message"]["content"]
         return text.strip() or None

@@ -2798,6 +2798,79 @@ _SERVER_PARK_COMMENTS = (
 _PREEMPT_KEEPALIVE_S = 2.0
 
 
+def _post_through_park(
+    client,
+    url: str,
+    *,
+    json,
+    window: Optional[float],
+    stall_grace: Optional[Callable[[], bool]],
+    cancel_event: Optional[threading.Event] = None,
+):
+    """POST a non-streaming request off a direct caller, waiting out a server park longer than
+    ``window``, the caller's own read timeout. A non-streaming response carries no notices, so the
+    aggregate ``stall_grace`` reading is the one signal; without one, or without a window, this is
+    ``client.post`` on that timeout. Past the window with no park, or past the park cap, it raises
+    ``httpx.ReadTimeout`` and closes ``client`` so the request in flight ends with it; a set
+    ``cancel_event`` raises ``httpx.ReadError`` the same way, a blocked read not waking for it."""
+    if stall_grace is None or window is None:
+        return client.post(url, json = json, timeout = httpx.Timeout(window, connect = 10))
+    window = float(window)
+    cap = float(_SERVER_PARK_STALL_CAP_S)
+    outcome: dict = {}
+    done = threading.Event()
+
+    def _send():
+        try:
+            outcome["response"] = client.post(
+                url, json = json, timeout = httpx.Timeout(window + cap + 5.0, connect = 10)
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target = _send, daemon = True, name = "park-aware-post")
+    worker.start()
+    deadline = time.monotonic() + window
+    crossed_at: Optional[float] = None
+
+    def _abandon(exc):
+        with contextlib.suppress(Exception):
+            client.close()
+        worker.join(timeout = 0.2)
+        raise exc
+
+    while True:
+        left = max(0.0, deadline - time.monotonic())
+        if done.wait(left if cancel_event is None else min(left, 0.1)):
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            _abandon(httpx.ReadError("Cancelled while the server held the request."))
+        if time.monotonic() < deadline:
+            continue
+        now = time.monotonic()
+        if crossed_at is None:
+            crossed_at = now
+        grace_left = crossed_at + cap - now
+        try:
+            parked = grace_left > 0 and bool(stall_grace())
+        except Exception:
+            parked = False
+        if done.is_set():
+            break
+        if not parked:
+            _abandon(httpx.ReadTimeout("The model did not answer in time."))
+        logger.info(
+            "llama direct request silent for %.0fs with a slot parked by the server; waiting",
+            now - crossed_at + window,
+        )
+        deadline = now + min(window, grace_left)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["response"]
+
+
 def _preempt_ram_option(token) -> tuple[bool, Optional[str]]:
     """Whether ``token`` is ``--preempt-ram`` as llama.cpp reads it (a long option's underscores
     are hyphens to it), and the value attached with ``=``, if any."""
@@ -48550,8 +48623,20 @@ class LlamaCppBackend:
 
                 watcher = threading.Thread(target = _close_when_cancelled, daemon = True)
                 watcher.start()
+            # The server parks the smallest slot first, and a render is silent until it is done.
+            park_grace = self._server_park_grace_any if self.server_may_park else None
             try:
-                resp = client.post(f"{self.base_url}/completion", json = payload)
+                if park_grace is None:
+                    resp = client.post(f"{self.base_url}/completion", json = payload)
+                else:
+                    resp = _post_through_park(
+                        client,
+                        f"{self.base_url}/completion",
+                        json = payload,
+                        window = read_timeout,
+                        stall_grace = park_grace,
+                        cancel_event = cancel_event,
+                    )
             except httpx.RequestError:
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Audio generation cancelled") from None
