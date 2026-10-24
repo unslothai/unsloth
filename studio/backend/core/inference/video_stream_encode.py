@@ -561,6 +561,18 @@ def claim_stream(
     return session.take(video_frames, fps, audio, audio_sample_rate)
 
 
+def _decodes_on_cuda(pipe: Any, decoder: Any, torch: Any) -> bool:
+    """The decoder runs on CUDA: resident there, or parked on the host by model / sequential offload (whose hooks
+    onload it for the decode) while the pipeline executes on CUDA. Raises StopIteration with no parameters."""
+    if next(decoder.parameters()).device.type == "cuda":
+        return True
+    try:
+        device = torch.device(getattr(pipe, "_execution_device", None) or "cpu")
+    except Exception:  # noqa: BLE001 - no execution device: a CPU render
+        return False
+    return device.type == "cuda"
+
+
 def open_stream_encode(
     pipe: Any,
     fps: int,
@@ -568,7 +580,8 @@ def open_stream_encode(
     engage: bool,
     logger: Any = None,
 ) -> Optional[StreamEncode]:
-    """A session for a resident CUDA ``AutoencoderKLWan`` with libx264 frame threads, or None."""
+    """A session for an ``AutoencoderKLWan`` decoding on CUDA (resident or offloaded) with libx264 frame threads,
+    or None."""
     if not engage or not stream_encode_enabled():
         return None
     from .video_encode import frame_threads_enabled
@@ -589,7 +602,9 @@ def open_stream_encode(
         import av  # noqa: F401
         import torch
 
-        if not torch.cuda.is_available() or next(decoder.parameters()).device.type != "cuda":
+        if not torch.cuda.is_available():
+            return None
+        if not _decodes_on_cuda(pipe, decoder, torch):
             return None
         return StreamEncode(vae, processor, fps, logger)
     except Exception:  # noqa: BLE001 - no PyAV, no CUDA or no parameters: encode afterwards
