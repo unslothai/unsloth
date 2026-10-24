@@ -13,8 +13,10 @@ from huggingface_hub.utils import filter_repo_objects
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-pytest.importorskip("unsloth_zoo", reason = "importing unsloth needs unsloth_zoo installed")
-import unsloth.models._utils as U  # noqa: E402
+try:
+    import unsloth.models._utils as U
+except ImportError as exc:  # a bare runner: unsloth_zoo, peft or torch absent
+    pytest.skip(f"unsloth is not importable here: {exc}", allow_module_level = True)
 
 SHARD = "transformer/diffusion_pytorch_model-00001-of-00002.safetensors"
 VISION = "vision_encoder/model.safetensors"
