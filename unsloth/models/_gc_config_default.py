@@ -3,23 +3,16 @@
 
 """Honour ``use_gradient_checkpointing = False`` when the trainer config only carries TRL's default.
 
-TRL's configs (``SFTConfig``, ``GRPOConfig``, ...) default ``gradient_checkpointing = True``, unlike
-``TrainingArguments``. ``Trainer.train()`` then calls ``model.gradient_checkpointing_enable()``, so a model
-loaded or patched with ``use_gradient_checkpointing = False`` is trained with torch's checkpointing anyway:
-every layer's forward is recomputed in the backward and the step is about 25-30% slower than the user asked for.
+TRL configs default ``gradient_checkpointing = True``, so ``Trainer.train()`` would re-enable it (~25-30% slower).
+Unsloth configs record whether it was passed to ``__init__`` as ``_unsloth_gradient_checkpointing_explicit``,
+not compared to a default (which varies by TRL release); full rebuilds (``dataclasses.replace``,
+``Config(**args.to_dict())``) count as explicit, keeping the old behaviour.
 
-The config value alone cannot tell "the user asked for it" from "TRL's default", so the Unsloth config
-classes record whether ``gradient_checkpointing`` was passed to ``__init__`` (by keyword or position) as
-``_unsloth_gradient_checkpointing_explicit``. That is the signal used here, chosen because it does not depend
-on comparing against a default value that changes between TRL releases, and because anything that rebuilds a
-config by passing every field (``dataclasses.replace``, ``Config(**args.to_dict())``, a subclass whose own
-``__init__`` forwards all fields) counts as explicit, which keeps the previous behaviour.
-
-Rules, applied once when an Unsloth trainer is constructed:
-- model recorded ``False`` + config at TRL's default ``True`` -> the config is set to ``False`` (one log line).
-- config set explicitly to ``True`` -> kept: the explicit trainer setting wins, as before (one log line).
-- config of unknown origin (not an Unsloth config class) -> kept, with a hint.
-- model recorded ``"unsloth"`` / ``True`` / nothing -> untouched.
+Rules, at trainer construction:
+- model ``False`` + config at TRL's default -> config set to ``False``.
+- config explicitly ``True`` -> kept.
+- config not an Unsloth class -> kept, with a hint.
+- model ``"unsloth"`` / ``True`` / unset -> untouched.
 """
 
 import functools
@@ -54,7 +47,6 @@ def track_explicit_gradient_checkpointing(config_class):
         return False
     if "gradient_checkpointing" not in names:
         return False
-    # Positional slot, counting ``self`` (``args`` below excludes it).
     position = names.index("gradient_checkpointing") - 1
 
     @functools.wraps(init)
@@ -70,7 +62,6 @@ def track_explicit_gradient_checkpointing(config_class):
 
 
 def honour_gradient_checkpointing_off(args, model):
-    """Turn ``args.gradient_checkpointing`` off when the model was set up without it and the config only has TRL's default."""
     if args is None or model is None or not getattr(args, "gradient_checkpointing", False):
         return False
     try:

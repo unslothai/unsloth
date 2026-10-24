@@ -4030,7 +4030,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _patched_config = getattr(created_module, f"Unsloth{RLConfig_name}", None)
     _patch_config_pickle_identity(RLConfig, _patched_config)
     if _patched_config is not None:
-        # Lets the trainer tell TRL's gradient_checkpointing = True default from an explicit choice.
         try:
             from ._gc_config_default import track_explicit_gradient_checkpointing
             track_explicit_gradient_checkpointing(_patched_config)
