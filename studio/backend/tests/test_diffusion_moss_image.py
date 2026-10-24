@@ -132,6 +132,27 @@ def test_unmasked_forward_takes_no_host_sync(transformers_pair, monkeypatch):
         ours(latents, torch.tensor(10.0), embeds, return_dict = False)
 
 
+@pytest.mark.parametrize(
+    "device, fp64, where",
+    [
+        ("mps", None, "cpu"),
+        ("xpu", False, "cpu"),
+        ("xpu", True, "xpu"),
+        ("cuda", None, "cuda"),
+        ("cpu", None, "cpu"),
+    ],
+)
+def test_timestep_sinusoid_keeps_float64_off_mps(moss, monkeypatch, device, fp64, where):
+    from types import SimpleNamespace
+
+    import torch
+
+    monkeypatch.setattr(
+        torch.xpu, "get_device_properties", lambda *a, **k: SimpleNamespace(has_fp64 = fp64)
+    )
+    assert moss._float64_device(torch.device(device)).type == where
+
+
 def test_rope_tables_are_cached_and_rebuilt_on_moves(transformers_pair):
     import torch
 

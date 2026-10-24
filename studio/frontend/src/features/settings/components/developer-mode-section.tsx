@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
@@ -107,20 +108,21 @@ export function DeveloperModeSection() {
       <SettingsSection title={t("settings.general.developerMode.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.developerMode.videoCpu")}
-          description={t("settings.general.developerMode.videoCpuDescription")}
-          below={
-            note ? (
-              <span
-                data-testid="developer-mode-note"
-                className={
-                  error
-                    ? "max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
-                    : "max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground"
-                }
-              >
-                {note}
-              </span>
-            ) : null
+          description={
+            <>
+              {t("settings.general.developerMode.videoCpuDescription")}
+              {note ? (
+                <span
+                  data-testid="developer-mode-note"
+                  className={cn(
+                    "mt-1.5 block",
+                    error ? "text-destructive" : "text-muted-foreground/80",
+                  )}
+                >
+                  {note}
+                </span>
+              ) : null}
+            </>
           }
         >
           <Switch

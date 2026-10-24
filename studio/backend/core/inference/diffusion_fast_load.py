@@ -525,8 +525,11 @@ def fast_upload(
     try:
         if fast_upload_enabled():
             import torch
+            from .host_pinning import host_pinning_allowed
+
             target = torch.device(device)
-            if target.type == "cuda" and torch.cuda.is_available():
+            # The ring is pinned memory: an integrated GPU takes the stock ``.to`` instead.
+            if target.type == "cuda" and torch.cuda.is_available() and host_pinning_allowed(target):
                 if target.index is None:
                     target = torch.device("cuda", torch.cuda.current_device())
                 sources = _upload_candidates(modules, target)

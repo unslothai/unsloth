@@ -78,9 +78,16 @@ def _divides(old, n, k):
     return all(n % t[1] == 0 and k % t[2] == 0 for t in old)
 
 
+@pytest.fixture
+def no_smem_fit(ac, monkeypatch):
+    # The dims fit alone: on a card with less shared memory (L4, A10: 101,376 B) the smem fit also steps the
+    # heuristic dX down to 3 stages, which the smem tests below cover.
+    monkeypatch.setattr(ac, "_device_smem_per_block", lambda *a, **k: None)
+
+
 @pytest.mark.parametrize("hidden,inter", SHAPES + [(2048, 1024)])
 @pytest.mark.parametrize("which", ["heuristic", "default"])
-def test_fallback_tiles_divide_each_gemm(ac, hidden, inter, which):
+def test_fallback_tiles_divide_each_gemm(ac, no_smem_fit, hidden, inter, which):
     fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
     old = OLD_HEURISTIC if which == "heuristic" else OLD_DEFAULT
     for kwargs, (n, k) in _gemms(hidden, inter):
@@ -104,7 +111,7 @@ def test_working_shapes_keep_exact_configs(ac, hidden, inter, which):
         assert [c.__dict__ for c in new] == [c.__dict__ for c in fn()]
 
 
-def test_no_dims_keeps_old_configs(ac):
+def test_no_dims_keeps_old_configs(ac, no_smem_fit):
     assert _tiles(ac._get_heuristic_configs()) == OLD_HEURISTIC
     assert _tiles(ac._get_default_configs()) == OLD_DEFAULT
 

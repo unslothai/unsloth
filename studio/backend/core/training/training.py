@@ -10,6 +10,7 @@ orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, 
 exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
+from core.inference.inference_gate import pauses_background_embedding
 from core.training.account_jobs import (
     account_is_retired,
     account_process_spec,
@@ -1718,6 +1719,7 @@ class TrainingBackend:
 
     @_invalidates_gpu_memory("training start")
     @owned_job()
+    @pauses_background_embedding
     def start_training(
         self,
         job_id: str,
