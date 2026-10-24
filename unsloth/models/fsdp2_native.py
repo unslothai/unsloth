@@ -3460,6 +3460,12 @@ def _refuse_tensor_parallel_model(model):
     except ImportError:
         pass
     dtensor = DTensor is not None and any(isinstance(p, DTensor) for p in model.parameters())
+    if model.__dict__.get("_unsloth_tp"):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
+            "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
+            "ranks only (data parallel size 1)."
+        )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
             "Unsloth: native FSDP2 got a model that is already distributed (tensor-parallel tp_plan, "

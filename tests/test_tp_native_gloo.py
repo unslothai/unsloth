@@ -80,6 +80,14 @@ def _case_parity(rank, world, tmp, arch, overrides = None):
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     tpn.apply_tensor_parallel(model, mesh["tp"])
     assert tpn.is_tensor_parallel(model)
+    assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
+    from test_fsdp2_native_units import _load_native
+
+    try:
+        _load_native()._refuse_tensor_parallel_model(model)
+        fsdp2_refused = None
+    except RuntimeError as e:
+        fsdp2_refused = str(e)
     ids = _batch(ref)
     ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
     tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
@@ -93,6 +101,7 @@ def _case_parity(rank, world, tmp, arch, overrides = None):
         "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
         "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors")) if rank == 0 else None,
         "local_q": (tuple(q.to_local().shape), tuple(q.shape), q.placements[0].dim),
+        "fsdp2_refused": fsdp2_refused,
     }
 
 
@@ -288,6 +297,7 @@ def _check_parity(results, world):
             torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
         assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6), (rank, losses, ref_losses)
         assert norms == pytest.approx(ref_norms, rel = 1e-5), (rank, norms, ref_norms)
+        assert "does not compose with Unsloth tensor parallelism" in (res["fsdp2_refused"] or "")
         local, full, dim = res["local_q"]
         assert local[dim] * world == full[dim] and local[1 - dim] == full[1 - dim]
     saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]

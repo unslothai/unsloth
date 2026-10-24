@@ -5675,6 +5675,13 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            if isinstance(getattr(model, "__dict__", None), dict) and model.__dict__.get("_unsloth_tp"):
+                # accelerate would wrap the tp ranks in DDP (or native FSDP2 refuses the DTensors).
+                raise RuntimeError(
+                    "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
+                    "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
+                    "training loop (unsloth/models/tp_native.py)."
+                )
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.

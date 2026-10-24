@@ -17,6 +17,20 @@ Embeddings, lm_head and norms stay replicated (fused cross entropy reads lm_head
 The plan comes from `plan=`, else the model's transformers TP plan (`_tp_plan` / text config
 `base_model_tp_plan`), else structural discovery; anything inside a region that the plan does not cover is
 refused. Nothing changes unless `apply_tensor_parallel` is called.
+
+v1 scope: LoRA / QLoRA (bitsandbytes 4-bit: each rank keeps the exact codes of its shard) on dense decoders,
+tensor parallel ranks only (data parallel size 1; native FSDP2 and the Trainer refuse a TP model), training
+forward (no fast generation). Refused with the reason: MoE, MLA, heads / kv heads / intermediate size not
+divisible by tp, kv heads < tp, DoRA, lora_bias, several adapters, trainable base weights, 8-bit / GPTQ / AWQ /
+fp8 / MXFP4 bases, per-layer norms over all heads. A custom loop (torchrun --nproc_per_node tp):
+
+    params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
+    optimizer = torch.optim.AdamW(params, lr = 2e-4)
+    loss = model(input_ids = ids, labels = ids).loss  # same batch on every tp rank
+    loss.backward()
+    tp_clip_grad_norm_(params, 1.0)
+    optimizer.step(); optimizer.zero_grad()
+    save_tp_adapter(model, "out")  # collective: the standard 1-GPU PEFT adapter, written by rank 0
 """
 
 from __future__ import annotations
