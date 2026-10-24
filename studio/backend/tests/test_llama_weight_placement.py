@@ -343,15 +343,15 @@ def test_each_os_reads_its_own_load_counter(monkeypatch):
     assert calls == [7]
 
 
-def test_the_load_counter_reads_a_real_process_on_this_os(tmp_path):
-    """No mocks: a child reads a file into memory, and this OS's counter must see at least that much.
+def test_load_progress_follows_a_real_process_on_this_os(tmp_path):
+    """No mocks: a child reads a weight file into memory, and load_progress must see all of it.
     Linux rchar and Windows read_bytes count the read; on macOS a page-cached file reads nothing from
-    disk, so the physical footprint of the held bytes carries it."""
+    disk, so the physical footprint of the held bytes carries it. Before, macOS and Windows got None."""
     if not (os.path.isdir("/proc") or sys.platform in ("darwin", "win32")):
         pytest.skip("no load counter on this platform")
     size = 64 * 1024 * 1024
-    blob = tmp_path / "weights.bin"
-    blob.write_bytes(os.urandom(size))
+    weights = tmp_path / "model.gguf"
+    weights.write_bytes(os.urandom(size))
     child = subprocess.Popen(
         [
             sys.executable,
@@ -360,15 +360,22 @@ def test_the_load_counter_reads_a_real_process_on_this_os(tmp_path):
             "data = open(sys.argv[1], 'rb').read()\n"
             "print(len(data), flush = True)\n"
             "time.sleep(60)\n",
-            str(blob),
+            str(weights),
         ],
         stdout = subprocess.PIPE,
         text = True,
     )
     try:
         assert int(child.stdout.readline()) == size
-        loaded = LlamaCppBackend._read_load_bytes(child.pid)
-        assert loaded is not None and loaded >= size
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = type("P", (), {"pid": child.pid, "args": None})()
+        backend._gguf_path = str(weights)
+        backend._healthy = False
+        progress = backend.load_progress()
+        assert progress is not None
+        assert progress["phase"] == "mmap"
+        assert progress["bytes_total"] == size
+        assert progress["fraction"] >= 0.99
     finally:
         child.kill()
         child.wait(10)
