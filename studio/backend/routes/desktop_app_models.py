@@ -125,16 +125,71 @@ def _gguf_header_facts(
         return None, None
 
 
+def _serves(llama, model_path: str, variant: Optional[str]) -> bool:
+    """Whether a resident llama backend is serving this model (and quant, when both are known)."""
+    from core.inference.model_ids import public_model_id
+
+    ident = getattr(llama, "model_identifier", None)
+    if not isinstance(ident, str) or not ident:
+        return False
+    if ident != model_path and public_model_id(ident) != public_model_id(model_path):
+        return False
+    held = getattr(llama, "hf_variant", None)
+    return not (variant and held and str(held).lower() != str(variant).lower())
+
+
+def _replaced_resident_bytes(model_path: str, variant: Optional[str]) -> int:
+    """Unified memory the resident llama-server(s) a load of this model stops first hold now.
+
+    The guard budget is what macOS has available right now, and a loaded model's weights and KV
+    are not available: on a 512 GB Mac serving a 300+ GB GGUF the budget read ~150 GB and the
+    guard said only 8k of context fit, for the very model already running at its full context.
+    A load of a model that is already resident restarts (or keeps) that server, and with Keep
+    multiple models loaded Off any load replaces what runs, so that memory comes back before
+    the new server allocates. Best effort: 0 when nothing is resident or it cannot be read."""
+    try:
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
+        from utils.multi_model_settings import get_multi_model_mode
+
+        replace_all = get_multi_model_mode() == "off"
+        slots = (None, *model_slots.visible())
+    except Exception:
+        return 0
+    total = 0
+    for slot in slots:
+        try:
+            llama = model_slots.in_slot(slot, get_llama_cpp_backend)
+            if not getattr(llama, "is_loaded", False):
+                continue
+            if not replace_all and not _serves(llama, model_path, variant):
+                continue
+            total += int(llama.resident_memory_mib() or 0) * 1024 * 1024
+        except Exception:
+            continue
+    return total
+
+
 async def _guard_context(
     load_request, trained: int, fastapi_request, current_subject
 ) -> tuple[Optional[int], Optional[int]]:
     """(budget, fitted context) of the Metal memory guard for this load, priced by the same
-    /api/inference/estimate-memory arithmetic the Run settings memory bar uses."""
+    /api/inference/estimate-memory arithmetic the Run settings memory bar uses. The budget
+    counts the memory a resident server this load replaces holds as available (see
+    ``_replaced_resident_bytes``)."""
     from core.inference.llama_cpp import LlamaCppBackend
     from models.inference import EstimateMemoryRequest
     from routes.inference import estimate_memory
 
-    budget = await asyncio.to_thread(LlamaCppBackend._apple_metal_memory_budget_bytes)
+    reclaimable = await asyncio.to_thread(
+        _replaced_resident_bytes, load_request.model_path, load_request.gguf_variant
+    )
+    if reclaimable > 0:
+        budget = await asyncio.to_thread(
+            LlamaCppBackend._apple_metal_memory_budget_bytes, reclaimable
+        )
+    else:
+        budget = await asyncio.to_thread(LlamaCppBackend._apple_metal_memory_budget_bytes)
     if not budget:
         return None, None
     shared = {

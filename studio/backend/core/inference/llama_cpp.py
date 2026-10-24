@@ -14573,7 +14573,7 @@ class LlamaCppBackend:
         return bool(LlamaCppBackend._apple_metal_memory_budget_bytes())
 
     @staticmethod
-    def _apple_metal_memory_budget_bytes() -> int:
+    def _apple_metal_memory_budget_bytes(reclaimable_bytes: int = 0) -> int:
         """Unified-memory budget for GGUF context fitting on Apple Silicon.
 
         No GPU is enumerated on Metal, so the context would default to native and
@@ -14598,6 +14598,11 @@ class LlamaCppBackend:
         over a static ceiling: available is a snapshot, and llama-server spends
         seconds loading weights, so another app can take memory inside that
         window. Budgeting all of it would re-create the failure this avoids.
+
+        ``reclaimable_bytes`` is memory a resident llama-server holds that the load being
+        priced will stop first (a reload of the same model, or a replacement). It counts as
+        available, since it will be by the time the new server allocates; the device
+        ceiling still caps the sum. 0, the default, is the plain "right now" budget.
         """
         from utils.hardware import is_apple_silicon
 
@@ -14630,6 +14635,7 @@ class LlamaCppBackend:
         except Exception:
             available = 0
         if available > 0:
+            available += max(0, int(reclaimable_bytes or 0))
             rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 

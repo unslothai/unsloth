@@ -608,3 +608,145 @@ def test_guard_prices_the_load_with_its_saved_settings(monkeypatch):
     )
     assert asyncio.run(dam._guard_context(load, 262_144, None, "owner")) == (None, None)
     assert asked == []
+
+
+# -- the guard budget counts a resident model the load replaces --------------------------------
+
+
+def _mac_budget_inputs(monkeypatch, *, recommended, available):
+    import psutil
+
+    import utils.hardware as hardware_pkg
+    import utils.hardware.hardware as hardware
+
+    monkeypatch.setattr(hardware_pkg, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hardware, "_metal_recommended_working_set_bytes", lambda: recommended)
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: _types.SimpleNamespace(total = 512 * 1024**3, available = available),
+    )
+
+
+def test_metal_budget_counts_reclaimable_memory_up_to_the_device_ceiling(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # Max's 512 GB Mac Studio, measured with GLM-5.3-Flash UD-Q6_K_XL loaded at 1M context:
+    # Metal working set 464 GiB, psutil available 188.19 GB, the llama-server's RSS 322.79 GB.
+    recommended, available, resident = 498_216_206_336, 188_190_539_776, 322_790_293_504
+    _mac_budget_inputs(monkeypatch, recommended = recommended, available = available)
+    # Right now: 0.85 x available, the ~149 GiB the guard showed (153.4 GiB at the time).
+    now = LlamaCppBackend._apple_metal_memory_budget_bytes()
+    assert now == int(available * 0.85)
+    assert 148 * 1024**3 < now < 150 * 1024**3
+    # With the resident server credited back, the device ceiling binds: 0.85 x 464 GiB.
+    credited = LlamaCppBackend._apple_metal_memory_budget_bytes(resident)
+    assert credited == int(recommended * 0.85)
+    # A small credit only adds itself; a negative one is ignored.
+    gib = 1024**3
+    assert LlamaCppBackend._apple_metal_memory_budget_bytes(10 * gib) == int(
+        (available + 10 * gib) * 0.85
+    )
+    assert LlamaCppBackend._apple_metal_memory_budget_bytes(-5 * gib) == now
+
+
+class _FakeLlama:
+    def __init__(
+        self,
+        ident,
+        variant,
+        mib,
+        loaded = True,
+    ):
+        self.model_identifier = ident
+        self.hf_variant = variant
+        self.is_loaded = loaded
+        self._mib = mib
+
+    def resident_memory_mib(self):
+        return self._mib
+
+
+def _resident_slots(monkeypatch, backends, mode):
+    import core.inference.model_slots as model_slots
+    import routes.inference as inference
+    import utils.multi_model_settings as multi
+
+    slots = list(backends)[1:]
+    current = {"slot": None}
+
+    def in_slot(slot, fn):
+        current["slot"] = slot
+        return fn()
+
+    monkeypatch.setattr(model_slots, "visible", lambda: slots)
+    monkeypatch.setattr(model_slots, "in_slot", in_slot)
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backends[current["slot"]])
+    monkeypatch.setattr(multi, "get_multi_model_mode", lambda: mode)
+
+
+def test_replaced_resident_bytes_credits_only_what_the_load_stops(monkeypatch):
+    import routes.desktop_app_models as dam
+
+    mib = 1024 * 1024
+    glm = "unsloth/GLM-5.3-Flash-GGUF"
+    backends = {
+        None: _FakeLlama(glm, "UD-Q6_K_XL", 300_000),
+        "slot-1": _FakeLlama("unsloth/Qwen3.8-GGUF", "UD-Q4_K_XL", 20_000),
+        "slot-2": _FakeLlama("unsloth/Other-GGUF", "Q8_0", 9_000, loaded = False),
+    }
+    # Keep multiple loaded on: only the server already serving this model and quant.
+    _resident_slots(monkeypatch, backends, "fit")
+    assert dam._replaced_resident_bytes(glm, "UD-Q6_K_XL") == 300_000 * mib
+    assert dam._replaced_resident_bytes(glm, "ud-q6_k_xl") == 300_000 * mib
+    # Another quant of the same repo loads beside it: nothing comes back.
+    assert dam._replaced_resident_bytes(glm, "UD-Q4_K_XL") == 0
+    assert dam._replaced_resident_bytes("unsloth/New-GGUF", "Q4_K_M") == 0
+    # Keep multiple loaded Off: the load replaces every loaded server (not the idle slot).
+    _resident_slots(monkeypatch, backends, "off")
+    assert dam._replaced_resident_bytes("unsloth/New-GGUF", "Q4_K_M") == 320_000 * mib
+
+
+def test_replaced_resident_bytes_never_raises(monkeypatch):
+    import routes.desktop_app_models as dam
+
+    class Broken(_FakeLlama):
+        def resident_memory_mib(self):
+            raise RuntimeError("gone")
+
+    _resident_slots(monkeypatch, {None: Broken("m", None, 1)}, "off")
+    assert dam._replaced_resident_bytes("m", None) == 0
+
+
+def test_guard_budget_includes_the_replaced_resident_model(monkeypatch):
+    import asyncio
+
+    import routes.desktop_app_models as dam
+    import routes.inference as inference
+    from core.inference.llama_cpp import LlamaCppBackend
+    from models.inference import LoadRequest
+
+    gib = 1024**3
+    credits = []
+
+    async def estimate(request, fastapi_request, subject):
+        gpu = 300 * gib + (request.n_ctx - 8_192) * (60 * gib) // (1_048_576 - 8_192)
+        return _types.SimpleNamespace(available = True, gpu_bytes = gpu, total_bytes = gpu)
+
+    def budget(reclaimable_bytes = 0):
+        credits.append(reclaimable_bytes)
+        return 150 * gib + int(reclaimable_bytes * 0.85)
+
+    monkeypatch.setattr(inference, "estimate_memory", estimate)
+    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(budget))
+    monkeypatch.setattr(dam, "_replaced_resident_bytes", lambda path, variant: 300 * gib)
+    load = LoadRequest(model_path = "/glm", gguf_variant = "UD-Q6_K_XL")
+    got, fitted = asyncio.run(dam._guard_context(load, 1_048_576, None, "owner"))
+    # 150 GiB free + 255 GiB back from the resident copy: the full 1M context fits.
+    assert credits == [300 * gib]
+    assert got == 405 * gib and fitted is None
+    # Nothing resident: the plain right-now budget, which caps the context.
+    credits.clear()
+    monkeypatch.setattr(dam, "_replaced_resident_bytes", lambda path, variant: 0)
+    got, fitted = asyncio.run(dam._guard_context(load, 1_048_576, None, "owner"))
+    assert credits == [0] and got == 150 * gib and fitted == 8_192
