@@ -1271,6 +1271,26 @@ def test_rocm_kept_secondary_still_gets_the_fused_sdpa_guard(_real_rocm_sdpa_pro
     assert flags() == (False, True)
 
 
+def test_rocm_kept_secondaries_share_a_fused_sdpa_kernel(_real_rocm_sdpa_probe, monkeypatch):
+    # cuda:1 runs only flash, cuda:2 only mem-efficient: neither is math-only, but keeping both would leave math as
+    # the only common kernel and turn every fused switch off under a plan priced for fused attention. cuda:2 goes.
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    answers = {
+        "cuda:0": (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT),
+        "cuda:1": (da.SDPA_MATH, da.SDPA_FLASH),
+        "cuda:2": (da.SDPA_MATH, da.SDPA_MEM_EFFICIENT),
+    }
+    monkeypatch.setattr(da, "_run_rocm_sdpa_children", lambda device, dtype: answers[device])
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1, 2)) == (1,)
+    assert flags() == (True, False)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1, 2)) == (1,)
+    assert flags() == (True, False)
+
+
 class _MixedPrecisionDiT(torch.nn.Module):
     """MiniMax-H3's layout: an input stem kept in fp32 registered before bf16 blocks whose attention runs in bf16."""
 

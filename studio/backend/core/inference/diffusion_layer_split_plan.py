@@ -845,6 +845,33 @@ def _rocm_sdpa_math_only(
         return False
 
 
+def _rocm_fused_sdpa_kernels(ordinal: int, dtype: Any) -> Optional[tuple[str, ...]]:
+    """The fused SDPA kernels that ran on this card at this dtype, read-only (the cached probe answer when the card was
+    already asked); None when the probe did not answer or the ROCm fused-SDPA guard would not act."""
+    try:
+        from types import SimpleNamespace
+
+        from .diffusion_attention import (
+            _SDPA_SUBQUADRATIC,
+            _is_cuda_rocm,
+            _rocm_guard_allowed,
+            _sdpa_capability,
+            read_only_sdpa_probe,
+        )
+
+        if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+            return None
+        with read_only_sdpa_probe():
+            available = _sdpa_capability(
+                SimpleNamespace(device = f"cuda:{int(ordinal)}", dtype = dtype)
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    if not available:
+        return None
+    return tuple(k for k in available if k in _SDPA_SUBQUADRATIC)
+
+
 def _rocm_drop_math_only(
     pipe: Any,
     primary: int,
@@ -853,18 +880,35 @@ def _rocm_drop_math_only(
 ) -> tuple[int, ...]:
     """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
     priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
-    block. A math-only primary priced that peak already, so cards matching it are kept."""
+    block. A math-only primary priced that peak already, so cards matching it are kept. A secondary sharing no fused
+    kernel with the primary and the cards kept before it is dropped too: the guard keeps only the common kernels."""
     if not cards:
         return cards
     dtype = _rocm_attention_dtype(pipe)
     if _rocm_sdpa_math_only(primary, dtype):
         return cards
     dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype, read_only = True))
+    mismatched: list[int] = []
+    # The fused switches are process-wide, so the kept cards must share a fused kernel with the primary: a secondary
+    # that would empty the common set is dropped like a math-only one (an unanswered card adds no constraint).
+    common = _rocm_fused_sdpa_kernels(primary, dtype)
+    if common:
+        for o in cards:
+            if o in dropped:
+                continue
+            fused = _rocm_fused_sdpa_kernels(o, dtype)
+            if fused is None:
+                continue
+            if any(k in fused for k in common):
+                common = tuple(k for k in common if k in fused)
+            else:
+                mismatched.append(o)
+        dropped = tuple(o for o in cards if o in dropped or o in mismatched)
     if dropped and logger is not None:
         logger.info(
             "diffusion.multigpu: layer split skips %s (%s at %s)",
             ", ".join(f"cuda:{o}" for o in dropped),
-            MATH_ONLY_DECLINE,
+            "no fused SDPA kernel shared with the primary" if mismatched else MATH_ONLY_DECLINE,
             dtype,
         )
     kept = tuple(o for o in cards if o not in dropped)
@@ -881,8 +925,8 @@ def _math_only_reason(primary: int, cards: Sequence[int]) -> str:
     names = ", ".join(f"cuda:{int(o)}" for o in cards)
     has = "has" if len(cards) == 1 else "have"
     return (
-        f"{MATH_ONLY_DECLINE}: {names} {has} no fused SDPA kernel at the model dtype (cuda:{int(primary)} does), so its "
-        "attention would materialise the full score matrix"
+        f"{MATH_ONLY_DECLINE}: {names} {has} no fused SDPA kernel shared with cuda:{int(primary)} at the model dtype, so "
+        "its attention would materialise the full score matrix"
     )
 
 
