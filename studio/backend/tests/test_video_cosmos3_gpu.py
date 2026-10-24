@@ -74,7 +74,7 @@ def _requests(snapshot):
         "prompt": prompt("example_i2v_prompt.json"),
         "width": 832,
         "height": 480,
-        "num_frames": 9,
+        "num_frames": 53,  # Edge's minimum; a 4k+1 count Nano takes too
     }
     return {"t2v": t2v, "i2v": {**t2v, "first_frame": image}}, common
 
