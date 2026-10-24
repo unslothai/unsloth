@@ -27,7 +27,18 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_tp_native_oracle import ARCHS, QWEN3, LLAMA, _batch, build, skip_unsupported, tpn  # noqa: E402
+from test_tp_native_oracle import (  # noqa: E402
+    ARCHS,
+    LLAMA,
+    PHI3_PACKED_PLAN,
+    QWEN3,
+    _batch,
+    build,
+    skip_unsupported,
+    tpn,
+)
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _free_port():
@@ -68,6 +79,23 @@ def _train(model, ids, steps, clip):
     return logits, grads, losses, norms
 
 
+def _clip_fp64(params, max_norm):
+    """clip_grad_norm_ with the norm accumulated in float64. torch's CPU fp32 vector_norm is off by ~2e-4
+    relative on a 512k-element gradient (a trained lm_head copy), more than the parity tolerance."""
+    grads = [p.grad for p in params if p.grad is not None]
+    total = torch.stack([g.double().square().sum() for g in grads]).sum().sqrt().float()
+    coef = torch.clamp(max_norm / (total + 1e-6), max = 1.0)
+    for g in grads:
+        g.mul_(coef)
+    return total
+
+
+def _tie_q_norms(model):
+    # Two regions sharing one trainable per-head norm weight: its tp sum must run once, not once per region.
+    layers = tpn._unwrap(model).model.layers
+    layers[1].self_attn.q_norm.weight = layers[0].self_attn.q_norm.weight
+
+
 def _case_parity(
     rank,
     world,
@@ -76,6 +104,10 @@ def _case_parity(
     overrides = None,
     lora_kwargs = None,
     save_kwargs = None,
+    plan = None,
+    freeze_before_save = False,
+    tie_norms = False,
+    fp64_ref_clip = False,
 ):
     from torch.distributed.device_mesh import init_device_mesh
     from safetensors.torch import load_file
@@ -85,8 +117,10 @@ def _case_parity(
     train_norms = arch in ("qwen3", "gemma3")
     ref = build(repo, overrides, train_norms = train_norms, **(lora_kwargs or {}))
     model = build(repo, overrides, train_norms = train_norms, **(lora_kwargs or {}))
+    if tie_norms:
+        _tie_q_norms(ref), _tie_q_norms(model)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
-    tpn.apply_tensor_parallel(model, mesh["tp"])
+    tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
     with pytest.raises(RuntimeError, match = "generation is not supported"):
@@ -99,8 +133,13 @@ def _case_parity(
     except RuntimeError as e:
         fsdp2_refused = str(e)
     ids = _batch(ref)
-    ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
+    ref_out = _train(ref, ids, 3, _clip_fp64 if fp64_ref_clip else torch.nn.utils.clip_grad_norm_)
     tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
+    if freeze_before_save:
+        # Frozen adapter (e.g. after training): PEFT still saves bias = "all" biases, trainable or not.
+        for m in (ref, model):
+            for p in m.parameters():
+                p.requires_grad_(False)
     ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
     ref.save_pretrained(ref_dir, **(save_kwargs or {}))
     tpn.save_tp_adapter(model, tp_dir, **(save_kwargs or {}))
@@ -117,28 +156,104 @@ def _case_parity(
     }
 
 
-def _case_fused(rank, world, tmp):
-    # The real package from this checkout, not the stub the oracle module loads tp_native under.
+def _import_checkout_unsloth():
+    """`import unsloth` from this checkout (not the stub tp_native is loaded under); None, or why it failed."""
+    import pathlib
+
     for name in [n for n in sys.modules if n == "unsloth" or n.startswith("unsloth.")]:
         del sys.modules[name]
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, REPO)
     try:
         # The same device spoof pytest's conftest applies in the parent (spawned ranks do not run it).
         import importlib.util
 
-        here = os.path.dirname(os.path.abspath(__file__))
         spec = importlib.util.spec_from_file_location(
-            "_tp_conftest", os.path.join(here, "conftest.py")
+            "_tp_conftest", os.path.join(REPO, "tests", "conftest.py")
         )
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
         import unsloth
-        from unsloth.kernels import fast_lora
-        from unsloth.models import tp_native
     except Exception as e:  # a CPU host that refuses `import unsloth`
-        return {"skip": repr(e)}
-    from torch.distributed.device_mesh import init_device_mesh
+        return repr(e)
+    # By path: compile setup may put other directories in front of sys.path.
+    root = pathlib.Path(REPO).resolve()
+    assert root in pathlib.Path(unsloth.__file__).resolve().parents, unsloth.__file__
+    return None
 
-    assert unsloth.__file__.startswith(sys.path[0]), unsloth.__file__
+
+def _raised(fn):
+    try:
+        fn()
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def _case_guards(rank, world, tmp):
+    """Every entry point that would run outside the tensor parallel regions is refused on every wrapper level,
+    whichever level apply_tensor_parallel was given."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth import FastLanguageModel, FastModel
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    args = transformers.TrainingArguments(output_dir = tmp, report_to = [], use_cpu = True)
+    out = {}
+    for applied in ("peft", "causal"):
+        model = build(LLAMA)
+        levels = {
+            "peft": model,
+            "lora": model.base_model,
+            "causal": model.base_model.model,
+            "decoder": model.base_model.model.model,
+        }
+        tp_native.apply_tensor_parallel(levels[applied], mesh["tp"])
+        ids = _batch(model)
+        res = {}
+        cached = model(input_ids = ids, use_cache = True)
+        res["forward_without_cache"] = cached.logits is not None
+        past = cached.past_key_values
+        step = ids[:, -1:]
+        for name, level in levels.items():
+            res[f"is_tp:{name}"] = tp_native.is_tensor_parallel(level)
+            res[f"fsdp2:{name}"] = _raised(lambda: fsdp2_native._refuse_tensor_parallel_model(level))
+            res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
+            res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
+            if name != "decoder":
+                res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
+                res[f"trainer:{name}"] = _raised(lambda: transformers.Trainer(model = level, args = args))
+                res[f"model_init:{name}"] = _raised(
+                    lambda: transformers.Trainer(model_init = lambda: level, args = args)
+                )
+            res[f"cached:{name}"] = _raised(
+                lambda: level(input_ids = step, past_key_values = past, use_cache = True)
+            )
+        res["generate:get_base_model"] = _raised(
+            lambda: model.get_base_model().generate(input_ids = ids)
+        )
+        params = [p for p in model.parameters() if p.requires_grad]
+        model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
+        norm = tp_native.tp_clip_grad_norm_(params, 1e9)
+        res["clip_mesh_equal"] = float(norm) == float(
+            tp_native.tp_clip_grad_norm_(params, 1e9, mesh = mesh["tp"])
+        )
+        out[applied] = res
+    return out
+
+
+def _case_fused(rank, world, tmp):
+    # The real package from this checkout, not the stub the oracle module loads tp_native under.
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    from unsloth.kernels import fast_lora
+    from unsloth.models import tp_native
+    from torch.distributed.device_mesh import init_device_mesh
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     calls = []
@@ -288,9 +403,20 @@ def _case_qlora_misaligned(rank, world, tmp):
     return {"unchanged": before == after, "flag": tpn.is_tensor_parallel(model)}
 
 
+def _case_save_subgroup(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    # tp = 1 inside a 2-rank world (data parallel 2): the world-scoped writer / barrier would not match.
+    mesh = init_device_mesh("cpu", (world, 1), mesh_dim_names = ("dp", "tp"))
+    model = tpn.apply_tensor_parallel(build(LLAMA), mesh["tp"])
+    return {"error": _raised(lambda: tpn.save_tp_adapter(model, os.path.join(tmp, "out")))}
+
+
 CASES = {
     "parity": _case_parity,
+    "save_subgroup": _case_save_subgroup,
     "fused": _case_fused,
+    "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
 }
@@ -437,3 +563,66 @@ def test_apply_refuses_a_2d_mesh():
 
     with pytest.raises(ValueError, match = "1-D tp mesh"):
         tpn.apply_tensor_parallel(model, _Mesh())
+
+
+def test_tp2_phi3_fused_qkv_under_a_packed_plan_matches_one_process():
+    # The tiny Phi3 is GQA (4 heads, 2 kv heads): qkv_proj parts are (q, kv, kv), not two packed halves.
+    _check_parity(_spawn("parity", 2, arch = "phi3", plan = PHI3_PACKED_PLAN), 2)
+
+
+@pytest.mark.parametrize(
+    "lora_kwargs,save_kwargs",
+    [
+        ({"bias": "all"}, None),  # frozen bias-bearing adapter: every bias, trainable or not
+        ({"bias": "lora_only"}, None),
+        ({"modules_to_save": ["lm_head"]}, None),
+        ({"modules_to_save": ["lm_head"]}, {"save_embedding_layers": True}),
+    ],
+)
+def test_tp2_adapter_save_matches_peft_selection(lora_kwargs, save_kwargs):
+    results = _spawn(
+        "parity",
+        2,
+        arch = "llama_bias",
+        lora_kwargs = lora_kwargs,
+        save_kwargs = save_kwargs,
+        freeze_before_save = True,
+        fp64_ref_clip = "modules_to_save" in lora_kwargs,
+    )
+    _check_parity(results, 2)
+    saved = results[0]["saved_tp"]
+    if lora_kwargs.get("bias") == "all":  # "lora_only" saves no base_layer bias on PEFT 0.18 (1 process too)
+        assert any("o_proj" in k and k.endswith("bias") for k in saved), sorted(saved)[:8]
+    if "modules_to_save" in lora_kwargs:
+        assert any("modules_to_save" in k or "lm_head" in k for k in saved), sorted(saved)[:8]
+
+
+def test_tp2_tied_norm_weight_is_summed_once():
+    _check_parity(_spawn("parity", 2, arch = "qwen3", tie_norms = True), 2)
+
+
+def test_tp2_entry_points_outside_the_regions_are_refused():
+    results = _spawn("guards", 2)
+    if "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    for res in results:
+        for applied, got in res.items():
+            assert got["forward_without_cache"] and got["clip_mesh_equal"], (applied, got)
+            for key, value in got.items():
+                if key.startswith("is_tp:"):
+                    assert value is True, (applied, key)
+                elif key.startswith("fsdp2:"):
+                    assert value and "does not compose with Unsloth tensor parallelism" in value, (applied, key, value)
+                elif "for_inference" in key:
+                    assert value and "for_inference is not supported" in value, (applied, key, value)
+                elif key.startswith("generate:"):
+                    assert value and "generation is not supported" in value, (applied, key, value)
+                elif key.startswith(("trainer:", "model_init:")):
+                    assert value and "cannot be trained by the Trainer" in value, (applied, key, value)
+                elif key.startswith("cached:"):
+                    assert value and "cached decoding" in value, (applied, key, value)
+
+
+def test_save_refuses_a_tp_mesh_smaller_than_the_world():
+    for res in _spawn("save_subgroup", 2):
+        assert res["error"] and "data parallel > 1 is outside v1" in res["error"], res

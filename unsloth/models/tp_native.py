@@ -20,9 +20,11 @@ refused. Nothing changes unless `apply_tensor_parallel` is called.
 
 v1 scope: LoRA / QLoRA (bitsandbytes 4-bit: each rank keeps the exact codes of its shard) on dense decoders,
 tensor parallel ranks only (data parallel size 1; native FSDP2 and the Trainer refuse a TP model), training
-forward (no fast generation). Refused with the reason: MoE, MLA, heads / kv heads / intermediate size not
-divisible by tp, kv heads < tp, DoRA, lora_bias, several adapters, trainable base weights, 8-bit / GPTQ / AWQ /
-fp8 / MXFP4 bases, per-layer norms over all heads. A custom loop (torchrun --nproc_per_node tp):
+forward (generate, for_inference and a filled KV cache are refused on every wrapper level). Refused with the
+reason: MoE, MLA, heads / kv heads / intermediate size not divisible by tp, kv heads < tp, DoRA, lora_bias,
+several adapters, trainable base weights, 8-bit / GPTQ / AWQ / fp8 / MXFP4 bases, QAT fake quantization,
+modules_to_save on an attention / MLP projection, per-layer norms over all heads. A custom loop (torchrun
+--nproc_per_node tp):
 
     params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
     optimizer = torch.optim.AdamW(params, lr = 2e-4)
@@ -281,10 +283,16 @@ def _classify(region_path, name, child, kind, compiled):
         if style not in _STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
         raw, style = style, _STYLES[style]
-        if style == COLWISE and (raw.endswith("packed_colwise") or name in _MLP_PACKED):
-            return COLWISE, "packed:plan"
-        if style == COLWISE and name in _FUSED_QKV:
+        # A fused qkv is [q, kv, kv] (GQA: unequal parts) whatever the plan calls it; "packed" means equal halves.
+        if style == COLWISE and kind == "attention" and name in _FUSED_QKV:
             return COLWISE, "qkv:plan"
+        if style == COLWISE and (raw.endswith("packed_colwise") or name in _MLP_PACKED):
+            if kind == "attention":
+                raise ValueError(
+                    f"Unsloth: '{key}': '{raw}' on the attention projection '{name}' has no known layout "
+                    "(tensor parallelism v1 knows fused qkv_proj); pass plan = {...} with 'colwise'."
+                )
+            return COLWISE, "packed:plan"
         return style, "plan"
     if kind == "attention":
         if name in _Q + _K + _V:
@@ -577,13 +585,20 @@ def _tp_lora_parameters(proj, bias = False):
     if bias and proj.__dict__.get("_unsloth_tp_style") == COLWISE and base.bias is not None:
         b = _local(base.bias)
     lora_A = proj._modules.get("lora_A")
-    if lora_A is None or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+    adapter = None
+    if lora_A is not None and not (
+        getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False)
+    ):
+        adapters = _active_adapter(proj)
+        if len(adapters) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        # No active adapter, or one this layer does not hold: the base projection only, as PEFT's forward
+        # (and _tp_projection_forward) computes it.
+        if adapters and adapters[0] in lora_A:
+            adapter = adapters[0]
+    if adapter is None:
         out = (W, W_quant, None, None, None)
     else:
-        adapter = _active_adapter(proj)
-        if len(adapter) > 1:
-            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
-        adapter = adapter[0]
         out = (
             W,
             W_quant,
@@ -629,10 +644,18 @@ def _refuse_base(path, proj_module, weight, base):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path})."
         )
-    if getattr(base, "weight_fake_quantizer", None) is not None:
-        raise ValueError(
-            f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path})."
-        )
+    for module in proj_module.modules():
+        forward_qat = any("FakeQuantized" in c.__name__ for c in type(module).__mro__)
+        if (
+            forward_qat
+            or getattr(module, "weight_fake_quantizer", None) is not None
+            or getattr(module, "activation_fake_quantizer", None) is not None
+        ):
+            # The TP projection forward and get_lora_parameters run plain matmuls on the local shards.
+            raise ValueError(
+                f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path}: "
+                f"{type(module).__name__})."
+            )
     if not _is_params4bit(weight) and type(weight) not in (nn.Parameter, torch.Tensor):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 cannot shard '{path}' weights of type {type(weight).__name__}."
@@ -649,15 +672,24 @@ def _refuse_base(path, proj_module, weight, base):
 
 
 def _active_adapter(proj):
+    """The active adapter names, read like kernels/utils.py get_lora_parameters: active_adapters, else
+    active_adapter, else "default"; a single name becomes a list, an explicitly empty selection stays empty."""
     adapters = getattr(proj, "active_adapters", None)
     if adapters is None:
-        return None
+        adapters = getattr(proj, "active_adapter", "default")
+    if adapters is None:
+        return []
     if isinstance(adapters, str):
-        adapters = [adapters]
+        return [adapters]
     return list(adapters)
 
 
 def _refuse_adapter(path, proj):
+    if "original_module" in proj._modules or "modules_to_save" in proj._modules:
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 cannot shard '{path}': it is a PEFT modules_to_save / trainable "
+            "copy (a full trainable projection). Keep modules_to_save outside the attention / MLP projections."
+        )
     if "lora_A" not in proj._modules:
         if "base_layer" in proj._modules:
             raise ValueError(
@@ -838,16 +870,29 @@ def reduce_from_tp(x, group):
     return _ReduceFromTP.apply(x, group)
 
 
+def _input_name(module):
+    """The name of the region forward's first argument (hidden_states, x, ...), for keyword calls."""
+    try:
+        params = list(inspect.signature(module.forward).parameters.values())
+    except (TypeError, ValueError):
+        return "hidden_states"
+    if params and params[0].kind in (params[0].POSITIONAL_ONLY, params[0].POSITIONAL_OR_KEYWORD):
+        return params[0].name
+    return "hidden_states"
+
+
 def _region_pre_hook(module, args, kwargs):
     group = module._unsloth_tp_group
-    if "hidden_states" in kwargs:
-        kwargs = dict(kwargs)
-        kwargs["hidden_states"] = copy_to_tp(kwargs["hidden_states"], group)
-        return args, kwargs
+    for name in (module.__dict__.get("_unsloth_tp_input", "hidden_states"), "hidden_states"):
+        if isinstance(kwargs.get(name), torch.Tensor):
+            kwargs = dict(kwargs)
+            kwargs[name] = copy_to_tp(kwargs[name], group)
+            return args, kwargs
     if args and isinstance(args[0], torch.Tensor):
         return (copy_to_tp(args[0], group),) + tuple(args[1:]), kwargs
     raise RuntimeError(
-        f"Unsloth: tensor parallel region {type(module).__name__} got no hidden_states."
+        f"Unsloth: tensor parallel region {type(module).__name__} got no tensor input "
+        f"({module.__dict__.get('_unsloth_tp_input', 'hidden_states')})."
     )
 
 
@@ -913,8 +958,43 @@ def _tp_projection_forward(self, x, *args, **kwargs):
 # --------------------------------------------------------------------------------------------------
 
 
+def _decoder_of(inner):
+    get_decoder = getattr(inner, "get_decoder", None)
+    if not callable(get_decoder):
+        return None
+    try:
+        decoder = get_decoder()
+    except Exception:
+        return None
+    return decoder if isinstance(decoder, nn.Module) else None
+
+
+def _tp_chain(model):
+    """`model` and the wrappers / models below it (PeftModel -> LoraModel -> CausalLM -> decoder): the levels
+    that carry the TP marker, so a guard reached through any of them sees it."""
+    chain, m = [], model
+    while isinstance(m, nn.Module) and all(m is not c for c in chain) and len(chain) < 8:
+        chain.append(m)
+        modules = m.__dict__.get("_modules") or {}
+        m = modules.get("base_model") or modules.get("model")
+    inner = _unwrap(model)
+    for extra in (inner, _decoder_of(inner)):
+        if isinstance(extra, nn.Module) and all(extra is not c for c in chain):
+            chain.append(extra)
+    return chain
+
+
 def is_tensor_parallel(model) -> bool:
-    return getattr(model, _TP_FLAG, None) is not None
+    """True when apply_tensor_parallel sharded `model`, a wrapper level below it, or any module inside it."""
+    if not isinstance(model, nn.Module):
+        return getattr(model, _TP_FLAG, None) is not None
+    try:
+        chain = _tp_chain(model)
+    except Exception:
+        chain = [model]
+    if any(m.__dict__.get(_TP_FLAG) is not None for m in chain):
+        return True
+    return any(m.__dict__.get("_unsloth_tp_style") is not None for m in model.modules())
 
 
 def _default_mesh(model):
@@ -934,6 +1014,47 @@ def _refuse_generate(*args, **kwargs):
         "Unsloth: generation is not supported on a tensor parallel model in v1; save the adapter "
         "(save_tp_adapter) and generate on one GPU."
     )
+
+
+def _cache_in_use(past):
+    if past is None:
+        return False
+    length = getattr(past, "get_seq_length", None)
+    if callable(length):
+        try:
+            return int(length()) > 0
+        except Exception:
+            return True
+    try:
+        return len(past) > 0
+    except TypeError:
+        return True
+
+
+def _refuse_cached_forward(module):
+    """Wrap module.forward (instance attribute: PEFT's LoraModel calls self.model.forward directly) to refuse a
+    filled KV cache: Unsloth's cached decode (fast_forward_inference) calls the attention / MLP kernels
+    directly, outside the tensor parallel regions."""
+    forward = module.forward
+    try:
+        names = list(inspect.signature(forward).parameters)
+    except (TypeError, ValueError):
+        names = []
+    index = names.index("past_key_values") if "past_key_values" in names else None
+
+    def forward_without_cache(*args, **kwargs):
+        past = kwargs.get("past_key_values", kwargs.get("past_key_value"))
+        if past is None and index is not None and len(args) > index:
+            past = args[index]
+        if _cache_in_use(past):
+            raise RuntimeError(
+                "Unsloth: cached decoding (past_key_values) is not supported on a tensor parallel model in "
+                "v1; save the adapter (save_tp_adapter) and generate on one GPU."
+            )
+        return forward(*args, **kwargs)
+
+    forward_without_cache.__wrapped__ = forward
+    module.__dict__["forward"] = forward_without_cache
 
 
 def _sync_trainable(model, group, src):
@@ -980,7 +1101,7 @@ def apply_tensor_parallel(
     tp_mesh = None,
     plan = None,
     config: Optional[TPConfig] = None,
-):
+) -> nn.Module:
     """Shard every decoder attention / MLP of `model` (the PeftModel for LoRA, after get_peft_model) over
     the 1-D `tp_mesh` (None = all ranks). Returns the model, changed in place. Idempotent."""
     if is_tensor_parallel(model):
@@ -1018,33 +1139,42 @@ def apply_tensor_parallel(
                     raise ValueError(
                         f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__})."
                     )
+    chain = _tp_chain(model)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
         _sync_trainable(model, group, dist.get_global_rank(group, 0))
+    hooked_norms = set()  # a norm weight shared by several regions gets one tp sum, not one per region
     for region in tp_plan.regions:
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
         for _, norm in region.norms:
             for p in norm.parameters():
-                if p.requires_grad:
+                if p.requires_grad and id(p) not in hooked_norms:
+                    hooked_norms.add(id(p))
                     # Each rank normalizes its own heads with the shared weight: the grad is a partial sum.
                     p.register_hook(lambda g, group = group: _all_reduce(g, group))
         module = region.module
         module._unsloth_tp_group = group
         module._unsloth_tp_row_projs = [p.module for p in region.projs if p.style == ROWWISE]
+        module._unsloth_tp_input = _input_name(module)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
-    # Unsloth's decode paths read config head counts and call the MLP kernels directly, outside the regions.
-    model.__dict__["generate"] = _refuse_generate
-    setattr(
-        model,
-        _TP_FLAG,
-        {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source},
-    )
-    model.__dict__["_unsloth_tp_mesh"] = tp_mesh
-    model.__dict__["_unsloth_tp_plan"] = tp_plan
+    # Unsloth's decode paths read config head counts and call the MLP kernels directly, outside the regions:
+    # generate and a filled KV cache are refused on every level (PeftModel, LoraModel, CausalLM, decoder), and
+    # every level carries the marker the Trainer / native FSDP2 / for_inference refusals read.
+    info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
+    inner = _unwrap(model)
+    decoder = _decoder_of(inner)
+    for level in chain:
+        level.__dict__[_TP_FLAG] = info
+        level.__dict__["_unsloth_tp_mesh"] = tp_mesh
+        level.__dict__["_unsloth_tp_plan"] = tp_plan
+        if callable(getattr(level, "generate", None)):
+            level.__dict__["generate"] = _refuse_generate
+        if level is inner or level is decoder:
+            _refuse_cached_forward(level)
     if rank == 0:
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
@@ -1112,14 +1242,17 @@ def tp_clip_grad_norm_(
     mesh = None,
     eps = 1e-6,
 ):
-    """Clip by the global 2-norm: sharded gradients' squares summed over tp, replicated ones counted once."""
+    """Clip by the global 2-norm: sharded gradients' squares summed over tp, replicated ones counted once.
+    `parameters`: a tensor or an iterable of tensors; `mesh`: the tp mesh (default: the gradients' own)."""
     import torch.distributed as dist
 
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
     params = [p for p in parameters if p.grad is not None]
     if not params:
         return torch.tensor(0.0)
     sharded = replicated = None
-    group = None
+    group = mesh.get_group() if mesh is not None else None
     for p in params:
         g = p.grad
         if _is_dtensor(g):
@@ -1190,17 +1323,62 @@ def tp_full_state_dict(model, adapters_only = False):
     return out
 
 
+def _peft_state_dict(model, **kwargs):
+    """The state dict save_pretrained(**kwargs) of the 1-GPU model writes from: the tensors PEFT's own
+    get_peft_model_state_dict selects (LoRA, bias = "all" / "lora_only" biases trainable or not,
+    modules_to_save, requested or resized embeddings, ...), DTensors gathered to their full 1-GPU tensor.
+    Only what PEFT selects is gathered (never the sharded base weights); local tensors are passed through
+    by reference so PEFT's selection, rerun inside save_pretrained, sees the same model."""
+    from peft import get_peft_model_state_dict
+
+    raw = model.state_dict(keep_vars = True)
+    adapters = kwargs.get("selected_adapters") or list(model.peft_config)
+    known = {id(value) for value in raw.values()}
+    wanted, unmapped = set(), 0
+    for adapter in adapters:
+        selected = get_peft_model_state_dict(
+            model,
+            state_dict = raw,
+            adapter_name = adapter,
+            save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
+        )
+        wanted.update(id(value) for value in selected.values())
+        unmapped += sum(_is_dtensor(v) and id(v) not in known for v in selected.values())
+    if unmapped:
+        raise RuntimeError(
+            "Unsloth: PEFT selected tensor parallel tensors that are not in the model state dict; "
+            "save_tp_adapter cannot gather them."
+        )
+    state = {}
+    with torch.no_grad():
+        for key, value in raw.items():
+            if _is_dtensor(value):
+                if id(value) in wanted:
+                    state[key] = _full(value, value).detach()
+            else:
+                state[key] = value.detach()
+    return state
+
+
 def save_tp_adapter(model, save_directory, **kwargs):
-    """PeftModel.save_pretrained with full (gathered) adapter tensors: the standard 1-GPU PEFT adapter.
-    Collective; rank 0 writes."""
+    """PeftModel.save_pretrained with full (gathered) adapter tensors: the standard 1-GPU PEFT adapter, the
+    same tensors PEFT selects on the 1-GPU model. Collective over every rank (the tp mesh must be the whole
+    world in v1); rank 0 writes."""
     import torch.distributed as dist
 
-    state = tp_full_state_dict(model, adapters_only = True)
+    mesh = None
+    for level in _tp_chain(model):
+        mesh = mesh or level.__dict__.get("_unsloth_tp_mesh")
+    if dist.is_initialized() and mesh is not None and mesh.size() != dist.get_world_size():
+        raise ValueError(
+            f"Unsloth: save_tp_adapter writes on global rank 0 behind a world barrier, but the tensor parallel "
+            f"mesh has {mesh.size()} of {dist.get_world_size()} ranks (data parallel > 1 is outside v1). "
+            "Gather with tp_full_state_dict and write from one rank yourself."
+        )
+    state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)
     if kwargs["is_main_process"]:
-        model.save_pretrained(
-            save_directory, state_dict = {k: v.cpu() for k, v in state.items()}, **kwargs
-        )
+        model.save_pretrained(save_directory, state_dict = state, **kwargs)
     if dist.is_initialized():
         dist.barrier()

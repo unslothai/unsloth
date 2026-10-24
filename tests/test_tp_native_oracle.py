@@ -26,10 +26,16 @@ def _load_tp():
     name = "unsloth.models.tp_native"
     if name in sys.modules:
         return sys.modules[name]
+    import importlib.machinery
+
     pkg = types.ModuleType("unsloth")
     pkg.__path__ = [os.path.join(REPO, "unsloth")]
     models = types.ModuleType("unsloth.models")
     models.__path__ = [os.path.join(REPO, "unsloth", "models")]
+    for package in (pkg, models):
+        # A spec, so a later importlib.util.find_spec("unsloth") in the same session does not raise.
+        package.__spec__ = importlib.machinery.ModuleSpec(package.__name__, None, is_package = True)
+        package.__spec__.submodule_search_locations = package.__path__
     sys.modules.setdefault("unsloth", pkg)
     sys.modules.setdefault("unsloth.models", models)
     spec = importlib.util.spec_from_file_location(
@@ -183,10 +189,10 @@ def _shard_copy(region, rank, tp):
     return module
 
 
-def simulate(model, tp):
+def simulate(model, tp, user_plan = None):
     """A copy of `model` whose regions run as tp summed shard copies, and the plan used."""
     sim = copy.deepcopy(model)
-    plan = tpn.derive_tp_plan(sim, tp)
+    plan = tpn.derive_tp_plan(sim, tp, user_plan)
     for region in plan.regions:
         parent_path, name = region.path.rsplit(".", 1)
         parent = tpn._unwrap(sim).get_submodule(parent_path)
@@ -491,3 +497,189 @@ def test_stablelm_4x_is_refused():
     repo, overrides = ARCHS["stablelm"]
     with pytest.raises(ValueError, match = "reshapes with hidden_size"):
         tpn.derive_tp_plan(build(repo, overrides), 2)
+
+
+# --------------------------------------------------------------------------------------------------
+# Review fixes
+# --------------------------------------------------------------------------------------------------
+
+# Phi3's fused qkv under a plan that calls it packed: the layout is still [q, kv, kv] (GQA: unequal parts).
+PHI3_PACKED_PLAN = {
+    "layers.*.self_attn.qkv_proj": "packed_colwise",
+    "layers.*.self_attn.o_proj": "rowwise",
+    "layers.*.mlp.gate_up_proj": "packed_colwise",
+    "layers.*.mlp.down_proj": "rowwise",
+}
+
+
+def test_fused_qkv_under_a_packed_plan_keeps_the_gqa_layout():
+    model = build(PHI3)
+    text = tpn._text_config(model)
+    assert text.num_key_value_heads < text.num_attention_heads  # the tiny Phi3 is GQA (4 / 2)
+    hd = text.hidden_size // text.num_attention_heads
+    q, kv = text.num_attention_heads * hd, text.num_key_value_heads * hd
+    ids = _batch(model)
+    _, ref_logits = _loss(model, ids)
+    sim, plan = simulate(model, 2, PHI3_PACKED_PLAN)
+    parts = {p.name: p.parts for p in plan.regions[0].projs}
+    assert parts["qkv_proj"] == (q, kv, kv), parts
+    _, logits = _loss(sim, ids)
+    torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+    with pytest.raises(ValueError, match = "has no known layout"):
+        tpn.derive_tp_plan(
+            build(LLAMA, lora = False), 2, {"layers.*.self_attn.q_proj": "packed_colwise"}
+        )
+
+
+class _FakeLora(torch.nn.Module):
+    def __init__(self, active):
+        super().__init__()
+        self.base_layer = torch.nn.Linear(4, 6, bias = False)
+        self.lora_A = torch.nn.ModuleDict({"default": torch.nn.Linear(4, 2, bias = False)})
+        self.lora_B = torch.nn.ModuleDict({"default": torch.nn.Linear(2, 6, bias = False)})
+        self.scaling = {"default": 2.0}
+        self.disable_adapters = False
+        self.merged = False
+        if active is not None:
+            self.active_adapters = active
+
+
+def test_active_adapter_matches_get_lora_parameters():
+    # active_adapters, else the singular active_adapter, else "default"; a string is one adapter.
+    singular = _FakeLora(None)
+    singular.active_adapter = "default"
+    assert tpn._active_adapter(singular) == ["default"]
+    assert tpn._active_adapter(_FakeLora(None)) == ["default"]
+    assert tpn._active_adapter(_FakeLora("default")) == ["default"]
+    assert tpn._active_adapter(_FakeLora([])) == []
+    for active in (None, "default", ["default"]):
+        W, _, A, B, s = tpn._tp_lora_parameters(_FakeLora(active))
+        assert A is not None and B is not None and s == 2.0
+    # Nothing active, or an adapter this layer lacks: the base projection, as PEFT's forward computes it.
+    for active in ([], ["other"]):
+        assert tpn._tp_lora_parameters(_FakeLora(active))[2:] == (None, None, None)
+    with pytest.raises(ValueError, match = "single active adapter"):
+        tpn._tp_lora_parameters(_FakeLora(["default", "other"]))
+
+
+def test_refuses_forward_qat_and_activation_fake_quantizers():
+    model = build(LLAMA)
+    region = tpn.derive_tp_plan(model, 2).regions[0]
+    proj = region.projs[0].module
+    weight, base = tpn._weight(proj)
+    # torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no weight_fake_quantizer.
+    forward_qat = type("NVFP4FakeQuantizedLinear", (torch.nn.Linear,), {})(4, 4).requires_grad_(False)
+    with pytest.raises(ValueError, match = "QAT fake quantization"):
+        tpn._refuse_base("p", torch.nn.ModuleDict({"base_layer": forward_qat}), forward_qat.weight, forward_qat)
+    try:
+        from torchao.prototype import qat
+
+        real_classes = [
+            (qat.MXFakeQuantizedLinear, qat.MXFakeQuantizeConfig),
+            (qat.NVFP4FakeQuantizedLinear, qat.NVFP4FakeQuantizeConfig),
+        ]
+    except Exception:
+        real_classes = []
+    for cls, cfg in real_classes:  # the real torchao classes (weights frozen, as under LoRA QAT)
+        real = cls(32, 32, activation_config = cfg(), weight_config = cfg()).requires_grad_(False)
+        assert getattr(real, "weight_fake_quantizer", None) is None
+        with pytest.raises(ValueError, match = "QAT fake quantization"):
+            tpn._refuse_base("p", torch.nn.ModuleDict({"base_layer": real}), real.weight, real)
+    proj.lora_A["default"].activation_fake_quantizer = torch.nn.Identity()
+    with pytest.raises(ValueError, match = "QAT fake quantization"):
+        tpn._refuse_base("p", proj, weight, base)
+    del proj.lora_A["default"].activation_fake_quantizer
+    tpn._refuse_base("p", proj, weight, base)  # plain LoRA passes
+
+
+def test_refuses_modules_to_save_inside_a_region():
+    model = build(
+        LLAMA,
+        target_modules = ["k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        modules_to_save = ["q_proj"],
+    )
+    region = tpn.derive_tp_plan(model, 2).regions[0]
+    q = next(p for p in region.projs if p.name == "q_proj")
+    with pytest.raises(ValueError, match = "modules_to_save"):
+        tpn._refuse_adapter(f"{region.path}.q_proj", q.module)
+
+
+def test_region_hook_takes_the_forward_input_by_name():
+    model = build(LLAMA, lora = False)
+    mlp = model.model.layers[0].mlp
+    mlp._unsloth_tp_group = None  # copy_to_tp's forward is the identity; the group is read in backward
+    mlp._unsloth_tp_input = "x"  # what apply_tensor_parallel records for LlamaMLP.forward(self, x)
+    h = torch.randn(1, 2, 16)
+    args, kwargs = tpn._region_pre_hook(mlp, (), {"x": h})  # mlp(x = h)
+    assert args == () and torch.equal(kwargs["x"], h) and kwargs["x"] is not h
+    attn = model.model.layers[0].self_attn
+    assert tpn._input_name(mlp) == "x" and tpn._input_name(attn) == "hidden_states"
+    args, kwargs = tpn._region_pre_hook(mlp, (h,), {})
+    assert torch.equal(args[0], h)
+    with pytest.raises(RuntimeError, match = "got no tensor input"):
+        tpn._region_pre_hook(mlp, (), {"y": h})
+
+
+def test_clip_takes_a_single_parameter():
+    a = torch.nn.Parameter(torch.randn(5, 3))
+    b = torch.nn.Parameter(a.detach().clone())
+    a.grad = torch.randn(5, 3) * 4
+    b.grad = a.grad.clone()
+    ref = torch.nn.utils.clip_grad_norm_(b, 1.0)
+    got = tpn.tp_clip_grad_norm_(a, 1.0)
+    torch.testing.assert_close(got, ref)
+    torch.testing.assert_close(a.grad, b.grad)
+
+
+def _load_flex():
+    name = "_tp_flex_attention"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(REPO, "unsloth", "kernels", "flex_attention.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return sys.modules[name]
+
+
+def test_gemma2_softcapping_helpers_use_local_heads():
+    """The Gemma2 softcapping helpers (unsloth/kernels/flex_attention.py) on one rank's heads: a module whose
+    config holds the global counts but carries this rank's _unsloth_tp_heads must equal a module whose config
+    holds the local counts."""
+    flex = _load_flex()
+    import types as _types
+
+    def attn(heads, kv, tp_heads = None, tp_kv = None):
+        config = _types.SimpleNamespace(
+            num_attention_heads = heads,
+            num_key_value_heads = kv,
+            query_pre_attn_scalar = 16,
+            attn_logit_softcapping = 50.0,
+        )
+        m = torch.nn.Module()
+        m.config, m.head_dim, m.num_key_value_groups = config, 8, heads // kv
+        if tp_heads is not None:
+            m._unsloth_tp_heads, m._unsloth_tp_kv_heads = tp_heads, tp_kv
+        return m
+
+    bsz, q_len = 2, 5
+    g = torch.Generator().manual_seed(0)
+    Q = torch.randn(bsz, 2, q_len, 8, generator = g)
+    K = torch.randn(bsz, 1, q_len, 8, generator = g)
+    V = torch.randn(bsz, 1, q_len, 8, generator = g)
+    mask = torch.triu(torch.full((q_len, q_len), float("-inf")), 1)
+    local, tp_rank = attn(2, 1), attn(4, 2, 2, 1)
+    eager = flex._compiled_slow_attention_softcapping._torchdynamo_orig_callable
+    for fn in (eager, flex.slow_inference_attention_softcapping):
+        want = fn(Q, K, V, mask, local, bsz, q_len)
+        got = fn(Q, K, V, mask, tp_rank, bsz, q_len)
+        assert got.shape == (bsz, q_len, 2 * 8)
+        torch.testing.assert_close(got, want)
+
+
+def test_stub_packages_keep_valid_specs():
+    # Later tests in the same session (e.g. the fused-loss harness) call find_spec("unsloth").
+    for name in ("unsloth", "unsloth.models"):
+        assert sys.modules[name].__spec__ is not None, name
+    importlib.util.find_spec("unsloth.models")
