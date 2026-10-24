@@ -21,14 +21,11 @@ _COMPILE_OPTIONS = {
     "shape_padding": True,
     "triton.cudagraphs": False,
 }
-# Opt-in CUDA graphs per block: one graph launch replaces each block's kernel launches. Static
-# shapes only pay off (each new sequence length records another graph and holds its memory).
+# Opt-in per-block CUDA graphs; only pays off for static shapes.
 if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
     _COMPILE_OPTIONS["triton.cudagraphs"] = True
-# Block input shapes that may record graphs. Variable-length batches (padded to the batch max) would
-# otherwise record a graph set per new length: 3.5x slower steps and a pool that grows every step.
-# One shape past the cap turns graphs off for that layer kind: the same compiled block runs without
-# them (admitted shapes kept re-recording at new tree positions, so their pool still grew).
+# Shape cap: variable lengths recorded a graph set per length (3.5x slower, pool grew every step).
+# Past the cap graphs go off for the whole layer kind; admitted shapes alone still grew the pool.
 try:
     _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
 except ValueError:
@@ -748,9 +745,8 @@ def _wrap(cls, compile_options):
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
-    # Under Unsloth checkpointing each block call is a new cudagraph tree generation (the forward runs
-    # under no_grad, the recompute inside backward), so the next block's replay overwrites this block's
-    # outputs and the gradient it returns for its input while the checkpoint still holds them.
+    # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
+    # overwrites this block's outputs and input gradient, so both are cloned out of the pool.
     graphs = bool(compile_options.get("triton.cudagraphs"))
     if graphs:
         plain = torch.compile(
