@@ -124,9 +124,11 @@ from .diffusion_zimage_cfg_split import (
     zimage_cfg_split_status,
 )
 from .diffusion_zimage_cfg_split import render as zimage_cfg_split_render
+from .diffusion_prefix_kv import release_prefix_kv, track_prefix_kv
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
+    release_cfg_prefix_kv,
     drop_displaced_cfg_router,
     install_cfg_parallel,
     multigpu_mode,
@@ -218,6 +220,7 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    prefer_whole_module_offload,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -1126,6 +1129,17 @@ def _is_source_sized(workflow: str, family: Any = None) -> bool:
     if workflow == "edit":
         return family is None or bool(getattr(family, "edit", False))
     return workflow in ("img2img", "inpaint", "upscale")
+
+
+def _release_prefix_kv(pipe: Any) -> None:
+    """Drop the denoiser's prefix KV caches (and a CFG-parallel replica's copies) before VAE decode."""
+    try:
+        released = release_prefix_kv(getattr(pipe, "transformer", None))
+        if released:
+            release_cfg_prefix_kv(pipe)
+            logger.debug("diffusion.prefix_kv: %d MiB released before decode", released >> 20)
+    except Exception as exc:  # noqa: BLE001 - a memory saving only
+        logger.debug("diffusion.prefix_kv: release failed: %s", exc)
 
 
 def _compile_shape_dims(
@@ -10387,6 +10401,7 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
+                        plan = prefer_whole_module_offload(pipe, plan, logger = logger)
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
@@ -13862,10 +13877,15 @@ class DiffusionBackend:
                     if cancel.is_set():
                         pipe._interrupt = True
                     cross_forward_step(pipe, step_index)
+                    # Last denoise step issued: the prefix KV cache (Qwen-Image-2.1) is dead weight through decode.
+                    num_steps = getattr(pipe, "_num_timesteps", None)
+                    if isinstance(num_steps, int) and step_index + 1 >= num_steps:
+                        _release_prefix_kv(pipe)
                     return callback_kwargs
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    track_prefix_kv(getattr(pipe, "transformer", None))
                 # Hires fix latent upscaler (ComfyUI LatentUpscale): the base pass hands the refine pass its latents,
                 # so it skips the VAE decode and the image post-processing that only the discarded pixels needed.
                 latent_output = bool(
@@ -14870,6 +14890,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
         import torch
         from diffusers.hooks import apply_group_offloading
 
+        from .diffusion_memory import _apply_group_offloading_packed
         from .host_pinning import host_pinning_allowed
 
         onload = torch.device(device)
@@ -14896,7 +14917,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
             install_group_offload_hooks_eager()
             kwargs["non_blocking"] = True
             kwargs["record_stream"] = True
-        apply_group_offloading(cn_model, **kwargs)
+        _apply_group_offloading_packed(apply_group_offloading, cn_model, kwargs, logger)
         if prefetch:
             if not _pin_top_level_group(cn_model, logger):
                 _skip_top_level_copy_back(cn_model, logger)

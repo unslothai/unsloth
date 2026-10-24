@@ -4,6 +4,42 @@
 import type { TrainingObjective } from "@/types/training";
 
 export type RlObjective = Exclude<TrainingObjective, "sft">;
+
+/** RL needs a text dataset and a text or vision-language model; the backend refuses the rest. */
+export function rlObjectiveSupported(s: {
+  modelType: string | null;
+  isEmbeddingModel?: boolean;
+  isDatasetImage?: boolean | null;
+  isDatasetAudio?: boolean;
+}): boolean {
+  return (
+    !s.isEmbeddingModel &&
+    !s.isDatasetImage &&
+    !s.isDatasetAudio &&
+    s.modelType !== "decision" &&
+    s.modelType !== "embeddings" &&
+    s.modelType !== "audio"
+  );
+}
+
+export function effectiveTrainingObjective(s: {
+  modelType: string | null;
+  isEmbeddingModel?: boolean;
+  isDatasetImage?: boolean | null;
+  isDatasetAudio?: boolean;
+  isVisionModel?: boolean;
+  trainingObjective: TrainingObjective;
+}): TrainingObjective {
+  if (!rlObjectiveSupported(s)) return "sft";
+  // The backend refuses DPO/ORPO for vision-language models (no token_type_ids in TRL's batches).
+  return s.isVisionModel && isPreferenceObjective(s.trainingObjective)
+    ? "sft"
+    : s.trainingObjective;
+}
+
+export function isPreferenceObjective(objective: TrainingObjective): boolean {
+  return objective === "dpo" || objective === "orpo";
+}
 export type RlRole = "prompt" | "answer" | "chosen" | "rejected" | "system";
 
 // Mirrors RL_ROLES / _REQUIRED_ROLES / _AUTO_ROLE_NAMES in studio/backend/core/training/rl.py.
@@ -24,6 +60,9 @@ const AUTO_NAMES: Record<RlRole, readonly string[]> = {
   rejected: ["rejected", "dispreferred"],
   system: ["system", "system_prompt"],
 };
+
+/** A column the user set to Ignore: never auto-mapped to a role (backend _IGNORE_ROLE). */
+export const RL_IGNORE = "ignore";
 
 /** Mapping limited to the objective's roles, with unmapped roles filled from column names. */
 export function resolveRlMapping(
@@ -46,9 +85,18 @@ export function resolveRlMapping(
     if (Object.values(out).includes(role)) {
       continue;
     }
-    const column = columns.find(
-      (c) => AUTO_NAMES[role].includes(c.toLowerCase()) && !(c in out),
-    );
+    // Aliases in priority order, as the backend resolves them: an Alpaca `instruction`
+    // beats an earlier `input` column.
+    const column = AUTO_NAMES[role]
+      .map((alias) =>
+        columns.find(
+          (c) =>
+            c.toLowerCase() === alias &&
+            !(c in out) &&
+            mapping[c] !== RL_IGNORE,
+        ),
+      )
+      .find((c) => c !== undefined);
     if (column) {
       out[column] = role;
     }
@@ -99,4 +147,40 @@ export function pythonRewardRow(
     out.answer = answer;
   }
   return out;
+}
+
+/** compare_to columns of the selected GRPO rewards that the dataset cannot supply. The worker
+ * renames the answer role's column to "answer"; any other name must be a dataset column. */
+export function missingRewardColumns(
+  compareTo: readonly string[],
+  columns: readonly string[],
+  mapping: Record<string, string>,
+): string[] {
+  const hasAnswer = Object.values(
+    resolveRlMapping("grpo", columns, mapping),
+  ).includes("answer");
+  return [...new Set(compareTo)].filter((column) =>
+    column === "answer" ? !hasAnswer : !columns.includes(column),
+  );
+}
+
+/** resolveRlMapping, keeping columns mapped to another objective's roles so switching back
+ * restores them; the backend ignores roles the objective does not use. */
+export function syncRlMapping(
+  objective: RlObjective,
+  columns: readonly string[],
+  mapping: Record<string, string>,
+): Record<string, string> {
+  const active: readonly string[] = RL_ROLES[objective];
+  const next = resolveRlMapping(objective, columns, mapping);
+  for (const [column, role] of Object.entries(mapping)) {
+    if (
+      !active.includes(role) &&
+      columns.includes(column) &&
+      !(column in next)
+    ) {
+      next[column] = role;
+    }
+  }
+  return next;
 }

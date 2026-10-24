@@ -92,12 +92,16 @@ const RULE_ICON: Record<RuleType, IconSvgElement> = {
 
 function RewardSummaryLine({
   record,
+  loaded,
 }: {
   record: RewardRecord | undefined;
-}): ReactElement {
+  loaded: boolean;
+}): ReactElement | null {
   const t = useT();
   if (!record) {
-    return <span className="text-destructive">{t("rl.rewards.invalid")}</span>;
+    return loaded ? (
+      <span className="text-destructive">{t("rl.rewards.invalid")}</span>
+    ) : null;
   }
   if (record.kind === "python") {
     return (
@@ -367,10 +371,11 @@ export function RewardsSection(): ReactElement {
         grpoSystemPrompt: s.grpoSystemPrompt,
       })),
     );
-  const { library, libraryError, refreshLibrary, previewRow } =
+  const { library, libraryLoaded, libraryError, refreshLibrary, previewRow } =
     useRlWorkspaceStore(
       useShallow((s) => ({
         library: s.library,
+        libraryLoaded: s.libraryLoaded,
         libraryError: s.libraryError,
         refreshLibrary: s.refreshLibrary,
         previewRow: s.previewRow,
@@ -410,12 +415,19 @@ export function RewardsSection(): ReactElement {
   const setWeight = (name: string, weight: number) =>
     setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
 
+  // An overwrite keeps the selection but changes the rule, so the scores must rerun.
+  const selectedRules = JSON.stringify(
+    rewards.map((r) => active.find((a) => a.name === r.name)?.rule ?? null),
+  );
+  const previewRequest = useRef(0);
   const runPreview = useCallback(async () => {
+    const request = ++previewRequest.current;
     if (rewards.length === 0) {
       setPreview(null);
       setPreviewTotal(null);
       return;
     }
+    // The backend scores each rule against its own compare_to column from row, as in training.
     try {
       // No answer role, no answer kwarg in training; with no dataset yet, assume one.
       const row = pythonRewardRow(
@@ -438,16 +450,20 @@ export function RewardsSection(): ReactElement {
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
       );
+      if (request !== previewRequest.current) return;
       setPreviewTotal(res.total);
       setIsolation(res.isolation);
       setPreviewError(null);
     } catch (err) {
+      if (request !== previewRequest.current) return;
       // Stale scores next to an error read as if the failing reward had scored.
       setPreview(null);
       setPreviewTotal(null);
       setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
+    // selectedRules stands in for the library entries (byName is rebuilt every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     rewards,
     completion,
@@ -456,9 +472,9 @@ export function RewardsSection(): ReactElement {
     answerColumn,
     mapping,
     grpoSystemPrompt,
+    selectedRules,
   ]);
 
-  // Score live, a beat after the last edit.
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);
     return () => window.clearTimeout(timer);
@@ -477,7 +493,12 @@ export function RewardsSection(): ReactElement {
   const removeFromLibrary = async (name: string) => {
     try {
       await deleteReward(name);
-      setRewards(rewards.filter((r) => r.name !== name));
+      // The selection may have changed while the request ran: filter the latest one.
+      setRewards(
+        useTrainingConfigStore
+          .getState()
+          .grpoRewards.filter((r) => r.name !== name),
+      );
       await refreshLibrary();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -539,7 +560,7 @@ export function RewardsSection(): ReactElement {
                   )}
                 </p>
                 <p className="truncate text-ui-11p5 text-muted-foreground/85">
-                  <RewardSummaryLine record={record} />
+                  <RewardSummaryLine record={record} loaded={libraryLoaded} />
                 </p>
               </div>
               <div className="flex items-center gap-1 text-ui-11 text-muted-foreground">
@@ -736,9 +757,11 @@ export function RewardsSection(): ReactElement {
         onOpenChange={setImportOpen}
         onImported={(record) => {
           refreshLibrary();
-          if (!selectedNames.has(record.name)) {
+          // Read now, not at submit: edits made while the import was pending must survive.
+          const current = useTrainingConfigStore.getState().grpoRewards;
+          if (!current.some((r) => r.name === record.name)) {
             setRewards(
-              [...rewards, { name: record.name, weight: 1 }].slice(0, 16),
+              [...current, { name: record.name, weight: 1 }].slice(0, 16),
             );
           }
         }}

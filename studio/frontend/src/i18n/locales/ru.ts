@@ -72,7 +72,7 @@ export const ru = {
       cursorDescription: "Показывает указатель там, где модели нажимают, вводят текст и перетаскивают на странице",
       askEveryTime: "Спрашивать каждый раз",
       permissionsTitle: "Разрешения агента",
-      permissionsDescription: "Выберите значения по умолчанию и добавьте исключения для отдельных сайтов. Поля паролей и платежей никогда не заполняются, что бы здесь ни было указано.",
+      permissionsDescription: "Задайте значения по умолчанию и исключения для сайтов. Поля паролей и платежей никогда не заполняются.",
       site: "Сайт или шаблон",
       sitePlaceholder: "example.com или *.example.com",
       default: "По умолчанию",
@@ -2772,6 +2772,11 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
+      showGenerationDetails: "Подробности генерации",
+      showGenerationDetailsDescription:
+        "Показывать скорость и число токенов в реальном времени во время ответа и где размещены слои локальной модели.",
+      showGenerationDetailsKeywords:
+        "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
@@ -2994,6 +2999,9 @@ export const ru = {
         searchAudio: "Поиск архивного аудио",
         unarchive: "Разархивировать",
         unarchiveAll: "Разархивировать всё",
+        unarchiveAllInProject: "Разархивировать всё в проекте",
+        deleteAllInProject: "Удалить всё в проекте",
+        groupActions: "Действия для {group}",
         unarchiveResults: "Разархивировать результаты",
         deleteResults: "Удалить результаты",
         noChats: "Нет чатов, соответствующих запросу.",
@@ -3694,6 +3702,7 @@ export const ru = {
             "Похоже, этот датасет содержит изображения, поэтому его нельзя передавать потоком.",
           audioDataset:
             "Похоже, этот датасет содержит аудио, поэтому его нельзя передавать потоком.",
+          rlObjective: "Потоковая загрузка пока не поддерживается для DPO, ORPO и GRPO.",
           appleSilicon:
             "Потоковая передача на Apple Silicon (MLX) пока не поддерживается.",
         },
@@ -4700,6 +4709,7 @@ export const ru = {
       orpoHint: "Как DPO за один проход с членом SFT, поэтому работает с базовой моделью.",
       grpoHint: "Генерировать несколько ответов на промпт и усиливать те, которые ваши вознаграждения оценивают выше.",
       cptLocked: "Продолженное предобучение всегда обучается с SFT.",
+      modelLocked: "Для DPO, ORPO и GRPO нужен текстовый датасет и текстовая или визуально-языковая модель.",
       macLocked: "Обучение на предпочтениях и RL пока недоступно на Apple Silicon.",
     },
     dataset: {
@@ -4708,6 +4718,7 @@ export const ru = {
       loadColumns: "Загрузить столбцы",
       loading: "Загрузка столбцов...",
       noDataset: "Сначала выберите набор данных.",
+      s3Unsupported: "RL-обучение пока не может прочитать роли столбцов из данных S3. Используйте датасет с Hugging Face или загруженный.",
       error: "Не удалось загрузить столбцы: {error}",
       missing: "Ещё нужно: {roles}",
       answerNote: "Столбец ответа передаётся только вознаграждениям; модель его никогда не видит.",

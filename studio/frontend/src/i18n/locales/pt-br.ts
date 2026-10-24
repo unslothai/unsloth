@@ -72,7 +72,7 @@ export const ptBR = {
       cursorDescription: "Mostra um ponteiro onde os modelos clicam, digitam e arrastam na página",
       askEveryTime: "Perguntar toda vez",
       permissionsTitle: "Permissões do agente",
-      permissionsDescription: "Escolha os padrões e adicione exceções para sites específicos. Campos de senha e de pagamento nunca são preenchidos, seja qual for a configuração.",
+      permissionsDescription: "Defina padrões e exceções por site. Campos de senha e de pagamento nunca são preenchidos.",
       site: "Site ou padrão",
       sitePlaceholder: "example.com ou *.example.com",
       default: "Padrão",
@@ -2774,6 +2774,11 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
+      showGenerationDetails: "Detalhes da geração",
+      showGenerationDetailsDescription:
+        "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
+      showGenerationDetailsKeywords:
+        "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",
@@ -2998,6 +3003,9 @@ export const ptBR = {
         searchAudio: "Buscar áudios arquivados",
         unarchive: "Desarquivar",
         unarchiveAll: "Desarquivar tudo",
+        unarchiveAllInProject: "Desarquivar tudo no projeto",
+        deleteAllInProject: "Excluir tudo no projeto",
+        groupActions: "Ações de {group}",
         unarchiveResults: "Desarquivar resultados",
         deleteResults: "Excluir resultados",
         noChats: "Nenhum chat corresponde à sua busca.",
@@ -3693,6 +3701,7 @@ export const ptBR = {
             "Este dataset parece conter imagens e não pode ser usado em streaming.",
           audioDataset:
             "Este dataset parece conter áudio e não pode ser usado em streaming.",
+          rlObjective: "O streaming ainda não é compatível com DPO, ORPO ou GRPO.",
           appleSilicon:
             "O streaming ainda não é compatível com Apple Silicon (MLX).",
         },
@@ -4702,6 +4711,7 @@ export const ptBR = {
       orpoHint: "Como o DPO em uma única passada com um termo SFT, então funciona a partir de um modelo base.",
       grpoHint: "Gerar várias respostas por prompt e reforçar as que suas recompensas pontuam mais alto.",
       cptLocked: "O pré-treinamento contínuo sempre treina com SFT.",
+      modelLocked: "DPO, ORPO e GRPO precisam de um dataset de texto e de um modelo de texto ou de visão e linguagem.",
       macLocked: "O treinamento por preferências e RL ainda não está disponível no Apple Silicon.",
     },
     dataset: {
@@ -4710,6 +4720,7 @@ export const ptBR = {
       loadColumns: "Carregar colunas",
       loading: "Carregando colunas...",
       noDataset: "Escolha um conjunto de dados primeiro.",
+      s3Unsupported: "O treinamento RL ainda não consegue ler os papéis das colunas de dados no S3. Use um dataset do Hugging Face ou enviado.",
       error: "Não foi possível carregar as colunas: {error}",
       missing: "Ainda falta: {roles}",
       answerNote: "A coluna de resposta só vai para as recompensas; o modelo nunca a vê.",

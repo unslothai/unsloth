@@ -72,7 +72,7 @@ export const es = {
       cursorDescription: "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
       askEveryTime: "Preguntar cada vez",
       permissionsTitle: "Permisos del agente",
-      permissionsDescription: "Elige los valores predeterminados y añade excepciones para sitios concretos. Los campos de contraseña y de pago nunca se rellenan, digan lo que digan estos ajustes.",
+      permissionsDescription: "Define valores predeterminados y excepciones por sitio. Los campos de contraseña y de pago nunca se rellenan.",
       site: "Sitio o patrón",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predeterminado",
@@ -2787,6 +2787,11 @@ export const es = {
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
+      showGenerationDetails: "Detalles de generación",
+      showGenerationDetailsDescription:
+        "Muestra la velocidad y los tokens en vivo mientras se genera una respuesta, y dónde quedaron las capas de un modelo local.",
+      showGenerationDetailsKeywords:
+        "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",
@@ -3015,6 +3020,9 @@ export const es = {
         searchAudio: "Buscar audio archivado",
         unarchive: "Desarchivar",
         unarchiveAll: "Desarchivar todo",
+        unarchiveAllInProject: "Desarchivar todo en el proyecto",
+        deleteAllInProject: "Eliminar todo en el proyecto",
+        groupActions: "Acciones de {group}",
         unarchiveResults: "Desarchivar resultados",
         deleteResults: "Eliminar resultados",
         noChats: "Ningún chat coincide con tu búsqueda.",
@@ -3717,6 +3725,7 @@ export const es = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
+          rlObjective: "El streaming aún no es compatible con DPO, ORPO ni GRPO.",
           appleSilicon:
             "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
@@ -4742,6 +4751,7 @@ export const es = {
       orpoHint: "Como DPO en una sola pasada con un término SFT, así que funciona desde un modelo base.",
       grpoHint: "Generar varias respuestas por prompt y reforzar las que tus recompensas puntúan más alto.",
       cptLocked: "El preentrenamiento continuo siempre entrena con SFT.",
+      modelLocked: "DPO, ORPO y GRPO necesitan un dataset de texto y un modelo de texto o de visión y lenguaje.",
       macLocked: "El entrenamiento por preferencias y RL aún no está disponible en Apple Silicon.",
     },
     dataset: {
@@ -4750,6 +4760,7 @@ export const es = {
       loadColumns: "Cargar columnas",
       loading: "Cargando columnas...",
       noDataset: "Elige primero un conjunto de datos.",
+      s3Unsupported: "El entrenamiento RL aún no puede leer los roles de columna de datos en S3. Usa un dataset de Hugging Face o uno subido.",
       error: "No se pudieron cargar las columnas: {error}",
       missing: "Aún falta: {roles}",
       answerNote: "La columna de respuesta solo va a las recompensas; el modelo nunca la ve.",

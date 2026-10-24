@@ -425,6 +425,16 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
+def grpo_completion_rows(prompts: int, rl_args) -> int:
+    """Completion rows one GRPO epoch trains: TRL's sampler drops a trailing partial group of
+    prompts, and each kept prompt becomes num_generations rows."""
+    generations = int(getattr(rl_args, "num_generations", 1) or 1)
+    group = (getattr(rl_args, "generation_batch_size", None) or 0) // generations
+    if group > 0:
+        prompts -= prompts % group
+    return prompts * generations
+
+
 def _ignored_adapter_settings(
     peft_config,
     lora_r,
@@ -558,6 +568,7 @@ class UnslothTrainer:
 
         self.is_cpt = False
         self.is_vlm = False
+        self.model_has_vision = False
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
@@ -653,6 +664,7 @@ class UnslothTrainer:
             if not self.is_audio
             else False
         )
+        self.model_has_vision = vision
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
         self._detect_diffusion_lm(lookup_name, hf_token, local_files_only, model_revision)
 
@@ -1062,6 +1074,14 @@ class UnslothTrainer:
 
     def _attach_early_stopping(self, training_args):
         from core.training.early_stopping import attach_early_stopping
+        if getattr(self, "training_objective", "sft") == "grpo":
+            # GRPO's group-centred loss sits near zero whatever the reward: it cannot rank checkpoints.
+            if training_args.get("early_stopping_patience"):
+                self._record_warning(
+                    "Early stopping is off for GRPO: its eval loss does not track reward."
+                )
+            self._early_stopping = None
+            return
         self._early_stopping = attach_early_stopping(
             self.trainer,
             training_args.get("early_stopping_patience"),
@@ -1360,6 +1380,7 @@ class UnslothTrainer:
                 if not self.is_audio
                 else False
             )
+            self.model_has_vision = vision
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
@@ -3256,9 +3277,6 @@ class UnslothTrainer:
         dataset_slice_start: Optional[int] = None,
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
-        objective: str = "sft",
-        rl_keep_columns: tuple = (),
-        rl_system_prompt: Optional[str] = None,
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
@@ -3267,6 +3285,9 @@ class UnslothTrainer:
         hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
+        objective: str = "sft",
+        rl_keep_columns: tuple = (),
+        rl_system_prompt: Optional[str] = None,
     ) -> Optional[tuple]:
         """Load and prepare a dataset for training.
 
@@ -3306,7 +3327,8 @@ class UnslothTrainer:
             has_separate_eval_source = False
             # Not `eval_steps > 0`: inf and NaN pass that and codec-encode a split later discarded.
             eval_enabled = evaluation_enabled(eval_steps)
-            raw_text_mode = is_cpt or format_type == "raw"
+            # RL rows are built from column roles, whatever format the SFT settings name.
+            raw_text_mode = objective == "sft" and (is_cpt or format_type == "raw")
             dataset_loaded_from_cache = False
 
             def _load_selected_cached_dataset(
@@ -3904,6 +3926,18 @@ class UnslothTrainer:
 
             _raise_if_empty_train_split(dataset, "")
 
+            if objective in ("dpo", "orpo") and (self.is_vlm or self.model_has_vision):
+                # TRL's preference batches carry no token_type_ids, which Gemma 3-style
+                # multimodal forwards require in training, text-only datasets included.
+                raise ValueError(
+                    f"{objective.upper()} is not available for vision-language models yet; "
+                    "use SFT or GRPO."
+                )
+            if objective != "sft" and self.diffusion_lm_profile:
+                # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
+                raise ValueError(
+                    f"{objective.upper()} is not available for text-diffusion models; use SFT."
+                )
             if objective != "sft":
                 return self._format_rl_dataset(
                     dataset,
@@ -4855,7 +4889,8 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "disable_tqdm": _hf_stdout_progress_disabled(),
-                "include_num_input_tokens_seen": True,
+                # DPO/ORPO/GRPO batches have no input_ids, so token tracking only warns every step.
+                "include_num_input_tokens_seen": training_args.get("objective", "sft") == "sft",
                 # serial_as_none = False: this is a config boundary, not a map() call site. The audio paths ask for 1
                 # to keep dataset workers off a process holding audio/CUDA state; pass None otherwise, so the shared
                 # policy sizes it from CPU affinity and cgroup quota rather than host os.cpu_count().
@@ -5061,6 +5096,21 @@ class UnslothTrainer:
                 rl_tokenizer = self.tokenizer
                 if isinstance(rl_tokenizer, ProcessorMixin) and hasattr(rl_tokenizer, "tokenizer"):
                     rl_tokenizer = rl_tokenizer.tokenizer
+                # RL rows are conversations and TRL applies the chat template: base models need one.
+                templated = get_training_chat_template(
+                    rl_tokenizer, self.model_name, "chatml_messages"
+                )
+                if templated is not rl_tokenizer:
+                    if rl_tokenizer is self.tokenizer:
+                        self.tokenizer = templated
+                    rl_tokenizer = templated
+                # GRPO renders prompts through processing_class, which is the processor restored below.
+                if (
+                    rl_tokenizer is not self.tokenizer
+                    and not getattr(self.tokenizer, "chat_template", None)
+                    and getattr(rl_tokenizer, "chat_template", None)
+                ):
+                    self.tokenizer.chat_template = rl_tokenizer.chat_template
                 logger.info(f"Configuring {objective.upper()} trainer\n")
                 self.trainer = build_rl_trainer(
                     objective,
@@ -5071,6 +5121,7 @@ class UnslothTrainer:
                     config_args = config_args,
                     settings = training_args.get("rl_settings") or {},
                     reward_specs = training_args.get("reward_specs") or [],
+                    on_warning = self._record_warning,
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer
@@ -5348,10 +5399,9 @@ class UnslothTrainer:
                 batch_size = training_args.get("batch_size", 2)
                 grad_accum = training_args.get("gradient_accumulation_steps", 4)
                 if objective == "grpo":
-                    # Unsloth may resize the batch to fit num_generations, and each prompt becomes
-                    # num_generations rows, so count from the trainer's own args.
+                    # Unsloth may resize the batch for num_generations: read the trainer's args.
                     rl_args = self.trainer.args
-                    num_samples *= int(getattr(rl_args, "num_generations", 1) or 1)
+                    num_samples = grpo_completion_rows(num_samples, rl_args)
                     batch_size = rl_args.per_device_train_batch_size
                     grad_accum = rl_args.gradient_accumulation_steps
                 total_steps = self._calculate_total_steps(

@@ -29,6 +29,7 @@ import {
   TRAINING_METHOD_ORDER,
   isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
+  effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -444,7 +445,9 @@ export function TrainingWizard({
   onParamModeChange: (next: ParamMode) => void;
 }) {
   const t = useT();
-  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  const objective = useTrainingConfigStore((s) =>
+    effectiveTrainingObjective(s),
+  );
   return (
     <div className="flex flex-col gap-6">
       <SectionBox
@@ -460,7 +463,7 @@ export function TrainingWizard({
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
         icon={Database02Icon}
-        chipTint="var(--chart-4)"
+        chipTint="var(--chart-1)"
         dataTour="studio-dataset"
         titleAction={<DatasetSourceToggleAction />}
       >
@@ -490,7 +493,7 @@ export function TrainingWizard({
           titleBadge={<NewBadge />}
           description={t("rl.rewards.description")}
           icon={Award01Icon}
-          chipTint="var(--chart-2)"
+          chipTint="var(--chart-1)"
         >
           <RewardsSection />
         </SectionBox>
@@ -500,7 +503,7 @@ export function TrainingWizard({
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
         icon={Settings05Icon}
-        chipTint="var(--chart-5)"
+        chipTint="var(--chart-1)"
         dataTour="studio-params"
         titleAction={
           <ParamModeToggle mode={paramMode} onChange={onParamModeChange} />
@@ -518,7 +521,7 @@ export function TrainingWizard({
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
         icon={FloppyDiskIcon}
-        chipTint="var(--chart-3)"
+        chipTint="var(--chart-1)"
       >
         <ConfigActions />
       </SectionBox>

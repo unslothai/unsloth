@@ -118,6 +118,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    _normalized_reward_name,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -1557,6 +1558,30 @@ _RESUME_CACHE_FIELDS = (
     "dataset_local_path",
     "dataset_snapshot_path",
 )
+
+
+def _stored_reward_specs(stored: dict) -> dict[str, dict]:
+    """name -> reward spec stored with a run. A resume scores with these, not the library's
+    current rules, which may have been edited or deleted since."""
+    specs = stored.get("reward_specs")
+    if not isinstance(specs, list):
+        return {}
+    return {
+        spec["name"]: spec
+        for spec in specs
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and spec.get("rule")
+    }
+
+
+def _resume_reward_mismatch(stored_specs: dict[str, dict], selections) -> bool:
+    """A resumed GRPO run must keep the source run's rewards and weights: the checkpoint's
+    optimizer state belongs to that summed reward."""
+    if not stored_specs:
+        return False
+    stored = {name: float(spec.get("weight", 1.0)) for name, spec in stored_specs.items()}
+    return stored != {_normalized_reward_name(s.name): float(s.weight) for s in selections}
+
+
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
     "load_in_4bit",
     "use_lora",
@@ -1630,6 +1655,13 @@ def _prepare_resume_resource_provenance(
                 detail = "The training type does not match the source run.",
             )
         request.training_type = stored_training_type
+    # The checkpoint's optimizer and trainer state belong to one loss.
+    stored_objective = stored.get("objective") or "sft"
+    if request.objective != stored_objective:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The training objective does not match the source run.",
+        )
     for field in _RESUME_CHECKPOINT_STRUCTURE_FIELDS:
         if field not in stored:
             continue
@@ -2285,13 +2317,28 @@ async def start_training(
                 detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
             )
         if request.objective == "grpo":
-            from core.training.rewards import RewardError, RewardNotFoundError, get_reward
+            from core.training.rewards import (
+                RewardError,
+                RewardNotFoundError,
+                get_reward,
+                normalize_reward_name,
+            )
 
-            # Resolved here, under the caller's account, and stored with the run: later edits to a
-            # library reward do not change what this run says it trained with.
+            stored_specs = (
+                _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
+            )
+            if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "The GRPO rewards do not match the source run.",
+                )
+            # Stored with the run, so later library edits never change what it says it trained with.
             try:
                 for selection in request.grpo_rewards:
-                    reward_specs.append({**get_reward(selection.name), "weight": selection.weight})
+                    spec = stored_specs.get(normalize_reward_name(selection.name)) or get_reward(
+                        selection.name
+                    )
+                    reward_specs.append({**spec, "weight": selection.weight})
             except RewardNotFoundError as exc:
                 raise HTTPException(status_code = 404, detail = str(exc)) from exc
             except RewardError as exc:
@@ -3107,6 +3154,7 @@ async def stream_training_progress(
             progress: Optional[Any] = None,
             grad_norm_override: Optional[float] = None,
             eval_loss_override: Optional[float] = None,
+            rl_metrics_override: Optional[dict] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -3124,7 +3172,10 @@ async def stream_training_progress(
             eval_loss = eval_loss_override
             if eval_loss is None and progress:
                 eval_loss = getattr(progress, "eval_loss", None)
-            rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
+            if rl_metrics_override is not None:
+                rl_metrics = rl_metrics_override or None
+            else:
+                rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
 
             return TrainingProgress(
                 job_id = job_id,
@@ -3173,6 +3224,12 @@ async def stream_training_progress(
                     getattr(backend, "grad_norm_history", []),
                 )
             }
+            # Each replayed step carries its own RL numbers, not the latest ones.
+            rl_by_step = {
+                entry["step"]: {k: v for k, v in entry.items() if k != "step"}
+                for entry in getattr(backend, "rl_metric_history", [])
+                if isinstance(entry, dict) and "step" in entry
+            }
             for i, step_val in enumerate(backend.step_history):
                 if not is_current_job():
                     return
@@ -3194,6 +3251,7 @@ async def stream_training_progress(
                         epoch_replay,
                         progress = tp_replay,
                         grad_norm_override = grad_norm_by_step.get(step_val),
+                        rl_metrics_override = rl_by_step.get(step_val, {}),
                     )
                     if not is_current_job():
                         return

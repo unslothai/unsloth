@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { usePlatformStore } from "@/config/env";
 import {
   Tooltip,
   TooltipContent,
@@ -44,10 +45,12 @@ export function ConfigActions() {
       const config = parseYamlConfig(content);
       const { trainingObjective, ...rl } = parseYamlRlSettings(content);
       const store = useTrainingConfigStore.getState();
+      // MLX has no RL trainer: an RL file loads its other settings for SFT.
+      const isMac = usePlatformStore.getState().deviceType === "mac";
       // Objective first: it swaps in the RL learning rate, which the file's own value then overrides.
-      store.setTrainingObjective(trainingObjective);
+      store.setTrainingObjective(isMac ? "sft" : trainingObjective);
       store.applyConfigPatch(config);
-      if (Object.keys(rl).length > 0) {
+      if (!isMac && Object.keys(rl).length > 0) {
         useTrainingConfigStore.setState(rl);
       }
       toast.success(t("studio.training.configLoaded"), {

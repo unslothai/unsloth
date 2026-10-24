@@ -2020,7 +2020,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2

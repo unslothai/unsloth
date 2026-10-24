@@ -82,7 +82,20 @@ export type {
   RewardPreviewResponse,
   RewardRecord,
 } from "./api/rewards-api";
+export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export { rlChartKeys } from "./lib/rl-chart-keys";
+export {
+  RL_IGNORE,
+  RL_REQUIRED_ROLES,
+  RL_ROLES,
+  effectiveTrainingObjective,
+  missingRlRoles,
+  rlObjectiveSupported,
+  resolveRlMapping,
+  syncRlMapping,
+} from "./lib/rl-roles";
+export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
   formatScore,
   readRewardHead,
@@ -114,6 +127,7 @@ export {
 } from "./events";
 export {
   parseYamlConfig,
+  parseRunConfigRlSettings,
   parseYamlRlSettings,
   serializeConfigToYaml,
 } from "./lib/yaml-config";

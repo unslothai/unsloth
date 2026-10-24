@@ -412,6 +412,25 @@ export const BUDGET = {
   // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
   // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
   // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
+  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
+  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
+  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
+  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
+  // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
+  // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
+  // budget, which keeps main's margin (re-added on top of main at 85d63e074). The GRPO prompt preview reading
+  // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
+  // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
+  // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
+  // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
+  // Re-added on top of main's #14582 budget at the e3d92b48e merge: main's +8,926 B raw / +2,367 B transfer
+  // since 85d63e074 on top of the line this replaced.
   // DPO / ORPO / GRPO training with Python rewards (#12995), mostly the eager icon chunk (+12.0 KB raw), the
   // training chunk (+7.8 KB) and the rl.* English strings (+6.1 KB): +28,313 B raw / +8,980 B transfer (6,932,829 ->
   // 6,961,142 B raw, 2,088,616 -> 2,097,596 B transfer against d4dab132e0, one machine and build, Node 24,
@@ -419,8 +438,10 @@ export const BUDGET = {
   // transfer, 105 chunks): their shared imports split into extra startup chunks. Raised by the growth.
   // Its Try it box sending row 1's prompt turns and the system prompt (#12995) adds 120 B raw / 42 B
   // transfer (6,961,142 -> 6,961,262 B raw, 2,097,596 -> 2,097,638 B transfer, same machine and build).
-  transferBytes: 2_097_670,
-  rawBytes: 6_961_404,
+  // Merged onto the #12601 head at e456c06fa8 this measures 6,803.0 KB raw / 2,045.4 KB transfer (Node 26,
+  // 99 chunks), inside #12601's budget, so that budget stands.
+  transferBytes: 2_100_286,
+  rawBytes: 6_971_545,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

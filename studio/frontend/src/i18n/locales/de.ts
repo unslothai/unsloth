@@ -72,7 +72,7 @@ export const de = {
       cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
-      permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
+      permissionsDescription: "Standardwerte und Ausnahmen pro Website festlegen. Passwort- und Zahlungsfelder werden nie ausgefüllt.",
       site: "Website oder Muster",
       sitePlaceholder: "example.com oder *.example.com",
       default: "Standard",
@@ -2796,6 +2796,11 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
+      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetailsDescription:
+        "Tempo und Tokenzahl live anzeigen, während eine Antwort gestreamt wird, und wo die Schichten eines lokalen Modells liegen.",
+      showGenerationDetailsKeywords:
+        "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
@@ -3023,6 +3028,9 @@ export const de = {
         searchAudio: "Archivierte Audiodateien suchen",
         unarchive: "Aus Archiv wiederherstellen",
         unarchiveAll: "Alle wiederherstellen",
+        unarchiveAllInProject: "Alle im Projekt wiederherstellen",
+        deleteAllInProject: "Alle im Projekt löschen",
+        groupActions: "Aktionen für {group}",
         unarchiveResults: "Ergebnisse wiederherstellen",
         deleteResults: "Ergebnisse löschen",
         noChats: "Keine Chats entsprechen deiner Suche.",
@@ -3722,6 +3730,7 @@ export const de = {
             "Dieser Datensatz scheint Bilder zu enthalten, die nicht gestreamt werden können.",
           audioDataset:
             "Dieser Datensatz scheint Audio zu enthalten, das nicht gestreamt werden kann.",
+          rlObjective: "Streaming wird für DPO, ORPO und GRPO noch nicht unterstützt.",
           appleSilicon:
             "Streaming wird auf Apple Silicon (MLX) noch nicht unterstützt.",
         },
@@ -4743,6 +4752,7 @@ export const de = {
       orpoHint: "Wie DPO in einem Durchgang mit SFT-Anteil, funktioniert also auch mit einem Basismodell.",
       grpoHint: "Mehrere Antworten pro Prompt erzeugen und die verstärken, die deine Belohnungen höher bewerten.",
       cptLocked: "Continued Pretraining trainiert immer mit SFT.",
+      modelLocked: "DPO, ORPO und GRPO brauchen einen Text-Datensatz und ein Text- oder Vision-Language-Modell.",
       macLocked: "Präferenz- und RL-Training sind auf Apple Silicon noch nicht verfügbar.",
     },
     dataset: {
@@ -4751,6 +4761,7 @@ export const de = {
       loadColumns: "Spalten laden",
       loading: "Spalten werden geladen...",
       noDataset: "Wähle zuerst einen Datensatz.",
+      s3Unsupported: "RL-Training kann Spaltenrollen aus S3-Daten noch nicht lesen. Verwende einen Hugging-Face- oder hochgeladenen Datensatz.",
       error: "Spalten konnten nicht geladen werden: {error}",
       missing: "Noch erforderlich: {roles}",
       answerNote: "Die Antwortspalte geht nur an die Belohnungen; das Modell sieht sie nie.",

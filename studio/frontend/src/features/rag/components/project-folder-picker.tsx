@@ -12,8 +12,8 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  FolderAddIcon,
   FolderSyncIcon,
-  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -99,7 +99,7 @@ export function ProjectFolderPicker({
   }
 
   return (
-    <div className="space-y-2.5">
+    <div className="min-w-0 space-y-2.5">
       <p className="text-ui-15 font-medium text-foreground">Source folders</p>
       <div className={FOLDER_CARD_CLASS}>
         {folders.map((folder) => (
@@ -109,7 +109,10 @@ export function ProjectFolderPicker({
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />
-            <span className="min-w-0 flex-1 truncate text-sm">
+            <span
+              className="min-w-0 flex-1 truncate text-sm"
+              title={folder.displayName}
+            >
               {folder.displayName}
             </span>
             <Button
@@ -148,7 +151,7 @@ export function ProjectFolderPicker({
             <Spinner className="size-4 shrink-0" />
           ) : (
             <HugeiconsIcon
-              icon={PlusSignIcon}
+              icon={FolderAddIcon}
               strokeWidth={1.75}
               className="size-4 shrink-0 text-muted-foreground"
             />

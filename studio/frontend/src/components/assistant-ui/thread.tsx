@@ -53,6 +53,7 @@ import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
+import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
@@ -213,6 +214,7 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -260,7 +262,7 @@ import {
   resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { translate, useT } from "@/i18n";
+import { translate, useLocale, useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
@@ -7888,9 +7890,44 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
+  return <GeneratingStatus />;
+};
+
+// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+const GeneratingStatus: FC = () => {
+  // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  const prefill = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.prefill ?? null,
+  );
+  const labelShown = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.prefillShown === true,
+  );
+  // A reply can decode with nothing to show yet (a tool call being written): past the prompt, back to Working.
+  const decoding = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
+  );
+  const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
+  const locale = useLocale();
+  const percent = prefill ? prefillPercent(prefill) : null;
+  // Held at 100% until the first token: going back to Working... for that moment would flash too.
+  if (prefill === null || !labelShown || percent === null || decoding) {
+    return (
+      <span className="generating-glint text-sm text-muted-foreground">
+        Working...
+      </span>
+    );
+  }
+  const timeLeft = formatPrefillTimeLeft(prefill);
   return (
-    <span className="generating-glint text-sm text-muted-foreground">
-      Working...
+    <span
+      data-slot="prefill-progress"
+      className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
+    >
+      Processing prompt {percent}%
+      {timeLeft ? ` · ${timeLeft}` : null}
+      {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
     </span>
   );
 };
@@ -8550,6 +8587,8 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
+        {/* Only while streaming, where the action bar is hidden; the timing badge takes over after. */}
+        <LiveGenerationLine />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>

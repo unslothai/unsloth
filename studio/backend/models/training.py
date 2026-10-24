@@ -122,6 +122,15 @@ def _resolve_inventory_handle(value: str) -> str:
     return resolve_inventory_handle(value)
 
 
+def _normalized_reward_name(name: str) -> str:
+    # The library lookup's normalisation, so EXACT-ANSWER and exact-answer count as one reward.
+    from core.training.rewards import RewardError, normalize_reward_name
+    try:
+        return normalize_reward_name(name)
+    except RewardError:
+        return name
+
+
 class RewardSelection(BaseModel):
     """One library reward enabled for a GRPO run, with its weight in the summed reward."""
 
@@ -129,6 +138,21 @@ class RewardSelection(BaseModel):
 
     name: str = Field(..., min_length = 1, max_length = 64)
     weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
+
+
+# (key in the stored run config's rl_settings, TrainingStartRequest field)
+_STORED_RL_SETTINGS = (
+    ("beta", "rl_beta"),
+    ("max_prompt_length", "rl_max_prompt_length"),
+    ("num_generations", "grpo_num_generations"),
+    ("max_completion_length", "grpo_max_completion_length"),
+    ("temperature", "grpo_temperature"),
+    ("variant", "grpo_variant"),
+    ("enable_thinking", "grpo_enable_thinking"),
+    ("system_prompt", "rl_system_prompt"),
+    ("mask_truncated_completions", "grpo_mask_truncated_completions"),
+    ("epsilon_high", "grpo_epsilon_high"),
+)
 
 
 # The strings trainer.normalize_gradient_checkpointing turns into False.
@@ -264,6 +288,32 @@ class TrainingStartRequest(BaseModel):
         le = _MAX_DATASET_SLICE_INDEX,
         description = "Inclusive end row index for dataset slicing",
     )
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _compat_stored_rl_config(cls, values: Any) -> Any:
+        """A resume posts the stored run config back, which nests the RL fields under rl_settings
+        and reward_specs; lift them into the request fields an explicit value has not set."""
+        if not isinstance(values, dict):
+            return values
+        settings = values.get("rl_settings")
+        specs = values.get("reward_specs")
+        if not isinstance(settings, dict) and not isinstance(specs, list):
+            return values
+        values = dict(values)
+        for stored, field in _STORED_RL_SETTINGS:
+            if isinstance(settings, dict) and stored in settings:
+                values.setdefault(field, settings[stored])
+        if isinstance(specs, list):
+            values.setdefault(
+                "grpo_rewards",
+                [
+                    {"name": s.get("name"), "weight": s.get("weight", 1.0)}
+                    for s in specs
+                    if isinstance(s, dict)
+                ],
+            )
+        return values
 
     @model_validator(mode = "before")
     @classmethod
@@ -795,17 +845,34 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} cannot train a decision model.")
         if self.is_dataset_image or self.is_dataset_audio or self.is_embedding:
             raise ValueError(f"{objective.upper()} supports text datasets only for now.")
+        if getattr(self, "is_decision", False):
+            raise ValueError(f"{objective.upper()} cannot be combined with decision training.")
         if self.dataset_streaming:
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
         # The raw-text path returns before role formatting, so the rows would have no prompt.
         if self.format_type == "raw":
             raise ValueError(f"{objective.upper()} needs column roles, not the Raw text format.")
+
+        if self.s3_config is not None:
+            # Column roles are picked from inspected columns, which S3 data can't offer yet.
+            raise ValueError(
+                f"{objective.upper()} can't read column roles from S3 data yet. "
+                "Use a Hugging Face or uploaded dataset."
+            )
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
-        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(
-            self.grpo_rewards
-        ):
+        if objective == "grpo" and len(
+            {_normalized_reward_name(r.name) for r in self.grpo_rewards}
+        ) != len(self.grpo_rewards):
             raise ValueError("Each GRPO reward can only be selected once.")
+        return self
+
+    @model_validator(mode = "after")
+    def _check_preference_beta(self) -> "TrainingStartRequest":
+        # Zero turns DPO's loss constant (no gradient) and drops ORPO's preference term; only
+        # GRPO's KL coefficient may be zero.
+        if self.objective in ("dpo", "orpo") and self.rl_beta == 0:
+            raise ValueError(f"{self.objective.upper()} needs a beta above 0.")
         return self
 
     @model_validator(mode = "after")
@@ -865,6 +932,11 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("drafter training is only available for text generation models.")
         if getattr(self, "training_type", None) == "Continued Pretraining":
             raise ValueError("drafter training is not available for continued pretraining.")
+        if getattr(self, "objective", "sft") != "sft":
+            # The drafter phase reads tokenized SFT rows; RL datasets hold prompts and answers.
+            raise ValueError(
+                f"drafter training is not available with {self.objective.upper()} yet."
+            )
         return self
 
 

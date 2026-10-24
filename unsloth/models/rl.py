@@ -90,6 +90,17 @@ try:
 except Exception:
     torch_version = Version("0.0.0")
 
+
+def _persistent_tma_matmul_ok():
+    # zoo's gate: torch 2.12+ guards every GEMM size once Inductor considers TMA templates
+    # (pytorch/pytorch#172925), so a compiled matmul recompiles per token count.
+    try:
+        from unsloth_zoo.temporary_patches.common import _persistent_tma_matmul_ok as zoo_gate
+    except Exception:
+        return tuple(torch_version.release[:2]) < (2, 12)  # 2.12 nightlies count as 2.12
+    return bool(zoo_gate())
+
+
 try:
     from transformers import __version__ as _transformers_version_raw
     transformers_version = Version(_transformers_version_raw)
@@ -866,6 +877,35 @@ def _wrap_ppo_train(trainer_cls):
     functools.update_wrapper(wrapped, original)
     wrapped._unsloth_ppo_train_wrapped = True
     trainer_cls.train = wrapped
+
+
+def _wrap_distillation_padding_mask(trainer_cls):
+    original = getattr(trainer_cls, "_get_last_hidden_state", None)
+    if original is None or getattr(original, "_unsloth_padding_mask_wrapped", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, unwrapped_model, *args, **kwargs):
+        # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
+        missing = object()
+        states = [
+            (module, getattr(module, "_unsloth_keep_padding_mask", missing))
+            for module in unwrapped_model.modules()
+            if hasattr(module, "embed_tokens")
+        ]
+        for module, _ in states:
+            module._unsloth_keep_padding_mask = True
+        try:
+            return original(self, unwrapped_model, *args, **kwargs)
+        finally:
+            for module, previous in states:
+                if previous is missing:
+                    del module._unsloth_keep_padding_mask
+                else:
+                    module._unsloth_keep_padding_mask = previous
+
+    wrapped._unsloth_padding_mask_wrapped = True
+    trainer_cls._get_last_hidden_state = wrapped
 
 
 def _park_optimizer_enabled(trainer):
@@ -2199,7 +2239,12 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
-    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = device)
+    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = "cpu")
+    # torch.tensor(..., device = cuda) is a pageable, stream-draining copy; pinned + non_blocking is not.
+    if device.type == "cuda":
+        present = present.pin_memory().to(device, non_blocking = True)
+    else:
+        present = present.to(device)
     dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
     buckets = {}
     for p, has_grad in zip(params, present.tolist()):
@@ -3744,8 +3789,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 '(__import__("unsloth.device_type", fromlist = ["cuda_visible_capabilities"])'
                 ".cuda_visible_capabilities())"
             )
+            # The sm90+ check only applies where zoo would request TMA at all; otherwise emit False.
+            tma_matmul = all_sm90 if _persistent_tma_matmul_ok() else "False"
             cuda_options = f"""
-            "triton.enable_persistent_tma_matmul": {all_sm90},"""
+            "triton.enable_persistent_tma_matmul": {tma_matmul},"""
             # cutlass options were added in PyTorch 2.8.0.
             if torch_version >= Version("2.8.0"):
                 cuda_options += f"""
@@ -4042,6 +4089,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
+    if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
+        _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(

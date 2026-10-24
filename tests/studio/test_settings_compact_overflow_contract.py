@@ -9,6 +9,7 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
+URL_PILL = REPO / "studio/frontend/src/features/settings/components/url-pill.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
 SETTINGS = REPO / "studio/frontend/src/features/settings"
 
@@ -56,7 +57,9 @@ def test_remote_access_card_can_shrink():
     source = REMOTE_ACCESS.read_text(encoding = "utf-8")
     assert '<div className="flex min-w-0 items-start gap-3">' in source
     assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
-    assert "block w-full break-all border" in source
+    # The URL box itself is the shared pill, which wraps rather than overflowing.
+    assert "<UrlPill url={url} />" in source
+    assert "block w-full break-all border" in URL_PILL.read_text(encoding = "utf-8")
     assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
 
 

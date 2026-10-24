@@ -71,7 +71,7 @@ export const it = {
       cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
-      permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
+      permissionsDescription: "Imposta i valori predefiniti e le eccezioni per sito. I campi di password e pagamento non vengono mai compilati.",
       site: "Sito o modello",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predefinito",
@@ -2699,6 +2699,11 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
+      showGenerationDetails: "Dettagli generazione",
+      showGenerationDetailsDescription:
+        "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
+      showGenerationDetailsKeywords:
+        "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
@@ -2924,6 +2929,9 @@ export const it = {
         searchAudio: "Cerca audio archiviati",
         unarchive: "Ripristina",
         unarchiveAll: "Ripristina tutto",
+        unarchiveAllInProject: "Ripristina tutto nel progetto",
+        deleteAllInProject: "Elimina tutto nel progetto",
+        groupActions: "Azioni per {group}",
         unarchiveResults: "Ripristina risultati",
         deleteResults: "Elimina risultati",
         noChats: "Nessuna chat corrisponde alla ricerca.",
@@ -3800,6 +3808,7 @@ export const it = {
             "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
           audioDataset:
             "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
+          rlObjective: "Lo streaming non è ancora supportato per DPO, ORPO o GRPO.",
           appleSilicon:
             "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
         },
@@ -4744,6 +4753,7 @@ export const it = {
       orpoHint: "Come DPO in un solo passaggio con un termine SFT, quindi funziona da un modello base.",
       grpoHint: "Generare più risposte per prompt e rafforzare quelle a cui le tue ricompense danno un punteggio più alto.",
       cptLocked: "Il pre-addestramento continuo addestra sempre con SFT.",
+      modelLocked: "DPO, ORPO e GRPO richiedono un dataset di testo e un modello di testo o vision-language.",
       macLocked: "L'addestramento per preferenze e RL non è ancora disponibile su Apple Silicon.",
     },
     dataset: {
@@ -4752,6 +4762,7 @@ export const it = {
       loadColumns: "Carica colonne",
       loading: "Caricamento colonne...",
       noDataset: "Scegli prima un dataset.",
+      s3Unsupported: "L'addestramento RL non può ancora leggere i ruoli delle colonne dai dati S3. Usa un dataset di Hugging Face o caricato.",
       error: "Impossibile caricare le colonne: {error}",
       missing: "Ancora necessari: {roles}",
       answerNote: "La colonna della risposta va solo alle ricompense; il modello non la vede mai.",

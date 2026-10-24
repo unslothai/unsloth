@@ -72,7 +72,7 @@ export const hi = {
       cursorDescription: "पेज पर जहाँ मॉडल क्लिक, टाइप और ड्रैग करते हैं, वहाँ एक पॉइंटर दिखाएँ",
       askEveryTime: "हर बार पूछें",
       permissionsTitle: "एजेंट अनुमतियाँ",
-      permissionsDescription: "डिफ़ॉल्ट चुनें और खास साइटों के लिए अपवाद जोड़ें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते, चाहे यहाँ कुछ भी हो।",
+      permissionsDescription: "डिफ़ॉल्ट और साइट के हिसाब से अपवाद तय करें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते।",
       site: "साइट या पैटर्न",
       sitePlaceholder: "example.com या *.example.com",
       default: "डिफ़ॉल्ट",
@@ -2764,6 +2764,11 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
+      showGenerationDetails: "जनरेशन विवरण",
+      showGenerationDetailsDescription:
+        "जवाब बनते समय लाइव गति और टोकन गिनती दिखाएँ, और लोकल मॉडल की परतें कहाँ रखी गईं।",
+      showGenerationDetailsKeywords:
+        "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
@@ -2988,6 +2993,9 @@ export const hi = {
         searchAudio: "संग्रहीत ऑडियो खोजें",
         unarchive: "संग्रह से निकालें",
         unarchiveAll: "सभी को संग्रह से निकालें",
+        unarchiveAllInProject: "प्रोजेक्ट में सभी को संग्रह से निकालें",
+        deleteAllInProject: "प्रोजेक्ट में सभी हटाएँ",
+        groupActions: "{group} के लिए कार्रवाइयाँ",
         unarchiveResults: "परिणामों को संग्रह से निकालें",
         deleteResults: "परिणाम मिटाएँ",
         noChats: "आपकी खोज से मेल खाती कोई चैट नहीं है।",
@@ -3677,6 +3685,7 @@ export const hi = {
             "यह डेटासेट इमेज वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
           audioDataset:
             "यह डेटासेट ऑडियो वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
+          rlObjective: "DPO, ORPO या GRPO के लिए स्ट्रीमिंग अभी समर्थित नहीं है।",
           appleSilicon:
             "Apple Silicon (MLX) पर अभी स्ट्रीमिंग समर्थित नहीं है।",
         },
@@ -4679,6 +4688,7 @@ export const hi = {
       orpoHint: "DPO जैसा, पर SFT टर्म के साथ एक ही पास में, इसलिए बेस मॉडल से भी चलता है।",
       grpoHint: "हर प्रॉम्प्ट के कई जवाब बनाएं और जिन्हें आपके रिवॉर्ड ज़्यादा स्कोर दें उन्हें मज़बूत करें।",
       cptLocked: "Continued Pretraining हमेशा SFT से ट्रेन होता है।",
+      modelLocked: "DPO, ORPO और GRPO के लिए टेक्स्ट डेटासेट और टेक्स्ट या विज़न-लैंग्वेज मॉडल चाहिए।",
       macLocked: "Apple Silicon पर प्रेफ़रेंस और RL ट्रेनिंग अभी उपलब्ध नहीं है।",
     },
     dataset: {
@@ -4687,6 +4697,7 @@ export const hi = {
       loadColumns: "कॉलम लोड करें",
       loading: "कॉलम लोड हो रहे हैं...",
       noDataset: "पहले डेटासेट चुनें।",
+      s3Unsupported: "RL ट्रेनिंग अभी S3 डेटा से कॉलम भूमिकाएँ नहीं पढ़ सकती। Hugging Face या अपलोड किया गया डेटासेट इस्तेमाल करें।",
       error: "कॉलम लोड नहीं हो सके: {error}",
       missing: "अभी चाहिए: {roles}",
       answerNote: "जवाब वाला कॉलम सिर्फ़ रिवॉर्ड को जाता है; मॉडल उसे कभी नहीं देखता।",
