@@ -66,4 +66,3 @@ def test_a_one_argument_hook_is_called_on_the_synthesized_final_pass(monkeypatch
     assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
     assert seen, "the one-argument hook never ran"
     assert len(seen[-1]) == len(payloads[-1]["messages"])
-

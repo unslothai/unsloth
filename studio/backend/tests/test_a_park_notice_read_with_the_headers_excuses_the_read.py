@@ -16,15 +16,18 @@ import pytest
 import routes.inference as inference
 
 _HEADERS = (
-    b"HTTP/1.1 200 OK\r\n"
-    b"Content-Type: text/event-stream\r\n"
-    b"Connection: close\r\n\r\n"
+    b"HTTP/1.1 200 OK\r\n" b"Content-Type: text/event-stream\r\n" b"Connection: close\r\n\r\n"
 )
 _FIRST = b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
 _LAST = b'data: {"choices":[{"delta":{"content":"b"}}]}\n\ndata: [DONE]\n\n'
 
 
-def _serve(with_headers: bytes, after_silence: bytes, silence_s: float, then = None):
+def _serve(
+    with_headers: bytes,
+    after_silence: bytes,
+    silence_s: float,
+    then = None,
+):
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -93,7 +96,6 @@ def test_a_resume_read_with_the_headers_leaves_a_later_stall_a_stall():
 
 def _relay_sync(port: int, stall_s: float) -> str:
     from core.inference.llama_cpp import LlamaCppBackend
-
     with httpx.Client(
         timeout = httpx.Timeout(10.0), limits = httpx.Limits(max_keepalive_connections = 0)
     ) as client:

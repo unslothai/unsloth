@@ -32,7 +32,12 @@ def roomy_host(monkeypatch):
     monkeypatch.setattr(llama_mod, "_parking_backends", weakref.WeakSet())
 
 
-def _relaunch(backend, *, named = _EXACT_BUDGET, exact_env = False):
+def _relaunch(
+    backend,
+    *,
+    named = _EXACT_BUDGET,
+    exact_env = False,
+):
     launched = []
     namespace = dict(vars(llama_mod))
     argv = ["llama-server", "-c", "0", "--kv-unified", "--preempt-ram", str(named)]
