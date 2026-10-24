@@ -2474,7 +2474,6 @@ def load_prequantized_transformer(
             # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
             # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
             # prequant whose checkpoint is cached and already loaded.
-            # ``into`` already carries its config; reading it again could only fail an otherwise usable load.
             config = (
                 None
                 if into is not None
@@ -3541,12 +3540,11 @@ def stream_prequantized_module(
 
 
 class PrequantIntoError(RuntimeError):
-    """Raised once ``_load_into_dense`` has started assigning: the module is neither dense nor fully loaded."""
+    """The module is neither dense nor fully loaded."""
 
 
 def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional[Any]) -> None:
-    """Assign a pre-quantized state dict into an existing dense module. Refuses (ValueError, module untouched) unless
-    the key sets and shapes match exactly; a failure during assignment raises ``PrequantIntoError``."""
+    """ValueError leaves the module untouched; PrequantIntoError means it was partly assigned."""
     if prepare_model is not None:
         raise ValueError(
             "prepare_model reshapes a fresh skeleton; it cannot run on an existing transformer"

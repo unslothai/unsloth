@@ -1469,7 +1469,6 @@ def test_a_returning_pipeline_load_reads_the_cache_bit_identically(
     fresh_dense.load_state_dict(model.state_dict())
     fam = _fam(base)
     _patch_scheme(monkeypatch, D, scheme)
-    # Nothing cached yet: a miss that leaves the dense module alone.
     miss = types.SimpleNamespace(transformer = fresh_dense)
     assert _pipeline_read(D, miss, fam, base, scheme) is None
     assert not D.transformer_is_quantised(fresh_dense)
@@ -1478,7 +1477,6 @@ def test_a_returning_pipeline_load_reads_the_cache_bit_identically(
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) is not None
     pipe = types.SimpleNamespace(transformer = fresh_dense)
     assert _pipeline_read(D, pipe, fam, base, scheme) == scheme
-    # Loaded INTO the pipeline's own module, quantized exactly as the fresh build was.
     assert pipe.transformer is fresh_dense and D.transformer_is_quantised(fresh_dense)
     assert fresh_dense._unsloth_runtime_quant == scheme
     assert _flat_equal(model.state_dict(), fresh_dense.state_dict()) == []
@@ -1528,7 +1526,6 @@ def test_a_pipeline_read_that_does_not_fit_leaves_the_module_dense(
     pipe = types.SimpleNamespace(transformer = other)
     assert _pipeline_read(D, pipe, fam, base, scheme) is None
     assert not D.transformer_is_quantised(other)
-    # A baked LoRA needs the dense module: never read.
     dense = Tiny().to(torch.bfloat16)
     pipe = types.SimpleNamespace(transformer = dense)
     assert _pipeline_read(D, pipe, fam, base, scheme, loras = [("a", 1.0)]) is None
@@ -1546,8 +1543,7 @@ def test_the_pipeline_quant_loop_reads_the_cache_before_quantizing():
 
 
 def test_a_rotated_int8_pipeline_read_matches_the_fresh_rotated_build(env, tmp_path, monkeypatch):
-    """ConvRot families (Qwen-Image-2.1, Z-Image): the cached build carries the offline rotation, the read installs
-    the online half, so the module computes exactly what a fresh rotate + quantize computes."""
+    """ConvRot: cached build has the offline rotation, the read installs the online half."""
     import core.inference.diffusion_transformer_quant as Q
     from core.inference import diffusion as D
     from core.inference.diffusion_convrot import is_rotated_linear

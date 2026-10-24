@@ -9837,8 +9837,6 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                # A returning load reads its earlier build from the local prequant cache instead of
-                                # re-quantising the dense denoiser.
                                 cached_scheme = (
                                     self._pipeline_quant_from_cache(
                                         pipe,
@@ -11256,9 +11254,7 @@ class DiffusionBackend:
         source_base: Optional[str],
         hf_token: Optional[str],
     ) -> Optional[str]:
-        """Load the transformer's int8/fp8 build in place from the local prequant cache. Returns the scheme, or None
-        with the module still dense; raises only if loading failed after weights were replaced. Hosted checkpoints
-        are not read: the published FLUX.2-klein-4B INT8 renders different pixels than a local quantize."""
+        """Hosted checkpoints are not read: the published FLUX.2-klein-4B INT8 renders different pixels."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             transformer = getattr(pipe, "transformer", None)
@@ -11305,7 +11301,6 @@ class DiffusionBackend:
             if loaded is None:
                 if transformer_is_quantised(transformer):
                     raise PrequantIntoError("the cached build was partly applied and then failed")
-                # Digest, recipe or fast-accum mismatch: quantize fresh.
                 return None
             note_hit(cached, logger)
             logger.info(

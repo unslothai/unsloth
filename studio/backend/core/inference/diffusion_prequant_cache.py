@@ -456,9 +456,7 @@ def lookup(
     logger: Any = None,
     source_base: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises.
-    ``source_base`` is where the dense shards were read (a mirror or a local snapshot dir), as ``save_runtime_quant``
-    takes it; the key still records ``base_repo``."""
+    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
     if not enabled() or scheme not in CACHEABLE_SCHEMES:
         return None
     try:
