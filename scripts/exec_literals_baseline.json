@@ -38,6 +38,20 @@
       "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
     },
     {
+      "file": "studio/backend/core/training/reward_worker_main.py",
+      "sink": "compile",
+      "digest": "bff4be78ca0e31c0",
+      "count": 1,
+      "reason": "Compiles the user's own Python reward source inside the os_sandbox reward worker (python_rewards.py launches it like the chat Python tool); running that code is the feature, and the sandbox is the boundary."
+    },
+    {
+      "file": "studio/backend/core/training/reward_worker_main.py",
+      "sink": "exec",
+      "digest": "4b6b3a49b588c0a6",
+      "count": 1,
+      "reason": "Runs the user's own Python reward source inside the os_sandbox reward worker (python_rewards.py launches it like the chat Python tool); running that code is the feature, and the sandbox is the boundary."
+    },
+    {
       "file": "unsloth/models/_utils.py",
       "sink": "eval",
       "digest": "6f65bd10ad34f535",

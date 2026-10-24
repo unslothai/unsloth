@@ -123,7 +123,10 @@ def test_notebook_correctness_scores_a_raw_gsm8k_answer(worker_factory):
     row = rl.format_rl_dataset(raw, "grpo", keep_columns = ("*",))[0][0]
     specs = [
         _spec("correctness", NOTEBOOK, "correctness_reward_func"),
-        _spec("raw", "def reward(completions, answer_raw, **kw):\n    return [float(len(answer_raw[0]))]\n"),
+        _spec(
+            "raw",
+            "def reward(completions, answer_raw, **kw):\n    return [float(len(answer_raw[0]))]\n",
+        ),
     ]
     got = make_python_reward_funcs(specs, worker_factory(specs))
     prompts, completions = [row["prompt"]], [[{"role": "assistant", "content": GOOD}]]
