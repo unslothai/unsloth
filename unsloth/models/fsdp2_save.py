@@ -872,7 +872,7 @@ def _fsdp_grad_sync_deferred(model, cache):
         cache["fsdp_states"] = states
     found = False
     for st in states:
-        groups = getattr(st, "_fsdp_param_groups", None)  # torch >= 2.9: a list
+        groups = getattr(st, "_fsdp_param_groups", None)  # a list on newer torch (singular on 2.10)
         if groups is None:
             group = getattr(st, "_fsdp_param_group", None)
             groups = [group] if group is not None else []
