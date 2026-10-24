@@ -125,6 +125,105 @@ def _gguf_header_facts(
         return None, None
 
 
+# Headroom the guard leaves macOS and other apps on top of what they hold right now, since they
+# can grow while llama-server spends seconds mapping weights: 5 % of the Metal working set, and
+# never under 4 GiB (23 GiB on a 464 GiB working set, 4 GiB on a 16 GB Mac's ~10.7 GiB).
+_GUARD_MARGIN_FRACTION = 0.05
+_GUARD_MARGIN_MIN_BYTES = 4 * 1024**3
+
+
+def _vm_stat_bytes() -> Optional[dict[str, int]]:
+    """macOS ``vm_stat`` counters in bytes, by their printed name; None when unreadable."""
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["vm_stat"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        ).stdout
+    except Exception:
+        return None
+    page = re.search(r"page size of (\d+) bytes", out or "")
+    if not page:
+        return None
+    size = int(page.group(1))
+    stats = {}
+    for name, value in re.findall(r"^([^:\n]+):\s+(\d+)\.?\s*$", out, re.MULTILINE):
+        stats[name.strip().strip('"')] = int(value) * size
+    return stats
+
+
+def unified_memory_held_bytes(stats: Optional[dict[str, int]]) -> Optional[int]:
+    """Unified memory macOS cannot hand a new Metal load without taking it from someone.
+
+    Wired pages (the kernel, GPU allocations, a resident model's Metal buffers), what the
+    compressor occupies, and anonymous (process-private) pages less the purgeable ones. File-
+    backed pages, active or inactive, are a cache of files on disk that macOS drops on demand;
+    after an unload most of a big GGUF stays there as "active" file cache, which psutil's
+    available (free + inactive) leaves out, so a reload looked hundreds of GB short. None when a
+    counter is missing."""
+    if not stats:
+        return None
+    try:
+        wired = stats["Pages wired down"]
+        anonymous = stats["Anonymous pages"]
+    except KeyError:
+        return None
+    compressor = stats.get("Pages occupied by compressor", 0)
+    purgeable = stats.get("Pages purgeable", 0)
+    return wired + compressor + max(0, anonymous - purgeable)
+
+
+def metal_guard_budget(
+    working_set: int,
+    total: int,
+    held: int,
+    reclaimable: int = 0,
+) -> int:
+    """Unified memory a Metal load can count on: what nobody else holds, under Metal's ceiling.
+
+    ``held`` is unified_memory_held_bytes; ``reclaimable`` the part of it the load frees first
+    (a resident server it replaces), so only other processes' memory is charged. The result is
+    min(Metal working set, total RAM - memory others hold) less the safety margin."""
+    if working_set <= 0 or total <= 0:
+        return 0
+    others = max(0, int(held) - max(0, int(reclaimable)))
+    margin = max(_GUARD_MARGIN_MIN_BYTES, int(working_set * _GUARD_MARGIN_FRACTION))
+    return max(0, min(int(working_set), int(total) - others) - margin)
+
+
+def _guard_budget_bytes(reclaimable: int) -> int:
+    """The Agents guard's budget. 0 where the Metal guard does not apply (off Apple Silicon,
+    unresolvable), exactly as LlamaCppBackend._apple_metal_memory_budget_bytes decides. Where
+    vm_stat or the working set cannot be read, that function's figure is used unchanged."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if reclaimable > 0:
+        fallback = LlamaCppBackend._apple_metal_memory_budget_bytes(reclaimable)
+    else:
+        fallback = LlamaCppBackend._apple_metal_memory_budget_bytes()
+    if not fallback:
+        return 0
+    try:
+        import psutil
+
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        working_set = int(_metal_recommended_working_set_bytes())
+        total = int(psutil.virtual_memory().total)
+    except Exception:
+        return int(fallback)
+    held = unified_memory_held_bytes(_vm_stat_bytes())
+    if held is None or working_set <= 0 or total <= 0:
+        return int(fallback)
+    return metal_guard_budget(working_set, total, held, reclaimable)
+
+
 def _serves(llama, model_path: str, variant: Optional[str]) -> bool:
     """Whether a resident llama backend is serving this model (and quant, when both are known)."""
     from core.inference.model_ids import public_model_id
@@ -174,22 +273,16 @@ async def _guard_context(
     load_request, trained: int, fastapi_request, current_subject
 ) -> tuple[Optional[int], Optional[int]]:
     """(budget, fitted context) of the Metal memory guard for this load, priced by the same
-    /api/inference/estimate-memory arithmetic the Run settings memory bar uses. The budget
-    counts the memory a resident server this load replaces holds as available (see
-    ``_replaced_resident_bytes``)."""
-    from core.inference.llama_cpp import LlamaCppBackend
+    /api/inference/estimate-memory arithmetic the Run settings memory bar uses, against the
+    budget of ``_guard_budget_bytes`` (which counts a resident server this load replaces, see
+    ``_replaced_resident_bytes``, as available)."""
     from models.inference import EstimateMemoryRequest
     from routes.inference import estimate_memory
 
     reclaimable = await asyncio.to_thread(
         _replaced_resident_bytes, load_request.model_path, load_request.gguf_variant
     )
-    if reclaimable > 0:
-        budget = await asyncio.to_thread(
-            LlamaCppBackend._apple_metal_memory_budget_bytes, reclaimable
-        )
-    else:
-        budget = await asyncio.to_thread(LlamaCppBackend._apple_metal_memory_budget_bytes)
+    budget = await asyncio.to_thread(_guard_budget_bytes, reclaimable)
     if not budget:
         return None, None
     shared = {

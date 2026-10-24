@@ -594,6 +594,8 @@ def test_guard_prices_the_load_with_its_saved_settings(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 20 * gib)
     )
+    # No vm_stat: the guard falls back to the upstream budget unchanged.
+    monkeypatch.setattr(dam, "_vm_stat_bytes", lambda: None)
     load = LoadRequest(
         model_path = "/m", gguf_variant = "Q4", cache_type_kv = "q8_0", speculative_type = "mtp"
     )
@@ -740,6 +742,7 @@ def test_guard_budget_includes_the_replaced_resident_model(monkeypatch):
     monkeypatch.setattr(inference, "estimate_memory", estimate)
     monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(budget))
     monkeypatch.setattr(dam, "_replaced_resident_bytes", lambda path, variant: 300 * gib)
+    monkeypatch.setattr(dam, "_vm_stat_bytes", lambda: None)
     load = LoadRequest(model_path = "/glm", gguf_variant = "UD-Q6_K_XL")
     got, fitted = asyncio.run(dam._guard_context(load, 1_048_576, None, "owner"))
     # 150 GiB free + 255 GiB back from the resident copy: the full 1M context fits.
@@ -750,3 +753,154 @@ def test_guard_budget_includes_the_replaced_resident_model(monkeypatch):
     monkeypatch.setattr(dam, "_replaced_resident_bytes", lambda path, variant: 0)
     got, fitted = asyncio.run(dam._guard_context(load, 1_048_576, None, "owner"))
     assert credits == [0] and got == 150 * gib and fitted == 8_192
+
+
+# -- the guard budget is Metal's working set less what others hold, not psutil's available ----
+
+_GIB = 1024**3
+# Max's Mac Studio: 512 GiB unified memory, Metal recommendedMaxWorkingSetSize 464 GiB.
+_TOTAL, _WORKING_SET = 512 * _GIB, 464 * _GIB
+_MARGIN = int(_WORKING_SET * 0.05)
+
+
+def _vm(
+    wired,
+    anonymous,
+    file_backed = 0,
+    purgeable = 0,
+    compressor = 0,
+):
+    return {
+        "Pages wired down": wired,
+        "Anonymous pages": anonymous,
+        "File-backed pages": file_backed,
+        "Pages purgeable": purgeable,
+        "Pages occupied by compressor": compressor,
+    }
+
+
+def test_cold_reload_after_an_unload_gets_about_the_whole_working_set():
+    from routes.desktop_app_models import metal_guard_budget, unified_memory_held_bytes
+
+    # Right after GLM-5.3-Flash Q6 was unloaded: ~170 GiB of its file pages still sit in the
+    # page cache as "active", so psutil's available read 331 GiB and the old guard 281 GiB.
+    stats = _vm(wired = 11 * _GIB, anonymous = 36 * _GIB, file_backed = 170 * _GIB, purgeable = _GIB)
+    held = unified_memory_held_bytes(stats)
+    assert held == 46 * _GIB
+    budget = metal_guard_budget(_WORKING_SET, _TOTAL, held)
+    assert budget == min(_WORKING_SET, _TOTAL - 46 * _GIB) - _MARGIN
+    assert budget > 440 * _GIB > int(331 * _GIB * 0.85)
+
+
+def test_memory_other_apps_really_hold_still_caps_the_budget():
+    from routes.desktop_app_models import (
+        guard_fitted_context,
+        metal_guard_budget,
+        unified_memory_held_bytes,
+    )
+
+    # Other apps hold 200 GiB wired (GPU buffers) and 100 GiB anonymous, 8 GiB compressed.
+    held = unified_memory_held_bytes(_vm(200 * _GIB, 100 * _GIB, compressor = 8 * _GIB))
+    budget = metal_guard_budget(_WORKING_SET, _TOTAL, held)
+    assert budget == _TOTAL - 308 * _GIB - _MARGIN
+    assert 180 * _GIB < budget < 182 * _GIB
+    # A 300 GiB model whose full 1M context needs 360 GiB is cut, and says so.
+    fitted = guard_fitted_context(1_048_576, 8_192, 300 * _GIB, 360 * _GIB, budget)
+    assert fitted == 8_192
+
+
+def test_replaced_resident_model_is_still_counted_back():
+    from routes.desktop_app_models import metal_guard_budget, unified_memory_held_bytes
+
+    # GLM loaded: its ~298 GiB RSS is Metal-wired. Reloading it frees that first.
+    held = unified_memory_held_bytes(_vm(322 * _GIB, 36 * _GIB, purgeable = _GIB))
+    resident = 298 * _GIB
+    assert metal_guard_budget(_WORKING_SET, _TOTAL, held) == _TOTAL - held - _MARGIN
+    warm = metal_guard_budget(_WORKING_SET, _TOTAL, held, resident)
+    assert warm == _TOTAL - (held - resident) - _MARGIN
+    assert warm > 425 * _GIB
+    # A credit larger than what is held never makes the budget exceed Metal's ceiling.
+    assert metal_guard_budget(_WORKING_SET, _TOTAL, held, 10**15) == _WORKING_SET - _MARGIN
+
+
+def test_small_mac_margin_floor_and_unreadable_inputs():
+    from routes.desktop_app_models import metal_guard_budget, unified_memory_held_bytes
+
+    # 16 GB Mac, ~10.7 GiB working set: the margin floor is 4 GiB, not 5 %.
+    ws = int(10.7 * _GIB)
+    assert metal_guard_budget(ws, 16 * _GIB, 3 * _GIB) == ws - 4 * _GIB
+    assert metal_guard_budget(ws, 16 * _GIB, 15 * _GIB) == 0
+    assert metal_guard_budget(0, 16 * _GIB, 0) == 0
+    assert unified_memory_held_bytes(None) is None
+    assert unified_memory_held_bytes({"Pages wired down": 1}) is None
+
+
+def test_vm_stat_is_parsed_in_bytes(monkeypatch):
+    import subprocess
+
+    import routes.desktop_app_models as dam
+
+    text = (
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free:                                  7194179.\n"
+        "Pages wired down:                           21136729.\n"
+        "Pages purgeable:                               70026.\n"
+        "File-backed pages:                           2727023.\n"
+        "Anonymous pages:                             2361779.\n"
+        '"Translation faults":                     1492729000.\n'
+        "Pages occupied by compressor:                   1891.\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _types.SimpleNamespace(stdout = text, returncode = 0)
+    )
+    stats = dam._vm_stat_bytes()
+    assert stats["Pages wired down"] == 21_136_729 * 16384
+    assert stats["Anonymous pages"] == 2_361_779 * 16384
+    assert stats["Translation faults"] == 1_492_729_000 * 16384
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _types.SimpleNamespace(stdout = "", returncode = 1)
+    )
+    assert dam._vm_stat_bytes() is None
+
+
+def test_guard_budget_off_apple_silicon_is_zero_and_reads_nothing(monkeypatch):
+    import routes.desktop_app_models as dam
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    def tripwire():
+        raise AssertionError("vm_stat read off Apple Silicon")
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda *a: 0)
+    )
+    monkeypatch.setattr(dam, "_vm_stat_bytes", tripwire)
+    assert dam._guard_budget_bytes(0) == 0
+    assert dam._guard_budget_bytes(300 * _GIB) == 0
+
+
+def test_guard_budget_uses_vm_stat_and_falls_back_to_upstream(monkeypatch):
+    import psutil
+
+    import routes.desktop_app_models as dam
+    import utils.hardware.hardware as hardware
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    calls = []
+
+    def upstream(reclaimable_bytes = 0):
+        calls.append(reclaimable_bytes)
+        return 281 * _GIB
+
+    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(upstream))
+    monkeypatch.setattr(hardware, "_metal_recommended_working_set_bytes", lambda: _WORKING_SET)
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: _types.SimpleNamespace(total = _TOTAL, available = 0)
+    )
+    monkeypatch.setattr(dam, "_vm_stat_bytes", lambda: _vm(11 * _GIB, 36 * _GIB, purgeable = _GIB))
+    assert dam._guard_budget_bytes(0) == _WORKING_SET - _MARGIN
+    monkeypatch.setattr(dam, "_vm_stat_bytes", lambda: _vm(322 * _GIB, 36 * _GIB))
+    assert dam._guard_budget_bytes(298 * _GIB) == _TOTAL - 60 * _GIB - _MARGIN
+    assert calls == [0, 298 * _GIB]
+    # vm_stat unreadable: the upstream figure, unchanged.
+    monkeypatch.setattr(dam, "_vm_stat_bytes", lambda: None)
+    assert dam._guard_budget_bytes(0) == 281 * _GIB
