@@ -793,9 +793,17 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     if before.get("loaded") is not True:
         return UnloadResult(kind = kind, model = model if unloaded else None, unloaded = unloaded)
     resident = opt_text(before.get("load_id"))
-    if resident is None:
-        # Studio names no load: another account's model, which Studio refuses to unload for this
-        # caller just as before.
+    if resident is None and "load_id" in before:
+        # Studio reports load ids but could not name this state (admissions or unloads kept landing
+        # while it read): an unconditional unload could end a load admitted since, so none is sent.
+        if not unloaded:
+            raise ToolError(
+                f"Unsloth Studio could not identify the loaded {kind} model while loads were changing; "
+                "nothing was unloaded. Try unload_model again."
+            )
+    elif resident is None:
+        # No load id at all: another account's model (Studio hides its id) or a Studio without load
+        # tokens, which refuses or unloads it for this caller just as before.
         after = await _media_unload_post(caller, kind)
         unloaded = unloaded or (isinstance(after, dict) and after.get("loaded") is not True)
     elif resident not in tokens:
@@ -803,9 +811,11 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
         unloaded = unloaded or answer.get("outcome") == "unloaded"
     # load_id names a load in flight; the model it was replacing is resident_load_id. A replacement
     # that failed before its unload above left that model loaded, so end it too, by its own id
-    # (a load admitted since is never it). Studio without the field: nothing more to name.
+    # (a load admitted since is never it), also when it is this caller's own token: its unload above
+    # answered superseded while the replacement was still in flight. Studio without the field:
+    # nothing more to name.
     held = opt_text(before.get("resident_load_id"))
-    if held is not None and held != resident and held not in tokens:
+    if held is not None and held != resident:
         answer = as_dict(await _media_unload_post(caller, kind, {"expected_load_id": held}))
         unloaded = unloaded or answer.get("outcome") == "unloaded"
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)

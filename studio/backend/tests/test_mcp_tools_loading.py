@@ -1479,3 +1479,52 @@ def test_an_unload_names_no_resident_id_studio_does_not_report(monkeypatch):
     unloaded = asyncio.run(loading.unload_media(caller, "video"))
     assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": "t1"}]
     assert unloaded.unloaded is False and state["resident"] == LTX
+
+
+def _status_studio(status, answers = None):
+    # Status answers `status`; each unload naming a token answers the next entry of answers[token].
+    answers = {k: list(v) for k, v in (answers or {}).items()}
+
+    def unload(request, body):
+        expected = json.loads(body).get("expected_load_id") if body else None
+        queue = answers.get(expected) or [{"unloaded": False, "outcome": "superseded"}]
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return fake_studio({VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload})
+
+
+def test_an_unload_sends_no_unconditional_unload_when_studio_cannot_name_the_load(monkeypatch):
+    # Studio reports load ids, but this read could not name the state: an unconditional unload
+    # could end a load admitted meanwhile, so none goes out.
+    studio = _status_studio({"loaded": True, "repo_id": LTX, "load_id": None, "resident_load_id": None})
+    caller = make_caller(studio_app = studio)
+    with pytest.raises(ToolError, match = "could not identify"):
+        asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == []
+
+
+def test_an_unload_of_a_model_studio_hides_keeps_the_plain_unload(monkeypatch):
+    # Another account's resident (Studio hides its id and status fields): the plain unload as before,
+    # which Studio refuses or performs for this caller.
+    studio = _status_studio({"loaded": True, "yours": False})
+    caller = make_caller(studio_app = studio)
+    asyncio.run(loading.unload_media(caller, "video"))
+    sent = [c[3] for c in studio.state.calls if c[1] == "/api/inference/video/unload"]
+    assert len(sent) == 1 and "expected_load_id" not in (sent[0] or "")
+
+
+def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(monkeypatch):
+    # This caller loaded A, then replacement B was in flight at the read: A's unload answers superseded
+    # while B is loading, B fails and its own unload answers superseded, so A is named again after.
+    studio = _status_studio(
+        {"loaded": True, "repo_id": LTX, "load_id": "B", "resident_load_id": "A"},
+        {"A": [{"unloaded": False, "outcome": "superseded"},
+               {"loaded": False, "unloaded": True, "outcome": "unloaded"}]},
+    )
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "A")
+    loading._remember_media_token(caller, "video", "B")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    sent = bodies(studio, "/api/inference/video/unload")
+    assert sent.count({"expected_load_id": "A"}) == 2 and {"expected_load_id": "B"} in sent
+    assert unloaded.unloaded is True
