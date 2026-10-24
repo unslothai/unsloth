@@ -102,6 +102,7 @@ def test_python_rewards_require_the_os_sandbox_unless_the_run_opts_out():
         ({"objective": "grpo"}, "at least one reward"),
         ({"objective": "dpo", "training_type": "Continued Pretraining"}, "Continued Pretraining"),
         ({"objective": "orpo", "is_dataset_image": True}, "text datasets"),
+        ({"objective": "dpo", "format_type": "raw"}, "Raw text format"),
         (
             {"objective": "grpo", "grpo_rewards": [{"name": "a"}, {"name": "a"}]},
             "only be selected once",

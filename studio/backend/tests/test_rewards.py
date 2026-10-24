@@ -214,3 +214,20 @@ def test_preview_reads_each_rules_compare_to_column_like_training():
 def test_numeric_bands_must_all_be_mappings(bands):
     with pytest.raises(rewards.RewardError, match = "bands"):
         rewards.validate_rule({"type": "numeric", "extract": None, "bands": bands})
+
+
+def test_a_backtracking_extract_regex_gives_up_too(monkeypatch):
+    import time
+
+    monkeypatch.setattr(rewards, "REGEX_TIMEOUT_SECONDS", 0.2)
+    rule = rewards.validate_rule(
+        {
+            "type": "exact_match",
+            "extract": {"regex": "((a+)+)$"},
+            "score": {"match": 1, "miss": 0},
+        }
+    )
+    started = time.monotonic()
+    assert rewards.score_rule(rule, "a" * 40 + "!", "aaa") == rule["missing"]
+    assert time.monotonic() - started < 5
+    assert rewards.score_rule(rule, "aaa", "aaa") == 1

@@ -797,6 +797,9 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} supports text datasets only for now.")
         if self.dataset_streaming:
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
+        # The raw-text path returns before role formatting, so the rows would have no prompt.
+        if self.format_type == "raw":
+            raise ValueError(f"{objective.upper()} needs column roles, not the Raw text format.")
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
         if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(

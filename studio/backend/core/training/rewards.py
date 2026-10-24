@@ -366,7 +366,11 @@ def _extract(text: str, extract: Optional[dict]) -> Optional[str]:
             return None
         j = text.find(end, i + len(start))
         return text[i + len(start) : j] if j >= 0 else None
-    match = re.search(extract["regex"], text, re.DOTALL | re.MULTILINE)
+    pattern, timeout = _timed_pattern(extract["regex"])
+    try:
+        match = pattern.search(text, **timeout)
+    except TimeoutError:
+        return None
     if not match:
         return None
     return match.group(1) if match.groups() else match.group(0)
@@ -411,13 +415,17 @@ def _json_matches(text: str, schema: dict) -> bool:
     )
 
 
-def _regex_hit(rule: dict, text: str) -> bool:
+def _timed_pattern(pattern: str) -> tuple[Any, dict]:
+    """The compiled pattern and the kwargs that bound its match time (none without regex)."""
     if _regex is None:
-        pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
-        timeout = {}
-    else:
-        pattern = _regex.compile(rule["pattern"], _regex.DOTALL | _regex.MULTILINE)
-        timeout = {"timeout": REGEX_TIMEOUT_SECONDS}
+        return re.compile(pattern, re.DOTALL | re.MULTILINE), {}
+    return _regex.compile(pattern, _regex.DOTALL | _regex.MULTILINE), {
+        "timeout": REGEX_TIMEOUT_SECONDS
+    }
+
+
+def _regex_hit(rule: dict, text: str) -> bool:
+    pattern, timeout = _timed_pattern(rule["pattern"])
     try:
         if rule["mode"] == "fullmatch":
             return pattern.fullmatch(text.strip(), **timeout) is not None
