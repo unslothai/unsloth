@@ -558,7 +558,11 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
 
         device = torch.device(
             _indexed_cuda_device(
-                str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "cuda")
+                str(
+                    getattr(target, "torch_device", None)
+                    or getattr(target, "device", None)
+                    or "cuda"
+                )
             )
         )
         index = device.index if device.index is not None else torch.cuda.current_device()

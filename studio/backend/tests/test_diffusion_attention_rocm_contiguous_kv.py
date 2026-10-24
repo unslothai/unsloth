@@ -24,19 +24,30 @@ TARGET = SimpleNamespace(device = "cuda", torch_device = "cuda:0", ordinal = 0)
 @pytest.fixture
 def registry(monkeypatch):
     backends = _AttentionBackendRegistry._backends
-    monkeypatch.setitem(backends, AttentionBackendName.NATIVE, backends[AttentionBackendName.NATIVE])
+    monkeypatch.setitem(
+        backends, AttentionBackendName.NATIVE, backends[AttentionBackendName.NATIVE]
+    )
     monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_KV_L2", {})
     monkeypatch.delenv(da.ROCM_CONTIGUOUS_KV_ENV, raising = False)
     return backends
 
 
-def _fake_card(monkeypatch, arch = "gfx1151", rocm = True, l2 = 2 * 1024 * 1024):
+def _fake_card(
+    monkeypatch,
+    arch = "gfx1151",
+    rocm = True,
+    l2 = 2 * 1024 * 1024,
+):
     monkeypatch.setattr(da, "_is_cuda_rocm", lambda target: rocm)
     monkeypatch.setattr(da, "_rocm_gfx_arch", lambda target: arch)
-    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda index: SimpleNamespace(L2_cache_size = l2))
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda index: SimpleNamespace(L2_cache_size = l2)
+    )
 
 
-@pytest.mark.parametrize("arch, rocm", [("gfx1100", True), ("gfx1201", True), ("gfx942", True), ("", False)])
+@pytest.mark.parametrize(
+    "arch, rocm", [("gfx1100", True), ("gfx1201", True), ("gfx942", True), ("", False)]
+)
 def test_other_gpus_keep_the_stock_native_backend(registry, monkeypatch, arch, rocm):
     _fake_card(monkeypatch, arch = arch, rocm = rocm)
     native = registry[AttentionBackendName.NATIVE]
@@ -73,9 +84,13 @@ def test_size_gate_matches_one_head_of_strided_kv_against_l2(monkeypatch):
     assert not da._rocm_contiguous_kv_wanted(at, at)
     assert da._rocm_contiguous_kv_wanted(over, over)
     dense = over.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
-    assert not da._rocm_contiguous_kv_wanted(dense, dense)  # already [B, H, S, D] in memory: nothing to copy
+    assert not da._rocm_contiguous_kv_wanted(
+        dense, dense
+    )  # already [B, H, S, D] in memory: nothing to copy
     monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_KV_L2", {5: l2})
-    assert not da._rocm_contiguous_kv_wanted(over, over)  # a card without an L2 entry (not gfx1151): no copy
+    assert not da._rocm_contiguous_kv_wanted(
+        over, over
+    )  # a card without an L2 entry (not gfx1151): no copy
 
 
 def test_wrapper_hands_sdpa_contiguous_kv_and_keeps_outputs(registry, monkeypatch):
