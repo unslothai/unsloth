@@ -13816,6 +13816,27 @@ def test_h3_native_plan_does_not_stage_pre_move_vaes_beside_a_missing_denoiser(
     assert plan["total_bytes"] == 19
 
 
+def test_h3_pre_move_copy_is_found_after_staging_moves_refs_main(monkeypatch, tmp_path):
+    """Staging a new quant moves refs/main to a snapshot without the pre-move names; the hash-identical bytes left in
+    the older snapshot must still be found, or the next cache-only load misses the VAEs it was told were present."""
+    from core.inference import video_minimax_h3 as h3
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    repo = "unsloth/MiniMax-H3-GGUF"
+    _seed_pre_move_vaes(cache, repo, sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    official = "vae/official/minimax_h3_video_vae_fp16.safetensors"
+    assert h3.h3_pre_move_cached_copy(official) is not None
+    root = cache / ("models--" + repo.replace("/", "--"))
+    newer = "d" * 40
+    (root / "snapshots" / newer).mkdir(parents = True)
+    (root / "snapshots" / newer / "minimax_h3_fl2va-Q8_0.gguf").write_bytes(b"q8")
+    (root / "refs" / "main").write_text(newer)
+    hit = h3.h3_pre_move_cached_copy(official)
+    assert hit is not None and hit.parent.parent.name == "c" * 40
+
+
 def test_h3_native_online_load_reads_the_pre_move_copy_instead_of_fetching(monkeypatch, tmp_path):
     """Online too: the plan counted the pre-move copy as present, so the load reads it rather than fetching the
     official-path file the plan never staged."""

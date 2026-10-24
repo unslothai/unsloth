@@ -1484,7 +1484,27 @@ def h3_pre_move_cached_copy(
                 Path(hit), filename, cancel_event, verify = verify
             ):
                 return Path(hit)
+            # Staging another file of the repo moves refs/main to a snapshot without the pre-move name; the bytes
+            # stay in the older snapshot, so look there too (newest first).
+            for older in _older_snapshot_copies(repo, old_name, cache_dir, hit):
+                if _matches_pinned(older, filename, cancel_event, verify = verify):
+                    return older
     return None
+
+
+def _older_snapshot_copies(
+    repo_id: str, filename: str, cache_dir: Optional[str], seen: Any
+) -> list[Path]:
+    try:
+        from huggingface_hub import constants
+        from huggingface_hub.file_download import repo_folder_name
+
+        root = Path(cache_dir or constants.HF_HUB_CACHE)
+        snapshots = root / repo_folder_name(repo_id = repo_id, repo_type = "model") / "snapshots"
+        hits = [p for p in snapshots.glob(f"*/{filename}") if p.is_file() and str(p) != seen]
+    except Exception:  # noqa: BLE001 -- an unreadable root just falls through
+        return []
+    return sorted(hits, key = lambda p: p.parent.stat().st_mtime, reverse = True)
 
 
 def h3_offline_miss_error(repo_id: str, filename: str) -> RuntimeError:
