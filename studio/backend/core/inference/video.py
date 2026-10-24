@@ -2887,8 +2887,7 @@ def _h3_residency_budget_bytes(
 ) -> int:
     """Device bytes the resident set may occupy for this request."""
     try:
-        import torch
-
+        from .diffusion_memory import cuda_reusable_cache_bytes
         from .video_minimax_h3 import H3_TEXT_ENCODER_BF16_GB
         from .video_minimax_h3_residency import h3_phase_need_gb
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
@@ -2897,8 +2896,9 @@ def _h3_residency_budget_bytes(
         free = _h3_signed_free_device_bytes(device)
         if free is None:
             return 0
-        cached = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
-        available = int(free) + max(0, cached) + int(residency.resident_bytes())
+        # only cache an ordinary allocation can reuse: CUDA graph pool free blocks are not
+        cached = cuda_reusable_cache_bytes(device)
+        available = int(free) + cached + int(residency.resident_bytes())
         te_gb = (
             H3_TE_STREAMED_GB
             if te_streamed
