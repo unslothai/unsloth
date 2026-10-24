@@ -3451,8 +3451,10 @@ def _expert_parallel_requested(model):
         dc = getattr(getattr(m, "config", None), "distributed_config", None)
         if dc is None:
             continue
-        ep = dc.get("enable_expert_parallel") if isinstance(dc, dict) else getattr(
-            dc, "enable_expert_parallel", False
+        ep = (
+            dc.get("enable_expert_parallel")
+            if isinstance(dc, dict)
+            else getattr(dc, "enable_expert_parallel", False)
         )
         if ep is True:
             return True

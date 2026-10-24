@@ -288,9 +288,7 @@ def _llava(**text_extra):
         image_size = 8,
         patch_size = 4,
     )
-    config = transformers.LlavaConfig(
-        text_config = text, vision_config = vision, image_token_index = 63
-    )
+    config = transformers.LlavaConfig(text_config = text, vision_config = vision, image_token_index = 63)
     model = transformers.LlavaForConditionalGeneration(config)
     # FastBaseModel.post_patch_model under DDP: VLMs checkpoint non-reentrantly.
     model._unsloth_vlm_gc_non_reentrant = True
@@ -352,9 +350,21 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
     env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
     proc = subprocess.run(
-        [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node", "2",
-         "--master_port", str(_free_port()), str(worker), str(tmp_path)],
-        env = env, capture_output = True, text = True, timeout = 600,
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node",
+            "2",
+            "--master_port",
+            str(_free_port()),
+            str(worker),
+            str(tmp_path),
+        ],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
@@ -363,7 +373,6 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
 
 def _free_port():
     import socket
-
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
