@@ -76,6 +76,24 @@ def force_eager(on: bool = True):
         _FORCE_EAGER.reset(token)
 
 
+def recording(module: Any) -> bool:
+    """True when a call into ``module`` now records inputs for its pending background compile.
+
+    A caller that reshapes the call when compiled (the Z-Image CFG split) must reshape the recorded one too, or the
+    background compile builds a graph the compiled renders never run."""
+    if not eager_forced() or _NO_RECORD.get():
+        return False
+    for hook in tuple((getattr(module, "_forward_pre_hooks", None) or {}).values()):
+        owner = getattr(hook, "__self__", None)
+        if (
+            isinstance(owner, BackgroundCompile)
+            and owner.module is module
+            and owner.wants_samples()
+        ):
+            return True
+    return False
+
+
 def _cuda_graph_helpers() -> tuple[Callable, Callable, Callable]:
     from .diffusion_cuda_graph import _flatten, _rebuild, graph_key
     return _flatten, _rebuild, graph_key
@@ -207,6 +225,14 @@ class BackgroundCompile:
             self.state = "failed"
             self.error = f"record: {type(exc).__name__}: {exc}"
         return None
+
+    def wants_samples(self) -> bool:
+        """Whether an eager-forced call into the module now would be recorded for the background compile."""
+        return (
+            self.state == "recording"
+            and len(self.samples) < self.max_samples
+            and self._handle is not None
+        )
 
     def _remove_hook(self) -> None:
         handle, self._handle = self._handle, None
