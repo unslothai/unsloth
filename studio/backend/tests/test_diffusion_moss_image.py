@@ -143,7 +143,6 @@ def test_unmasked_forward_takes_no_host_sync(transformers_pair, monkeypatch):
     ],
 )
 def test_timestep_sinusoid_keeps_float64_off_mps(moss, monkeypatch, device, fp64, where):
-    """MPS and Arc XPUs have no float64 (the first denoise step raised there), so the sinusoid is built on the CPU."""
     from types import SimpleNamespace
 
     import torch
