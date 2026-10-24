@@ -1023,6 +1023,9 @@ def apply_pipeline_parallel(
         if callable(getattr(level, "generate", None)):
             level.__dict__["generate"] = _refuse_generate
     del inner
+    import gc
+
+    gc.collect()  # the dropped layers sit in reference cycles: free their weights now, not at a later collection
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     if rank == 0:
