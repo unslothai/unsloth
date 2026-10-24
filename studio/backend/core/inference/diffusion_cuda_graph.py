@@ -2128,9 +2128,22 @@ class OffloadPlacement:
             if self._inner is not None:
                 self._inner.forward = self._inner_safe
             self.module.__dict__["forward"] = handle
+            self._hold_carry(True)
             self._enable_slots()
         else:
             self.module._old_forward = handle
+
+    def _hold_carry(self, hold: bool) -> None:
+        """A replay bypasses the prefetcher's onloads: nothing is carried into a forward that may replay."""
+        try:
+            pf = self._prefetcher()
+            if pf is None:
+                return
+            pf.graph_hold = hold
+            if hold and not getattr(pf, "active", False):
+                pf.drop_carried()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _prefetcher(self) -> Any:
         from .diffusion_offload_prefetch import module_prefetcher
@@ -2216,6 +2229,7 @@ class OffloadPlacement:
         if self.mode == "group":
             if self.module.__dict__.get("forward") is handle:
                 self.module.__dict__["forward"] = self.prev
+                self._hold_carry(False)
             return
         if getattr(self.module, "_old_forward", None) is handle:
             self.module._old_forward = self.prev
