@@ -254,3 +254,94 @@ def test_the_plan_suggests_keeping_models_loaded_only_when_it_helps(monkeypatch)
     assert flows_routes._residency_hints([two[0], {**two[1], "optional": True}]) == []
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
     assert flows_routes._residency_hints(two) == []
+
+
+@run_async
+async def test_no_early_load_swaps_the_model_a_use_loaded_model_step_runs_on(studio):
+    seen = {}
+
+    async def gen(ctx):
+        if not (ctx.params.get("model") or {}).get("repo"):
+            seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+            return {"text": "loaded"}
+        return await _gen(ctx)
+
+    async def template(ctx):
+        # t1 feeds the "use the loaded model" step and ends first; t2 feeds the m2 step.
+        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
+        return {"text": "t"}
+
+    eng = _engine({"input.text": _text, "llm.generate": gen, "text.template": template})
+    d = doc(
+        [
+            node("a", "input.text", value = "loaded-model"),
+            node("g1", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m1"}),
+            node("t1", "text.template", template = "{}"),
+            node("t2", "text.template", template = "{}"),
+            node("loaded", "llm.generate", prompt = "{{prompt}}", model = {}),
+            node("g2", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m2"}),
+        ],
+        [
+            edge("a", "text", "g1", "prompt"),
+            edge("g1", "text", "t1", "values"),
+            edge("g1", "text", "t2", "values"),
+            edge("t1", "text", "loaded", "prompt"),
+            edge("t2", "text", "g2", "prompt"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed"
+    # The step on "use the loaded model" still ran on m1, the model the run had loaded when its input arrived.
+    assert seen["loaded"] == ["m1"]
+
+
+@run_async
+async def test_stopping_a_run_mid_early_load_stops_that_load(studio, monkeypatch):
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        repo = choice["repo"]
+        if repo == "m2":
+            await asyncio.sleep(30)  # still loading when the run is stopped
+        studio["slots"]["llm"] = [repo]
+        ctx.resident["llm"] = repo
+        return {"repo": repo}
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    parsed, errors = parse_document(_chain("stop-early-load"))
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = parsed["id"], doc = parsed, options = {})
+    rs.caller = rs.caller or object()
+    for _ in range(100):
+        if rs.prefetch_load:
+            break
+        await asyncio.sleep(0.05)
+    assert rs.prefetch_load == ("llm", "m2")
+    await eng.cancel(rs.id)
+    await asyncio.wait_for(rs.task, timeout = 30)
+    assert rs.status == "cancelled"
+    # Cancelling the wait alone leaves Studio's load job running; the unload is what stops it.
+    assert studio["unloads"] == ["m2"]
+
+
+@run_async
+async def test_unload_after_the_run_leaves_a_slot_it_could_not_read(studio, monkeypatch):
+    studio["keep"] = True
+    studio["slots"]["llm"] = ["m1"]
+    reads = []
+
+    async def resident_slots(caller):
+        reads.append(1)
+        # The start-of-run read of the chat slot failed, so whether m1 / m2 were there before is unknown.
+        if len(reads) == 1:
+            return {"image": []}
+        return {k: list(v) for k, v in studio["slots"].items()}
+
+    monkeypatch.setattr(loading, "resident_slots", resident_slots)
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    rs = await _run(eng, _chain("unknown-slot", unload_after_run = True))
+    assert rs.status == "completed" and studio["unloads"] == []

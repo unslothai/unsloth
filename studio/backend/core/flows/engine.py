@@ -213,6 +213,8 @@ class RunState:
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
+    # (slot, repo) of a load started ahead and not finished yet.
+    prefetch_load: Optional[tuple[str, str]] = None
     gpu_ops: int = 0
     # A Run Flow child counts its GPU steps against the run that called it.
     gpu_parent: Optional["RunState"] = field(default = None, repr = False)
@@ -1192,11 +1194,17 @@ class FlowEngine:
             return
         plan = rs.plan
         running_ids = set(running.values())
+        # A pending step on "use the loaded model" runs on whatever its slot holds: never swap that slot early.
+        held = {
+            self._model_of(plan, n)[0]
+            for n in pending
+            if plan.specs[n]["lane"] == "gpu" and not self._model_of(plan, n)[1]
+        }
         for nid in plan.order:
             if nid not in pending or plan.specs[nid]["lane"] != "gpu":
                 continue
             slot, repo = self._model_of(plan, nid)
-            if not repo or (rs.resident.get(slot) or "").lower() == repo:
+            if not repo or slot in held or (rs.resident.get(slot) or "").lower() == repo:
                 continue
             if not self._prefetchable(rs, nid) or not self._will_compute(rs, nid):
                 continue
@@ -1251,7 +1259,9 @@ class FlowEngine:
                         "message": f"Loading {params['model']['repo']} ahead while {ahead_of} runs",
                     },
                 )
+                rs.prefetch_load = (slot, params["model"]["repo"])
                 await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
+                rs.prefetch_load = None
                 rs.prefetched += 1
         except asyncio.CancelledError:
             raise
@@ -1264,6 +1274,21 @@ class FlowEngine:
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions = True)
+        load, rs.prefetch_load = rs.prefetch_load, None
+        if load is None or rs.caller is None:
+            return
+        # Cancelling the wait leaves the load job running: unloading is how a load is stopped, so the next run
+        # never finds this run's guess evicting its models.
+        from studio_mcp import loading
+
+        slot, repo = load
+        try:
+            if slot == "llm":
+                await asyncio.wait_for(loading.unload_llm(rs.caller, repo), RESIDENT_PROBE_S * 4)
+            elif slot in ("image", "video"):
+                await asyncio.wait_for(loading.unload_media(rs.caller, slot), RESIDENT_PROBE_S * 4)
+        except Exception:
+            logger.debug("flows: stopping the early load of %s failed", repo, exc_info = True)
 
     async def _unload_after_run(self, rs: RunState) -> None:
         """The flow's "Unload models when the run ends": free what this run loaded, never what was loaded before."""
@@ -1279,7 +1304,10 @@ class FlowEngine:
         try:
             slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
             for slot, names in (slots or {}).items():
-                before = {n.lower() for n in rs.initial_resident.get(slot, [])}
+                # A slot the start-of-run probe could not read may hold a model the user loaded: leave it.
+                if slot not in rs.initial_resident:
+                    continue
+                before = {n.lower() for n in rs.initial_resident[slot]}
                 for name in names or []:
                     if name.lower() in before or name.lower() not in wanted:
                         continue
