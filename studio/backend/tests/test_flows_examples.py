@@ -571,26 +571,21 @@ def test_localization_kit_translates_every_string_per_language():
         strings = ctx.inputs["context"][0]
         calls.append((ctx.inputs["prompt"], strings))
         language = ctx.inputs["prompt"].split(" into ")[1].rstrip(".")
-        return {
-            "text": "",
-            "json": {
-                "language": language,
-                "strings": [{"key": k, "text": v} for k, v in strings.items()],
-            },
-        }
+        return {"text": "", "json": {"strings": dict(strings), "language": language}}
 
     rs, failed = asyncio.run(_run_example_c("localization-kit", {"llm.generate": generate}))
     assert rs.status == "completed" and not failed, failed
     languages = ["Spanish", "German", "Japanese", "Brazilian Portuguese"]
     assert [c[0] for c in calls] == [
-        f"Translate every string in the context into {l}." for l in languages
+        f"Target language: {l}. Translate every UI string in the context into {l}."
+        for l in languages
     ]
     from core.flows.examples.build_examples import LOCALIZATION_STRINGS
 
     assert all(c[1] == LOCALIZATION_STRINGS for c in calls)
     kit = rs.outputs["translations"]
     assert [k["language"] for k in kit] == languages
-    assert [s["key"] for s in kit[0]["strings"]] == list(LOCALIZATION_STRINGS)
+    assert list(kit[0]["strings"]) == list(LOCALIZATION_STRINGS)
 
 
 def test_campaign_kit_crops_one_image_into_three_captioned_ads():
@@ -641,4 +636,5 @@ def test_campaign_kit_crops_one_image_into_three_captioned_ads():
         assert len(img.crop((0, 0, img.width, img.height // 3)).getcolors(1 << 20)) > 1
     assert sizes == [(1080, 1080), (1080, 1350), (1200, 628)]
     assert len(rs.nodes["save"].outputs["saved"]) == 3
-    assert rs.nodes["show"].outputs["value"]["kind"] == "image"
+    shown = rs.nodes["show"].outputs["value"]
+    assert [v["kind"] for v in shown] == ["image"] * 3

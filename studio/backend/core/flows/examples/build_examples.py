@@ -3120,6 +3120,8 @@ def lora_style() -> B:
         size = "1024x1024",
         seed = 5,
         loras = [{"id": "krea/Krea-2-LoRA-softwatercolor", "weight": 1.0}],
+        # The adapter's trigger phrase from its model card; without it the style barely shows.
+        style = "Art Deco watercolor style",
     )
     b.e("what.text", "plain.prompt")
     b.e("what.text", "styled.prompt")
@@ -3909,18 +3911,22 @@ def release_notes() -> B:
         group = "sort_loop",
         label = "Sort the change",
         model = CHAT,
-        instructions = "kind is breaking when users must change something to upgrade, internal for CI, build "
-        "and refactors users never notice. note is one short past-tense sentence a user understands.",
+        instructions = "note is one short past-tense sentence a user understands. kind is one of: feature "
+        "(something new users can do or that got faster), fix (a bug that was fixed), breaking (users must change "
+        "their code, flags or setup to upgrade, such as a renamed or removed option or a dropped platform), docs "
+        "(documentation only), internal (CI, build, tooling and refactors users never notice). A fix or a "
+        "speed-up is never breaking.",
+        # The note comes first, so the model has described the change before it picks a kind.
         json_schema = {
             "type": "object",
             "properties": {
+                "note": {"type": "string"},
                 "kind": {
                     "type": "string",
                     "enum": ["feature", "fix", "breaking", "docs", "internal"],
                 },
-                "note": {"type": "string"},
             },
-            "required": ["kind", "note"],
+            "required": ["note", "kind"],
         },
     )
     b.e("each.item", "sort.text")
@@ -4018,7 +4024,7 @@ def localization_kit() -> B:
         2,
         1.5,
         group = "lang_loop",
-        template = "Translate every string in the context into {{values}}.",
+        template = "Target language: {{values}}. Translate every UI string in the context into {{values}}.",
     )
     b.e("each.item", "ask.values")
     b.n(
@@ -4031,23 +4037,22 @@ def localization_kit() -> B:
         temperature = 0.2,
         max_tokens = 1500,
         system = "You are a professional software translator. The context is a JSON object of UI strings by key. "
-        "Return every key exactly once with its translation. Keep placeholders in curly braces such as {name} "
-        "exactly as written, untranslated. Match the length and tone of a button or message.",
+        "Translate each value into the language the user names and return them under the same keys. Keep "
+        "placeholders in curly braces such as {name} exactly as written, untranslated. Match the length and tone "
+        "of a button or message.",
         prompt = "{{prompt}}",
+        # Strings come first: a small model asked for the language name first tends to write a translation there.
         json_schema = {
             "type": "object",
             "properties": {
-                "language": {"type": "string"},
                 "strings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {"key": {"type": "string"}, "text": {"type": "string"}},
-                        "required": ["key", "text"],
-                    },
+                    "type": "object",
+                    "description": "Every key from the context, mapped to its translation",
+                    "additionalProperties": {"type": "string"},
                 },
+                "language": {"type": "string", "description": "The target language"},
             },
-            "required": ["language", "strings"],
+            "required": ["strings", "language"],
         },
     )
     b.e("ask.text", "translate.prompt")
@@ -4272,19 +4277,9 @@ def campaign_kit() -> B:
     b.n("ads", "logic.collect", 6, 1)
     for fid, *_ in formats:
         b.e(f"{fid}_ad.image", "ads.items")
-    b.n(
-        "board",
-        "image.grid",
-        7,
-        0.5,
-        columns = 3,
-        caption_style = "none",
-        cell_size = 512,
-        column_labels = [label for _, label, _, _ in formats],
-    )
-    b.e("ads.list", "board.images")
-    b.n("show", "output.preview", 8, 0.5)
-    b.e("board.image", "show.value")
+    # Shown as a list, not a grid: a grid crops every cell square, which would hide what each format looks like.
+    b.n("show", "output.preview", 7, 0.5, label = "Ad set")
+    b.e("ads.list", "show.value")
     b.n("save", "output.library", 7, 1.6, folder = "Campaigns")
     b.e("ads.list", "save.value")
     b.note(
