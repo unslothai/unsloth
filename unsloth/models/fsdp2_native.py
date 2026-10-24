@@ -2044,10 +2044,8 @@ def native_load_optimizer(model, optimizer, path_or_state):
     root = _native_root(model)
     inner = _inner_optimizer(optimizer)
     unstepped = _unstepped_optimizer_params(root, inner, state)
-    # torch refuses a trainable parameter without saved state (the strict check; a KeyError on 2.6),
-    # and strict = False keeps the fresh optimizer's initialised state for it (step 1 after the
-    # zero-lr init step), which a single-GPU load_state_dict would not. Excluding these parameters
-    # from the load (requires_grad off) leaves them without state, as they were saved.
+    # torch refuses a trainable parameter without saved state, and strict = False would keep the
+    # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
     try:
         for param in unstepped:
             param.requires_grad_(False)
@@ -2066,9 +2064,8 @@ def native_load_optimizer(model, optimizer, path_or_state):
 
 
 def _unstepped_optimizer_params(root, optimizer, state):
-    """Trainable parameters of `optimizer` the saved run never stepped (no gradient before the save:
-    an unused expert or modality branch): no saved state, but listed in the saved param groups. Raises
-    for one the checkpoint does not list at all, which was not saved from this model's optimizer."""
+    """Trainable parameters listed in the saved param groups but with no saved state (never got a
+    gradient). Raises for one not listed at all: another model's optimizer."""
     saved_state = state.get("state") or {}
     if not isinstance(saved_state, dict) or all(isinstance(k, int) for k in saved_state):
         return []  # not keyed by FQN: torch loads it as given

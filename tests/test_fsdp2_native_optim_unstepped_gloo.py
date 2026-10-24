@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 optimizer.pt resume (native_save_optimizer / native_load_optimizer) on a gloo CPU
-world of 2, when a trainable parameter never got a gradient before the save (an unused MoE expert
-or modality branch), so the saved optimizer holds no state for it:
-
-* the resume loads, from the file and from the in-memory state, leaves that parameter without
-  state (as a single-GPU Optimizer.load_state_dict does), and its next step is bitwise equal to the
-  uninterrupted run (loss, weights, optimizer state);
-* a checkpoint that does not list a trainable parameter in its param groups (another model's
-  optimizer) is still refused."""
+"""Native FSDP2 optimizer resume on a gloo CPU world of 2 when a trainable parameter never got a
+gradient before the save: it stays stateless and the next step is bitwise equal to the
+uninterrupted run; a checkpoint not listing a trainable parameter is still refused."""
 
 import datetime
 import multiprocessing
@@ -183,8 +177,7 @@ def _case_resume(native, dist, rank, tmp):
 
 
 def _case_refuse(native, dist, rank, tmp):
-    """The skipped parameter is missing from both the state and the param groups (as in a checkpoint
-    of a model without it), and a checkpoint of another model: both still raise."""
+    """A checkpoint missing the parameter entirely, or from another model, still raises."""
     model, opt, _ = _new(native, 1)
     for step in (1, 2):
         _step(model, opt, step, rank, skip = _skip(model))
