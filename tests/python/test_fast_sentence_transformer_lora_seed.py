@@ -13,7 +13,9 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("sentence_transformers")
 
 # The loader reads device properties even with device_map = "cpu".
-pytestmark = pytest.mark.skipif(not has_real_accelerator(), reason = "the loader needs an accelerator")
+pytestmark = pytest.mark.skipif(
+    not has_real_accelerator(), reason = "the loader needs an accelerator"
+)
 
 ENCODER = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
 
