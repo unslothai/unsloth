@@ -335,7 +335,15 @@ if _LEAN_VARLEN:
     try:
         from torch.nn.attention.varlen import _can_use_cudnn as _varlen_can_use_cudnn
     except Exception:
-        _LEAN_VARLEN = False
+        # torch 2.12 / 2.13 decide per device only (_should_use_cudnn, False on every GPU in 2.13).
+        try:
+            from torch.nn.attention.varlen import _should_use_cudnn as _varlen_should_use_cudnn
+
+            def _varlen_can_use_cudnn(query, key, value, max_q, window_size, enable_gqa = False):
+                return query.is_cuda and _varlen_should_use_cudnn(query.device.index)
+
+        except Exception:
+            _LEAN_VARLEN = False
 
 
 class _LeanFlashVarlen(torch.autograd.Function):
