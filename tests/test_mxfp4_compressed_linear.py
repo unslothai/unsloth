@@ -162,6 +162,20 @@ def test_dequant_matches_compressed_tensors_decompress(device):
         assert torch.equal(got.view(torch.int16), want.view(torch.int16)), (o, i)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+def test_torch_fp16_decode_rounds_once_for_every_finite_scale(device):
+    # E8M0 1..254 (0xFF is NaN): past fp16's range a value is inf, a zero nibble stays +-0, small ones go subnormal.
+    # torch < 2.12's ldexp built 2^e in fp16, so 0 * 2^16 was NaN, 2^-10 * 2^20 inf and 6 * 2^-25 zero.
+    packed, scale = _random_packed(8, 64, low = 1, high = 255)
+    packed[0, :16] = torch.arange(0, 256, 16, dtype = torch.uint8)
+    packed[1, :16] = torch.arange(0, 16, dtype = torch.uint8)
+    scale[0, 0], scale[0, 1], scale[1, 0], scale[1, 1] = 143, 147, 102, 254
+    want = _reference_decode(packed, scale).to(torch.float16)
+    got = _dequantize_torch(packed.to(device).view(8, 2, 16), scale.to(device), torch.float16).cpu()
+    assert got.dtype == torch.float16 and got.shape == (8, 64)
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_zoo_kernel_and_torch_path_agree():
     packed, scale = _random_packed(256, 512, low = 1, high = 254)
