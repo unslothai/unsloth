@@ -220,6 +220,7 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    prefer_whole_module_offload,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -10400,6 +10401,7 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
+                        plan = prefer_whole_module_offload(pipe, plan, logger = logger)
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
