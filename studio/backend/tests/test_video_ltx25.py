@@ -2253,7 +2253,9 @@ def test_whole_module_phases_count_the_always_resident_share():
         vae_tiling: bool = False
         vae_slicing: bool = False
         reasons: tuple = ()
-        estimates: dict = dataclasses.field(default_factory = lambda: {"safe_device_budget_mib": 46504})
+        estimates: dict = dataclasses.field(
+            default_factory = lambda: {"safe_device_budget_mib": 46504}
+        )
 
     plan = _Plan()
     kw = dict(denoiser_mib = 40054, text_encoder_mib = 22792, vae_mib = 8773, runtime_mib = 7839)
