@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One "the Hub did not connect" verdict for every cached-load Hub call, not just the prequant freshness probe.
-
-A network that drops packets (captive portal, firewall) used to cost one wait per metadata call on a fully cached
-load, and ``model_info`` had no timeout at all. Every Hub request below goes through huggingface_hub's own HTTP stack
-on a mocked transport: no socket is opened.
-"""
+"""Shared "Hub did not connect" verdict. Requests use huggingface_hub's HTTP stack on a mocked transport."""
 
 from __future__ import annotations
 
@@ -136,8 +131,7 @@ def test_model_info_is_bounded(blackholed):
 
 
 def test_lookups_that_pick_what_loads_are_bounded_but_never_skipped(blackholed):
-    """The base_model tag and the hosted pre-quantised listing decide WHICH weights load: a network that came back
-    inside the TTL must get the healthy answer, so they are still asked, only with a timeout."""
+    """Lookups that decide WHICH weights load are still asked, only with a timeout."""
     R.note_hub_failure(httpx.ConnectError("refused"))
     assert D._hf_base_model(REPO, None) is None
     source = types.SimpleNamespace(kind = "repo", location = "org/prequant", filename = "x.safetensors")
@@ -187,8 +181,7 @@ def test_the_verdict_expires_and_a_success_clears_it(blackholed, monkeypatch):
 
 
 def test_a_gated_uncached_base_keeps_todays_answers(monkeypatch):
-    """The access check only fails OPEN on a transport failure, so skipping it under the verdict changes nothing; an
-    answering Hub that says gated still refuses an uncached base with the licence message."""
+    """An answering Hub that says gated still refuses an uncached base."""
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     R.note_hub_failure(httpx.ConnectError("refused"))
     assert D._assert_base_repo_accessible("org/gated", None) is None

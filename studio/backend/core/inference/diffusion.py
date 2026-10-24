@@ -1354,8 +1354,6 @@ def _assert_base_repo_accessible(
         return status in (401, 403)
 
     try:
-        # Under the shared reachability verdict: a Hub that just failed to connect gets the fail-open answer below
-        # (the same one a timed-out call gets) without another wait.
         gated = getattr(hub_reachability.model_info(HfApi(), repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
         if _already_downloaded():
@@ -1504,7 +1502,7 @@ def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
 
 
 def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
-    # get_paths_info takes no timeout, so a Hub that just failed to connect is not asked again for a hint.
+    # get_paths_info takes no timeout.
     if hub_reachability.hub_unreachable():
         return 0
     try:
@@ -4233,9 +4231,6 @@ class DiffusionBackend:
         # re-pulls the whole multi-GB file inside the load lock, after eviction, where unload cannot preempt it and
         # progress already reported 100%.
         cache_dir = hub_cache_dir()
-        # A cached file under a Hub that just failed to connect is read off disk: online, the call would only wait out
-        # its HEAD timeout and then serve the same cached pointer. An uncached one still asks, so a first download
-        # works the moment the network is back.
         offline_ok = local_files_only or hub_reachability.hub_unreachable()
         cached_here = False
         # Best-effort: an unreadable cache raises here, and letting that escape would abort a load that only had to
@@ -5596,10 +5591,7 @@ class DiffusionBackend:
             # fallback, never the override: it fires only when the estimate came back empty, since the metadata that
             # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte
             # already on disk.
-            # A Hub that failed to connect within the reachability TTL, with this pick already cached: the load runs
-            # off the cache, which is where diffusers' own "Couldn't connect to the Hub" fallback lands, minus its
-            # revision lookup and model_info (no timeout) on a network that drops packets. A pick whose manifest or
-            # checkpoint is not cached keeps asking, so a first download still works once the network is back.
+            # Where diffusers' own "Couldn't connect" fallback lands, minus its untimed revision / model_info calls.
             if not local_files_only and _pick_cached_while_hub_unreachable(
                 fam, kind, kwargs["repo_id"], kwargs.get("gguf_filename"), base, fetch_base
             ):
@@ -6216,8 +6208,7 @@ class DiffusionBackend:
         from huggingface_hub.errors import RepositoryNotFoundError
 
         try:
-            # Decides whether the dense shards are dropped for a hosted checkpoint, and runs only when that checkpoint
-            # is NOT cached: always asked, only bounded.
+            # Decides what loads: always asked, only bounded.
             info = hub_reachability.model_info(
                 HfApi(token = hf_token or None),
                 source.location,
@@ -9414,8 +9405,6 @@ class DiffusionBackend:
                                 # config is a REPO ID, and diffusers forwards this into the load_config() that resolves
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
-                                # A cached config under a Hub that just failed to connect is read off disk, skipping
-                                # the HEAD that would time out and then serve the same file.
                                 "local_files_only": local_files_only
                                 or _cached_while_hub_unreachable(
                                     fetch_base, "transformer/config.json"
@@ -14729,9 +14718,8 @@ def _remember_companion_base(repo_id: str, base: str) -> None:
 
 
 def _cached_while_hub_unreachable(repo_id: Any, filename: str) -> bool:
-    """True when the Hub failed to connect within the reachability TTL AND ``filename`` of Hub repo ``repo_id`` is in
-    the live cache: the one case where ``local_files_only=True`` returns exactly what the online call would after its
-    HEAD timed out. False for a local path, an uncached file, or any doubt, so a first download still asks."""
+    """Hub just failed to connect AND ``filename`` is cached: ``local_files_only=True`` then returns what the online
+    call would after its HEAD timed out. False on any doubt, so a first download still asks."""
     if not hub_reachability.hub_unreachable():
         return False
     try:
@@ -14751,8 +14739,7 @@ def _pick_cached_while_hub_unreachable(
     base: Optional[str],
     fetch_base: Optional[str],
 ) -> bool:
-    """Whether a load may run off the cache because the Hub just failed to connect: the base's pipeline index is
-    cached (or the base is a local directory) and, for a GGUF / single-file pick, so is the checkpoint itself."""
+    """Base manifest cached (or local) and, for a GGUF / single-file pick, the checkpoint too."""
     if not hub_reachability.hub_unreachable():
         return False
     try:
@@ -14781,8 +14768,7 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     try:
         from huggingface_hub import HfApi
 
-        # The tag picks the base that loads, so it is always asked (only bounded): a skipped call would swap in the
-        # family default on a network that just came back.
+        # Picks the base: never skipped, or a recovered network would get the family default.
         meta = (
             hub_reachability.model_info(
                 HfApi(), repo_id, token = hf_token, skip_when_unreachable = False

@@ -1977,7 +1977,7 @@ def te_prequant_hub_files(
         try:
             from .hub_reachability import always_asked
 
-            # Reached only when no cached copy exists, and its answer picks the encoder: always asked, only bounded.
+            # Picks the encoder: always asked, only bounded.
             info = always_asked(api).model_info(source.location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)

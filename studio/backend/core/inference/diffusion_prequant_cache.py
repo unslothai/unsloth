@@ -587,10 +587,7 @@ _REMOTE_TTL_SECONDS = 300.0
 _REMOTE_TIMEOUT_SECONDS = 5.0
 _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
-# The per-process "the endpoint did not connect" verdict, shared with every other cached-load Hub call
-# (hub_reachability). Every shard of every lookup asks the same host, so after one failure the rest are answered
-# "unknown" (the local snapshot stands, as huggingface_hub does on a failed HEAD) for the TTL, instead of each waiting
-# out its own timeout.
+# Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
 _UNREACHABLE = _reach._UNREACHABLE
 _connection_failed = _reach.connection_failed
 _endpoint = _reach.endpoint
