@@ -1147,7 +1147,9 @@ def apply_tensor_parallel(
                     raise ValueError(
                         f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__})."
                     )
-    stray = [n for n, p in model.named_parameters() if _preloaded(p) is not None and id(p) not in covered]
+    stray = [
+        n for n, p in model.named_parameters() if _preloaded(p) is not None and id(p) not in covered
+    ]
     if stray:
         raise ValueError(
             f"Unsloth: {stray[:3]} were sharded by sharded_loading but are not in this tensor parallel plan; "
@@ -1260,14 +1262,18 @@ def check_tp_dp_composition(model, dp_mesh):
     import torch.distributed as dist
 
     chain = _tp_chain(model)
-    tp_mesh = next((m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None)
+    tp_mesh = next(
+        (m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None
+    )
     if tp_mesh is None:
         raise ValueError(
             "Unsloth: native FSDP2 over a tensor parallel model needs the outermost model (the one "
             "apply_tensor_parallel was given, or a wrapper of it)."
         )
     if dp_mesh.ndim != 1:
-        raise ValueError("Unsloth: native FSDP2 over a tensor parallel model takes a 1-D dp mesh (mesh['dp']).")
+        raise ValueError(
+            "Unsloth: native FSDP2 over a tensor parallel model takes a 1-D dp mesh (mesh['dp'])."
+        )
     dp_ranks, tp_ranks = set(dp_mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
     me = dist.get_rank()
     if dp_ranks & tp_ranks != {me} or dp_mesh.size() * tp_mesh.size() != dist.get_world_size():
@@ -1278,7 +1284,6 @@ def check_tp_dp_composition(model, dp_mesh):
         )
     try:
         from torch.distributed.device_mesh import _mesh_resources
-
         same_root = _mesh_resources.get_root_mesh(dp_mesh) is _mesh_resources.get_root_mesh(tp_mesh)
     except Exception:
         same_root = True
@@ -1287,7 +1292,9 @@ def check_tp_dp_composition(model, dp_mesh):
             "Unsloth: the dp and tp meshes must come from one init_device_mesh(..., (dp, tp), mesh_dim_names = "
             "('dp', 'tp')) (FSDP2 shards the tp DTensors over its dp dimension)."
         )
-    plan = next((m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None)
+    plan = next(
+        (m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None
+    )
     for region in plan.regions if plan is not None else ():
         for name, norm in region.norms:
             if any(p.requires_grad for p in norm.parameters()):
@@ -1373,7 +1380,9 @@ def _clip_over_world(params, max_norm, eps):
                     "mesh must span the world."
                 )
             # Replicate dims hold copies; Shard and FSDP2's _StridedShard (not is_shard() on newer torch) split.
-            copies = math.prod(mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate())
+            copies = math.prod(
+                mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate()
+            )
             sq = g.to_local().float().square().sum() / copies
         else:
             sq = g.float().square().sum() / world  # the same on every rank
@@ -1387,7 +1396,11 @@ def _clip_over_world(params, max_norm, eps):
     return total
 
 
-def _full(tensor, param = None, layout = None):
+def _full(
+    tensor,
+    param = None,
+    layout = None,
+):
     """The whole tensor (collective over its mesh), fused / packed parts back in their original order."""
     if not _is_dtensor(tensor):
         return tensor
@@ -1470,7 +1483,9 @@ def save_tp_adapter(model, save_directory, **kwargs):
         mesh = mesh or level.__dict__.get("_unsloth_tp_mesh")
         dp_mesh = dp_mesh or level.__dict__.get("_unsloth_tp_dp_mesh")
     # Under shard_model over the dp mesh every trainable DTensor spans the whole (dp, tp) world.
-    ranks = mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) if mesh is not None else None
+    ranks = (
+        mesh.size() * (dp_mesh.size() if dp_mesh is not None else 1) if mesh is not None else None
+    )
     if dist.is_initialized() and mesh is not None and ranks != dist.get_world_size():
         raise ValueError(
             f"Unsloth: save_tp_adapter writes on global rank 0 behind a world barrier, but the tensor parallel "
@@ -1583,7 +1598,6 @@ def _checkpoint_index(name, kwargs):
 
     def keys_of(path):
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt", device = "cpu") as f:
             return {key: path for key in f.keys()}
 
@@ -1632,7 +1646,6 @@ class _SliceReader:
         path = self.index[key]
         if path not in self.handles:
             from safetensors import safe_open
-
             self.handles[path] = safe_open(path, framework = "pt", device = "cpu")
         return self.handles[path]
 
@@ -1812,7 +1825,9 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     finally:
         state["active"] = False
     text = _text_config(model)
-    if getattr(text, "quantization_config", None) or getattr(model.config, "quantization_config", None):
+    if getattr(text, "quantization_config", None) or getattr(
+        model.config, "quantization_config", None
+    ):
         raise ValueError(
             "Unsloth: tensor parallel sharded loading supports 16-bit checkpoints only; this checkpoint is "
             "pre-quantized. Load it in full and call apply_tensor_parallel."
@@ -1853,7 +1868,9 @@ def sharded_loading(tp_mesh = None, plan = None):
     state = {"mesh": tp_mesh, "plan": plan, "models": [], "active": False}
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        return _from_pretrained_sharded(original, cls, pretrained_model_name_or_path, args, kwargs, state)
+        return _from_pretrained_sharded(
+            original, cls, pretrained_model_name_or_path, args, kwargs, state
+        )
 
     PreTrainedModel.from_pretrained = classmethod(from_pretrained)
     try:
@@ -1862,12 +1879,17 @@ def sharded_loading(tp_mesh = None, plan = None):
         PreTrainedModel.from_pretrained = descriptor
 
 
-def load_tensor_parallel(model_name, tp_mesh = None, loader = None, plan = None, **kwargs):
+def load_tensor_parallel(
+    model_name,
+    tp_mesh = None,
+    loader = None,
+    plan = None,
+    **kwargs,
+):
     """`loader(model_name, **kwargs)` under sharded_loading (default FastLanguageModel.from_pretrained, 16-bit).
     Returns what the loader returns; raises if no model went through the sharded path."""
     if loader is None:
         from unsloth import FastLanguageModel
-
         loader = FastLanguageModel.from_pretrained
         kwargs.setdefault("load_in_4bit", False)
     with sharded_loading(tp_mesh, plan) as state:
@@ -1889,13 +1911,27 @@ def load_tensor_parallel(model_name, tp_mesh = None, loader = None, plan = None,
 # turns into the token mean over the dp replicas, as for DDP on dp GPUs.
 
 _TP_DATA = "_unsloth_tp_data"
-_UNSUPPORTED_OPTIMIZERS = ("8bit", "bnb", "paged", "lomo", "galore", "apollo", "torchao", "q_galore")
+_UNSUPPORTED_OPTIMIZERS = (
+    "8bit",
+    "bnb",
+    "paged",
+    "lomo",
+    "galore",
+    "apollo",
+    "torchao",
+    "q_galore",
+)
 
 
 def _tp_meshes(model):
     chain = _tp_chain(model)
-    tp = next((m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None)
-    dp = next((m.__dict__["_unsloth_tp_dp_mesh"] for m in chain if "_unsloth_tp_dp_mesh" in m.__dict__), None)
+    tp = next(
+        (m.__dict__["_unsloth_tp_mesh"] for m in chain if "_unsloth_tp_mesh" in m.__dict__), None
+    )
+    dp = next(
+        (m.__dict__["_unsloth_tp_dp_mesh"] for m in chain if "_unsloth_tp_dp_mesh" in m.__dict__),
+        None,
+    )
     return tp, dp
 
 
@@ -1909,12 +1945,17 @@ def _refuse_tp_trainer_args(args):
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
-        problems.append("accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)")
+        problems.append(
+            "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
+        )
     if _strategy(getattr(args, "save_strategy", "no")) != "no":
         problems.append(
             "Trainer checkpoints (set save_strategy = 'no'; trainer.save_model() writes the 1-GPU adapter)"
         )
-    if _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no"))) != "no":
+    if (
+        _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
+        != "no"
+    ):
         problems.append("evaluation during training (set eval_strategy = 'no')")
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
@@ -1927,11 +1968,17 @@ def _refuse_tp_trainer_args(args):
         problems.append("accelerator_config.dispatch_batches")
     if problems:
         raise RuntimeError(
-            "Unsloth: the Trainer on a tensor parallel model does not support " + "; ".join(problems) + "."
+            "Unsloth: the Trainer on a tensor parallel model does not support "
+            + "; ".join(problems)
+            + "."
         )
 
 
-def tp_trainer_setup(model = None, phase = "pre", trainer = None):
+def tp_trainer_setup(
+    model = None,
+    phase = "pre",
+    trainer = None,
+):
     """Called around Trainer.__init__ (models/_utils.py) for a tensor parallel model. Returns True if it is one."""
     import torch.distributed as dist
 
@@ -1958,7 +2005,9 @@ def tp_trainer_setup(model = None, phase = "pre", trainer = None):
     tp_mesh, dp_mesh = _tp_meshes(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
-    trainer.__dict__["_unsloth_tensor_parallel"] = True  # the generated TRL trainers skip for_inference()
+    trainer.__dict__["_unsloth_tensor_parallel"] = (
+        True  # the generated TRL trainers skip for_inference()
+    )
     _tp_scaler(trainer, dp_size)
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
     for name in ("evaluate", "predict"):
@@ -1987,7 +2036,11 @@ def _refuse_tp_trainer_call(name):
     return refuse
 
 
-def _tp_trainer_save_model(self, output_dir = None, _internal_call = False):
+def _tp_trainer_save_model(
+    self,
+    output_dir = None,
+    _internal_call = False,
+):
     """Trainer.save_model for a tensor parallel model: the 1-GPU PEFT adapter (collective, rank 0 writes)."""
     output_dir = output_dir if output_dir is not None else self.args.output_dir
     save_tp_adapter(self.model, output_dir)
@@ -2028,7 +2081,12 @@ def _install_tp_accelerate_hooks():
             return True
         return not is_native_fsdp2(model)  # native FSDP2 (dp > 1) prepares it itself
 
-    def prepare_model(self, model, device_placement = None, evaluation_mode = False):
+    def prepare_model(
+        self,
+        model,
+        device_placement = None,
+        evaluation_mode = False,
+    ):
         if not _tp_model(self, model):
             return original_prepare_model(
                 self, model, device_placement = device_placement, evaluation_mode = evaluation_mode
@@ -2056,18 +2114,28 @@ def _install_tp_accelerate_hooks():
         self.__class__ = type(
             "UnslothTensorParallelDataAccelerator",
             (cls,),
-            {"num_processes": property(lambda s: dp_size), "process_index": property(lambda s: dp_rank)},
+            {
+                "num_processes": property(lambda s: dp_size),
+                "process_index": property(lambda s: dp_rank),
+            },
         )
         try:
             return original_data_loader(self, data_loader, *args, **kwargs)
         finally:
             self.__class__ = cls
 
-    def clip_grad_norm_(self, parameters, max_norm, norm_type = 2):
+    def clip_grad_norm_(
+        self,
+        parameters,
+        max_norm,
+        norm_type = 2,
+    ):
         if self.__dict__.get(_TP_DATA) is None:
             return original_clip(self, parameters, max_norm, norm_type = norm_type)
         if float(norm_type) != 2.0:
-            raise RuntimeError("Unsloth: tensor parallel gradient clipping supports the 2-norm only.")
+            raise RuntimeError(
+                "Unsloth: tensor parallel gradient clipping supports the 2-norm only."
+            )
         self.unscale_gradients()
         return tp_clip_grad_norm_(list(parameters), max_norm)
 

@@ -709,6 +709,8 @@ def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
             calls.append(type(self).__name__)
 
     for tensor_parallel in (False, True):
-        trainer = types.SimpleNamespace(**({"_unsloth_tensor_parallel": True} if tensor_parallel else {}))
+        trainer = types.SimpleNamespace(
+            **({"_unsloth_tensor_parallel": True} if tensor_parallel else {})
+        )
         exec(tail, {}, {"self": trainer, "model": Model()})
     assert calls == ["Model"], calls

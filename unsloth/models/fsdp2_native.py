@@ -3538,7 +3538,11 @@ def _expert_parallel_requested(model):
     return False
 
 
-def _refuse_tensor_parallel_model(model, mesh = None, compose = False):
+def _refuse_tensor_parallel_model(
+    model,
+    mesh = None,
+    compose = False,
+):
     """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
     parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
     Native FSDP2 cannot shard it again. An Unsloth tensor parallel model (apply_tensor_parallel) composes
@@ -3572,7 +3576,6 @@ def _refuse_tensor_parallel_model(model, mesh = None, compose = False):
     ):
         if compose and mesh is not None:
             from .tp_native import check_tp_dp_composition
-
             check_tp_dp_composition(model, mesh)
             return True
         raise RuntimeError(

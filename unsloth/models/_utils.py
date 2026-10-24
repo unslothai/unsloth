@@ -5728,7 +5728,6 @@ def patch_gradient_accumulation_fix(Trainer):
                 native_fsdp2_trainer_setup(self, phase = "post")
             if tensor_parallel:
                 from .tp_native import tp_trainer_setup
-
                 tp_trainer_setup(phase = "post", trainer = self)
             try:
                 accelerator = getattr(self, "accelerator", None)
@@ -5814,7 +5813,6 @@ def _tensor_parallel_trainer_pre(model):
     if not _is_unsloth_tensor_parallel(model):
         return False
     from .tp_native import tp_trainer_setup
-
     return tp_trainer_setup(model, phase = "pre")
 
 
