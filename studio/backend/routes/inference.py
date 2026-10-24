@@ -3175,7 +3175,8 @@ def _openai_llama_publish_round_charge(
         lease = reservation.lease_nowait() if reservation is not None else None
         if lease is None:
             return
-        get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
+        controller = get_preemption_controller(_preempt_key(llama_backend))
+        controller.note_tokens(
             gen_id,
             int(lease.tokens or 0),
             _openai_llama_admission_charged_prompt_tokens(
@@ -3189,6 +3190,20 @@ def _openai_llama_publish_round_charge(
         )
         if observe_tokens is not None:
             observe_tokens(0)
+        # The round's prefill goes upstream next, so it waits for the decoding chats told to
+        # pause, as the arm does. Only off the event loop, where the rounds run.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            participant = controller.participant(gen_id)
+            awaited = [
+                g
+                for g in controller.evictions_in_flight(exclude = gen_id)
+                if not getattr(controller.participant(g), "fresh", True)
+            ]
+            if awaited and participant is not None:
+                participant.awaiting_victims = awaited
+                _openai_llama_wait_for_armed_victims(controller, gen_id)
     except Exception:
         pass
 
@@ -3340,6 +3355,20 @@ def _openai_llama_wait_for_victims(controller, gen_id: str) -> bool:
             return True
 
 
+def _openai_llama_armed_victims_pending(controller, gen_id: str) -> bool:
+    participant = controller.participant(gen_id)
+    return participant is not None and bool(participant.awaiting_victims)
+
+
+def _openai_llama_wait_for_armed_victims(controller, gen_id: str) -> None:
+    """Blocking: hold an armed chat's prefill until the chats its plan paused let go. Never
+    refuses it: a victim still decoding when the wait runs out leaves the chat as it was."""
+    if not _openai_llama_armed_victims_pending(controller, gen_id):
+        return
+    if not _openai_llama_wait_for_victims(controller, gen_id):
+        _llama_preemption_log("armed-victims-late", level = "warning", gen_id = gen_id)
+
+
 async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> None:
     """Before an unpausable request goes upstream, wait for the chats its plan paused."""
     if gen_id is None or not preemption_enabled():
@@ -3482,7 +3511,9 @@ def _openai_llama_preemption_arm(
     if controller is None:
         return None
     _refresh_residency_before_planning(controller)
-    return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+    policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+    _openai_llama_wait_for_armed_victims(controller, gen_id)
+    return policy
 
 
 async def _openai_llama_preemption_arm_async(
@@ -3499,7 +3530,12 @@ async def _openai_llama_preemption_arm_async(
         return None
     try:
         await _refresh_residency_before_planning_async(controller)
-        return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+        policy = _openai_llama_preemption_plan(
+            controller, gen_id = gen_id, signal = signal, loop = loop
+        )
+        if _openai_llama_armed_victims_pending(controller, gen_id):
+            await asyncio.to_thread(_openai_llama_wait_for_armed_victims, controller, gen_id)
+        return policy
     except BaseException:
         # Cancelled mid-arm, the stream never starts, so no disarm would drop the enrolment.
         controller.unregister(gen_id)
@@ -3611,6 +3647,12 @@ def _openai_llama_preemption_plan(
     if participant is not None:
         charged = int(getattr(participant, "base_tokens", 0) or participant.tokens or 0)
     victims = controller.plan_preemptions(needed = 0)
+    # A decoding victim keeps writing into its cells until its stream sees the signal, so the
+    # prefill waits for it as an unpausable holder does. One with no token yet may still be
+    # arming itself, and waiting on it could wait on a chat that waits on this one.
+    awaited = [v.gen_id for v in victims if not v.parked_on_a_tool and not v.fresh]
+    if awaited and participant is not None:
+        participant.awaiting_victims = awaited
     snapshot = controller.snapshot()
     _llama_preemption_log(
         "armed",
