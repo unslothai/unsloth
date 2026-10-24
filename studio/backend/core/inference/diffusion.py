@@ -56,6 +56,7 @@ from .diffusion_content import (
     whole_pipeline_gguf_family,
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
+from . import hub_reachability
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
     small_dit_rule_excludes,
@@ -1357,7 +1358,7 @@ def _assert_base_repo_accessible(
         return status in (401, 403)
 
     try:
-        gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
+        gated = getattr(hub_reachability.model_info(HfApi(), repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
         if _already_downloaded():
             return other_root_snapshot
@@ -1505,12 +1506,17 @@ def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
 
 
 def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
+    # get_paths_info takes no timeout.
+    if hub_reachability.hub_unreachable():
+        return 0
     try:
         from huggingface_hub import HfApi
         for info in HfApi().get_paths_info(repo_id, [filename], token = hf_token):
+            hub_reachability.note_hub_success()
             return int(getattr(info, "size", 0) or 0)
-    except Exception:  # noqa: BLE001 - a size is a progress-bar hint, never a refusal
-        pass
+        hub_reachability.note_hub_success()
+    except Exception as exc:  # noqa: BLE001 - a size is a progress-bar hint, never a refusal
+        hub_reachability.note_hub_failure(exc)
     return 0
 
 
@@ -4235,12 +4241,15 @@ class DiffusionBackend:
         # re-pulls the whole multi-GB file inside the load lock, after eviction, where unload cannot preempt it and
         # progress already reported 100%.
         cache_dir = hub_cache_dir()
+        offline_ok = local_files_only or hub_reachability.hub_unreachable()
+        cached_here = False
         # Best-effort: an unreadable cache raises here, and letting that escape would abort a load that only had to
         # download. Any failure falls through to the pinned download below.
         try:
-            if not isinstance(
+            cached_here = isinstance(
                 try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str
-            ):
+            )
+            if not cached_here:
                 # Same other-root reuse as the pre-quant checkpoint, reached THROUGH that root rather than returned
                 # raw, so the ref still resolves and a republished GGUF is picked up; the blob is reused, and offline
                 # the cached pointer comes back anyway.
@@ -4252,7 +4261,7 @@ class DiffusionBackend:
                             gguf_filename,
                             token = hf_token,
                             cache_dir = None,
-                            local_files_only = local_files_only,
+                            local_files_only = offline_ok,
                         )
                     except Exception:  # noqa: BLE001 - revalidation is a bonus, never a new failure
                         return elsewhere
@@ -4263,7 +4272,7 @@ class DiffusionBackend:
             gguf_filename,
             token = hf_token,
             cache_dir = cache_dir,
-            local_files_only = local_files_only,
+            local_files_only = local_files_only or (cached_here and offline_ok),
         )
 
     def _dense_quant_prefetch_needed(
@@ -5594,20 +5603,51 @@ class DiffusionBackend:
             # fallback, never the override: it fires only when the estimate came back empty, since the metadata that
             # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte
             # already on disk.
-            kwargs["_base_local_dir"] = (
-                self._prefetch_files(
+            # Where diffusers' own "Couldn't connect" fallback lands, minus its untimed revision / model_info calls.
+            forced_offline = False
+            if not local_files_only and _pick_cached_while_hub_unreachable(
+                fam, kind, kwargs["repo_id"], kwargs.get("gguf_filename"), base, fetch_base
+            ):
+                logger.info(
+                    "diffusion.hub_unreachable: %s is cached and the Hub did not connect moments ago; loading "
+                    "from the cache",
                     kwargs["repo_id"],
-                    kwargs.get("gguf_filename"),
-                    base,
-                    base_files,
-                    kwargs.get("hf_token"),
-                    cancel_event = cancel_event,
-                    fetch_base = fetch_base,
-                    local_files_only = local_files_only,
                 )
-                or base_snapshot
-            )
-            self.load_pipeline(**kwargs)
+                forced_offline = True
+
+            def _prefetch_and_load(offline: bool) -> None:
+                kwargs["local_files_only"] = offline
+                kwargs["_base_local_dir"] = (
+                    self._prefetch_files(
+                        kwargs["repo_id"],
+                        kwargs.get("gguf_filename"),
+                        base,
+                        base_files,
+                        kwargs.get("hf_token"),
+                        cancel_event = cancel_event,
+                        fetch_base = fetch_base,
+                        local_files_only = offline,
+                    )
+                    or base_snapshot
+                )
+                self.load_pipeline(**kwargs)
+
+            try:
+                _prefetch_and_load(local_files_only or forced_offline)
+            except OSError as exc:
+                # Only the manifest is checked up front: an interrupted download still needs the online load.
+                if (
+                    not forced_offline
+                    or self._load_token != token
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    raise
+                logger.info(
+                    "diffusion.hub_unreachable: %s is not fully cached (%s); retrying online",
+                    kwargs["repo_id"],
+                    exc,
+                )
+                _prefetch_and_load(False)
             with self._load_cancel_lock:
                 # Only clear the marker if this load is still current (a superseder has its own token).
                 if self._load_token == token:
@@ -6200,7 +6240,13 @@ class DiffusionBackend:
         from huggingface_hub.errors import RepositoryNotFoundError
 
         try:
-            info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
+            # Decides what loads: always asked, only bounded.
+            info = hub_reachability.model_info(
+                HfApi(token = hf_token or None),
+                source.location,
+                files_metadata = True,
+                skip_when_unreachable = False,
+            )
         except RepositoryNotFoundError as exc:
             # 401/403/404 on the repo = no hosted checkpoint, not a partial listing (GatedRepoError subclasses this).
             logger.info(
@@ -6360,7 +6406,9 @@ class DiffusionBackend:
             if kind == "pipeline":
 
                 def _pipeline_listing(metadata_repo: str) -> tuple[Any, Any, list[Any]]:
-                    info = api.model_info(metadata_repo, files_metadata = True, token = hf_token)
+                    info = hub_reachability.model_info(
+                        api, metadata_repo, files_metadata = True, token = hf_token
+                    )
                     components = _pipeline_components_from_index(
                         metadata_repo,
                         info,
@@ -6429,7 +6477,9 @@ class DiffusionBackend:
                 _record_revision(revisions_out, metadata_repo, info)
                 return total, base_files
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                info = hub_reachability.model_info(
+                    api, repo_id, files_metadata = True, token = hf_token
+                )
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
                 if sizes_out is not None:
@@ -6466,7 +6516,9 @@ class DiffusionBackend:
                     )
 
             def _base_listing(listing_repo: str) -> list[Any]:
-                info = api.model_info(listing_repo, files_metadata = True, token = hf_token)
+                info = hub_reachability.model_info(
+                    api, listing_repo, files_metadata = True, token = hf_token
+                )
                 # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
                 _record_revision(revisions_out, listing_repo, info)
                 return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
@@ -7067,7 +7119,10 @@ class DiffusionBackend:
         """The current Hub commit for a mirror repo, or None when metadata is unavailable."""
         try:
             from huggingface_hub import HfApi
-            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
+            return (
+                getattr(hub_reachability.model_info(HfApi(), repo_id, token = hf_token), "sha", None)
+                or None
+            )
         except Exception:  # noqa: BLE001 -- no SHA means conservative staging
             return None
 
@@ -9390,7 +9445,10 @@ class DiffusionBackend:
                                 # config is a REPO ID, and diffusers forwards this into the load_config() that resolves
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
-                                "local_files_only": local_files_only,
+                                "local_files_only": local_files_only
+                                or _cached_while_hub_unreachable(
+                                    fetch_base, "transformer/config.json"
+                                ),
                                 # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
                                 **transformer_config_overrides_for(
                                     fam, gguf_filename, repo_id, display_repo_id, base
@@ -14706,6 +14764,48 @@ def _remember_companion_base(repo_id: str, base: str) -> None:
         logger.debug("diffusion.companion_link_record_failed: %s", exc)
 
 
+def _cached_while_hub_unreachable(repo_id: Any, filename: str) -> bool:
+    """Hub just failed to connect AND ``filename`` is cached: ``local_files_only=True`` then returns what the online
+    call would after its HEAD timed out. False on any doubt, so a first download still asks."""
+    if not hub_reachability.hub_unreachable():
+        return False
+    try:
+        if not isinstance(repo_id, str) or Path(repo_id).expanduser().exists():
+            return False
+        from huggingface_hub import try_to_load_from_cache
+        return isinstance(try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir()), str)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pick_cached_while_hub_unreachable(
+    fam: Any,
+    kind: str,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    base: Optional[str],
+    fetch_base: Optional[str],
+) -> bool:
+    """Base manifest cached (or local) and, for a GGUF / single-file pick, the checkpoint too."""
+    if not hub_reachability.hub_unreachable():
+        return False
+    try:
+        manifest = _base_manifest_name(fam)
+        if not (
+            (bool(base) and _is_local_path(base))
+            or any(
+                _cached_while_hub_unreachable(repo, manifest)
+                for repo in dict.fromkeys(r for r in (fetch_base, base) if r)
+            )
+        ):
+            return False
+        if kind != "pipeline" and gguf_filename and not _is_local_path(repo_id):
+            return _cached_while_hub_unreachable(repo_id, gguf_filename)
+        return True
+    except Exception:  # noqa: BLE001 - any doubt keeps the online load
+        return False
+
+
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     """The diffusers base repo from a GGUF repo's ``base_model`` tag, or None. Lets one family entry
     cover every variant (Turbo/full, schnell/dev, the 2512 Qwen revision). Skipped for local
@@ -14714,7 +14814,14 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
         return None
     try:
         from huggingface_hub import HfApi
-        meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
+
+        # Picks the base: never skipped, or a recovered network would get the family default.
+        meta = (
+            hub_reachability.model_info(
+                HfApi(), repo_id, token = hf_token, skip_when_unreachable = False
+            ).cardData
+            or {}
+        )
     except Exception:  # noqa: BLE001 - best-effort; fall back to the family default
         return None
     base = meta.get("base_model")
