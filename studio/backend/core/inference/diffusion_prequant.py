@@ -2328,8 +2328,13 @@ def load_prequantized_transformer(
     logger: Any = None,
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
+    into: Optional[Any] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``into``: an already-built DENSE transformer to load the checkpoint into instead of a fresh ``from_config``
+    skeleton (the pipeline-quant path, whose denoiser came with the pipeline). Its key set must equal the
+    checkpoint's; it stays where its weights already are, and on a refusal before assignment it is left dense.
 
     ``family`` (the Studio family name) is what a ComfyUI-format artifact needs to pick the layers Studio's
     own ``scheme`` quantizes; Studio's own checkpoints record it themselves.
@@ -2406,6 +2411,10 @@ def load_prequantized_transformer(
         comfy_scan = scan_comfy_quant(path)
         comfy_rotated = False
         if comfy_scan is not None:
+            if into is not None:
+                raise ValueError(
+                    "a ComfyUI-format checkpoint cannot be loaded into an existing transformer"
+                )
             if prepare_model is not None or (component and component != DEFAULT_PREQUANT_COMPONENT):
                 raise ValueError(
                     "a ComfyUI-format checkpoint is only read as a whole denoiser, not as the "
@@ -2465,24 +2474,32 @@ def load_prequantized_transformer(
             # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
             # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
             # prequant whose checkpoint is cached and already loaded.
-            config = _load_transformer_config(
-                transformer_cls,
-                base,
-                hf_token,
-                cache_dir,
-                path,
-                config_subfolder,
-                local_files_only = local_files_only,
+            config = (
+                None
+                if into is not None
+                else _load_transformer_config(
+                    transformer_cls,
+                    base,
+                    hf_token,
+                    cache_dir,
+                    path,
+                    config_subfolder,
+                    local_files_only = local_files_only,
+                )
             )
             from accelerate import init_empty_weights
 
             metadata = ckpt.get("metadata") or {}
-            with init_empty_weights():
-                transformer = transformer_cls.from_config(config)
-            if prepare_model is not None:
-                prepare_model(transformer, metadata)
-            transformer.load_state_dict(state_dict, strict = True, assign = True)
-            if _has_meta_tensors(transformer):
+            if into is not None:
+                transformer = into
+                _load_into_dense(transformer, state_dict, prepare_model)
+            else:
+                with init_empty_weights():
+                    transformer = transformer_cls.from_config(config)
+                if prepare_model is not None:
+                    prepare_model(transformer, metadata)
+                transformer.load_state_dict(state_dict, strict = True, assign = True)
+            if into is None and _has_meta_tensors(transformer):
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
                 # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
                 transformer = transformer_cls.from_config(config)
@@ -2584,6 +2601,9 @@ def load_prequantized_transformer(
                 placement_device or device,
             )
         return transformer
+    except PrequantIntoError:
+        # Partly assigned: falling back would mix two builds.
+        raise
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
         _warn(logger, f"{scheme}:{source.kind}", exc)
         return None
@@ -3517,6 +3537,36 @@ def stream_prequantized_module(
             "overlapped" if use_stream else "synchronous",
         )
     return mode
+
+
+class PrequantIntoError(RuntimeError):
+    """The module is neither dense nor fully loaded."""
+
+
+def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional[Any]) -> None:
+    """ValueError leaves the module untouched; PrequantIntoError means it was partly assigned."""
+    if prepare_model is not None:
+        raise ValueError(
+            "prepare_model reshapes a fresh skeleton; it cannot run on an existing transformer"
+        )
+    own = transformer.state_dict()
+    if set(own) != set(state_dict):
+        missing = sorted(set(own) - set(state_dict))[:3]
+        extra = sorted(set(state_dict) - set(own))[:3]
+        raise ValueError(
+            f"checkpoint keys differ from the transformer (missing {missing}, unexpected {extra})"
+        )
+    for name, tensor in state_dict.items():
+        have = own[name]
+        if tuple(getattr(have, "shape", ())) != tuple(getattr(tensor, "shape", ())):
+            raise ValueError(
+                f"checkpoint shape of {name} {tuple(tensor.shape)} != transformer {tuple(have.shape)}"
+            )
+    del own
+    try:
+        transformer.load_state_dict(state_dict, strict = True, assign = True)
+    except Exception as exc:  # noqa: BLE001
+        raise PrequantIntoError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _has_meta_tensors(module: Any) -> bool:

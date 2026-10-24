@@ -1559,6 +1559,7 @@ class CalibratedImageActivation:
     decode_mib: int
     tiled_decode_mib: int
     max_canvas_mib: int
+    resident_only: bool = False
 
     def headroom(self, tiled: bool) -> int:
         return max(
@@ -1591,7 +1592,11 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # MOSS-Image SFT, B200 bf16 measurements; both tiers take the eager worst.
     "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
+    # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
+    "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
 }
+# U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
+_RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
 
 
 def calibrated_image_activation(
@@ -1601,7 +1606,8 @@ def calibrated_image_activation(
     if measured is None:
         return None
     return CalibratedImageActivation(
-        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0])
+        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0]),
+        resident_only = str(family or "") in _RESIDENT_ONLY_CALIBRATED,
     )
 
 
@@ -2739,10 +2745,17 @@ def plan_diffusion_memory(
         policy = OFFLOAD_NONE
         fast_budget = _fast_device_budget_mib(device_memory)
         estimates["resident_budget_mib"] = fast_budget
-        if fast_budget is not None and required is not None and required > fast_budget:
+        fast_required = required
+        if calibrated_activation is not None and calibrated_activation.resident_only:
+            # the flat 8 GiB guess demoted an explicit fast SDXL on 15-16 GB cards, where it fits with room to spare
+            fast_required = _sum_required(
+                model_dense_mib, calibrated_activation.headroom(False), base_overhead_mib
+            )
+            estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(False)
+        if fast_budget is not None and fast_required is not None and fast_required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
             reasons.append(
-                f"fast requested but weights do not fit resident ({required} MiB needed, "
+                f"fast requested but weights do not fit resident ({fast_required} MiB needed, "
                 f"{fast_budget} MiB free after the reserve); offloading"
             )
             if not stream_transformer:
@@ -2979,6 +2992,22 @@ def _calibrated_faster_tier(
     budget = int(budget)
     free = int(free_mib) - overhead
     room = free - act.max_canvas_mib
+    if act.resident_only:
+        # Larger requests are still checked by the generation guard; an oversized decode is tiled by its OOM retry.
+        weights = transformer + te + others
+        if (
+            policy != OFFLOAD_NONE
+            and weights + act.headroom(False) + overhead <= budget
+            and weights <= room
+        ):
+            return (
+                OFFLOAD_NONE,
+                False,
+                True,
+                False,
+                "measured activations fit resident; the U-Net's only other tier uploads every component per call",
+            )
+        return None
     if policy == OFFLOAD_NONE:
         flat_rank = 0
     elif policy == OFFLOAD_GROUP and not stream_transformer:
