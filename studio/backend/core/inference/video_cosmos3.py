@@ -9,6 +9,7 @@ without the package, so Studio refuses the load up front; ``UNSLOTH_COSMOS3_SAFE
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -169,3 +170,39 @@ def install_untiled_encode(pipe: Any, logger: Any = None) -> bool:
             "video.cosmos3: VAE encodes the conditioning clip untiled (tiled on out-of-memory)"
         )
     return True
+
+
+# Wan@16x seam audit floor (test_vae_tile_geometry): >= 4-latent overlaps, >= 8-latent edge tiles.
+_MIN_OVERLAP_LATENTS = 4
+_MIN_EDGE_LATENTS = 8
+
+
+def seam_safe_stride(length: int, tile: int, stride: int) -> int:
+    """Largest stride <= ``stride`` (latents) whose last tile over ``length`` keeps >= 8 latents; stock if none."""
+    if length <= tile:
+        return stride
+    for s in range(stride, tile // 2 - 1, -1):
+        if tile - s >= _MIN_OVERLAP_LATENTS and length - (length - 1) // s * s >= _MIN_EDGE_LATENTS:
+            return s
+    return stride
+
+
+@contextlib.contextmanager
+def seam_safe_tile_strides(pipe: Any, height: int, width: int):
+    """Tile strides for this canvas while tiling runs: stock Wan@16x tiles leave a 4-latent edge tile at 480 / 832 px."""
+    vae = getattr(pipe, "vae", None)
+    keys = ("tile_sample_stride_height", "tile_sample_stride_width")
+    try:
+        ratio = int(vae.spatial_compression_ratio)
+        old = tuple(int(getattr(vae, k)) for k in keys)
+        tiles = (int(vae.tile_sample_min_height) // ratio, int(vae.tile_sample_min_width) // ratio)
+    except (AttributeError, TypeError, ValueError):
+        yield
+        return
+    for key, side, tile, stride in zip(keys, (height, width), tiles, old):
+        setattr(vae, key, seam_safe_stride(int(side) // ratio, tile, stride // ratio) * ratio)
+    try:
+        yield
+    finally:
+        for key, value in zip(keys, old):
+            setattr(vae, key, value)

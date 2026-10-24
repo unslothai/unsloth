@@ -12366,10 +12366,12 @@ class VideoBackend:
                         # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
                         i2v_swap.enter_context(bg_compile.no_record())
                 if fam.name in COSMOS3_FAMILIES:
+                    from .video_cosmos3 import seam_safe_tile_strides
                     from .video_i2v import offload_vae_after_encode
 
                     # Every Cosmos3 call (t2v too) encodes a clip first; nothing else offloads the VAE after it.
                     i2v_swap.enter_context(offload_vae_after_encode(pipe))
+                    i2v_swap.enter_context(seam_safe_tile_strides(pipe, height, width))
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,

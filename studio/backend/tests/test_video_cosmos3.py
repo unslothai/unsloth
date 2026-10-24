@@ -547,7 +547,13 @@ def test_the_overrides_sample_the_cards_schedule_on_the_real_unipc(repo):
 class _FakeCosmos3Vae(_FakeWanVae):
     def __init__(self):
         super().__init__()
-        self.use_tiling, self.calls, self.encode_raises = False, [], []
+        self.use_tiling, self.calls, self.encode_raises, self.strides = False, [], [], []
+        self.spatial_compression_ratio, self.tile_sample_min_height, self.tile_sample_min_width = (
+            16,
+            256,
+            256,
+        )
+        self.tile_sample_stride_height = self.tile_sample_stride_width = 192
 
     def enable_tiling(self):
         super().enable_tiling()
@@ -561,6 +567,7 @@ class _FakeCosmos3Vae(_FakeWanVae):
 
     def decode(self, *args, **kwargs):
         self.calls.append("decode tiled" if self.use_tiling else "decode untiled")
+        self.strides.append((self.tile_sample_stride_height, self.tile_sample_stride_width))
         return super().decode(*args, **kwargs)
 
 
@@ -1107,3 +1114,30 @@ def test_cosmos3_decodes_untiled_when_it_fits_under_every_placement(policy, spee
         assert gate(family, policy, "cuda", speed) is True
         assert gate(family, policy, "cpu", speed) is False
     assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (policy == "none" and speed != "off")
+
+
+def test_generate_decodes_in_seam_safe_strides_and_restores_them(cosmos3_runtime):
+    backend, _status = _loaded(EDGE)
+    vae = backend._state.pipe.vae
+    backend.generate(
+        prompt = "p", steps = 1
+    )  # Edge's 832 x 480: 52 x 30 latents, stock 12-latent strides
+    assert vae.strides == [(11 * 16, 11 * 16)]
+    assert (vae.tile_sample_stride_height, vae.tile_sample_stride_width) == (192, 192)
+
+
+@pytest.mark.parametrize("family", sorted(vf.COSMOS3_FAMILIES))
+def test_seam_safe_strides_clear_the_wan_seam_floor_on_every_preset_side(family):
+    import test_vae_tile_geometry as G
+
+    _, config = G._family_configs()[family]
+    vae, _ = G.build_vae(config, None)
+    floor, stock = G.SMALLER_GEOMETRY_OK["AutoencoderKLWan@16x"], vae.tile_sample_stride_height
+    for side in G._sides(family):
+        with vc3.seam_safe_tile_strides(SimpleNamespace(vae = vae), side, side):
+            tiles = G.probe_axis(vae, config, side // 16, G.MIN_SIDE // 16, True)
+        assert G.check_axis(tiles, floor) == [], (side, tiles)
+        assert vae.tile_sample_stride_height == stock
+    assert (
+        vc3.seam_safe_stride(45, 16, 12) == vc3.seam_safe_stride(80, 16, 12) == 12
+    )  # stock kept where it passes
