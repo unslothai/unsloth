@@ -636,6 +636,45 @@ def _case_momentum(native, dist, rank, tmp):
     return res
 
 
+def _case_bnb_keys(native, dist, rank, tmp):
+    """A sharded checkpoint holding the local-shard bitsandbytes Adam keys (state1 / state2), resumed
+    into torch's AdamW: the keys are renamed as the optimizer.pt path renames them."""
+    import torch.distributed.checkpoint as dcp
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
+
+    def _new(seed):
+        model = native.shard_model(_model(seed), native.FSDP2Config(param_dtype = torch.float32))
+        return model, torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False)
+
+    model, opt = _new(1)
+    for step in (1, 2):
+        _step(model, opt, step, rank)
+    ckpt = os.path.join(tmp, "ckpt")
+    os.makedirs(ckpt, exist_ok = True)
+    state = get_optimizer_state_dict(model, opt, options = StateDictOptions(full_state_dict = False))
+    names = {"exp_avg": "state1", "exp_avg_sq": "state2"}  # a copy: the live entries stay as they are
+    state["state"] = {
+        fqn: {names.get(k, k): v for k, v in entry.items()} for fqn, entry in state["state"].items()
+    }
+    dcp.save(state, checkpoint_id = os.path.join(ckpt, "optimizer_dcp"))
+    weights = native.native_full_state_dict(model)
+    if rank == 0:
+        model.save_pretrained(ckpt, state_dict = weights, safe_serialization = True)
+    dist.barrier()
+    ref = {"loss": _step(model, opt, 3, rank).item(), "after": _full_model(model)}
+    m, o = _new(2)
+    native.native_load_model_checkpoint(m, ckpt)
+    res = {}
+    try:
+        native.native_load_optimizer(m, o, os.path.join(ckpt, "optimizer_dcp"))
+        res["keys"] = sorted({k for st in o.state.values() for k in st})
+        res["loss"] = [ref["loss"], _step(m, o, 3, rank).item()]
+        res["after_diff"] = _diff_models(ref["after"], _full_model(m))
+    except BaseException as exc:  # CheckpointException is a BaseException
+        res["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    return res
+
+
 def _case_reshard(native, dist, rank, tmp, phase):
     """Save with one world size, resume with another: the weights (sharded read) and the
     optimizer_dcp directory both come back equal to the saver's full state."""
@@ -670,7 +709,7 @@ def _case_reshard(native, dist, rank, tmp, phase):
     return res
 
 
-_SHORT_TIMEOUT_CASES = ("amsgrad", "unstepped", "momentum")
+_SHORT_TIMEOUT_CASES = ("amsgrad", "unstepped", "momentum", "bnb_keys")
 
 
 def _worker(rank, world, port, out, case, tmp):
@@ -692,6 +731,8 @@ def _worker(rank, world, port, out, case, tmp):
             res = _case_unstepped(native, dist, rank, tmp)
         elif case == "momentum":
             res = _case_momentum(native, dist, rank, tmp)
+        elif case == "bnb_keys":
+            res = _case_bnb_keys(native, dist, rank, tmp)
         elif case.startswith("reshard_"):
             res = _case_reshard(native, dist, rank, tmp, case[len("reshard_") :])
         else:
@@ -867,3 +908,12 @@ def test_sharded_optimizer_restores_state_the_fresh_optimizer_lacks(tmp_path):
         assert r["momentum"] == 0.9 and r["buffers"] > 0, r
         assert r["loss"][0] == r["loss"][1], r
         assert r["after_diff"] == [] and r["optim_diff"] == [], r
+
+
+def test_sharded_optimizer_renames_bitsandbytes_adam_keys(tmp_path):
+    pytest.importorskip("transformers")
+    for rank, r in _run("bnb_keys", str(tmp_path), timeout = 600).items():
+        assert "error" not in r, r
+        assert "exp_avg" in r["keys"] and "state1" not in r["keys"], r
+        assert r["loss"][0] == r["loss"][1], r
+        assert r["after_diff"] == [], r

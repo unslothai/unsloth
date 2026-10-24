@@ -2177,6 +2177,10 @@ def native_load_optimizer_sharded(model, optimizer, directory):
             )
         # torch's strict check refuses a trainable parameter without state; these were never stepped.
         options = StateDictOptions(full_state_dict = False, strict = False)
+    from .fsdp2_bnb_optim import rename_optimizer_state_for
+
+    # As the optimizer.pt path: torch Adam keys to the local-shard bitsandbytes keys, or back.
+    rename_optimizer_state_for(optimizer, state)
     set_optimizer_state_dict(root, optimizer, state, options = options)
     return state
 
