@@ -3872,7 +3872,65 @@ def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     return None
 
 
+_DENOISER_FIRST_REASON = (
+    "the text encoders stream instead of staying resident: that keeps {streamed} MiB of the denoiser resident "
+    "rather than {resident} MiB (the denoiser runs every step, the encoders once per prompt)"
+)
+
+
 def refine_plan_from_loaded_weights(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    family: Optional[str],
+    speed_mode: Optional[str],
+    logger: Any = None,
+    **labels: Optional[str],
+) -> MemoryPlan:
+    """Re-place a streamed ``auto`` load from its LOADED weights; the denoiser has priority over the text encoders.
+
+    The flat plan keeps the encoders resident once their floor fits, and their bytes come out of the denoiser's room.
+    The encoders-streamed plan is taken only when it keeps strictly more of the denoiser resident; plans where the
+    encoders cost nothing are unchanged."""
+    refined = _refine_plan_from_loaded_weights(
+        pipe, plan, family = family, speed_mode = speed_mode, logger = logger, **labels
+    )
+    if (
+        getattr(plan, "requested_mode", None) != MEMORY_MODE_AUTO
+        or plan.offload_policy != OFFLOAD_GROUP
+        or bool(getattr(plan, "stream_text_encoders", False))
+        or not bool(getattr(plan, "stream_transformer", True))
+        or plan.estimates.get("text_encoder_dense_mib") is None
+    ):
+        return refined
+    try:
+        streamed = _refine_plan_from_loaded_weights(
+            pipe,
+            replace(plan, stream_text_encoders = True),
+            family = family,
+            speed_mode = speed_mode,
+            logger = None,
+            **labels,
+        )
+        resident_dit = int(getattr(refined, "resident_transformer_mib", None) or 0)
+        streamed_dit = int(getattr(streamed, "resident_transformer_mib", None) or 0)
+        if streamed_dit <= resident_dit:
+            return refined
+        reason = _DENOISER_FIRST_REASON.format(streamed = streamed_dit, resident = resident_dit)
+        if logger is not None:
+            logger.info("diffusion.memory: %s", reason)
+        return replace(
+            streamed,
+            reasons = streamed.reasons + (reason,),
+            estimates = {**streamed.estimates, "denoiser_first_resident_te_dit_mib": resident_dit},
+        )
+    except Exception as exc:  # noqa: BLE001 - keep the encoders-resident refinement
+        if logger is not None:
+            logger.debug("diffusion.memory: streamed-encoder comparison skipped (%s)", exc)
+        return refined
+
+
+def _refine_plan_from_loaded_weights(
     pipe: Any,
     plan: MemoryPlan,
     *,
