@@ -132,3 +132,9 @@ def test_live_conversations_flags_worlds_whose_players_call_a_model():
         doc([{**node("r", "world.npc_reply"), "disabled": True}])
     )
     assert not replication.live_conversations(doc([node("t", "input.text", value = "x")]))
+
+
+def test_the_recorded_gguf_is_the_exact_variant_not_a_substring(tmp_path):
+    cache = _cache(tmp_path, QWEN, SHA_A, ["m-BF16.gguf", "m-F16.gguf", "mmproj-F16.gguf"])
+    assert replication.cached_gguf(cache, QWEN, SHA_A, "F16") == "m-F16.gguf"
+    assert replication.cached_gguf(cache, QWEN, SHA_A, "BF16") == "m-BF16.gguf"

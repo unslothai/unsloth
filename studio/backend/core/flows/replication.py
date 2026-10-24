@@ -96,14 +96,14 @@ def cached_gguf(
     if cache is None or not revision or not variant:
         return None
     root = _repo_dir(cache, repo) / "snapshots" / revision
-    want = variant.lower()
     try:
-        names = sorted(
-            str(p.relative_to(root)) for p in root.rglob("*.gguf") if want in p.name.lower()
-        )
+        files = [str(p.relative_to(root)) for p in root.rglob("*.gguf")]
     except OSError:
         return None
-    names = [n for n in names if "mmproj" not in n.lower()] or names
+    # The loader's own matching, so F16 never records a BF16 file.
+    from core.inference.llama_cpp import _gguf_files_for_variant
+
+    names = _gguf_files_for_variant(files, variant)
     return names[0] if names else None
 
 
