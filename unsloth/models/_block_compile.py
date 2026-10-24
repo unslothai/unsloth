@@ -727,15 +727,17 @@ def _layer_kind(layer):
     )
 
 
-def _wrap(cls, compile_options, kinds = 1):
+def _wrap(
+    cls,
+    compile_options,
+    kinds = 1,
+):
     original = cls.forward
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     isolate = {}
     if _ISOLATE_RECOMPILES:
-        isolate = dict(
-            isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds)
-        )
+        isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
     compiled = torch.compile(
         original, fullgraph = False, dynamic = None, options = compile_options, **isolate
     )
