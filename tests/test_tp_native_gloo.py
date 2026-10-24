@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""apply_tensor_parallel on a gloo CPU world (2 and 4 ranks) against the same model in one process, fp32:
-
-* forward logits and loss equal on every rank;
-* step-0 LoRA gradients (DTensor grads gathered with full_tensor, packed layouts un-permuted) equal 1 process,
-  including the Partial sums of replicated factors and of per-head q_norm / k_norm weights;
-* tp_clip_grad_norm_ equals clip_grad_norm_ and 3 AdamW steps follow the same losses;
-* save_tp_adapter writes the 1-process PEFT adapter (same keys, same values);
-* the fused LoRA_QKV / LoRA_W Functions, fed by get_lora_parameters, match the non-fused TP forward (needs
-  `import unsloth`, which some CPU hosts refuse: then skipped). The fused MLP is Triton: GPU only."""
+"""apply_tensor_parallel on a gloo CPU world (2 and 4 ranks) vs the same model in one process, fp32."""
 
 import multiprocessing
 import os
@@ -80,8 +72,7 @@ def _train(model, ids, steps, clip):
 
 
 def _clip_fp64(params, max_norm):
-    """clip_grad_norm_ with the norm accumulated in float64. torch's CPU fp32 vector_norm is off by ~2e-4
-    relative on a 512k-element gradient (a trained lm_head copy), more than the parity tolerance."""
+    """clip_grad_norm_ in float64: torch's CPU fp32 vector_norm is ~2e-4 off, above the parity tolerance."""
     grads = [p.grad for p in params if p.grad is not None]
     total = torch.stack([g.double().square().sum() for g in grads]).sum().sqrt().float()
     coef = torch.clamp(max_norm / (total + 1e-6), max = 1.0)
@@ -164,7 +155,7 @@ def _import_checkout_unsloth():
         del sys.modules[name]
     sys.path.insert(0, REPO)
     try:
-        # The same device spoof pytest's conftest applies in the parent (spawned ranks do not run it).
+        # conftest's device spoof (spawned ranks do not run it).
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(
@@ -189,8 +180,7 @@ def _raised(fn):
 
 
 def _case_guards(rank, world, tmp):
-    """Every entry point that would run outside the tensor parallel regions is refused on every wrapper level,
-    whichever level apply_tensor_parallel was given."""
+    """Entry points outside the tp regions are refused on every wrapper level."""
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -352,8 +342,7 @@ def _qlora_model(
     model = _quantize_layers(build(LLAMA, QLORA_SIZES, lora = False, seed = seed), nested, blocksize)
     torch.manual_seed(seed + 1)
     config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
-    # train(): bitsandbytes repacks eval-mode CPU Linear4bit weights for its CPU gemm, which rounds
-    # differently from dequantize + matmul (no dropout here, so train mode changes nothing else).
+    # train(): eval-mode CPU Linear4bit repacks for a CPU gemm that rounds differently.
     return get_peft_model(model, config).train()
 
 
@@ -369,7 +358,6 @@ def _case_qlora(rank, world, tmp, nested):
     }
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     tpn.apply_tensor_parallel(model, mesh["tp"])
-    # Every local 4-bit shard dequantizes to its slice of the full dequantized weight.
     shard_err = 0.0
     for region in model._unsloth_tp_plan.regions:
         for proj in region.projs:
@@ -524,8 +512,6 @@ def test_tp2_qlora_matches_one_process(nested):
     for res in results:
         ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
         logits, grads, losses, norms = res["tp"]
-        # The shard's codes and absmax (dequantized when double quantized) are sliced, not re-quantized:
-        # every local 4-bit weight dequantizes bitwise to its slice of the 1-process weight.
         assert res["shard_err"] == 0.0
         torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
         assert set(grads) == set(ref_grads) and grads

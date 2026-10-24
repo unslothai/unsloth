@@ -6,25 +6,8 @@
     model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
     apply_tensor_parallel(model, init_device_mesh("cuda", (tp,), mesh_dim_names = ("tp",))["tp"])
 
-Each decoder layer's attention and MLP become tensor-parallel regions: q / k / v and gate / up are column
-sharded, o / down row sharded. The region input goes through `copy_to_tp` (identity forward, all-reduce
-backward) and its output through `reduce_from_tp` (all-reduce forward), with the row bias added once after.
-Weights are stored as DTensors on the tp mesh but every kernel computes on local shards: Unsloth's fused LoRA
-kernels read their weights through `get_lora_parameters`, which hands them `to_local()` views (replicated LoRA
-factors with Partial gradients, summed over tp), and plain forwards run a small TP-aware projection forward.
-Embeddings, lm_head and norms stay replicated (fused cross entropy reads lm_head.weight).
-
-The plan comes from `plan=`, else the model's transformers TP plan (`_tp_plan` / text config
-`base_model_tp_plan`), else structural discovery; anything inside a region that the plan does not cover is
-refused. Nothing changes unless `apply_tensor_parallel` is called.
-
-v1 scope: LoRA / QLoRA (bitsandbytes 4-bit: each rank keeps the exact codes of its shard) on dense decoders,
-tensor parallel ranks only (data parallel size 1; native FSDP2 and the Trainer refuse a TP model), training
-forward (generate, for_inference and a filled KV cache are refused on every wrapper level). Refused with the
-reason: MoE, MLA, heads / kv heads / intermediate size not divisible by tp, kv heads < tp, DoRA, lora_bias,
-several adapters, trainable base weights, 8-bit / GPTQ / AWQ / fp8 / MXFP4 bases, QAT fake quantization,
-modules_to_save on an attention / MLP projection, per-layer norms over all heads. A custom loop (torchrun
---nproc_per_node tp):
+v1: LoRA / QLoRA training forward on dense decoders, tp ranks only (no Trainer / FSDP2 / generate).
+Custom loop (torchrun --nproc_per_node tp):
 
     params = [p for p in model.parameters() if p.requires_grad]  # DTensors (keep plain ones in their own group)
     optimizer = torch.optim.AdamW(params, lr = 2e-4)
@@ -118,8 +101,7 @@ _GLOBAL_WIDTH_READS = re.compile(r"(config|self)\.hidden_size\b")
 
 @dataclasses.dataclass
 class TPConfig:
-    # {"layers.*.self_attn.q_proj": "colwise", ...} (transformers style names); None = the model's TP plan,
-    # else structural discovery.
+    # {"layers.*.self_attn.q_proj": "colwise", ...}; None = the model's TP plan, else structural discovery.
     plan: Optional[dict] = None
     # Broadcast trainable parameters from tp rank 0 first (every rank must start from the same adapter).
     sync_trainable: bool = True
@@ -160,9 +142,6 @@ class TPPlan:
         return {f"{r.path}.{p.name}": p.style for r in self.regions for p in r.projs}
 
 
-# --------------------------------------------------------------------------------------------------
-# Plan derivation
-# --------------------------------------------------------------------------------------------------
 
 
 def _unwrap(model):
@@ -241,8 +220,7 @@ _ATTENTION_DROPOUT_KEYS = ("attention_dropout", "attn_pdrop")
 
 
 def _refuse_dropout(model, layers):
-    """Dropout inside a tensor parallel region needs masks distinct per head / feature shard and equal for
-    replicated tensors; v1 has no TP-aware RNG, so nonzero dropout is refused (LoRA dropout: _refuse_adapter)."""
+    """v1 has no TP-aware RNG (masks must differ per shard, match when replicated): refuse dropout."""
     text = _text_config(model)
     for key in _ATTENTION_DROPOUT_KEYS:
         value = getattr(text, key, None)
@@ -367,8 +345,7 @@ def derive_tp_plan(
     tp_size,
     plan = None,
 ) -> TPPlan:
-    """The regions, projections and head counts tensor parallelism will shard, validated for tp_size.
-    Raises ValueError (with the reason) for anything v1 cannot shard correctly."""
+    """The regions to shard, validated for tp_size; ValueError for anything v1 cannot shard."""
     tp_size = int(tp_size)
     if tp_size < 1:
         raise ValueError(f"Unsloth: tensor parallel size must be >= 1, got {tp_size}.")
@@ -536,9 +513,6 @@ def _check_attention_source(module, path):
         )
 
 
-# --------------------------------------------------------------------------------------------------
-# Sharding helpers
-# --------------------------------------------------------------------------------------------------
 
 
 def shard_slice(tensor, dim, parts, rank, tp):
@@ -579,8 +553,7 @@ def _is_dtensor(t):
 
 
 def _local_complete(t):
-    """A local view whose gradient is already complete on every rank (computed after the all-reduce, such
-    as the row bias), so it must not be summed over tp again."""
+    """A local view whose gradient is already complete (e.g. row bias): never summed over tp again."""
     DTensor, _, Replicate, _ = _dtensor_api()
     if not isinstance(t, DTensor):
         return t
@@ -600,8 +573,7 @@ def _local(t):
 
 
 def _tp_lora_parameters(proj, bias = False):
-    """get_lora_parameters(_bias) for a tensor parallel projection: (W, W quant state, A, B, scale[, bias]) as
-    local shards. The row bias is None: the region adds it once, after the all-reduce."""
+    """get_lora_parameters(_bias) on local shards; row bias is None (the region adds it after the reduce)."""
     weight, base = _weight(proj)
     W = _local(weight)
     W_quant = getattr(W, "quant_state", None)
@@ -616,8 +588,6 @@ def _tp_lora_parameters(proj, bias = False):
         adapters = _active_adapter(proj)
         if len(adapters) > 1:
             raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
-        # No active adapter, or one this layer does not hold: the base projection only, as PEFT's forward
-        # (and _tp_projection_forward) computes it.
         if adapters and adapters[0] in lora_A:
             adapter = adapters[0]
     if adapter is None:
@@ -696,8 +666,7 @@ def _refuse_base(path, proj_module, weight, base):
 
 
 def _active_adapter(proj):
-    """The active adapter names, read like kernels/utils.py get_lora_parameters: active_adapters, else
-    active_adapter, else "default"; a single name becomes a list, an explicitly empty selection stays empty."""
+    """Active adapter names, resolved like kernels/utils.py get_lora_parameters; empty stays empty."""
     adapters = getattr(proj, "active_adapters", None)
     if adapters is None:
         adapters = getattr(proj, "active_adapter", "default")
@@ -762,8 +731,7 @@ def _set_dtensor(
     rank = 0,
     tp = 1,
 ):
-    """Replace module.<name> by a DTensor parameter: Shard(shard_dim) of `full` (parts permuted so each
-    rank's parts are contiguous) or Replicate."""
+    """Replace module.<name> by a DTensor parameter (Shard with parts permuted per rank, or Replicate)."""
     DTensor, _, Replicate, Shard = _dtensor_api()
     if placement == "shard":
         local = shard_slice(full.detach(), shard_dim, parts, rank, tp)
@@ -805,9 +773,7 @@ def _check_params4bit(path, weight, style, tp):
 
 
 def _shard_params4bit(path, base, weight, style, parts, rank, tp):
-    """This rank's shard of a bitsandbytes 4-bit weight as a local Params4bit with its own QuantState: the
-    packed codes and the (dequantized) absmax of the shard's blocks, so it dequantizes bitwise to the
-    1-GPU weight's slice. Double-quantized absmax is kept as float32 (no second quantization)."""
+    """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32."""
     import bitsandbytes as bnb
 
     _check_params4bit(path, weight, style, tp)
@@ -854,9 +820,6 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
         base.quant_state = local_state
 
 
-# --------------------------------------------------------------------------------------------------
-# Collectives at the region boundaries
-# --------------------------------------------------------------------------------------------------
 
 
 def _all_reduce(tensor, group):
@@ -945,9 +908,6 @@ def _region_post_hook(module, args, output):
     )
 
 
-# --------------------------------------------------------------------------------------------------
-# Projection forward (non-fused path: PEFT / nn.Linear / Linear4bit on local shards)
-# --------------------------------------------------------------------------------------------------
 
 
 def _tp_projection_forward(self, x, *args, **kwargs):
@@ -983,9 +943,6 @@ def _tp_projection_forward(self, x, *args, **kwargs):
     return out
 
 
-# --------------------------------------------------------------------------------------------------
-# apply_tensor_parallel
-# --------------------------------------------------------------------------------------------------
 
 
 def _decoder_of(inner):
@@ -1000,8 +957,7 @@ def _decoder_of(inner):
 
 
 def _tp_chain(model):
-    """`model` and the wrappers / models below it (PeftModel -> LoraModel -> CausalLM -> decoder): the levels
-    that carry the TP marker, so a guard reached through any of them sees it."""
+    """`model` and every wrapper level below it (PeftModel -> LoraModel -> CausalLM -> decoder)."""
     chain, m = [], model
     while isinstance(m, nn.Module) and all(m is not c for c in chain) and len(chain) < 8:
         chain.append(m)
@@ -1062,9 +1018,7 @@ def _cache_in_use(past):
 
 
 def _refuse_cached_forward(module):
-    """Wrap module.forward (instance attribute: PEFT's LoraModel calls self.model.forward directly) to refuse a
-    filled KV cache: Unsloth's cached decode (fast_forward_inference) calls the attention / MLP kernels
-    directly, outside the tensor parallel regions."""
+    """Refuse a filled KV cache (instance attribute: LoraModel calls self.model.forward directly)."""
     forward = module.forward
     try:
         names = list(inspect.signature(forward).parameters)
@@ -1099,8 +1053,6 @@ def _set_local_heads(module, region, tp):
     heads, kv_heads = region.heads // tp, region.kv_heads // tp
     module._unsloth_tp_heads = heads
     module._unsloth_tp_kv_heads = kv_heads
-    # Instance head counts: always num_heads / num_key_value_heads (read with a config fallback by
-    # patched forwards), the other names only where the module has them.
     for name, value, always in (
         ("num_heads", heads, True),
         ("num_key_value_heads", kv_heads, True),
@@ -1117,8 +1069,7 @@ def _set_local_heads(module, region, tp):
     except (OSError, TypeError):
         source = ""
     if _GLOBAL_HEAD_READS.search(source) and "_unsloth_tp_heads" not in source:
-        # A forward that slices with config.num_attention_heads (Phi3's fused qkv) reads a per-module copy
-        # holding the local counts; the model's shared config is left as it is.
+        # Per-module config copy with local counts (Phi3 fused qkv); the shared config is left alone.
         local = copy.copy(config)
         local.num_attention_heads = heads
         if getattr(config, "num_key_value_heads", None) is not None:
@@ -1132,8 +1083,7 @@ def apply_tensor_parallel(
     plan = None,
     config: Optional[TPConfig] = None,
 ) -> nn.Module:
-    """Shard every decoder attention / MLP of `model` (the PeftModel for LoRA, after get_peft_model) over
-    the 1-D `tp_mesh` (None = all ranks). Returns the model, changed in place. Idempotent."""
+    """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
     config = config or TPConfig()
@@ -1193,9 +1143,7 @@ def apply_tensor_parallel(
             _set_local_heads(module, region, tp)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
-    # Unsloth's decode paths read config head counts and call the MLP kernels directly, outside the regions:
-    # generate and a filled KV cache are refused on every level (PeftModel, LoraModel, CausalLM, decoder), and
-    # every level carries the marker the Trainer / native FSDP2 / for_inference refusals read.
+    # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
     decoder = _decoder_of(inner)
@@ -1263,9 +1211,6 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
-# --------------------------------------------------------------------------------------------------
-# Training-loop helpers
-# --------------------------------------------------------------------------------------------------
 
 
 def tp_clip_grad_norm_(
@@ -1274,8 +1219,7 @@ def tp_clip_grad_norm_(
     mesh = None,
     eps = 1e-6,
 ):
-    """Clip by the global 2-norm: sharded gradients' squares summed over tp, replicated ones counted once.
-    `parameters`: a tensor or an iterable of tensors; `mesh`: the tp mesh (default: the gradients' own)."""
+    """Clip by the global 2-norm: sharded grads summed over tp, replicated ones counted once."""
     import torch.distributed as dist
 
     if isinstance(parameters, torch.Tensor):
@@ -1330,9 +1274,7 @@ def _full(tensor, param = None):
 
 
 def tp_full_state_dict(model, adapters_only = False):
-    """The model state dict with every DTensor gathered to its full 1-GPU tensor (collective: call on
-    every rank). adapters_only: only LoRA tensors, trainable parameters and the embedding / lm_head weights
-    (PEFT's save filter decides whether to keep those). 4-bit shards stay local."""
+    """State dict with DTensors gathered (collective); 4-bit shards stay local."""
     state = model.state_dict(keep_vars = True)
     # PEFT picks embedding weights out of the given state dict (save_embedding_layers, resized vocab).
     embeddings = set()
@@ -1356,11 +1298,8 @@ def tp_full_state_dict(model, adapters_only = False):
 
 
 def _peft_state_dict(model, **kwargs):
-    """The state dict save_pretrained(**kwargs) of the 1-GPU model writes from: the tensors PEFT's own
-    get_peft_model_state_dict selects (LoRA, bias = "all" / "lora_only" biases trainable or not,
-    modules_to_save, requested or resized embeddings, ...), DTensors gathered to their full 1-GPU tensor.
-    Only what PEFT selects is gathered (never the sharded base weights); local tensors are passed through
-    by reference so PEFT's selection, rerun inside save_pretrained, sees the same model."""
+    """What PEFT selects for save_pretrained, DTensors gathered; local tensors by reference (PEFT reruns
+    its selection inside save_pretrained and must see the same model)."""
     from peft import get_peft_model_state_dict
 
     raw = model.state_dict(keep_vars = True)
@@ -1393,9 +1332,7 @@ def _peft_state_dict(model, **kwargs):
 
 
 def save_tp_adapter(model, save_directory, **kwargs):
-    """PeftModel.save_pretrained with full (gathered) adapter tensors: the standard 1-GPU PEFT adapter, the
-    same tensors PEFT selects on the 1-GPU model. Collective over every rank (the tp mesh must be the whole
-    world in v1); rank 0 writes."""
+    """Write the standard 1-GPU PEFT adapter. Collective (tp mesh = whole world in v1); rank 0 writes."""
     import torch.distributed as dist
 
     mesh = None

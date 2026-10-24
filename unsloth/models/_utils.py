@@ -5762,9 +5762,7 @@ def patch_gradient_accumulation_fix(Trainer):
 
 
 def _is_unsloth_tensor_parallel(model):
-    """apply_tensor_parallel (models/tp_native.py) marks every level from the model it was given down to the
-    decoder (PeftModel -> LoraModel -> CausalLM -> decoder); walking down finds it from any of them. Dict
-    lookups only: tp_native is not imported."""
+    """Walk the wrapper levels for apply_tensor_parallel's marker (dict lookups, no tp_native import)."""
     m, depth = model, 0
     while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
         if m.__dict__.get("_unsloth_tp"):
@@ -5776,7 +5774,6 @@ def _is_unsloth_tensor_parallel(model):
 
 def _refuse_tensor_parallel_for_trainer(model):
     if _is_unsloth_tensor_parallel(model):
-        # accelerate would wrap the tp ranks in DDP (or native FSDP2 refuses the DTensors).
         raise RuntimeError(
             "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
             "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "

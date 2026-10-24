@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallel plan derivation and math, single process, fp32 CPU.
-
-The simulated-TP oracle replaces every attention / MLP region of a LoRA model by tp copies holding only
-their shard_slice of each weight (with this rank's head counts) and sums their outputs, which is what tp
-ranks compute between copy_to_tp and reduce_from_tp. Logits and LoRA gradients (replicated factors summed
-over the copies, sharded ones concatenated) must match the unsharded model. Then plan derivation across
-architectures, with and without a transformers TP plan, and every v1 refusal."""
+"""Tensor parallel plan derivation, refusals, and a simulated-TP oracle (summed shard copies), fp32 CPU."""
 
 import copy
 import importlib.util
@@ -308,9 +302,6 @@ def test_mutation_unsummed_replicated_factor_fails():
         )
 
 
-# --------------------------------------------------------------------------------------------------
-# Plan derivation
-# --------------------------------------------------------------------------------------------------
 
 
 def _styles(plan):
@@ -433,9 +424,6 @@ def test_shard_slice_unpermute_round_trip():
     assert torch.equal(tpn._unpermute(torch.cat(shards), 0, parts, 2), t)
 
 
-# --------------------------------------------------------------------------------------------------
-# Refusals
-# --------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -516,9 +504,6 @@ def test_stablelm_4x_is_refused():
         tpn.derive_tp_plan(build(repo, overrides), 2)
 
 
-# --------------------------------------------------------------------------------------------------
-# Review fixes
-# --------------------------------------------------------------------------------------------------
 
 # Phi3's fused qkv under a plan that calls it packed: the layout is still [q, kv, kv] (GQA: unequal parts).
 PHI3_PACKED_PLAN = {
@@ -562,7 +547,6 @@ class _FakeLora(torch.nn.Module):
 
 
 def test_active_adapter_matches_get_lora_parameters():
-    # active_adapters, else the singular active_adapter, else "default"; a string is one adapter.
     singular = _FakeLora(None)
     singular.active_adapter = "default"
     assert tpn._active_adapter(singular) == ["default"]
@@ -572,7 +556,6 @@ def test_active_adapter_matches_get_lora_parameters():
     for active in (None, "default", ["default"]):
         W, _, A, B, s = tpn._tp_lora_parameters(_FakeLora(active))
         assert A is not None and B is not None and s == 2.0
-    # Nothing active, or an adapter this layer lacks: the base projection, as PEFT's forward computes it.
     for active in ([], ["other"]):
         assert tpn._tp_lora_parameters(_FakeLora(active))[2:] == (None, None, None)
     with pytest.raises(ValueError, match = "single active adapter"):
@@ -666,9 +649,7 @@ def _load_flex():
 
 
 def test_gemma2_softcapping_helpers_use_local_heads():
-    """The Gemma2 softcapping helpers (unsloth/kernels/flex_attention.py) on one rank's heads: a module whose
-    config holds the global counts but carries this rank's _unsloth_tp_heads must equal a module whose config
-    holds the local counts."""
+    """Gemma2 softcapping helpers honour _unsloth_tp_heads over the config's global counts."""
     flex = _load_flex()
     import types as _types
 
