@@ -58,6 +58,7 @@ LTX25_DEV_SCHEDULER_OVERRIDES: dict[str, Any] = {
 TWO_STAGE_ENV = "UNSLOTH_LTX25_TWO_STAGE"
 SAMPLER_ENV = "UNSLOTH_LTX25_SAMPLER"
 _OFF = ("0", "false", "no", "off")
+_ON = ("1", "true", "yes", "on")
 
 # Pack components a load never reads: the dev DiT (single-file dev picks bring their own), the prompt enhancer and its
 # processor (Studio never enhances), the diffusion decoder (conv decode is the pipeline default), the temporal
@@ -84,9 +85,10 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# An unset text_encoder_quant runs the int8 ConvRot encoder, as ComfyUI's LTX-2.5 templates load Lightricks'
-# gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot. "none" / "off" pin the bf16 encoder; UNSLOTH_LTX25_TE_INT8=0 makes
-# an unset request bf16 again (an operator kill switch, not the default).
+# The int8 ConvRot encoder (what ComfyUI's LTX-2.5 templates load: Lightricks' gemma4-12b-with-proj-ltx-2.5-comfy-
+# int8-convrot) is opt-in: against the bf16 encoder it measured LPIPS 0.270 mean / 0.484 max (0.310 earlier), above
+# the 0.256 compile floor, so an unset text_encoder_quant keeps bf16. "int8" picks it per load; UNSLOTH_LTX25_TE_INT8=1
+# makes an unset request int8 ("0" or unset keeps bf16). "none" / "off" always pin bf16.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -709,15 +711,15 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
     from .diffusion_precision import normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
-        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _OFF:
-            return None
-        return LTX25_TE_QUANT_DEFAULT
+        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in _ON:
+            return LTX25_TE_QUANT_DEFAULT
+        return None
     scheme = normalize_te_quant(text_encoder_quant)
     if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
         return scheme
     raise ValueError(
         f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
-        f"'{scheme}'. Pick int8 (the default when unset) for int8, or Off for bf16."
+        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
     )
 
 
