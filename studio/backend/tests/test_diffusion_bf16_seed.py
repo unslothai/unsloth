@@ -45,8 +45,11 @@ def store(tmp_path, monkeypatch):
     return mp
 
 
-def _pipe(dtype = torch.bfloat16):
-    return types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+def _pipe(dtype = torch.bfloat16, measured_target = True):
+    return types.SimpleNamespace(
+        transformer = types.SimpleNamespace(dtype = dtype),
+        _unsloth_dense_tier_seeds = measured_target,
+    )
 
 
 def _l4_plan():
@@ -109,18 +112,35 @@ def test_the_bf16_kill_switch_restores_the_flat_plan(store, monkeypatch):
 
 def test_only_the_eager_tier_and_measured_sizes_are_seeded(store):
     m = dm.measured_image_runtime_mib
-    assert m("flux.1", "off", dense_transformer_mib = 22681, dense_bf16 = True) == 4352
+    assert (
+        m("flux.1", "off", dense_transformer_mib = 22681, dense_bf16 = True, dense_tier_seeds = True)
+        == 4352
+    )
+    # measured with a sub-quadratic attention kernel: elsewhere the seed does not apply
+    assert m("flux.1", "off", dense_transformer_mib = 22681, dense_bf16 = True) is None
     # the compiled tiers of a bf16 denoiser were not measured
     assert (
         m("flux.1", "default", dense_transformer_mib = 22681, dense_bf16 = True, dense_tier_seeds = True)
         is None
     )
     # a DiT above the measured size keeps the flat estimate
-    assert m("flux.1", "off", dense_transformer_mib = 30000, dense_bf16 = True) is None
+    assert (
+        m("flux.1", "off", dense_transformer_mib = 30000, dense_bf16 = True, dense_tier_seeds = True)
+        is None
+    )
     # an unmeasured family too
-    assert m("z-image", "off", dense_transformer_mib = 11000, dense_bf16 = True) is None
+    assert (
+        m("z-image", "off", dense_transformer_mib = 11000, dense_bf16 = True, dense_tier_seeds = True)
+        is None
+    )
     # the fp16 table is unchanged
     assert m("flux.1", "off", dense_transformer_mib = 22680) == 2816
+
+
+def test_math_only_attention_keeps_a_bf16_denoiser_learned_only(store):
+    """The seed was measured with a sub-quadratic SDPA kernel; math-only attention / ROCm keep the streamed plan."""
+    plan = _l4_plan()
+    assert _refine(_pipe(measured_target = False), plan) is plan
 
 
 def test_packed_and_fp8_stored_bf16_denoisers_stay_learned_only(store, monkeypatch):
@@ -134,6 +154,7 @@ def test_packed_and_fp8_stored_bf16_denoisers_stay_learned_only(store, monkeypat
 
 def test_the_request_guard_reads_the_bf16_seed_from_the_reserve(store):
     pipe = types.SimpleNamespace(
+        _unsloth_dense_tier_seeds = True,
         _unsloth_peak_identity = ("flux.1", "dense:bfloat16", "off"),
         _unsloth_measured_reserve = (
             4352,

@@ -70,7 +70,9 @@ def test_dense_table_places_bf16_only_from_its_own_measurements(monkeypatch, bf1
     if not bf16_table:
         monkeypatch.setenv(dm.MEASURED_ACTIVATION_BF16_ENV, "0")
     for dtype, kept in ((torch.bfloat16, bf16_table), (torch.float16, True)):
-        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = dtype))
+        pipe = types.SimpleNamespace(
+            transformer = types.SimpleNamespace(dtype = dtype), _unsloth_dense_tier_seeds = True
+        )
         out = dm.refine_plan_from_loaded_weights(pipe, plan, family = "flux.1", speed_mode = "off")
         assert bool(out.resident_transformer_mib) is kept, dtype
         assert bool(out.estimates.get("measured_dense_bf16")) is (

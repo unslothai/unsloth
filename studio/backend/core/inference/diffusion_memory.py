@@ -3370,11 +3370,13 @@ def _dense_seed_mib(
     GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
     s/step). ``tier_seeds``: the target is where the phase table was measured (NVIDIA with a sub-quadratic attention
     kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate.
-    ``bf16``: the bf16 table, eager tier only (the default / max tiers of a bf16 denoiser were not measured)."""
+    ``bf16``: the bf16 table, eager tier only (the default / max tiers of a bf16 denoiser were not measured), and only on
+    a ``tier_seeds`` target: it was measured with a sub-quadratic attention kernel."""
     if bf16:
         entry = _MEASURED_DENSE_BF16_EAGER_PEAK_MIB.get(family)
         if (
             entry is None
+            or not tier_seeds
             or _env_off(MEASURED_ACTIVATION_BF16_ENV)
             or speed_mode not in _MEASURED_DENSE_SPEED_MODES
             or not 0 < dense_mib <= entry[1]
@@ -4149,6 +4151,8 @@ def _refine_plan_from_loaded_weights(
             and not fp8_stored
             and dense_bf16_seeded(family)
             and _denoiser_is_dense_bf16(pipe)
+            # measured with a sub-quadratic attention kernel: math-only SDPA / ROCm keep the learned peak alone
+            and bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
         )
         static_seed = not (
             fp8_stored
