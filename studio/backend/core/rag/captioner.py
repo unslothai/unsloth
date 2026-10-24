@@ -173,7 +173,6 @@ def _vision_complete(
                 )
             else:
                 from core.inference.llama_cpp import _post_through_park
-
                 with httpx.Client(headers = _vision_auth_headers(), trust_env = False) as client:
                     r = _post_through_park(
                         client,

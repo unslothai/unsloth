@@ -72,7 +72,6 @@ class _ChatBackend:
 
 def _caption(monkeypatch, *, server: bool, parked: bool, park_s: float):
     import routes.inference as inf_mod
-
     monkeypatch.setattr(captioner, "_direct_llama_slot", lambda **_k: contextlib.nullcontext())
     with _upstream(park_s, _CHAT_BODY) as port:
         backend = _ChatBackend(port, server = server, parked = parked)
@@ -120,18 +119,30 @@ class _Codec:
     def __init__(self):
         self.decoded = []
 
-    def decode(self, audio_type, device, *, token_ids = None, text = ""):
+    def decode(
+        self,
+        audio_type,
+        device,
+        *,
+        token_ids = None,
+        text = "",
+    ):
         self.decoded.append(text)
         return b"RIFF", 24000
 
 
-def _tts(monkeypatch, *, server: bool, parked: bool, park_s: float, cancel = None):
+def _tts(
+    monkeypatch,
+    *,
+    server: bool,
+    parked: bool,
+    park_s: float,
+    cancel = None,
+):
     codec = _Codec()
     monkeypatch.setattr(llama_mod.LlamaCppBackend, "_codec_mgr", codec)
     monkeypatch.setattr(llama_mod, "_GGUF_AUDIO_READ_TIMEOUT", 1.0)
-    monkeypatch.setattr(
-        llama_mod.LlamaCppBackend, "server_may_park", property(lambda self: server)
-    )
+    monkeypatch.setattr(llama_mod.LlamaCppBackend, "server_may_park", property(lambda self: server))
     with _upstream(park_s, {"content": "<audio>", "stop_type": "eos"}) as port:
         backend = llama_mod.LlamaCppBackend.__new__(llama_mod.LlamaCppBackend)
         backend._port = port

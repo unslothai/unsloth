@@ -17,7 +17,11 @@ import uuid
 import pytest
 
 from core.inference import llama_preemption as preemption
-from core.inference.llama_preemption import ParticipantState, PreemptSignal, get_preemption_controller
+from core.inference.llama_preemption import (
+    ParticipantState,
+    PreemptSignal,
+    get_preemption_controller,
+)
 import routes.inference as inference
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")

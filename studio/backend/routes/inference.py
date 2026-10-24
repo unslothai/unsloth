@@ -3530,9 +3530,7 @@ async def _openai_llama_preemption_arm_async(
         return None
     try:
         await _refresh_residency_before_planning_async(controller)
-        policy = _openai_llama_preemption_plan(
-            controller, gen_id = gen_id, signal = signal, loop = loop
-        )
+        policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
         if _openai_llama_armed_victims_pending(controller, gen_id):
             await asyncio.to_thread(_openai_llama_wait_for_armed_victims, controller, gen_id)
         return policy

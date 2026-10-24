@@ -46,9 +46,9 @@ def test_a_first_lookup_elsewhere_cannot_orphan_a_direct_holder(monkeypatch):
     try:
         holder = inference._openai_llama_count_embeddings_holder(fake, "x" * 400)
         assert holder is not None
-        assert get_preemption_controller(key).participant(holder) is not None, (
-            "the holder registered on a controller later lookups no longer find"
-        )
+        assert (
+            get_preemption_controller(key).participant(holder) is not None
+        ), "the holder registered on a controller later lookups no longer find"
     finally:
         if holder is not None:
             inference._openai_llama_release_completions_holder(fake, holder)
