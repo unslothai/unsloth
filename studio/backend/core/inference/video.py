@@ -9844,9 +9844,12 @@ class VideoBackend:
                         speed_optims += ("vae_wide_tiles",)
                 except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                     logger.warning("video.vae_wide_tiles: not installed: %s", exc)
-            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            # Decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical. Offloaded
+            # placements too: the gate reads the memory free at the decode itself, which a streamed or offloaded
+            # denoiser has handed back, so a T4 / L4 no longer re-decodes every tile overlap where ComfyUI decodes the
+            # clip whole. Sequential offload streams the VAE itself and keeps the tiled decode.
             if (
-                offload_policy == "none"
+                offload_policy in (OFFLOAD_NONE, OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING)
                 and target.device == "cuda"
                 and effective_speed != SPEED_OFF
             ):
