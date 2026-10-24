@@ -21,6 +21,28 @@ _COMPILE_OPTIONS = {
     "shape_padding": True,
     "triton.cudagraphs": False,
 }
+# Opt-in CUDA graphs per block: one graph launch replaces each block's kernel launches. Static
+# shapes only pay off (each new sequence length records another graph and holds its memory).
+if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
+    _COMPILE_OPTIONS["triton.cudagraphs"] = True
+
+
+class _CloneGrad(torch.autograd.Function):
+    """Identity; backward copies the input gradient out of the CUDA graph pool."""
+
+    @staticmethod
+    def forward(ctx, x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.clone()
+
+
+def _clone_outputs(out):
+    import torch.utils._pytree as pytree
+
+    return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
@@ -719,6 +741,10 @@ def _wrap(cls, compile_options):
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
+    # Under Unsloth checkpointing each block call is a new cudagraph tree generation (the forward runs
+    # under no_grad, the recompute inside backward), so the next block's replay overwrites this block's
+    # outputs and the gradient it returns for its input while the checkpoint still holds them.
+    graphs = bool(compile_options.get("triton.cudagraphs"))
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -727,6 +753,10 @@ def _wrap(cls, compile_options):
         try:
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
+                if graphs:
+                    if hidden_states.requires_grad and torch.is_grad_enabled():
+                        hidden_states = _CloneGrad.apply(hidden_states)
+                    return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
