@@ -725,7 +725,7 @@ def _gather_both_paths(x, weight, group, rank, size):
         calls = []
         original = cp._fused_gather_ok
         cp._fused_gather_ok = lambda group, fused = fused: fused
-        rs, ag = cp._reduce_scatter, dist.all_gather_into_tensor
+        rs, ag = cp._reduce_scatter, cp._all_gather_into
 
         def _count(name, fn):
             def wrapper(*args, **kwargs):
@@ -735,7 +735,7 @@ def _gather_both_paths(x, weight, group, rank, size):
             return wrapper
 
         cp._reduce_scatter = _count("reduce_scatter", rs)
-        dist.all_gather_into_tensor = _count("all_gather_into_tensor", ag)
+        cp._all_gather_into = _count("all_gather_into_tensor", ag)
         try:
             leaf = x.clone().requires_grad_(True)
             full = cp._GatherSequence.apply(leaf, group, rank, size)
@@ -743,7 +743,7 @@ def _gather_both_paths(x, weight, group, rank, size):
             (full.float() * (weight + rank)).sum().backward()
         finally:
             cp._fused_gather_ok, cp._reduce_scatter = original, rs
-            dist.all_gather_into_tensor = ag
+            cp._all_gather_into = ag
         results[fused] = (full.detach(), leaf.grad, calls)
     return results
 
@@ -786,15 +786,15 @@ def _gather_worker(rank, world, init_file, queue):
         x = torch.randn(2, 3, 4)
         leaf = x.clone().requires_grad_(True)
         calls = []
-        ag = dist.all_gather_into_tensor
-        dist.all_gather_into_tensor = lambda *a, **k: calls.append(1)
+        ag = cp._all_gather_into
+        cp._all_gather_into = lambda *a, **k: calls.append(1)
         original = cp._fused_gather_ok
         cp._fused_gather_ok = lambda group: False
         try:
             full = cp._GatherSequence.apply(leaf, group, rank, world)
             full.sum().backward()
         finally:
-            dist.all_gather_into_tensor, cp._fused_gather_ok = ag, original
+            cp._all_gather_into, cp._fused_gather_ok = ag, original
         assert calls == [] and full.shape == (2, 6, 4)
         assert torch.equal(leaf.grad, torch.full_like(x, float(world)))
         queue.put((rank, "ok"))

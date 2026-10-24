@@ -1010,9 +1010,13 @@ def _fused_gather_ok(group) -> bool:
     return "mpi" not in backend and any(name in backend for name in _FUSED_GATHER_BACKENDS)
 
 
-# reduce_scatter_tensor is deprecated for reduce_scatter_single on newer torch (same signature).
+# reduce_scatter_tensor / all_gather_into_tensor are deprecated for reduce_scatter_single /
+# all_gather_single on newer torch (same signatures).
 _reduce_scatter = getattr(dist, "reduce_scatter_single", None) or getattr(
     dist, "reduce_scatter_tensor", None
+)
+_all_gather_into = getattr(dist, "all_gather_single", None) or getattr(
+    dist, "all_gather_into_tensor", None
 )
 
 
@@ -1023,23 +1027,25 @@ class _GatherSequence(torch.autograd.Function):
     def forward(ctx, x, group, rank, size):
         ctx.group, ctx.rank, ctx.local = group, rank, x.shape[1]
         # Peers hold equal shards: the manager pads the sequence to a multiple of the group size.
-        ctx.fused = _reduce_scatter is not None and _fused_gather_ok(group)
+        ctx.fused = (
+            _reduce_scatter is not None and _all_gather_into is not None and _fused_gather_ok(group)
+        )
         if not ctx.fused:
             x = x.contiguous()
             parts = [torch.empty_like(x) for _ in range(size)]
             dist.all_gather(parts, x, group = group)
             return torch.cat(parts, dim = 1)
         batch, local, rest = x.shape[0], x.shape[1], x.shape[2:]
-        # all_gather_into_tensor concatenates along dim 0, so the sequence dim goes first. A fresh
+        # The gather concatenates along dim 0, so the sequence dim goes first. A fresh
         # output (no view base), as torch.cat gave.
         out = x.new_empty((batch, size * local, *rest))
         if batch == 1:
-            dist.all_gather_into_tensor(
+            _all_gather_into(
                 out.view(size * local, *rest), x.reshape(local, *rest).contiguous(), group = group
             )
             return out
         buffer = x.new_empty((size * local, batch, *rest))
-        dist.all_gather_into_tensor(buffer, x.movedim(1, 0).contiguous(), group = group)
+        _all_gather_into(buffer, x.movedim(1, 0).contiguous(), group = group)
         return out.copy_(buffer.movedim(0, 1))
 
     @staticmethod
