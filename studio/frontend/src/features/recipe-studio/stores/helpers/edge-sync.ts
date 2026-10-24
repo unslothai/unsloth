@@ -3,7 +3,6 @@
 
 import { type Edge, addEdge } from "@xyflow/react";
 import type {
-  LayoutDirection,
   ModelConfig,
   NodeConfig,
   SamplerConfig,
@@ -77,7 +76,6 @@ export function syncEdgesForConfigPatch(
   patch: Partial<NodeConfig>,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
-  layoutDirection: LayoutDirection,
 ): Edge[] {
   let nextEdges = edges;
 
@@ -121,7 +119,6 @@ export function syncEdgesForConfigPatch(
           },
           configs,
           nextEdges,
-          layoutDirection,
         );
         nextEdges = result.edges;
       }
@@ -192,7 +189,6 @@ export function syncEdgesForConfigPatch(
           },
           configs,
           nextEdges,
-          layoutDirection,
         );
         nextEdges = result.edges;
       }
@@ -227,7 +223,6 @@ export function syncEdgesForConfigPatch(
           },
           configs,
           nextEdges,
-          layoutDirection,
         );
         nextEdges = result.edges;
       }

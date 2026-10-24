@@ -614,10 +614,9 @@ export function importRecipePayload(
     return { errors, snapshot: null };
   }
 
-  const { layouts, auxNodes, edges: uiEdges, layoutDirection } = parseUi(ui);
-  const resolvedLayoutDirection = layoutDirection ?? "LR";
+  const { layouts, auxNodes, edges: uiEdges, reroutes } = parseUi(ui);
   const nodes = buildNodes(configs, layouts);
-  const edges = buildEdges(configs, nameToId, uiEdges, resolvedLayoutDirection);
+  const edges = buildEdges(configs, nameToId, uiEdges, new Set(Object.keys(reroutes)));
   const auxNodePositions = Object.fromEntries(
     auxNodes.flatMap((item) => {
       const llmId = nameToId.get(item.llm);
@@ -638,7 +637,9 @@ export function importRecipePayload(
       edges,
       auxNodePositions,
       processors,
-      layoutDirection: resolvedLayoutDirection,
+      reroutes,
+      // Cards only take inputs on the left, so a saved top-to-bottom recipe opens left to right.
+      layoutDirection: "LR",
       nextId,
       nextY: maxY + 140,
     },

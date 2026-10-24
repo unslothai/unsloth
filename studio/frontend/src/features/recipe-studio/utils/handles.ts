@@ -2,114 +2,54 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { Connection } from "@xyflow/react";
-import type { LayoutDirection } from "../types";
 
+// Inputs sit on the left of a card, outputs on the right. See utils/ports.ts for which card
+// shows which port and what it is labelled.
 export const HANDLE_IDS = {
-  // data flow lanes
   dataIn: "data-in",
-  dataInTop: "data-in-top",
-  dataInRight: "data-in-right",
-  dataInBottom: "data-in-bottom",
   dataOut: "data-out",
-  dataOutLeft: "data-out-left",
-  dataOutTop: "data-out-top",
-  dataOutBottom: "data-out-bottom",
-  // semantic dependency lanes
   semanticIn: "semantic-in",
-  semanticInTop: "semantic-in-top",
-  semanticInRight: "semantic-in-right",
-  semanticInBottom: "semantic-in-bottom",
-  semanticInLeft: "semantic-in-left",
   semanticOut: "semantic-out",
-  semanticOutLeft: "semantic-out-left",
-  semanticOutTop: "semantic-out-top",
-  semanticOutBottom: "semantic-out-bottom",
-  semanticOutRight: "semantic-out-right",
-  // llm prompt/scorer lanes
-  llmInputOutLeft: "llm-input-out-left",
-  llmInputOutRight: "llm-input-out-right",
-  llmInputOutTop: "llm-input-out-top",
-  llmInputOutBottom: "llm-input-out-bottom",
+  modelIn: "model-in",
+  toolsIn: "tools-in",
+  promptIn: "prompt-in",
+  llmInputOut: "llm-input-out-right",
+  rerouteIn: "reroute-in",
+  rerouteOut: "reroute-out",
 } as const;
 
 export type RecipeHandleId = (typeof HANDLE_IDS)[keyof typeof HANDLE_IDS];
 
-const LEGACY_HANDLE_ALIAS_MAP: Record<string, string> = {
-  [HANDLE_IDS.semanticInLeft]: HANDLE_IDS.semanticIn,
-  [HANDLE_IDS.semanticOutRight]: HANDLE_IDS.semanticOut,
+// Handles older recipes may still reference, including the top and bottom ones from the
+// top-to-bottom layout. Each maps to the left or right handle of the same lane; the edge is kept.
+export const LEGACY_HANDLE_ALIAS_MAP: Record<string, string> = {
+  "data-in-top": HANDLE_IDS.dataIn,
+  "data-in-right": HANDLE_IDS.dataIn,
+  "data-in-bottom": HANDLE_IDS.dataIn,
+  "data-out-bottom": HANDLE_IDS.dataOut,
+  "data-out-left": HANDLE_IDS.dataOut,
+  "data-out-top": HANDLE_IDS.dataOut,
+  "semantic-in-top": HANDLE_IDS.semanticIn,
+  "semantic-in-left": HANDLE_IDS.semanticIn,
+  "semantic-in-right": HANDLE_IDS.semanticIn,
+  "semantic-in-bottom": HANDLE_IDS.semanticIn,
+  "semantic-out-bottom": HANDLE_IDS.semanticOut,
+  "semantic-out-right": HANDLE_IDS.semanticOut,
+  "semantic-out-left": HANDLE_IDS.semanticOut,
+  "semantic-out-top": HANDLE_IDS.semanticOut,
+  "llm-input-out-bottom": HANDLE_IDS.llmInputOut,
+  "llm-input-out-left": HANDLE_IDS.llmInputOut,
+  "llm-input-out-top": HANDLE_IDS.llmInputOut,
 };
 
-const DATA_TARGET_HANDLES = new Set<string>([
-  HANDLE_IDS.dataIn,
-  HANDLE_IDS.dataInTop,
-  HANDLE_IDS.dataInRight,
-  HANDLE_IDS.dataInBottom,
-]);
-
-const DATA_SOURCE_HANDLES = new Set<string>([
-  HANDLE_IDS.dataOut,
-  HANDLE_IDS.dataOutLeft,
-  HANDLE_IDS.dataOutTop,
-  HANDLE_IDS.dataOutBottom,
-]);
-
+const DATA_TARGET_HANDLES = new Set<string>([HANDLE_IDS.dataIn]);
+const DATA_SOURCE_HANDLES = new Set<string>([HANDLE_IDS.dataOut]);
 const SEMANTIC_TARGET_HANDLES = new Set<string>([
   HANDLE_IDS.semanticIn,
-  HANDLE_IDS.semanticInTop,
-  HANDLE_IDS.semanticInRight,
-  HANDLE_IDS.semanticInBottom,
-  HANDLE_IDS.semanticInLeft,
+  HANDLE_IDS.modelIn,
+  HANDLE_IDS.toolsIn,
 ]);
-
-const SEMANTIC_SOURCE_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticOut,
-  HANDLE_IDS.semanticOutLeft,
-  HANDLE_IDS.semanticOutTop,
-  HANDLE_IDS.semanticOutBottom,
-  HANDLE_IDS.semanticOutRight,
-]);
-
-const DATA_TARGET_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataIn,
-  HANDLE_IDS.dataInRight,
-]);
-
-const DATA_TARGET_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataInTop,
-  HANDLE_IDS.dataInBottom,
-]);
-
-const DATA_SOURCE_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataOut,
-  HANDLE_IDS.dataOutLeft,
-]);
-
-const DATA_SOURCE_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataOutTop,
-  HANDLE_IDS.dataOutBottom,
-]);
-
-const SEMANTIC_TARGET_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticIn,
-  HANDLE_IDS.semanticInRight,
-  HANDLE_IDS.semanticInLeft,
-]);
-
-const SEMANTIC_TARGET_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticInTop,
-  HANDLE_IDS.semanticInBottom,
-]);
-
-const SEMANTIC_SOURCE_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticOut,
-  HANDLE_IDS.semanticOutLeft,
-  HANDLE_IDS.semanticOutRight,
-]);
-
-const SEMANTIC_SOURCE_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticOutTop,
-  HANDLE_IDS.semanticOutBottom,
-]);
+const SEMANTIC_SOURCE_HANDLES = new Set<string>([HANDLE_IDS.semanticOut]);
 
 export function normalizeRecipeHandleId(
   handleId: string | null | undefined,
@@ -118,6 +58,31 @@ export function normalizeRecipeHandleId(
     return null;
   }
   return LEGACY_HANDLE_ALIAS_MAP[handleId] ?? handleId;
+}
+
+export type RecipeHandleSide = "left" | "right";
+
+/** Side a handle sits on: every input is on the left, every output on the right. */
+export function getRecipeHandleSide(
+  _handleId: string | null | undefined,
+  kind: "source" | "target",
+): RecipeHandleSide {
+  return kind === "target" ? "left" : "right";
+}
+
+/** Rewrites removed handle ids on a stored edge to their legal replacement. */
+export function migrateRecipeEdgeHandles<
+  T extends { sourceHandle?: string | null; targetHandle?: string | null },
+>(edge: T): T {
+  const sourceHandle = normalizeRecipeHandleId(edge.sourceHandle);
+  const targetHandle = normalizeRecipeHandleId(edge.targetHandle);
+  if (
+    sourceHandle === (edge.sourceHandle ?? null) &&
+    targetHandle === (edge.targetHandle ?? null)
+  ) {
+    return edge;
+  }
+  return { ...edge, sourceHandle, targetHandle };
 }
 
 export function normalizeRecipeConnectionHandles(
@@ -138,29 +103,6 @@ function isKnownHandle(
     return false;
   }
   return handles.has(normalizeRecipeHandleId(handleId) ?? "");
-}
-
-function remapHandleForDirection(
-  handleId: string | null | undefined,
-  direction: LayoutDirection,
-  horizontalHandles: Set<string>,
-  verticalHandles: Set<string>,
-  defaultHandle: string,
-): string {
-  const normalizedHandleId = normalizeRecipeHandleId(handleId);
-  if (!normalizedHandleId) {
-    return defaultHandle;
-  }
-  if (direction === "LR") {
-    if (verticalHandles.has(normalizedHandleId)) {
-      return defaultHandle;
-    }
-    return normalizedHandleId;
-  }
-  if (horizontalHandles.has(normalizedHandleId)) {
-    return defaultHandle;
-  }
-  return normalizedHandleId;
 }
 
 export function isDataTargetHandle(
@@ -185,88 +127,4 @@ export function isSemanticSourceHandle(
   handleId: string | null | undefined,
 ): boolean {
   return isKnownHandle(handleId, SEMANTIC_SOURCE_HANDLES);
-}
-
-export function getDefaultDataTargetHandle(direction: LayoutDirection): string {
-  return direction === "TB" ? HANDLE_IDS.dataInTop : HANDLE_IDS.dataIn;
-}
-
-export function getDefaultDataSourceHandle(direction: LayoutDirection): string {
-  return direction === "TB" ? HANDLE_IDS.dataOutBottom : HANDLE_IDS.dataOut;
-}
-
-export function getDefaultSemanticTargetHandle(
-  direction: LayoutDirection,
-): string {
-  return direction === "TB" ? HANDLE_IDS.semanticInTop : HANDLE_IDS.semanticIn;
-}
-
-export function getDefaultSemanticSourceHandle(
-  direction: LayoutDirection,
-): string {
-  return direction === "TB" ? HANDLE_IDS.semanticOutBottom : HANDLE_IDS.semanticOut;
-}
-
-type RecipeEdgeHandles = {
-  sourceHandle?: string | null;
-  targetHandle?: string | null;
-  type?: string | null;
-};
-
-export function remapRecipeEdgeHandlesForLayout(
-  edge: RecipeEdgeHandles,
-  direction: LayoutDirection,
-): { sourceHandle: string; targetHandle: string } {
-  const semantic =
-    edge.type === "semantic" ||
-    (isSemanticSourceHandle(edge.sourceHandle) &&
-      isSemanticTargetHandle(edge.targetHandle));
-  if (semantic) {
-    const sourceIsData = isDataSourceHandle(edge.sourceHandle);
-    const targetIsData = isDataTargetHandle(edge.targetHandle);
-    return {
-      sourceHandle: remapHandleForDirection(
-        edge.sourceHandle,
-        direction,
-        sourceIsData
-          ? DATA_SOURCE_HORIZONTAL_HANDLES
-          : SEMANTIC_SOURCE_HORIZONTAL_HANDLES,
-        sourceIsData
-          ? DATA_SOURCE_VERTICAL_HANDLES
-          : SEMANTIC_SOURCE_VERTICAL_HANDLES,
-        sourceIsData
-          ? getDefaultDataSourceHandle(direction)
-          : getDefaultSemanticSourceHandle(direction),
-      ),
-      targetHandle: remapHandleForDirection(
-        edge.targetHandle,
-        direction,
-        targetIsData
-          ? DATA_TARGET_HORIZONTAL_HANDLES
-          : SEMANTIC_TARGET_HORIZONTAL_HANDLES,
-        targetIsData
-          ? DATA_TARGET_VERTICAL_HANDLES
-          : SEMANTIC_TARGET_VERTICAL_HANDLES,
-        targetIsData
-          ? getDefaultDataTargetHandle(direction)
-          : getDefaultSemanticTargetHandle(direction),
-      ),
-    };
-  }
-  return {
-    sourceHandle: remapHandleForDirection(
-      edge.sourceHandle,
-      direction,
-      DATA_SOURCE_HORIZONTAL_HANDLES,
-      DATA_SOURCE_VERTICAL_HANDLES,
-      getDefaultDataSourceHandle(direction),
-    ),
-    targetHandle: remapHandleForDirection(
-      edge.targetHandle,
-      direction,
-      DATA_TARGET_HORIZONTAL_HANDLES,
-      DATA_TARGET_VERTICAL_HANDLES,
-      getDefaultDataTargetHandle(direction),
-    ),
-  };
 }

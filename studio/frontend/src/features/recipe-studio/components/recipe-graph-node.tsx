@@ -28,7 +28,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type NodeProps,
   NodeResizer,
-  Position,
   useUpdateNodeInternals,
 } from "@xyflow/react";
 import { type ReactElement, memo, useEffect, useMemo } from "react";
@@ -45,12 +44,11 @@ import type {
   RecipeNode as RecipeGraphNodeType,
   SamplerType,
 } from "../types";
-import { NODE_HANDLE_CLASS } from "../utils/handle-layout";
-import { HANDLE_IDS } from "../utils/handles";
 import {
   RECIPE_STUDIO_NODE_TONES,
   RECIPE_STUDIO_USER_NODE_TONE,
 } from "../utils/ui-tones";
+import { NodePorts } from "./graph/node-ports";
 import { InlineCategoryBadges } from "./inline/inline-category-badges";
 import { InlineExpression } from "./inline/inline-expression";
 import { InlineLlm } from "./inline/inline-llm";
@@ -64,7 +62,6 @@ import {
   BaseNodeHeader,
   BaseNodeHeaderTitle,
 } from "./rf-ui/base-node";
-import { LabeledHandle } from "./rf-ui/labeled-handle";
 
 type IconType = typeof CodeIcon;
 
@@ -386,7 +383,7 @@ function RecipeGraphNodeBase({
 
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, layoutDirection, config, updateNodeInternals]);
+  }, [id, layoutDirection, config, data.ports, updateNodeInternals]);
 
   if (config?.kind === "markdown_note") {
     const rgb = hexToRgb(config.note_color ?? "#FDE68A");
@@ -422,19 +419,6 @@ function RecipeGraphNodeBase({
     );
   }
 
-  const showDataHandles =
-    data.kind === "llm" ||
-    data.kind === "validator" ||
-    data.kind === "expression" ||
-    data.kind === "sampler" ||
-    data.kind === "seed";
-  const showSemanticIn =
-    data.kind === "model_config" || data.kind === "validator";
-  const showSemanticOut =
-    data.kind === "model_config" ||
-    data.kind === "model_provider" ||
-    data.kind === "tool_config" ||
-    data.kind === "validator";
   const summary = getConfigSummary(config);
   const nodeBody = renderNodeBody(
     config,
@@ -544,6 +528,8 @@ function RecipeGraphNodeBase({
         </div>
       </BaseNodeHeader>
 
+      <NodePorts ports={data.ports} />
+
       <BaseNodeContent
         className={cn(
           "gap-2 px-3 py-2",
@@ -553,128 +539,6 @@ function RecipeGraphNodeBase({
         {nodeBody}
       </BaseNodeContent>
 
-      {showDataHandles && (
-        <>
-          <LabeledHandle
-            id={HANDLE_IDS.dataIn}
-            title="Data input"
-            type="target"
-            position={Position.Left}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataOutLeft}
-            title="Data output"
-            type="source"
-            position={Position.Left}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataInTop}
-            title="Data input"
-            type="target"
-            position={Position.Top}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataOutTop}
-            title="Data output"
-            type="source"
-            position={Position.Top}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataOut}
-            title="Data output"
-            type="source"
-            position={Position.Right}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataInRight}
-            title="Data input"
-            type="target"
-            position={Position.Right}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataOutBottom}
-            title="Data output"
-            type="source"
-            position={Position.Bottom}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataInBottom}
-            title="Data input"
-            type="target"
-            position={Position.Bottom}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-        </>
-      )}
-
-      {showSemanticIn && (
-        <>
-          <LabeledHandle
-            id={HANDLE_IDS.semanticIn}
-            title="Semantic input"
-            type="target"
-            position={Position.Left}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.semanticInTop}
-            title="Semantic input"
-            type="target"
-            position={Position.Top}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-        </>
-      )}
-
-      {showSemanticOut && (
-        <>
-          <LabeledHandle
-            id={HANDLE_IDS.semanticOut}
-            title="Semantic output"
-            type="source"
-            position={Position.Right}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.semanticOutBottom}
-            title="Semantic output"
-            type="source"
-            position={Position.Bottom}
-            className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-        </>
-      )}
     </BaseNode>
   );
 }

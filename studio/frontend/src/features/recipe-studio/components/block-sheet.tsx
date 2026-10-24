@@ -20,6 +20,7 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
+  Route02Icon,
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -91,6 +92,7 @@ type BlockSheetProps = {
     type: ValidatorBlockType,
   ) => void;
   onAddMarkdownNote: () => void;
+  onAddReroute: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
   onCopy: () => void;
@@ -98,10 +100,15 @@ type BlockSheetProps = {
 };
 
 export const RECIPE_BLOCK_DND_MIME = "application/x-recipe-studio-block";
-export type RecipeBlockDragPayload = {
-  kind: SheetKind;
-  type: BlockType;
-};
+export type RecipeBlockDragPayload =
+  | {
+      kind: SheetKind;
+      type: BlockType;
+    }
+  | { kind: "reroute"; type: "reroute" };
+
+const REROUTE_TITLE = "Reroute";
+const REROUTE_DESCRIPTION = "Steer a wire by hand. Drop it on a wire to split it.";
 
 function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "root") {
@@ -262,6 +269,7 @@ export function BlockSheet({
   onAddExpression,
   onAddValidator,
   onAddMarkdownNote,
+  onAddReroute,
   onOpenProcessors,
   copied,
   onCopy,
@@ -567,6 +575,26 @@ export function BlockSheet({
                     }}
                   />
                 ))}
+              {isRootView &&
+                (!hasSearch || matchesSearch(REROUTE_TITLE, REROUTE_DESCRIPTION)) && (
+                  <BlockSheetButton
+                    icon={Route02Icon}
+                    title={REROUTE_TITLE}
+                    description={REROUTE_DESCRIPTION}
+                    draggable={true}
+                    onDragStart={(event) => {
+                      const serialized = JSON.stringify({ kind: "reroute", type: "reroute" });
+                      event.dataTransfer.setData(RECIPE_BLOCK_DND_MIME, serialized);
+                      event.dataTransfer.setData("text/plain", serialized);
+                      event.dataTransfer.effectAllowed = "copy";
+                    }}
+                    trailing="drag"
+                    onClick={() => {
+                      setSheetOpen(false);
+                      onAddReroute();
+                    }}
+                  />
+                )}
               {SHOW_PROCESSOR_IN_BLOCK_SHEET && isProcessorView && (
                 (!hasSearch ||
                   matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION)) && (

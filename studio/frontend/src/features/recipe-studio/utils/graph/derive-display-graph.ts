@@ -4,28 +4,24 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import type { RecipeGraphAuxNodeData } from "../../components/recipe-graph-aux-node";
 import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../../constants";
-import type { RecipeNode, LayoutDirection, NodeConfig } from "../../types";
+import type { RecipeNode, NodeConfig } from "../../types";
+import { HANDLE_IDS } from "../handles";
 import {
-  getDefaultDataSourceHandle,
-  getDefaultDataTargetHandle,
-  getDefaultSemanticSourceHandle,
-  getDefaultSemanticTargetHandle,
-  HANDLE_IDS,
-  isDataSourceHandle,
-  isDataTargetHandle,
-  isSemanticSourceHandle,
-  isSemanticTargetHandle,
-  normalizeRecipeHandleId,
-} from "../handles";
+  getAuxNodePorts,
+  getRecipeNodePorts,
+  REROUTE_PORTS,
+  resolveRecipeEdgeHandles,
+} from "../ports";
 import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
 import { isSemanticRelation } from "./relations";
+import { expandRerouteEdges, REROUTE_HEIGHT, REROUTE_WIDTH } from "./reroutes";
 
 type DisplayGraphInput = {
   nodes: RecipeNode[];
   edges: Edge[];
   configs: Record<string, NodeConfig>;
-  layoutDirection: LayoutDirection;
   auxNodePositions: Record<string, XYPosition>;
+  reroutes?: Record<string, XYPosition>;
   llmAuxVisibility: Record<string, boolean>;
   runtime?: {
     runningNodeId: string | null;
@@ -47,7 +43,6 @@ function isAuxEdge(edge: Edge): boolean {
 function normalizeEdge(
   edge: Edge,
   configs: Record<string, NodeConfig>,
-  layoutDirection: LayoutDirection,
   activeEdgeIds: Set<string>,
   runningNodeId: string | null,
   doneNodeIds: Set<string>,
@@ -77,8 +72,8 @@ function normalizeEdge(
         ...edge,
         source: edge.target,
         target: edge.source,
-        sourceHandle: getDefaultDataSourceHandle(layoutDirection),
-        targetHandle: getDefaultDataTargetHandle(layoutDirection),
+        sourceHandle: HANDLE_IDS.dataOut,
+        targetHandle: HANDLE_IDS.dataIn,
       }
     : edge;
 
@@ -87,45 +82,10 @@ function normalizeEdge(
   const semantic =
     displayEdge.type === "semantic" ||
     (Boolean(source && target) && isSemanticRelation(source, target));
-  const sourceHandleNormalized = normalizeRecipeHandleId(displayEdge.sourceHandle);
-  const targetHandleNormalized = normalizeRecipeHandleId(displayEdge.targetHandle);
-  const semanticSourceDefault =
-    source?.kind === "llm"
-      ? getDefaultDataSourceHandle(layoutDirection)
-      : getDefaultSemanticSourceHandle(layoutDirection);
-  const semanticTargetDefault =
-    target?.kind === "llm"
-      ? getDefaultDataTargetHandle(layoutDirection)
-      : getDefaultSemanticTargetHandle(layoutDirection);
-  let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
-  let targetHandle = getDefaultDataTargetHandle(layoutDirection);
-
-  if (semantic) {
-    sourceHandle =
-      isSemanticSourceHandle(sourceHandleNormalized) ||
-      isDataSourceHandle(sourceHandleNormalized)
-        ? sourceHandleNormalized ?? semanticSourceDefault
-        : semanticSourceDefault;
-    targetHandle =
-      isSemanticTargetHandle(targetHandleNormalized) ||
-      isDataTargetHandle(targetHandleNormalized)
-        ? targetHandleNormalized ?? semanticTargetDefault
-        : semanticTargetDefault;
-    // LLM nodes only expose data lane handles; coerce legacy semantic handles.
-    if (source?.kind === "llm" && isSemanticSourceHandle(sourceHandle)) {
-      sourceHandle = semanticSourceDefault;
-    }
-    if (target?.kind === "llm" && isSemanticTargetHandle(targetHandle)) {
-      targetHandle = semanticTargetDefault;
-    }
-  } else {
-    sourceHandle = isDataSourceHandle(sourceHandleNormalized)
-      ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
-      : getDefaultDataSourceHandle(layoutDirection);
-    targetHandle = isDataTargetHandle(targetHandleNormalized)
-      ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
-      : getDefaultDataTargetHandle(layoutDirection);
-  }
+  // The handles follow from what the two cards are, so a stale stored handle can't drop a wire.
+  const { sourceHandle, targetHandle } = isActiveReversedRuntimeEdge
+    ? { sourceHandle: HANDLE_IDS.dataOut, targetHandle: HANDLE_IDS.dataIn }
+    : resolveRecipeEdgeHandles(source, target);
 
   return {
     ...displayEdge,
@@ -141,6 +101,7 @@ function normalizeEdge(
 
 type AuxNodeItem = {
   key: string;
+  portLabel: string;
   data: RecipeGraphAuxNodeData;
 };
 
@@ -200,143 +161,6 @@ function findNonOverlappingPosition(
   return preferred;
 }
 
-type HandleSide = "left" | "right" | "top" | "bottom";
-
-const SIDE_TO_TARGET_HANDLE: Record<HandleSide, string> = {
-  left: HANDLE_IDS.dataIn,
-  right: HANDLE_IDS.dataInRight,
-  top: HANDLE_IDS.dataInTop,
-  bottom: HANDLE_IDS.dataInBottom,
-};
-
-function getTargetSide(
-  handleId: string | null | undefined,
-  direction: LayoutDirection,
-): HandleSide {
-  const normalized = normalizeRecipeHandleId(handleId);
-  if (!normalized) {
-    return direction === "TB" ? "top" : "left";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInRight ||
-    normalized === HANDLE_IDS.semanticInRight
-  ) {
-    return "right";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInBottom ||
-    normalized === HANDLE_IDS.semanticInBottom
-  ) {
-    return "bottom";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInTop ||
-    normalized === HANDLE_IDS.semanticInTop
-  ) {
-    return "top";
-  }
-  return "left";
-}
-
-function getSourceSide(
-  handleId: string | null | undefined,
-  direction: LayoutDirection,
-): HandleSide {
-  const normalized = normalizeRecipeHandleId(handleId);
-  if (!normalized) {
-    return direction === "TB" ? "bottom" : "right";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutLeft ||
-    normalized === HANDLE_IDS.semanticOutLeft
-  ) {
-    return "left";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutTop ||
-    normalized === HANDLE_IDS.semanticOutTop
-  ) {
-    return "top";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutBottom ||
-    normalized === HANDLE_IDS.semanticOutBottom
-  ) {
-    return "bottom";
-  }
-  return "right";
-}
-
-function pickAuxTargetHandle(
-  llmId: string,
-  direction: LayoutDirection,
-  edges: Edge[],
-): string {
-  const occupied = new Set<HandleSide>();
-  for (const edge of edges) {
-    if (isAuxEdge(edge)) {
-      continue;
-    }
-    if (edge.target === llmId) {
-      occupied.add(getTargetSide(edge.targetHandle, direction));
-    }
-    if (edge.source === llmId) {
-      occupied.add(getSourceSide(edge.sourceHandle, direction));
-    }
-  }
-
-  const priority: HandleSide[] =
-    direction === "LR"
-      ? ["left", "right", "bottom", "top"]
-      : ["top", "bottom", "right", "left"];
-  for (const side of priority) {
-    if (!occupied.has(side)) {
-      return SIDE_TO_TARGET_HANDLE[side];
-    }
-  }
-
-  const fallback: HandleSide = direction === "LR" ? "bottom" : "right";
-  return SIDE_TO_TARGET_HANDLE[fallback];
-}
-
-function getHandleSideFromTargetHandle(targetHandle: string): HandleSide {
-  if (targetHandle === HANDLE_IDS.dataInRight) {
-    return "right";
-  }
-  if (targetHandle === HANDLE_IDS.dataInTop) {
-    return "top";
-  }
-  if (targetHandle === HANDLE_IDS.dataInBottom) {
-    return "bottom";
-  }
-  return "left";
-}
-
-function pickAuxSourceHandle(
-  auxPosition: XYPosition,
-  auxWidth: number,
-  auxHeight: number,
-  llmPosition: XYPosition,
-  llmWidth: number,
-  llmHeight: number,
-): string {
-  const auxCenter = {
-    x: auxPosition.x + auxWidth / 2,
-    y: auxPosition.y + auxHeight / 2,
-  };
-  const llmCenter = {
-    x: llmPosition.x + llmWidth / 2,
-    y: llmPosition.y + llmHeight / 2,
-  };
-  const dx = llmCenter.x - auxCenter.x;
-  const dy = llmCenter.y - auxCenter.y;
-
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return dx >= 0 ? HANDLE_IDS.llmInputOutRight : HANDLE_IDS.llmInputOutLeft;
-  }
-  return dy >= 0 ? HANDLE_IDS.llmInputOutBottom : HANDLE_IDS.llmInputOutTop;
-}
-
 type AppendAuxNodeAndEdgeInput = {
   auxNodes: Node<RecipeGraphAuxNodeData>[];
   auxEdges: Edge[];
@@ -348,9 +172,6 @@ type AppendAuxNodeAndEdgeInput = {
   };
   position: XYPosition;
   parentNode: Node<RecipeNode["data"] | RecipeGraphAuxNodeData>;
-  parentWidth: number;
-  parentHeight: number;
-  auxTargetHandle: string;
 };
 
 function appendAuxNodeAndEdge({
@@ -359,14 +180,11 @@ function appendAuxNodeAndEdge({
   entry,
   position,
   parentNode,
-  parentWidth,
-  parentHeight,
-  auxTargetHandle,
 }: AppendAuxNodeAndEdgeInput): void {
   auxNodes.push({
     id: entry.auxId,
     type: "aux",
-    data: entry.item.data,
+    data: { ...entry.item.data, ports: getAuxNodePorts(entry.item.portLabel) },
     position,
     width: entry.width,
     height: entry.height,
@@ -383,16 +201,9 @@ function appendAuxNodeAndEdge({
   auxEdges.push({
     id: `e-${entry.auxId}-${parentNode.id}`,
     source: entry.auxId,
-    sourceHandle: pickAuxSourceHandle(
-      position,
-      entry.width,
-      entry.height,
-      parentNode.position,
-      parentWidth,
-      parentHeight,
-    ),
+    sourceHandle: HANDLE_IDS.llmInputOut,
     target: parentNode.id,
-    targetHandle: auxTargetHandle,
+    targetHandle: HANDLE_IDS.promptIn,
     type: "canvas",
     data: { path: "auto" },
     selectable: false,
@@ -404,8 +215,8 @@ export function deriveDisplayGraph({
   nodes,
   edges,
   configs,
-  layoutDirection,
   auxNodePositions,
+  reroutes = {},
   llmAuxVisibility,
   runtime,
 }: DisplayGraphInput): DisplayGraph {
@@ -463,14 +274,12 @@ export function deriveDisplayGraph({
     if (!llmAuxVisibility[config.id]) {
       continue;
     }
-    const llmDirection = node.data.layoutDirection ?? layoutDirection;
-    const auxTargetHandle = pickAuxTargetHandle(node.id, llmDirection, edges);
-    const auxTargetSide = getHandleSideFromTargetHandle(auxTargetHandle);
     const items: AuxNodeItem[] = [];
 
     if (config.system_prompt.trim()) {
       items.push({
         key: "system",
+        portLabel: "system",
         data: {
           kind: "llm-prompt-input",
           llmId: config.id,
@@ -484,6 +293,7 @@ export function deriveDisplayGraph({
     if (config.prompt.trim()) {
       items.push({
         key: "prompt",
+        portLabel: "prompt",
         data: {
           kind: "llm-prompt-input",
           llmId: config.id,
@@ -498,6 +308,7 @@ export function deriveDisplayGraph({
       (config.scores ?? []).forEach((_score, scoreIndex) => {
         items.push({
           key: `score-${scoreIndex}`,
+          portLabel: "score",
           data: {
             kind: "llm-judge-score",
             llmId: config.id,
@@ -526,56 +337,12 @@ export function deriveDisplayGraph({
 
     const gap = 24;
     const sideOffset = 48;
-    const stackHorizontal =
-      auxTargetSide === "top" || auxTargetSide === "bottom";
-
-    if (stackHorizontal) {
-      const totalWidth =
-        itemsWithLayout.reduce((sum, entry) => sum + entry.width, 0) +
-        (itemsWithLayout.length - 1) * gap;
-      const startX = node.position.x + (parentWidth - totalWidth) / 2;
-      let xCursor = startX;
-
-      for (const entry of itemsWithLayout) {
-        const preferredPosition = {
-          x: xCursor,
-          y:
-            auxTargetSide === "top"
-              ? node.position.y - entry.height - sideOffset
-              : node.position.y + parentHeight + sideOffset,
-        };
-        const defaultPosition = findNonOverlappingPosition(
-          preferredPosition,
-          entry.width,
-          entry.height,
-          occupiedRects,
-        );
-        const position = auxNodePositions[entry.auxId] ?? defaultPosition;
-        xCursor += entry.width + gap;
-
-        occupiedRects.push(toRect(position, entry.width, entry.height));
-        appendAuxNodeAndEdge({
-          auxNodes,
-          auxEdges,
-          entry,
-          position,
-          parentNode: node,
-          parentWidth,
-          parentHeight,
-          auxTargetHandle,
-        });
-      }
-      continue;
-    }
-
     const totalHeight =
       itemsWithLayout.reduce((sum, entry) => sum + entry.height, 0) +
       (itemsWithLayout.length - 1) * gap;
     const maxWidth = Math.max(...itemsWithLayout.map((entry) => entry.width));
-    const baseX =
-      auxTargetSide === "right"
-        ? node.position.x + parentWidth + sideOffset
-        : node.position.x - maxWidth - sideOffset;
+    // Prompt boxes feed the LLM's left side, so they sit to its left.
+    const baseX = node.position.x - maxWidth - sideOffset;
     let yCursor = node.position.y + (parentHeight - totalHeight) / 2;
 
     for (const entry of itemsWithLayout) {
@@ -599,24 +366,53 @@ export function deriveDisplayGraph({
         entry,
         position,
         parentNode: node,
-        parentWidth,
-        parentHeight,
-        auxTargetHandle,
       });
     }
   }
 
-  return {
-    nodes: [...displayNodes, ...auxNodes],
-    edges: [...edges, ...auxEdges].map((edge) =>
-      normalizeEdge(
-        edge,
-        configs,
-        layoutDirection,
-        activeEdgeIds,
-        runningNodeId,
-        doneNodeIds,
-      ),
+  const displayEdges = expandRerouteEdges(
+    [...edges, ...auxEdges].map((edge) =>
+      normalizeEdge(edge, configs, activeEdgeIds, runningNodeId, doneNodeIds),
     ),
+    reroutes,
+  );
+
+  // Ports depend on what is wired in, so they are worked out after the edges.
+  const auxOpen = new Set(auxEdges.map((edge) => edge.target));
+  const dataInputs = new Set(
+    displayEdges
+      .filter((edge) => edge.targetHandle === HANDLE_IDS.dataIn)
+      .map((edge) => edge.target),
+  );
+  const hasToolProfiles = Object.values(configs).some(
+    (config) => config.kind === "tool_config",
+  );
+  const portedNodes = displayNodes.map((node) => ({
+    ...node,
+    data: {
+      ...node.data,
+      ports: getRecipeNodePorts(configs[node.id], {
+        promptInput: auxOpen.has(node.id),
+        toolsInput: hasToolProfiles,
+        dataInput: dataInputs.has(node.id),
+      }),
+    },
+  }));
+  const rerouteNodes: Node<RecipeNode["data"] | RecipeGraphAuxNodeData>[] = Object.entries(
+    reroutes,
+  ).map(([id, position]) => ({
+    id,
+    type: "reroute",
+    position,
+    width: REROUTE_WIDTH,
+    height: REROUTE_HEIGHT,
+    data: { ports: REROUTE_PORTS } as unknown as RecipeNode["data"],
+    selectable: true,
+    draggable: true,
+  }));
+
+  return {
+    nodes: [...portedNodes, ...auxNodes, ...rerouteNodes],
+    edges: displayEdges,
   };
 }

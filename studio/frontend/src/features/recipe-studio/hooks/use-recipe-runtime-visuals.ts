@@ -27,7 +27,6 @@ import {
   pickLatestActiveExecution,
 } from "../utils/graph/runtime-visual-state";
 import type {
-  LayoutDirection,
   LlmType,
   NodeConfig,
   RecipeNode as RecipeBuilderNode,
@@ -93,8 +92,8 @@ type UseRecipeRuntimeVisualsArgs = {
   configs: Record<string, NodeConfig>;
   nodes: RecipeBuilderNode[];
   edges: Edge[];
-  layoutDirection: LayoutDirection;
   auxNodePositions: Record<string, { x: number; y: number }>;
+  reroutes: Record<string, { x: number; y: number }>;
   llmAuxVisibility: Record<string, boolean>;
 };
 
@@ -111,8 +110,8 @@ export function useRecipeRuntimeVisuals({
   configs,
   nodes,
   edges,
-  layoutDirection,
   auxNodePositions,
+  reroutes,
   llmAuxVisibility,
 }: UseRecipeRuntimeVisualsArgs): UseRecipeRuntimeVisualsResult {
   const activeExecution = useMemo(
@@ -136,8 +135,8 @@ export function useRecipeRuntimeVisuals({
         nodes,
         edges,
         configs,
-        layoutDirection,
         auxNodePositions,
+        reroutes,
         llmAuxVisibility,
         runtime: runtimeVisualState,
       }),
@@ -145,9 +144,9 @@ export function useRecipeRuntimeVisuals({
       auxNodePositions,
       configs,
       edges,
-      layoutDirection,
       llmAuxVisibility,
       nodes,
+      reroutes,
       runtimeVisualState,
     ],
   );

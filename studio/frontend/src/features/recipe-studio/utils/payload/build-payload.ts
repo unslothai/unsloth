@@ -12,17 +12,7 @@ import type {
 } from "../../types";
 import { isSemanticRelation } from "../graph/relations";
 import { getConfigErrors } from "../index";
-import {
-  getDefaultDataSourceHandle,
-  getDefaultDataTargetHandle,
-  getDefaultSemanticSourceHandle,
-  getDefaultSemanticTargetHandle,
-  isDataSourceHandle,
-  isDataTargetHandle,
-  isSemanticSourceHandle,
-  isSemanticTargetHandle,
-  normalizeRecipeHandleId,
-} from "../handles";
+import { resolveRecipeEdgeHandles } from "../ports";
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildExpressionColumn,
@@ -37,7 +27,7 @@ import {
   buildValidatorColumn,
   pickFirstSeedConfig,
 } from "./builders";
-import type { RecipePayloadResult } from "./types";
+import type { RecipePayload, RecipePayloadResult } from "./types";
 import {
   validateModelAliasLinks,
   validateModelConfigProviders,
@@ -91,6 +81,15 @@ function collectAdvancedOpenByNode(
   return out;
 }
 
+/** The payload a run is sent with: reroutes are canvas-only, so they never reach the backend. */
+export function withoutReroutes(payload: RecipePayload): RecipePayload {
+  const { reroutes: _reroutes, ...ui } = payload.ui;
+  return {
+    ...payload,
+    ui: { ...ui, edges: ui.edges.map(({ via: _via, ...edge }) => edge) },
+  };
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: payload build
 export function buildRecipePayload(
   configs: Record<string, NodeConfig>,
@@ -99,6 +98,7 @@ export function buildRecipePayload(
   processors: RecipeProcessorConfig[] = [],
   layoutDirection: LayoutDirection = "LR",
   auxNodePositions: Record<string, XYPosition> = {},
+  reroutes: Record<string, XYPosition> = {},
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
@@ -321,45 +321,18 @@ export function buildRecipePayload(
     }
     const semantic =
       edge.type === "semantic" || isSemanticRelation(source, target);
-    const sourceHandleNormalized = normalizeRecipeHandleId(edge.sourceHandle);
-    const targetHandleNormalized = normalizeRecipeHandleId(edge.targetHandle);
-    const semanticSourceDefault =
-      source.kind === "llm"
-        ? getDefaultDataSourceHandle(layoutDirection)
-        : getDefaultSemanticSourceHandle(layoutDirection);
-    const semanticTargetDefault =
-      target.kind === "llm"
-        ? getDefaultDataTargetHandle(layoutDirection)
-        : getDefaultSemanticTargetHandle(layoutDirection);
-    let sourceHandle = getDefaultDataSourceHandle(layoutDirection);
-    let targetHandle = getDefaultDataTargetHandle(layoutDirection);
-
-    if (semantic) {
-      sourceHandle =
-        isSemanticSourceHandle(sourceHandleNormalized) ||
-        isDataSourceHandle(sourceHandleNormalized)
-          ? sourceHandleNormalized ?? semanticSourceDefault
-          : semanticSourceDefault;
-      targetHandle =
-        isSemanticTargetHandle(targetHandleNormalized) ||
-        isDataTargetHandle(targetHandleNormalized)
-          ? targetHandleNormalized ?? semanticTargetDefault
-          : semanticTargetDefault;
-    } else {
-      sourceHandle = isDataSourceHandle(sourceHandleNormalized)
-        ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
-        : getDefaultDataSourceHandle(layoutDirection);
-      targetHandle = isDataTargetHandle(targetHandleNormalized)
-        ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
-        : getDefaultDataTargetHandle(layoutDirection);
-    }
+    const { sourceHandle, targetHandle } = resolveRecipeEdgeHandles(source, target);
+    const via = ((edge.data as { via?: string[] } | undefined)?.via ?? []).filter(
+      (id) => id in reroutes,
+    );
     return [
       {
         from: source.name,
         to: target.name,
         type: semantic ? "semantic" : "canvas",
-        source_handle: sourceHandle ?? undefined,
-        target_handle: targetHandle ?? undefined,
+        source_handle: sourceHandle,
+        target_handle: targetHandle,
+        ...(via.length > 0 ? { via } : {}),
       },
     ];
   });
@@ -421,6 +394,13 @@ export function buildRecipePayload(
         nodes: uiNodes,
         edges: uiEdges,
         layout_direction: layoutDirection,
+        ...(Object.keys(reroutes).length > 0 && {
+          reroutes: Object.entries(reroutes).map(([id, position]) => ({
+            id,
+            x: position.x,
+            y: position.y,
+          })),
+        }),
         ...(uiAuxNodes.length > 0 && { aux_nodes: uiAuxNodes }),
         ...(firstSeed && { seed_source_type: firstSeed.seed_source_type }),
         ...(firstSeed && { seed_columns: firstSeed.seed_columns ?? [] }),

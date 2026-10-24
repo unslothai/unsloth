@@ -2,14 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type Connection, type Edge, addEdge } from "@xyflow/react";
-import type { LayoutDirection, NodeConfig, SamplerConfig } from "../../types";
+import type { NodeConfig, SamplerConfig } from "../../types";
 import {
-  HANDLE_IDS,
   isDataSourceHandle,
   isDataTargetHandle,
   isSemanticSourceHandle,
   isSemanticTargetHandle,
-  normalizeRecipeHandleId,
 } from "../handles";
 import {
   isCategoryConfig,
@@ -20,6 +18,7 @@ import {
   VALIDATOR_OXC_CODE_LANGS,
   VALIDATOR_SQL_CODE_LANGS,
 } from "../validators/code-lang";
+import { resolveRecipeEdgeHandles } from "../ports";
 import {
   isSemanticRelation,
   isTextFormatValidator,
@@ -170,17 +169,6 @@ function isCompetingIncomingEdge(
   return source.kind === "sampler" && source.sampler_type === "datetime";
 }
 
-function isModelSemanticRelation(
-  source: NodeConfig,
-  target: NodeConfig,
-): boolean {
-  return (
-    (source.kind === "model_provider" && target.kind === "model_config") ||
-    (source.kind === "model_config" && target.kind === "llm") ||
-    (source.kind === "tool_config" && target.kind === "llm")
-  );
-}
-
 function canApplyCodeLangToValidator(
   validator: Extract<NodeConfig, { kind: "validator" }>,
   codeLang: string,
@@ -202,100 +190,6 @@ function canApplyCodeLangToValidator(
   );
 }
 
-function countHandleUsage(
-  edges: Edge[],
-  nodeId: string,
-  handleId: string,
-  lane: "source" | "target",
-): number {
-  return edges.reduce((count, edge) => {
-    const edgeNodeId = lane === "source" ? edge.source : edge.target;
-    if (edgeNodeId !== nodeId) {
-      return count;
-    }
-    const edgeHandleId =
-      lane === "source"
-        ? normalizeRecipeHandleId(edge.sourceHandle)
-        : normalizeRecipeHandleId(edge.targetHandle);
-    return edgeHandleId === handleId ? count + 1 : count;
-  }, 0);
-}
-
-function pickLeastUsedHandle(
-  candidates: string[],
-  requested: string | null,
-  usageFor: (handleId: string) => number,
-): string {
-  let bestHandle = candidates[0];
-  let bestCount = Number.POSITIVE_INFINITY;
-  const requestedNormalized = requested
-    ? normalizeRecipeHandleId(requested)
-    : null;
-
-  for (const candidate of candidates) {
-    const usage = usageFor(candidate);
-    if (usage < bestCount) {
-      bestHandle = candidate;
-      bestCount = usage;
-      continue;
-    }
-    if (usage === bestCount && requestedNormalized === candidate) {
-      bestHandle = candidate;
-    }
-  }
-
-  return bestHandle;
-}
-
-function chooseModelSemanticHandles(
-  connection: Connection,
-  source: NodeConfig,
-  target: NodeConfig,
-  edges: Edge[],
-  layoutDirection: LayoutDirection,
-): Connection {
-  if (!isModelSemanticRelation(source, target)) {
-    return connection;
-  }
-
-  const sourceCandidates =
-    source.kind === "model_config" && target.kind === "llm"
-      ? layoutDirection === "TB"
-        ? [HANDLE_IDS.semanticOut]
-        : [HANDLE_IDS.semanticOutBottom]
-      : layoutDirection === "TB"
-        ? [HANDLE_IDS.semanticOut, HANDLE_IDS.semanticOutBottom]
-        : [HANDLE_IDS.semanticOutBottom, HANDLE_IDS.semanticOut];
-  const targetCandidates =
-    target.kind === "model_config"
-      ? layoutDirection === "TB"
-        ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
-        : [HANDLE_IDS.semanticInTop, HANDLE_IDS.semanticIn]
-      : [
-          HANDLE_IDS.dataInTop,
-          HANDLE_IDS.dataInBottom,
-          HANDLE_IDS.dataIn,
-          HANDLE_IDS.dataInRight,
-        ];
-
-  const sourceHandle = pickLeastUsedHandle(
-    sourceCandidates,
-    connection.sourceHandle ?? null,
-    (handleId) => countHandleUsage(edges, source.id, handleId, "source"),
-  );
-  const targetHandle = pickLeastUsedHandle(
-    targetCandidates,
-    connection.targetHandle ?? null,
-    (handleId) => countHandleUsage(edges, target.id, handleId, "target"),
-  );
-
-  return {
-    ...connection,
-    sourceHandle,
-    targetHandle,
-  };
-}
-
 function normalizeValidatorSemanticConnection(
   connection: Connection,
   source: NodeConfig,
@@ -311,8 +205,6 @@ function normalizeValidatorSemanticConnection(
       ...connection,
       source: target.id,
       target: source.id,
-      sourceHandle: HANDLE_IDS.dataOut,
-      targetHandle: HANDLE_IDS.dataIn,
     };
   }
   return connection;
@@ -347,7 +239,6 @@ export function applyRecipeConnection(
   connection: Connection,
   configs: Record<string, NodeConfig>,
   edges: Edge[],
-  layoutDirection: LayoutDirection = "LR",
 ): { edges: Edge[]; configs?: Record<string, NodeConfig> } {
   if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
@@ -389,15 +280,12 @@ export function applyRecipeConnection(
           !isCompetingIncomingEdge(edge, target.id, singleRefRelation, configs),
       )
     : edges;
-  const resolvedConnection = chooseModelSemanticHandles(
-    normalizedConnection,
-    source,
-    target,
-    nextBaseEdges,
-    layoutDirection,
-  );
   const nextEdges = addEdge(
-    { ...resolvedConnection, type: semanticRelation ? "semantic" : "canvas" },
+    {
+      ...normalizedConnection,
+      ...resolveRecipeEdgeHandles(source, target),
+      type: semanticRelation ? "semantic" : "canvas",
+    },
     nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
