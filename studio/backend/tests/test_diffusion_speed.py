@@ -818,7 +818,11 @@ def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True)
 
-    def fused(p, logger):
+    def fused(
+        p,
+        logger,
+        encoder = True,
+    ):
         p.vae._unsloth_vae_fused_cl_weights = True
         return True
 
@@ -826,6 +830,30 @@ def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
     applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
     assert applied["vae_fused"] is True
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_fused_vae_leaves_the_encoder_stock_for_a_family_that_opts_out(monkeypatch, opt_out):
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    seen = []
+
+    def fused(
+        p,
+        logger,
+        encoder = True,
+    ):
+        seen.append(encoder)
+        return True
+
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", fused)
+    family = _family()
+    if opt_out:
+        family.vae_fused_encoder = False
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert seen == [not opt_out]
 
 
 @pytest.mark.parametrize(

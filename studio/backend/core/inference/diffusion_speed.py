@@ -598,7 +598,9 @@ def apply_speed_optims(
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
     if on_cuda:
-        applied["vae_fused"] = _install_fused_vae(pipe, logger)
+        applied["vae_fused"] = _install_fused_vae(
+            pipe, logger, encoder = getattr(family, "vae_fused_encoder", True)
+        )
 
     if (
         on_cuda
@@ -1635,13 +1637,18 @@ def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
 
 
-def _install_fused_vae(pipe: Any, logger: Any) -> bool:
-    """Triton-fused VAE norm passes (diffusion_vae_fused), unless the env forces the VAE decode compile instead."""
+def _install_fused_vae(
+    pipe: Any,
+    logger: Any,
+    encoder: bool = True,
+) -> bool:
+    """Triton-fused VAE norm passes (diffusion_vae_fused), unless the env forces the VAE decode compile instead.
+    ``encoder=False`` leaves the VAE encoder stock (the family's ``vae_fused_encoder``)."""
     if os.environ.get(COMPILE_VAE_ENV, "").strip().lower() in _VAE_TRUE_TOKENS:
         return False
     try:
         from . import diffusion_vae_fused  # noqa: PLC0415 - Triton import only on CUDA loads
-        return diffusion_vae_fused.install(getattr(pipe, "vae", None), logger) > 0
+        return diffusion_vae_fused.install(getattr(pipe, "vae", None), logger, encoder = encoder) > 0
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "fused vae", exc)
         return False
