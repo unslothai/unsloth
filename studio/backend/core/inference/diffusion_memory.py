@@ -4534,7 +4534,9 @@ def release_for_decode(
         if dev.index is None:
             dev = torch.device("cuda", torch.cuda.current_device())
         need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
-        free = int(torch.cuda.mem_get_info(dev)[0])
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        # keep the VRAM Budget reserve free, like every other decode-time check
+        free -= user_budget_reserve_bytes(dev, total)
         # only the cache an ordinary decode allocation can reuse: a CUDA graph pool's free blocks are not
         cached = max(
             0,
