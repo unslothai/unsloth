@@ -1645,11 +1645,12 @@ def native_clip_grad_norm_(
             else:
                 # complex grads give real norms; every rank must gather the same dtype.
                 norm_dtype = dtype.to_real() if dtype.is_complex else dtype
-                values = torch.full(
-                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype
-                )
-                if live:
-                    values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
+                # Host-side interleave: torch.tensor(live, device = cuda) was a blocking H2D copy per step.
+                fill = torch.full((), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype)
+                slots = [fill] * len(idx)
+                for k, n in zip(live, norms):
+                    slots[k] = n.to(device = device, dtype = norm_dtype)
+                values = torch.stack(slots)
             chunks.append(values)
         return chunks
 
@@ -2134,13 +2135,62 @@ def native_load_optimizer(model, optimizer, path_or_state):
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
     rename_optimizer_state_for(_inner_optimizer(optimizer), state)
-    set_optimizer_state_dict(
-        _native_root(model),
-        _inner_optimizer(optimizer),
-        state,
-        options = StateDictOptions(full_state_dict = True),
-    )
+    root = _native_root(model)
+    inner = _inner_optimizer(optimizer)
+    unstepped = _unstepped_optimizer_params(root, inner, state)
+    # torch refuses a trainable parameter without saved state, and strict = False would keep the
+    # fresh init state for it. Hiding these (requires_grad off) leaves them stateless, as saved.
+    try:
+        for param in unstepped:
+            param.requires_grad_(False)
+        set_optimizer_state_dict(
+            root,
+            inner,
+            state,
+            options = StateDictOptions(full_state_dict = True),
+        )
+    finally:
+        for param in unstepped:
+            param.requires_grad_(True)
+    for param in unstepped:
+        inner.state.pop(param, None)
     return state
+
+
+def _unstepped_optimizer_params(root, optimizer, state):
+    """Trainable parameters listed in the saved param groups but with no saved state (never got a
+    gradient). Raises for one not listed at all: another model's optimizer."""
+    saved_state = state.get("state") or {}
+    if not isinstance(saved_state, dict) or all(isinstance(k, int) for k in saved_state):
+        return []  # not keyed by FQN: torch loads it as given
+    try:
+        from torch.distributed.checkpoint.state_dict import _get_fqns
+    except ImportError:
+        _get_fqns = None
+    fqns = {}
+    for name, param in root.named_parameters(remove_duplicate = False):
+        names = _get_fqns(root, name) if _get_fqns is not None else {name}
+        fqns.setdefault(param, set()).update(names)
+    listed = {f for g in state.get("param_groups") or [] for f in (g.get("params") or [])}
+    saved = set(saved_state)
+    unstepped, seen, unknown = [], set(), []
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            names = fqns.get(param)
+            if not param.requires_grad or not names or names & saved:
+                continue
+            if names & listed:
+                if id(param) not in seen:
+                    seen.add(id(param))
+                    unstepped.append(param)
+            else:
+                unknown.append(sorted(names)[0])
+    if unknown:
+        raise RuntimeError(
+            f"Unsloth: the optimizer checkpoint has no entry for {unknown[0]} ({len(unknown)} "
+            "parameters), so it was not saved from this model's optimizer."
+        )
+    return unstepped
 
 
 # Sharded (torch.distributed.checkpoint) resume. The optimizer directory is opt-in
