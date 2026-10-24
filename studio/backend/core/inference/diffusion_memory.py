@@ -2162,7 +2162,7 @@ def _torchao_group_offload_kwargs(
             if forced in ("0", "off", "false", "no") or _pinned_memory_capped()
             else _pin_budget_mib()
         )
-        need = _module_host_mib(module)
+        need = _module_pin_mib(module)
         already = pinned_mib[0] if pinned_mib else 0
         if budget is not None and already + need <= budget:
             if pinned_mib is not None:
@@ -4665,7 +4665,7 @@ def hook_resident_denoiser(
     onload = torch.device(device)
     if onload.type != "cuda":
         return False
-    dit_mib = _module_host_mib(transformer)
+    dit_mib = _module_pin_mib(transformer)
     # the load's _torchao_stream_pinnable rule: unpinned, the apply copies the whole transformer to pageable host RAM
     if not _streamed_pin_plan(dit_mib, 0)[0]:
         if logger is not None:
@@ -4696,8 +4696,11 @@ def hook_resident_denoiser(
         if "low_cpu_mem_usage" in params:
             gkwargs["low_cpu_mem_usage"] = False
         pinned_mib = [0]
-        apply_group_offloading(
-            transformer, **_torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib)
+        _apply_group_offloading_packed(
+            apply_group_offloading,
+            transformer,
+            _torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib),
+            logger,
         )
         if not _pin_top_level_group(transformer, logger, pinned_mib):
             _skip_top_level_copy_back(transformer, logger)
@@ -5356,6 +5359,71 @@ def _module_host_mib(module: Any) -> int:
         return total // (1024 * 1024)
     except Exception:  # noqa: BLE001 - an unsizeable module is priced as nothing to pin
         return 0
+
+
+def _unique_tensors(module: Any) -> list:
+    seen: set[int] = set()
+    out = []
+    for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
+        if id(tensor) not in seen:
+            seen.add(id(tensor))
+            out.append(tensor)
+    return out
+
+
+def _module_pin_mib(module: Any) -> int:
+    """Pinned host MiB of an up-front pin of ``module``: slab packing when the arena is on, else per-tensor rounding."""
+    from .diffusion_pinned_arena import arena_reserved_bytes, pin_arena_enabled
+
+    if not pin_arena_enabled():
+        return _module_host_mib(module)
+    try:
+        return -(-arena_reserved_bytes(_unique_tensors(module)) // (1024 * 1024))
+    except Exception:  # noqa: BLE001 - priced as the per-tensor pin
+        return _module_host_mib(module)
+
+
+def _apply_group_offloading_packed(
+    apply: Callable[..., Any],
+    module: Any,
+    kwargs: dict[str, Any],
+    logger: Any = None,
+) -> Any:
+    """``apply(module, **kwargs)`` with an up-front pin (stream, ``low_cpu_mem_usage=False``) packed into slabs.
+
+    diffusers pins each tensor through torch's host allocator, which rounds it up to a power of two: a 23.8 GB bf16
+    Flux DiT held 37.2 GB pinned. Slabs hold the same tensors in ~weight bytes; the H2D copies read the same pinned
+    pages, so overlap is unchanged. Lazy (``low_cpu_mem_usage``) and unstreamed applies run as before."""
+    from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
+
+    pack = (
+        bool(kwargs.get("use_stream"))
+        and not kwargs.get("low_cpu_mem_usage", False)
+        and host_pinning_allowed()
+    )
+    expected = None
+    if pack:
+        try:
+            expected = packable_bytes(_unique_tensors(module))
+        except Exception:  # noqa: BLE001 - whole slabs, as without a size
+            expected = None
+    with pinned_arena_for_group_offload(
+        enabled = None if pack else False, expected_bytes = expected
+    ) as arena:
+        out = apply(module, **kwargs)
+    if arena is not None and arena.payload_bytes:
+        try:
+            module._unsloth_pin_arena_bytes = (arena.payload_bytes, arena.reserved_bytes)
+        except Exception:  # noqa: BLE001 - only a diagnostic
+            pass
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s pinned in %.2f GB of slabs (%.2f GB of weights)",
+                type(module).__name__,
+                arena.reserved_bytes / 1e9,
+                arena.payload_bytes / 1e9,
+            )
+    return out
 
 
 def _storage_nbytes(tensor: Any, depth: int = 0) -> list[int]:
@@ -6294,23 +6362,7 @@ def _apply_group_offload(
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        pin_streamed = (True, True)
-        if stream_text_encoders and "low_cpu_mem_usage" in _params:
-            # The streamed path PINS every offloaded parameter in host RAM when a copy stream is in use (diffusers
-            # group_offloading `_init_cpu_param_dict`), which is a fine trade when group offload was already the plan.
-            # Pin only what host RAM covers (unbounded pinning hurt #8188); unpinned re-pins on every onload.
-            pin_streamed = _streamed_pin_plan(
-                sum(_module_host_mib(m) for m in streamed.values()),
-                sum(_module_host_mib(m) for m in streamed_encoders.values()),
-                logger,
-            )
-            gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
-        if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
-            # pinning would copy the small-host route's memory-mapped bytes back into host RAM
-            pin_streamed = (False, False)
-            gkwargs["low_cpu_mem_usage"] = True
-        # ``background_pin``: a module the plan pins is applied unpinned and handed to a _GroupPinner, which the caller
-        # starts with start_background_pins once the load has committed.
+        # background_pin: applied unpinned; a _GroupPinner pins it once the load commits (start_background_pins).
         if background_pin is None:
             background_pin = bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
         defer = (
@@ -6319,6 +6371,23 @@ def _apply_group_offload(
             and "low_cpu_mem_usage" in _params
             and _background_pin_enabled()
         )
+        # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
+        pin_mib = _module_host_mib if defer else _module_pin_mib
+        pin_streamed = (True, True)
+        if stream_text_encoders and "low_cpu_mem_usage" in _params:
+            # The streamed path PINS every offloaded parameter in host RAM when a copy stream is in use (diffusers
+            # group_offloading `_init_cpu_param_dict`), which is a fine trade when group offload was already the plan.
+            # Pin only what host RAM covers (unbounded pinning hurt #8188); unpinned re-pins on every onload.
+            pin_streamed = _streamed_pin_plan(
+                sum(pin_mib(m) for m in streamed.values()),
+                sum(pin_mib(m) for m in streamed_encoders.values()),
+                logger,
+            )
+            gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
+        if getattr(pipe, "_unsloth_small_host", None) and "low_cpu_mem_usage" in _params:
+            # pinning would copy the small-host route's memory-mapped bytes back into host RAM
+            pin_streamed = (False, False)
+            gkwargs["low_cpu_mem_usage"] = True
         if defer:
             install_group_pin_wait()
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to()
@@ -6331,7 +6400,7 @@ def _apply_group_offload(
                 comp.to(onload)
         # Encoders the plan pins count against the same budget as any torchao denoiser pinned below.
         pinned_mib = [
-            sum(_module_host_mib(m) for m in streamed_encoders.values())
+            sum(pin_mib(m) for m in streamed_encoders.values())
             if stream_text_encoders and pin_streamed[1]
             else 0
         ]
@@ -6345,8 +6414,11 @@ def _apply_group_offload(
                 apply_group_offloading(module, **{**gkwargs, "low_cpu_mem_usage": True})
                 _defer_pinning(pipe, module, onload, logger)
             else:
-                apply_group_offloading(
-                    module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
+                _apply_group_offloading_packed(
+                    apply_group_offloading,
+                    module,
+                    _torchao_group_offload_kwargs(module, gkwargs, pinned_mib),
+                    logger,
                 )
             installed += 1
             if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
@@ -6380,7 +6452,7 @@ def _apply_group_offload(
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     _defer_pinning(pipe, module, onload, logger)
                 else:
-                    apply_group_offloading(module, **ekwargs)
+                    _apply_group_offloading_packed(apply_group_offloading, module, ekwargs, logger)
                 installed += 1
                 _pin_vision_embedding_device(module)
                 if te_room > 0:
@@ -6496,14 +6568,14 @@ def stream_text_encoders_onto(
         if str(n).startswith("text_encoder") and isinstance(m, torch.nn.Module)
     }
     if "low_cpu_mem_usage" in params:
-        pin = _streamed_pin_plan(0, sum(_module_host_mib(m) for m in encoders.values()), logger)
+        pin = _streamed_pin_plan(0, sum(_module_pin_mib(m) for m in encoders.values()), logger)
         kwargs["low_cpu_mem_usage"] = not pin[1]
     done: list[str] = []
     try:
         for name, module in encoders.items():
             module.to("cpu")
             done.append(name)
-            apply_group_offloading(module, **kwargs)
+            _apply_group_offloading_packed(apply_group_offloading, module, kwargs, logger)
             _pin_vision_embedding_device(module)
     except Exception:
         for name in done:
@@ -7068,24 +7140,24 @@ def _apply_streaming_offload(
         # Overlap needs a pinned host copy and record_stream (record_stream=False syncs the compute stream per group).
         prefetch = use_stream and _streaming_prefetch_enabled()
         pin_dits, pin_encoders = False, False
-        if prefetch:
-            pin_dits, pin_encoders = _streamed_pin_plan(
-                sum(_module_host_mib(m) for m, t in streamed.values() if t == "block_level"),
-                sum(_module_host_mib(m) for m, t in streamed.values() if t != "block_level"),
-                logger,
-            )
         defer = (
             prefetch
             and bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
             and _background_pin_enabled()
         )
+        # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
+        pin_mib = _module_host_mib if defer else _module_pin_mib
+        if prefetch:
+            pin_dits, pin_encoders = _streamed_pin_plan(
+                sum(pin_mib(m) for m, t in streamed.values() if t == "block_level"),
+                sum(pin_mib(m) for m, t in streamed.values() if t != "block_level"),
+                logger,
+            )
         if defer:
             install_group_pin_wait()
         # pinned encoders count against the budget a torchao denoiser pins within, as on the group tier
         if pin_encoders:
-            pinned_mib[0] = sum(
-                _module_host_mib(m) for m, t in streamed.values() if t != "block_level"
-            )
+            pinned_mib[0] = sum(pin_mib(m) for m, t in streamed.values() if t != "block_level")
 
         for module, offload_type in streamed.values():
             kwargs: dict[str, Any] = {
@@ -7105,7 +7177,7 @@ def _apply_streaming_offload(
             if use_stream and "low_cpu_mem_usage" in params:
                 kwargs["low_cpu_mem_usage"] = not (pin and not defer)
             kwargs = _torchao_group_offload_kwargs(module, kwargs, pinned_mib)
-            apply_group_offloading(module, **kwargs)
+            _apply_group_offloading_packed(apply_group_offloading, module, kwargs, logger)
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
             installed += 1
