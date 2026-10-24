@@ -3241,6 +3241,11 @@ def _read_native_quant_from_cache(
     if spec is None:
         return {}
     try:
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(logger)  # a no-op once the load closed it above
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        logger.debug("dynamo pre-import skipped: %r", exc)
+    try:
         import diffusers
 
         from .diffusion_native_cache import load, lookup
