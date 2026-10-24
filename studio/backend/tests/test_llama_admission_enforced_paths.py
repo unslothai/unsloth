@@ -586,7 +586,7 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
 
         source = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
         fit = source.index("conversation, truncation = _fit_with_instruction_pins(")
-        recost = source.index("on_conversation_grew(conversation, safe_tools)")
+        recost = source.index("on_conversation_grew, conversation, safe_tools")
         assert fit < recost, "the round is re-costed before its compaction"
 
 

@@ -3138,6 +3138,27 @@ def _stand_down_child_parking(
     return overridden
 
 
+def _call_conversation_grew(callback, conversation, tools):
+    """``on_conversation_grew`` was ``callback(conversation)`` before the catalogue was passed
+    too, so a hook that takes one argument is still called with one. Judged from the signature,
+    never by retrying: a TypeError raised inside the hook is the hook's own."""
+    import inspect
+
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return callback(conversation, tools)
+    try:
+        signature.bind(conversation, tools)
+    except TypeError:
+        try:
+            signature.bind(conversation)
+        except TypeError:
+            return callback(conversation, tools)
+        return callback(conversation)
+    return callback(conversation, tools)
+
+
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -42562,7 +42583,7 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
+        on_conversation_grew: Optional[Callable[..., Optional[int]]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
@@ -43451,7 +43472,9 @@ class LlamaCppBackend:
 
             if on_conversation_grew is not None:
                 try:
-                    _recosted_allowance = on_conversation_grew(conversation, safe_tools)
+                    _recosted_allowance = _call_conversation_grew(
+                        on_conversation_grew, conversation, safe_tools
+                    )
                     if _recosted_allowance is not None:
                         admission_output_allowance = _recosted_allowance
                         _iteration_fit_max_tokens = min(
@@ -47196,8 +47219,8 @@ class LlamaCppBackend:
             if on_conversation_grew is not None:
                 try:
                     # The catalogue the payload carries, or the prompt is priced without it.
-                    _final_recosted_allowance = on_conversation_grew(
-                        stream_payload["messages"], _final_tools or None
+                    _final_recosted_allowance = _call_conversation_grew(
+                        on_conversation_grew, stream_payload["messages"], _final_tools or None
                     )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
