@@ -290,7 +290,10 @@ def test_direct_helper_transpose_backward(sm75):
     N, K = 512, 256
     packed, scale = _weight(N, K, device, seed = 9)
     g = torch.randn(3, N, dtype = torch.float16, device = device).requires_grad_()
-    mcl._DENSE_BUDGET[device.index] = [128 * K * g.element_size(), 1024]  # its backward is a chunked forward
+    mcl._DENSE_BUDGET[device.index] = [
+        128 * K * g.element_size(),
+        1024,
+    ]  # its backward is a chunked forward
     mcl.mxfp4_packed_matmul(g, packed, scale, transpose = True).float().sum().backward()
     want, _ = _grad_oracle(g, packed, scale, None, True)
     _assert_grad_close(g.grad, want)
