@@ -420,6 +420,24 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     )  # the plain free reading still never goes negative
 
 
+def test_video_h3_residency_budget_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.video as vid
+    import core.inference.video_minimax_h3_residency as res
+
+    monkeypatch.setattr(vid, "_h3_signed_free_device_bytes", lambda device: 1000 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    monkeypatch.setattr(res, "h3_phase_need_gb", lambda *a, **k: 0.0)
+    residency = types.SimpleNamespace(resident_bytes = lambda: 0)
+    budget = vid._h3_residency_budget_bytes(
+        residency, "cuda", width = 64, height = 64, frames = 1, te_streamed = True, te_scheme = None
+    )
+    assert budget == 1100 * 2**20
+
+
 def test_video_request_available_reading_charges_the_reserve(fraction, monkeypatch):
     import core.inference.video as vid
     from utils import hardware
@@ -590,14 +608,14 @@ def test_denoiser_hold_between_calls_keeps_the_reserve_free(fraction, monkeypatc
 def test_cfg_batch_doubled_call_keeps_the_reserve_free(fraction, monkeypatch):
     from core.inference import diffusion_cfg_batch as cb
 
-    fake = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(
-            mem_get_info = lambda device: (10 * GiB << 20, 24 * GiB << 20),
-            memory_reserved = lambda device: 2 * GiB << 20,
-            memory_allocated = lambda device: 1 * GiB << 20,
-        )
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device = None: (10 * GiB << 20, 24 * GiB << 20)
     )
-    monkeypatch.setattr(cb, "_torch", lambda: fake)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 2 * GiB << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 1 * GiB << 20)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
+    monkeypatch.setattr(cb, "_torch", lambda: torch)
     assert cb._usable_free_mib("cuda:0") == 11 * GiB
     fraction["value"] = 0.75
     assert cb._usable_free_mib("cuda:0") == 11 * GiB - 6 * GiB
