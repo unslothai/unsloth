@@ -256,10 +256,6 @@ const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
-const FOOTER_BUTTON_CLASS =
-  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -4186,13 +4182,12 @@ export function ModelConfigPage({
             {saveStatus}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Primary action first, like the Preset row's Save/Delete. */}
+        {/* Preset Save/Delete sizing, right-aligned under the settings. */}
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
             variant="dark"
             type="button"
             size="sm"
-            className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
@@ -4216,7 +4211,6 @@ export function ModelConfigPage({
               type="button"
               variant="outline"
               size="sm"
-              className={FOOTER_BUTTON_CLASS}
               // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
               // settings the load path strips or has already captured. Forget stores nothing, so
               // broken saved arguments must not lock it.
@@ -4238,7 +4232,7 @@ export function ModelConfigPage({
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
+            className="text-muted-foreground"
             disabled={atDefault}
             onClick={() => {
               handleSharedConfigEdit();
@@ -4259,7 +4253,7 @@ export function ModelConfigPage({
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
-              className={FOOTER_BUTTON_CLASS}
+              className="text-muted-foreground"
               target={target}
               config={config}
               ready={!extraArgsHydrating}

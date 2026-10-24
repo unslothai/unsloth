@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Share01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
@@ -58,13 +59,15 @@ export function SharedRunConfigActions({
     <>
       <Button
         type="button"
-        size="sm"
-        variant="outline"
+        size="icon-sm"
+        variant="ghost"
         className={className}
+        aria-label="Share"
+        title="Share"
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >
-        Share
+        <HugeiconsIcon icon={Share01Icon} strokeWidth={1.75} />
       </Button>
       {sharing && (
         <ShareRunConfigDialog
