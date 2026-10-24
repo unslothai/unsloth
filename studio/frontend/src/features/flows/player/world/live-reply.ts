@@ -26,10 +26,7 @@ export function appendReplyDelta(
   return { ...live, text: live.text + delta };
 }
 
-/**
- * The reply failed because no chat model can answer here (none loaded, not downloaded, or none picked). A load that
- * failed for another reason (out of memory, a bad file) is a real error the player should see.
- */
+/** No chat model can answer (none loaded, not downloaded, none picked); any other load failure stays an error. */
 export function isNoChatModelError(message: string): boolean {
   if (/could not load/i.test(message)) {
     return /not downloaded|connect|offline|outgoing traffic|cannot find the requested files|not found|\b404\b/i.test(
@@ -47,10 +44,7 @@ const OFFLINE_LINES = [
   "Lovely day for a walk, isn't it?",
 ];
 
-/**
- * What a villager says when no chat model can answer (a baked world played offline): their greeting first,
- * then a few stock lines, so the conversation still reads as theirs instead of an error.
- */
+/** What a villager says when no chat model can answer: their greeting first, then stock lines. */
 export function offlineLine(greeting: string | undefined, npcTurnsSoFar: number): string {
   if (npcTurnsSoFar === 0 && greeting?.trim()) return greeting.trim();
   return OFFLINE_LINES[npcTurnsSoFar % OFFLINE_LINES.length];

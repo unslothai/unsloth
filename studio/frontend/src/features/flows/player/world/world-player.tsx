@@ -685,7 +685,6 @@ export function WorldPlayer({
       setLive(null);
       const message = e instanceof Error ? e.message : String(e);
       if (isNoChatModelError(message)) {
-        // A baked world played without a chat model: the villager still answers, in their own words.
         const npc = npcById.get(npcId);
         const spoken = (wsRef.current.talks[npcId] ?? []).filter(
           (t) => t.role === "npc",
