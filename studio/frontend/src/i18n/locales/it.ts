@@ -71,7 +71,7 @@ export const it = {
       cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
-      permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
+      permissionsDescription: "Imposta i valori predefiniti e le eccezioni per sito. I campi di password e pagamento non vengono mai compilati.",
       site: "Sito o modello",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predefinito",
