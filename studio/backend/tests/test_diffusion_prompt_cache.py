@@ -534,7 +534,6 @@ def test_wan_negative_prompt_is_encoded_once_across_new_prompts():
         got = pipe.encode_prompt(text, negative_prompt = "blurry")
         ref = want.encode_prompt(text, negative_prompt = "blurry")
         assert all(torch.equal(a, b) for a, b in zip(got, ref))
-    # Three new prompts, one negative: the negative ran once, every positive ran.
     assert pipe.t5_calls == ["a cat", "blurry", "a dog", "a boat"]
 
 

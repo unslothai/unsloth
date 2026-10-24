@@ -24,9 +24,7 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
-# Per-text cache below encode_prompt: Wan's encode_prompt runs one UMT5 forward per text (prompt, then negative). The
-# pair key misses on every new prompt, so the unchanged negative was re-encoded each render; keyed per text it is
-# reused. Same call, same output (bit-identical). "0" keys only on the pair, as before.
+# Wan encodes prompt and negative separately; caching per text reuses the unchanged negative. "0" = pair key only.
 _ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
 _PER_TEXT_METHODS = {"Wan": "_get_t5_prompt_embeds"}
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
@@ -287,7 +285,6 @@ def release(pipe: Any) -> None:
 
 
 def _per_text_method(pipe: Any) -> Optional[str]:
-    """The per-text encoder method to cache under ``encode_prompt`` on this pipe, or None."""
     if (os.environ.get(_ENV_PER_TEXT) or "").strip().lower() in _FALSE_TOKENS:
         return None
     cls = type(pipe).__name__
