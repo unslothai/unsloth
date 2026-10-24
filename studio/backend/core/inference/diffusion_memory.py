@@ -491,6 +491,37 @@ def _same_view(tensor: Any, view: Any) -> bool:
     )
 
 
+def _prune_pin_layout(layout: list, host: dict, buffer_host: dict) -> None:
+    """Drop, in place, the layout entries whose kept host weight is no longer their pinned view, and the chunks left
+    with none: the layout's own references would otherwise keep those pinned chunks alive."""
+    kept = []
+    for buf, entries in layout:
+        live = []
+        for entry in entries:
+            name, view = entry[0], entry[2]
+            tensor = buffer_host.get(name[1:]) if name.startswith("\0") else host.get(name)
+            if tensor is None:
+                continue
+            # A torchao wrapper weight has one entry per inner tensor (as ``_upload_pinned_chunks`` reads them).
+            inner = None if name.startswith("\0") else _wrapper_inner(tensor)
+            if inner is not None:
+                if any(_same_view(t, view) for _, t in inner):
+                    live.append(entry)
+            elif _same_view(tensor, view):
+                live.append(entry)
+        if live:
+            kept.append((buf, live))
+    layout[:] = kept
+
+
+def _prune_state_layout(state: dict) -> None:
+    layout = state.get("pin_layout")
+    if layout:
+        _prune_pin_layout(layout, state.get("host") or {}, state.get("buffer_host") or {})
+        if not layout:
+            state.pop("pin_layout", None)
+
+
 def _upload_pinned_chunks(
     module: Any, layout: list, host: dict, owner: dict, buffer_host: dict, device: Any
 ) -> int:
@@ -720,6 +751,8 @@ def _wrap_cpu_offload_hook(
                 pass
         out = init_hook(mod)
         _capture(mod)
+        # a weight cast or replaced on the device comes back as a new host tensor: release its pinned chunk now
+        _prune_state_layout(state)
         version.clear()
         buffer_version.clear()
         return out
@@ -741,6 +774,8 @@ def _wrap_cpu_offload_hook(
             for name in list(buffer_host):
                 if current.get(name) is not buffer_host[name]:
                     buffer_host.pop(name, None)
+            # changed while offloaded (a dtype cast, a replacement): its pinned chunk is not kept for nothing
+            _prune_state_layout(state)
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
@@ -1079,6 +1114,19 @@ def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
         except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
             pool_device = None
     return reclaimable - _graph_held_cache_bytes(pool_device)
+
+
+def cuda_reusable_cache_bytes(device: Any = None) -> int:
+    """``cuda_reclaimable_bytes`` (excludes CUDA graph pools) floored at 0 for any device form; resolved to an int
+    index because ``_graph_held_cache_bytes`` would silently skip the graph-pool count for a torch.device."""
+    index = None
+    if device is not None:
+        try:
+            import torch
+            index = device if isinstance(device, int) else torch.device(device).index
+        except Exception:  # noqa: BLE001 - unparseable: read the current card
+            index = None
+    return max(0, cuda_reclaimable_bytes(index) or 0)
 
 
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
@@ -4499,7 +4547,9 @@ def release_for_decode(
         if dev.index is None:
             dev = torch.device("cuda", torch.cuda.current_device())
         need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
-        free = int(torch.cuda.mem_get_info(dev)[0])
+        free, total = (int(x) for x in torch.cuda.mem_get_info(dev))
+        # keep the VRAM Budget reserve free, like every other decode-time check
+        free -= user_budget_reserve_bytes(dev, total)
         # only the cache an ordinary decode allocation can reuse: a CUDA graph pool's free blocks are not
         cached = max(
             0,

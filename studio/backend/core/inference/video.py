@@ -10003,7 +10003,11 @@ class VideoBackend:
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
             install_cfg_batch(
-                pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
+                pipe,
+                offload_policy = offload_policy,
+                speed_mode = speed_mode,
+                transformer_quant = transformer_quant_engaged,
+                logger = logger,
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
