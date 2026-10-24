@@ -251,6 +251,23 @@ def test_the_text_diffusion_path_records_it_too():
         assert "_mark_requested_float32(model, user_float32)" in statement, statement
 
 
+def test_the_direct_diffusion_loader_records_it_too():
+    """FastDiffusionModel.from_pretrained called directly never passes through _dispatch_diffusion, so on a
+    GPU without bf16 a float32 request trained under fp16 mixed precision with a loss scaler."""
+    src = (REPO_ROOT / "unsloth" / "models" / "diffusion.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    cls = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "FastDiffusionModel"
+    )
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    first = ast.unparse(fn.body[0])
+    assert first == "user_float32 = _requested_float32(dtype)", first
+    returns = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert returns, "expected the diffusion loader to return a model"
+    for statement in returns:
+        assert "_mark_requested_float32(model, user_float32)" in statement, statement
+
+
 def test_the_request_is_read_from_the_model_not_the_environment():
     """A process-global would describe whichever model loaded last, so a
     program that loads two before building a trainer would train the first
