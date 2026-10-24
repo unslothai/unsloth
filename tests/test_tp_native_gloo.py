@@ -54,6 +54,13 @@ def _train(model, ids, steps, clip):
         if step == 0:
             grads = _grads(model)
             logits = out.logits.detach().clone()
+            # Replicated factors' Partial grads are summed in backward: grads land in their param's layout.
+            mismatched = [
+                n
+                for n, p in model.named_parameters()
+                if tpn._is_dtensor(p.grad) and tuple(p.grad.placements) != tuple(p.placements)
+            ]
+            assert not mismatched, mismatched[:4]
         norms.append(float(clip(params, 1.0)))
         opt.step()
         opt.zero_grad(set_to_none = True)
@@ -141,7 +148,93 @@ def _case_fused(rank, world, tmp):
     return out
 
 
-CASES = {"parity": _case_parity, "fused": _case_fused}
+def _quantize_layers(model, nested):
+    """Every Linear in the decoder layers -> a bitsandbytes NF4 Linear4bit (the same bytes in every process)."""
+    import bitsandbytes as bnb
+
+    for name, module in list(model.named_modules()):
+        for child_name, child in list(module.named_children()):
+            if type(child) is not torch.nn.Linear or ".layers." not in f".{name}.":
+                continue
+            q = bnb.nn.Linear4bit(
+                child.in_features,
+                child.out_features,
+                bias = child.bias is not None,
+                compute_dtype = torch.float32,
+                quant_type = "nf4",
+                compress_statistics = nested,
+            )
+            packed, state = bnb.functional.quantize_4bit(
+                child.weight.data, blocksize = 64, quant_type = "nf4", compress_statistics = nested
+            )
+            q.weight = bnb.nn.Params4bit(
+                packed,
+                requires_grad = False,
+                quant_state = state,
+                blocksize = 64,
+                compress_statistics = nested,
+                quant_type = "nf4",
+                module = q,
+                bnb_quantized = True,
+            )
+            if child.bias is not None:
+                q.bias = child.bias
+            setattr(module, child_name, q)
+    return model
+
+
+QLORA_SIZES = {
+    "hidden_size": 128,
+    "intermediate_size": 256,
+    "num_attention_heads": 4,
+    "num_key_value_heads": 2,
+    "head_dim": 32,
+}
+
+
+def _qlora_model(nested, seed = 0):
+    from peft import LoraConfig, get_peft_model
+
+    model = _quantize_layers(build(LLAMA, QLORA_SIZES, lora = False, seed = seed), nested)
+    torch.manual_seed(seed + 1)
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+    # train(): bitsandbytes repacks eval-mode CPU Linear4bit weights for its CPU gemm, which rounds
+    # differently from dequantize + matmul (no dropout here, so train mode changes nothing else).
+    return get_peft_model(model, config).train()
+
+
+def _case_qlora(rank, world, tmp, nested):
+    import bitsandbytes as bnb
+    from torch.distributed.device_mesh import init_device_mesh
+
+    ref, model = _qlora_model(nested), _qlora_model(nested)
+    full = {
+        n: bnb.functional.dequantize_4bit(m.weight.data, m.weight.quant_state)
+        for n, m in model.named_modules()
+        if type(m).__name__ == "Linear4bit"
+    }
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    # Every local 4-bit shard dequantizes to its slice of the full dequantized weight.
+    shard_err = 0.0
+    for region in model._unsloth_tp_plan.regions:
+        for proj in region.projs:
+            base = proj.module.base_layer
+            name = next(n for n, m in model.named_modules() if m is base)
+            local = bnb.functional.dequantize_4bit(base.weight.data, base.weight.quant_state)
+            col = proj.style == tpn.COLWISE
+            want = tpn.shard_slice(full[name], 0 if col else 1, proj.parts if col else (full[name].shape[1],), rank, world)
+            assert local.shape == want.shape, (name, local.shape, want.shape)
+            shard_err = max(shard_err, float((local - want).abs().max()))
+    ids = _batch(ref)
+    return {
+        "ref": _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_),
+        "tp": _train(model, ids, 3, tpn.tp_clip_grad_norm_),
+        "shard_err": shard_err,
+    }
+
+
+CASES = {"parity": _case_parity, "fused": _case_fused, "qlora": _case_qlora}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -204,9 +297,26 @@ def _check_parity(results, world):
         torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-4, atol = 1e-5, msg = key)
 
 
-@pytest.mark.parametrize("arch", ["llama", "qwen3", "phi3", "stablelm", "gemma2"])
+@pytest.mark.parametrize("arch", ["llama", "llama_bias", "qwen3", "phi3", "stablelm", "gemma2"])
 def test_tp2_matches_one_process(arch):
     _check_parity(_spawn("parity", 2, arch = arch), 2)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_tp2_qlora_matches_one_process(nested):
+    results = _spawn("qlora", 2, nested = nested)
+    for res in results:
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
+        # The shard's codes and absmax (dequantized when double quantized) are sliced, not re-quantized:
+        # every local 4-bit weight dequantizes bitwise to its slice of the 1-process weight.
+        assert res["shard_err"] == 0.0
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
 
 
 def test_tp4_gqa_matches_one_process():

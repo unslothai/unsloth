@@ -56,6 +56,7 @@ DEEPSEEK_V3 = "trl-internal-testing/tiny-DeepseekV3ForCausalLM"
 # Archs that shard at tp = 2 (config overrides make every count divisible where the tiny repo is not).
 ARCHS = {
     "llama": (LLAMA, {}),
+    "llama_bias": (LLAMA, {"attention_bias": True, "mlp_bias": True}),  # row biases: added once
     "qwen3": (QWEN3, {}),
     "gemma2": (GEMMA2, {}),
     "gemma3": (GEMMA3, {"num_attention_heads": 4, "num_key_value_heads": 2}),

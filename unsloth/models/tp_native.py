@@ -648,39 +648,55 @@ def _set_dtensor(module, name, full, mesh, placement, parts = None, shard_dim = 
 
 
 def _shard_params4bit(path, base, weight, style, parts, rank, tp):
-    """Dequantize, slice and re-quantize this rank's shard into a local Params4bit with its own QuantState."""
+    """This rank's shard of a bitsandbytes 4-bit weight as a local Params4bit with its own QuantState: the
+    packed codes and the (dequantized) absmax of the shard's blocks, so it dequantizes bitwise to the
+    1-GPU weight's slice. Double-quantized absmax is kept as float32 (no second quantization)."""
     import bitsandbytes as bnb
 
     state = weight.quant_state
     blocksize = state.blocksize
     out_features, in_features = state.shape
+    if in_features % blocksize or blocksize % 2:
+        raise ValueError(
+            f"Unsloth: 4-bit '{path}': in_features = {in_features} is not a multiple of the quantization "
+            f"blocksize {blocksize}; its blocks span rows, which tensor parallelism v1 cannot split."
+        )
     if style == ROWWISE and (in_features // tp) % blocksize:
         raise ValueError(
             f"Unsloth: 4-bit '{path}': in_features / tp = {in_features // tp} is not a multiple of the "
-            f"quantization blocksize {blocksize}; row sharding would change the blocks."
+            f"quantization blocksize {blocksize}; row sharding would split blocks."
         )
-    if style == COLWISE and any((size // tp) * in_features % blocksize for size in parts):
-        raise ValueError(
-            f"Unsloth: 4-bit '{path}': a column shard is not a whole number of {blocksize}-blocks."
-        )
-    full = bnb.functional.dequantize_4bit(weight.data, state)
-    local = shard_slice(full, 0 if style == COLWISE else 1, parts if style == COLWISE else (in_features,), rank, tp)
-    del full
-    packed, local_state = bnb.functional.quantize_4bit(
-        local.contiguous(),
+    codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
+    absmax = state.absmax
+    if state.nested:
+        absmax = bnb.functional.dequantize_blockwise(state.absmax, state.state2) + state.offset
+    absmax = absmax.float().view(out_features, in_features // blocksize)
+    if style == COLWISE:
+        codes = shard_slice(codes, 0, parts, rank, tp)
+        absmax = shard_slice(absmax, 0, parts, rank, tp)
+        shape = (sum(parts) // tp, in_features)
+    else:
+        codes = shard_slice(codes, 1, (in_features // 2,), rank, tp)
+        absmax = shard_slice(absmax, 1, (in_features // blocksize,), rank, tp)
+        shape = (out_features, in_features // tp)
+    storage = weight.data.dtype
+    packed = codes.contiguous().view(storage).reshape(-1, 1)
+    local_state = bnb.functional.QuantState(
+        absmax = absmax.contiguous(),
+        shape = torch.Size(shape),
+        code = state.code,
         blocksize = blocksize,
-        compress_statistics = getattr(weight, "compress_statistics", state.nested),
         quant_type = state.quant_type,
-        quant_storage = getattr(weight, "quant_storage", torch.uint8),
+        dtype = state.dtype,
     )
     new = bnb.nn.Params4bit(
         packed,
         requires_grad = False,
         quant_state = local_state,
         blocksize = blocksize,
-        compress_statistics = getattr(weight, "compress_statistics", state.nested),
+        compress_statistics = False,
         quant_type = state.quant_type,
-        quant_storage = getattr(weight, "quant_storage", torch.uint8),
+        quant_storage = storage,
         module = base,
         bnb_quantized = True,
     )
