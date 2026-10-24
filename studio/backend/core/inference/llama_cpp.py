@@ -46644,10 +46644,18 @@ class LlamaCppBackend:
                         _declined_charged = max_tokens - _spent_so_far
                     else:
                         _declined_charged += _pre_spent
-                    _declined_display = (cumulative_display, _last_emitted, in_thinking)
+                    # As the resume below: a textual call cut from the prose is neither replayed
+                    # nor seeded into the display, or the final pass continues inside its markup.
+                    _declined_display = (
+                        _strip_tool_markup_streaming(cumulative_display)
+                        if _preempt_content != content_accum
+                        else cumulative_display,
+                        _last_emitted,
+                        in_thinking,
+                    )
                     try:
                         _declined_continues = self._assemble_preempt_resume(
-                            conversation, _checkpoint, content_accum, reasoning_accum
+                            conversation, _checkpoint, _preempt_content, reasoning_accum
                         )
                     except Exception:
                         logger.warning(
