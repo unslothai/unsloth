@@ -481,6 +481,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         await runRecoverableOp(() =>
           loadCheckpoint({
             checkpoint_path: checkpointPath,
+            trust_remote_code: params.trustRemoteCode,
+            approved_remote_code_fingerprint:
+              params.approvedRemoteCodeFingerprint ?? null,
             hf_token: params.loadToken ?? null,
             // REAP scores and slices 16-bit expert weights.
             ...(params.reap ? { load_in_4bit: false } : {}),

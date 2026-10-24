@@ -189,6 +189,7 @@ def decide(
     gpu_ids: Optional[list[int]] = None,
     preload_split: bool = True,
     place: bool = True,
+    calibrated: Optional[dm.CalibratedImageActivation] = None,
 ) -> Decision:
     """What an Automatic load (``gpu_ids`` None) or an explicit selection decides on ``host`` for ``sizes``."""
     host.install(monkeypatch)
@@ -225,6 +226,7 @@ def decide(
             text_encoder_dense_mib = tes,
             runtime_headroom_mib = headroom,
             requested_mode = "auto",
+            calibrated_activation = calibrated,
         )
     with mg.selection_scope(selection):
         plan = mg.refine_plan_for_multigpu(pipe, one_card)
@@ -460,12 +462,9 @@ def test_encoder_card_pricing_never_admits_an_encoder_that_does_not_fit_the_free
 
 
 # The discrete reserve: a partly used big card.
-@pytest.mark.parametrize(
-    "total, expected",
-    [(15360, 2048), (24576, 2457), (40960, 4096), (81920, 4096), (182272, 4096)],
-)
-def test_discrete_reserve_is_capped(total, expected):
-    assert dm._reserve_mib("discrete_vram", total) == expected
+@pytest.mark.parametrize("total", [15360, 24576, 40960, 81920, 182272])
+def test_discrete_reserve_is_fixed(total):
+    assert dm._reserve_mib("discrete_vram", total) == 2048
 
 
 def test_partly_used_big_cards_get_the_companion_split(monkeypatch):
@@ -480,6 +479,20 @@ def test_partly_used_big_cards_get_the_companion_split(monkeypatch):
     )
     d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600), headroom = 3000)
     assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
+
+
+def test_partly_used_big_card_places_the_companion_split_with_the_fixed_reserve(monkeypatch):
+    # 2x B200, 20 / 12 GiB free: the old 4 GiB reserve offloaded; 2 GiB puts the encoder on cuda:1.
+    b200 = 182272
+    host = Host(
+        [
+            Card(0, b200, b200 - 20 * GIB, cap = (10, 0), name = "B200"),
+            Card(1, b200, b200 - 12 * GIB, cap = (10, 0), name = "B200"),
+        ]
+    )
+    d = decide(monkeypatch, host, _sizes(dit = 12000, te = 9000), headroom = 3000)
+    assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
+    assert _placement(d)["chosen"] == "companion_split"
 
 
 def test_the_apu_pool_keeps_the_uncapped_reserve(monkeypatch):
@@ -564,3 +577,56 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     )
     assert split is None
     assert "5555 MiB of activations" in reason
+
+
+# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB.
+_ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
+_ZIMAGE_FLAT = 6963
+
+
+def test_zimage_on_two_t4s_flat_estimate_declines_the_layer_split(monkeypatch):
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
+    assert d.plan.layer_split is None and d.plan.offload_policy != dm.OFFLOAD_NONE
+    layer = [r["reason"] for r in _placement(d)["rejected"] if r["kind"] == "layer_split"]
+    assert layer and "11931 MiB of denoiser and VAE weights" in layer[0]
+    assert "6963 MiB of activations" in layer[0] and "short by about" in layer[0]
+
+
+def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkeypatch):
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    act = dm.calibrated_image_activation("z-image", max_speed = False)
+    assert act is not None and act.headroom(False) < _ZIMAGE_FLAT
+    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT, calibrated = act)
+    assert d.one_card.estimates["calibrated_split_headroom_mib"] == act.headroom(False)
+    assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
+    assert _placement(d)["chosen"] == "layer_split"
+    for ordinal, required in d.plan.layer_split.card_required_mib:
+        assert required <= dict(d.plan.layer_split.card_limit_mib)[ordinal]
+
+
+def test_image_activation_estimate_scales_with_resolution():
+    hint = "z-image Tongyi-MAI/Z-Image-Turbo"
+    at_1024 = dm.estimate_image_runtime_mib(width = 1024, height = 1024, family = hint)
+    at_768 = dm.estimate_image_runtime_mib(width = 768, height = 768, family = hint)
+    assert (
+        at_1024
+        == _ZIMAGE_FLAT
+        == dm.estimate_image_runtime_mib(width = None, height = None, family = hint)
+    )
+    assert at_768 == int(8192 * (768 * 768) / (1024 * 1024) * 0.85) < at_1024
+
+
+def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypatch):
+    # The generate guard must treat the split as calibrated (it never reserved the flat figure).
+    from core.inference.diffusion import plan_is_calibrated
+
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    act = dm.calibrated_image_activation("z-image", max_speed = False)
+    split = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT, calibrated = act)
+    assert split.plan.layer_split is not None and plan_is_calibrated(split.plan)
+    # the one-card fallback that carries the key but was decided from the flat estimate stays uncalibrated
+    assert "calibrated_split_headroom_mib" in split.one_card.estimates
+    assert not plan_is_calibrated(split.one_card)
+    flat = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
+    assert flat.plan.layer_split is None and not plan_is_calibrated(flat.plan)

@@ -739,6 +739,26 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
     assert IMAGE_REFUSAL_HEADER not in other.headers
 
 
+def test_generate_unified_memory_load_refusal_is_structured_not_500(client, monkeypatch):
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        UnifiedMemoryShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _refused(**kwargs):
+        raise UnifiedMemoryShortfallError("Could not load the diffusers engine: needs about 30 GB")
+
+    monkeypatch.setattr(backend, "generate", _refused)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 400
+    assert resp.headers.get(IMAGE_REFUSAL_HEADER) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    assert "30 GB" in resp.json()["detail"]
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
@@ -1279,8 +1299,14 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
     )
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
@@ -3314,3 +3340,19 @@ def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
     assert ("load", "black-forest-labs/flux-3-image-klein") in seen
     validated = [entry[2:] for entry in seen if entry[0] == "validate"]
     assert validated and set(validated) == {(None, "pipeline")}, seen
+
+
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():
+    # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
+    from fastapi import HTTPException
+    from models.inference import DiffusionLoadRequest, LoraSpec
+
+    off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
+    inference_routes._refuse_mlx_loras(off)
+    assert inference_routes._has_active_loras(off.loras) is False
+    on = DiffusionLoadRequest(
+        model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
+    )
+    assert inference_routes._has_active_loras(on.loras) is True
+    with pytest.raises(HTTPException):
+        inference_routes._refuse_mlx_loras(on)

@@ -1789,16 +1789,15 @@ def _fits_in_memory_snapshot(device):
 
 
 @pytest.mark.parametrize("device,hooked", [("mps", 1), ("cuda", 0)])
-def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
-    fake_runtime, monkeypatch, device, hooked
-):
+def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, hooked):
     # Tiling alone does not bound a Wan decode on MPS; the load must arm the sync.
     torch = sys.modules["torch"]
+    syncs = []
     monkeypatch.setattr(
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: None,
+            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
@@ -1824,7 +1823,11 @@ def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
     )
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
-    assert len(backend._state.pipe.vae.decoder.hooks) == hooked
+    hooks = backend._state.pipe.vae.decoder.hooks
+    assert len(hooks) == hooked
+    for hook in hooks:
+        hook(None, (), None)
+    assert len(syncs) == hooked
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
@@ -2234,6 +2237,68 @@ def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch
     assert res["mp4_bytes"] == b"STREAMED"
     assert len(seen) == 1 and seen[0][0] is not None
     assert session.took == [seen[0][1]] and session.closed == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_a_render_returns_its_pinned_clip_to_the_driver(fake_runtime, monkeypatch, fail):
+    # Each render empties the pinned host cache once, after the session closes and the clip is unreferenced.
+    import functools
+    import weakref
+
+    import core.inference.video as vid
+
+    class _Frames(list):
+        pass
+
+    class _Session:
+        closed = False
+
+        def hooks(self):
+            return contextlib.nullcontext()
+
+        def take(self, frames, fps):
+            return b"STREAMED"
+
+        def close(self):
+            self.closed = True
+
+    session = _Session()
+    monkeypatch.setattr(vid, "open_stream_encode", lambda *_a, **_k: session)
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe_cls = type(backend._state.pipe)
+    real_call = pipe_cls.__call__
+    clips = []
+
+    # wraps: the backend reads the pipeline's signature to decide which kwargs it threads.
+    @functools.wraps(real_call)
+    def call(self, *args, **kwargs):
+        out = real_call(self, *args, **kwargs)
+        out.frames = [_Frames(out.frames[0])]
+        clips.append(weakref.ref(out.frames[0]))
+        return out
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    if fail:
+
+        def boom(*_a, **_k):
+            raise RuntimeError("encode failed")
+
+        monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(boom))
+    released = []
+    monkeypatch.setattr(
+        vid,
+        "release_pinned_host_memory",
+        lambda: released.append((session.closed, [ref() is None for ref in clips])),
+    )
+    if fail:
+        with pytest.raises(RuntimeError, match = "encode failed"):
+            backend.generate(prompt = "a sloth")
+        # The in-flight traceback still holds the clip; the cache is emptied anyway, after the session is closed.
+        assert [closed for closed, _ in released] == [True]
+    else:
+        assert backend.generate(prompt = "a sloth")["mp4_bytes"]
+        assert released == [(True, [True])]
 
 
 def test_wan_a14b_dual_dit_pipeline_loads(fake_runtime):
@@ -8729,7 +8794,7 @@ def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, m
     # Log the request shape behind an OOM (#8225).
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: False)
     records = _capture_generate_failures(monkeypatch)
 
     with pytest.raises(RuntimeError):
@@ -8767,7 +8832,7 @@ def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypa
     monkeypatch.setattr(
         type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
     )
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: False)
     records = _capture_generate_failures(monkeypatch)
 
     with pytest.raises(RuntimeError):
@@ -8782,7 +8847,7 @@ def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp
     # With no fused kernel, an OOM should carry the score-matrix diagnosis.
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: True)
     records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 2
@@ -8797,7 +8862,7 @@ def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monk
         "__call__",
         _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
     )
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: True)
     records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 1
@@ -8843,7 +8908,7 @@ def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_p
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
 
-    def _boom(target):
+    def _boom(target, *_):
         raise RuntimeError("the probe itself is broken")
 
     monkeypatch.setattr(video_mod, "sdpa_math_only", _boom)
@@ -8883,7 +8948,7 @@ def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
     )
     probed: list = []
 
-    def _never(target):
+    def _never(target, *_):
         probed.append(target)
         return True
 
@@ -8905,8 +8970,12 @@ def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_pa
     backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
     _shared_setup_6(backend, monkeypatch)
     seen: list = []
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
+    monkeypatch.setattr(
+        video_mod, "sdpa_math_only", lambda target, *a: seen.append((target, *a)) or True
+    )
+    monkeypatch.setattr(video_mod, "_dit_head_dims", lambda pipe: {128})
     records = _shared_setup_10(backend, monkeypatch)
+    assert [a for _, *a in seen] == [[[128]]]
 
     assert any("dtype=float32" in line for line in records)
     assert len(seen) == 1

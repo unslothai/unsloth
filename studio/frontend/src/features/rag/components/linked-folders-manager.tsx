@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { FolderSyncIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
@@ -39,7 +39,7 @@ import { useLinkedFolders } from "./use-linked-folders";
 
 /** Grouped folder card, shared with the create project dialog. */
 export const FOLDER_CARD_CLASS =
-  "overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
+  "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
 export const FOLDER_ROW_CLASS =
   "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
 
@@ -338,7 +338,7 @@ export function LinkedFoldersManager({
                 <Spinner className="size-4 shrink-0" />
               ) : (
                 <HugeiconsIcon
-                  icon={FolderAddIcon}
+                  icon={PlusSignIcon}
                   strokeWidth={1.75}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
@@ -402,7 +402,7 @@ export function LinkedFoldersManager({
           <Spinner />
         </div>
       ) : manager.folders.length === 0 ? (
-        <div className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
+        <div className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
           No source folders.
         </div>
       ) : (
@@ -415,7 +415,7 @@ export function LinkedFoldersManager({
             return (
               <li
                 key={folder.id}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-background px-3 py-2.5"
+                className="flex min-w-0 items-start gap-3 rounded-lg border border-border/70 bg-background px-3 py-2.5"
               >
                 <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">

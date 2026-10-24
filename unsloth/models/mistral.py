@@ -155,6 +155,7 @@ def MistralAttention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         # The window the flash path already gets through window_size. SDPA needs it too, and not only in

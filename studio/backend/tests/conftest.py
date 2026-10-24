@@ -118,6 +118,18 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_load_budget_snapshots():
+    def _forget():
+        for name, module in list(sys.modules.items()):
+            if name.endswith("core.inference.diffusion_memory"):
+                getattr(module, "_LOAD_BUDGET_FRACTIONS", {}).clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_mxc_isolation_settings():
     # The setting is cached for a second across tests that each get their own Studio home.
     def _forget():
@@ -872,6 +884,23 @@ def dit_train_host(monkeypatch):
     monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda *_a, **_k: None)
     return dtc
+
+
+@pytest.fixture(autouse = True)
+def _fresh_archive_vector_cache():
+    """The archive's pre-embedded vector cache is process-wide; one test's vectors must not answer another's."""
+    archive = sys.modules.get("core.rag.conversation_archive")
+    if archive is not None:
+        archive._vector_cache.clear()
+        archive._noted_branches.clear()
+    yield
+    archive = sys.modules.get("core.rag.conversation_archive")
+    if archive is not None:
+        archive._prewarm_stop.set()
+        if archive._prewarm_worker is not None:
+            archive._prewarm_worker.join()
+        archive._vector_cache.clear()
+        archive._noted_branches.clear()
 
 
 @pytest.fixture(autouse = True)

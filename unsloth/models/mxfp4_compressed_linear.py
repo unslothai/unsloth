@@ -122,7 +122,20 @@ def mxfp4_packed_matmul(
 ):
     """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
     Skinny forward inputs (decode, small batches) never build the 16-bit weight on sm_80+; below sm_80 they decode it
-    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS."""
+    for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS.
+    Differentiable in ``x`` / ``bias``: the kernels and the reused chunk buffer have no autograd of their own."""
+    if torch.is_grad_enabled() and (
+        x.requires_grad or (bias is not None and not transpose and bias.requires_grad)
+    ):
+        y = _Mxfp4PackedMatmulFunction.apply(x, packed, scale, transpose, bias)
+        # As _linear: a used bias never writes out.
+        if out is None or (bias is not None and not transpose):
+            return y
+        return out.copy_(y)
+    return _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias)
+
+
+def _mxfp4_packed_matmul(x, packed, scale, transpose, out, bias):
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
     if not transpose and _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
@@ -136,6 +149,26 @@ def mxfp4_packed_matmul(
     if transpose:
         return torch.matmul(x, weight, out = out)
     return _linear(x, weight, out, bias)
+
+
+class _Mxfp4PackedMatmulFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, packed, scale, transpose, bias):
+        ctx.save_for_backward(packed, scale)
+        ctx.transpose, ctx.x_dtype = transpose, x.dtype
+        return _mxfp4_packed_matmul(x, packed, scale, transpose, None, None if transpose else bias)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        packed, scale = ctx.saved_tensors
+        grad_x = grad_bias = None
+        if ctx.needs_input_grad[0]:
+            grad_x = _mxfp4_packed_matmul(
+                grad_output, packed, scale, not ctx.transpose, None, None
+            ).to(ctx.x_dtype)
+        if ctx.needs_input_grad[4] and not ctx.transpose:
+            grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
+        return grad_x, None, None, None, grad_bias
 
 
 def _linear(x, weight, out, bias):

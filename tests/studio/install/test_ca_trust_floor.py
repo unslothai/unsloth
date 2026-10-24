@@ -25,7 +25,9 @@ def _release(version: str) -> tuple[int, ...]:
 
 
 def test_the_no_torch_runtime_pin_is_at_or_above_the_floor() -> None:
-    text = (REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt").read_text()
+    text = (REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt").read_text(
+        encoding = "utf-8"
+    )
     (pin,) = re.findall(r"^certifi==(\S+)", text, re.MULTILINE)
     assert _release(pin) >= CERTIFI_FLOOR
 
