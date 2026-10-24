@@ -170,7 +170,9 @@ def test_install_sh_rerun_keeps_an_existing_rocm_build_on_gfx90c(monkeypatch, tm
 
 @_POSIX
 @pytest.mark.parametrize("prev", ["2.11.0+cpu", "2.11.0", ""])
-def test_install_sh_a_non_rocm_previous_torch_still_takes_cpu_on_gfx90c(monkeypatch, tmp_path, prev):
+def test_install_sh_a_non_rocm_previous_torch_still_takes_cpu_on_gfx90c(
+    monkeypatch, tmp_path, prev
+):
     _rocminfo_harness(monkeypatch, tmp_path, _ROCMINFO_GFX90C)
     monkeypatch.setenv("_PREV_TORCH_VER", prev)
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
@@ -178,7 +180,9 @@ def test_install_sh_a_non_rocm_previous_torch_still_takes_cpu_on_gfx90c(monkeypa
 
 
 @_POSIX
-def test_install_sh_an_existing_rocm_build_does_not_keep_rocm_for_other_uncovered_arches(monkeypatch, tmp_path):
+def test_install_sh_an_existing_rocm_build_does_not_keep_rocm_for_other_uncovered_arches(
+    monkeypatch, tmp_path
+):
     rocminfo = _ROCMINFO_GFX90C.replace("gfx90c", "gfx1010")
     _rocminfo_harness(monkeypatch, tmp_path, rocminfo)
     monkeypatch.setenv("_PREV_TORCH_VER", "2.11.0+rocm7.2")
@@ -193,7 +197,9 @@ _OVERRIDE_HINT = "export HSA_OVERRIDE_GFX_VERSION=9.0.0"
 
 @_POSIX
 def test_install_sh_other_uncovered_arches_get_no_gfx900_hint(monkeypatch, tmp_path):
-    rocminfo = _ROCMINFO_GFX90C.replace("gfx90c", "gfx1010").replace("AMD Radeon Graphics", "AMD Radeon RX 5700 XT")
+    rocminfo = _ROCMINFO_GFX90C.replace("gfx90c", "gfx1010").replace(
+        "AMD Radeon Graphics", "AMD Radeon RX 5700 XT"
+    )
     _rocminfo_harness(monkeypatch, tmp_path, rocminfo)
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
     assert url.endswith("/cpu"), (url, err)
@@ -201,9 +207,7 @@ def test_install_sh_other_uncovered_arches_get_no_gfx900_hint(monkeypatch, tmp_p
 
 
 @_POSIX
-@pytest.mark.parametrize(
-    "gfx,hint", [("gfx90c", True), ("gfx1010", False), ("gfx803", False)]
-)
+@pytest.mark.parametrize("gfx,hint", [("gfx90c", True), ("gfx1010", False), ("gfx803", False)])
 def test_setup_sh_names_the_gfx900_override_for_gfx90c_only(gfx, hint):
     out = read_arch._setup_report(gfx, gfx, "")
     assert f"AMD GPU detected ({gfx}) -- no ROCm PyTorch wheels" in out, out

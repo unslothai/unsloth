@@ -3359,9 +3359,7 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
 # route. install.sh's get_torch_index_url holds the same list.
 # gfx90c is gfx9 Vega: the generic wheel's gfx900 kernels run it under this override (opt-in,
 # untested by Unsloth). install.sh and studio/setup.sh print the same line.
-_GFX90C_OVERRIDE_HINT = (
-    "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
-)
+_GFX90C_OVERRIDE_HINT = "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
 _LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
     {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803", "gfx90c"}
 )
