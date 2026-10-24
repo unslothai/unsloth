@@ -824,3 +824,33 @@ def test_a_cancelled_video_preflight_never_unloads_the_image_model():
         with pytest.raises(RuntimeError, match = "Video load was cancelled"):
             cs.run_unless_load_cancelled("Video load was cancelled.", unloaded.append, 1)
     assert unloaded == []
+
+
+def test_a_token_unload_names_the_engine_the_preflight_settled_on(client, env, monkeypatch):
+    # The named POST finishes switching engines while its preflight is being cancelled: the unload
+    # must check the load on the engine it registered on, not the one active before the cancel.
+    import types
+
+    import core.inference.diffusion_engine_router as router
+    from core.inference import media_load_ids
+
+    old = types.SimpleNamespace(name = "old", unload = None)
+    new = types.SimpleNamespace(name = "new", unload = None)
+    active = {"engine": old}
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: active["engine"])
+
+    def _cancel(*args, **kwargs):
+        active["engine"] = new  # the switch completed and the load registered before the cancel ran
+        return 0
+
+    monkeypatch.setattr(cs, "cancel_preparing_loads", _cancel)
+    seen = []
+
+    def _unload_if_current(modality, engine, token, unload):
+        seen.append(engine.name)
+        return "superseded", None
+
+    monkeypatch.setattr(media_load_ids, "unload_if_current", _unload_if_current)
+    resp = client.post(f"{_LOADS['image'][0]}/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200, resp.text
+    assert seen == ["new"]

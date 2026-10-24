@@ -400,6 +400,9 @@ class RoutedMlxEngine:
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
         self._epoch = 0
+        # The logical load's epoch (media_load_ids reads it as _load_token): moved by begin_load and
+        # unload only, never by a fallback, whose engines keep counters of their own.
+        self._logical_load = 0
         # Replacement loads between their first epoch bump and registering their options: no fallback registers.
         self._replacing = 0
         self._diffusers_ours = False
@@ -431,6 +434,10 @@ class RoutedMlxEngine:
     @property
     def _state(self) -> Any:
         return getattr(self._primary(), "_state", None)
+
+    @property
+    def _load_token(self) -> int:
+        return self._logical_load
 
     @property
     def is_loaded(self) -> bool:
@@ -500,6 +507,8 @@ class RoutedMlxEngine:
             return self._diffusers_ours
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
+        with self._lock:
+            self._logical_load += 1
         # Fenced until this load's options are saved, so no request routes on the old model's options.
         ours = self._drain_fallback(replacing = True)
         try:
@@ -778,6 +787,7 @@ class RoutedMlxEngine:
                 else:
                     self._diffusers().unload(expected_account = expected_account)
             with self._lock:
+                self._logical_load += 1
                 self._diffusers_ours = False
                 self._mlx_dropped = False
                 self._origin_identity = None

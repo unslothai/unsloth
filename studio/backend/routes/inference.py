@@ -53968,22 +53968,24 @@ async def unload_diffusion_model(
             current_account_id(),
             any_account = account_access.account_scope() is None,
         )
-    active = get_active_diffusion_engine()
-    unload = active.unload
-    if account_access.account_scope() is not None:
-        unload = functools.partial(unload, expected_account = current_account_id())
-    if expected_load_id:
-        from core.inference import media_load_ids
+    else:
         from core.inference.chat_swap_kv import cancel_preparing_loads
 
-        # The POST carrying this token, if it is still in preflight: stopped (or registered, which
-        # the check below then names) before any engine switch or eviction it would run.
+        # The POST carrying this token, if it is still in preflight: stopped, or registered (which the
+        # check below then names), before any engine switch or eviction it would run. The engine is
+        # resolved after that settles: a POST that finished switching registered on the new one.
         await asyncio.to_thread(
             cancel_preparing_loads,
             "image",
             current_account_id(),
             load_token = expected_load_id,
         )
+    active = get_active_diffusion_engine()
+    unload = active.unload
+    if account_access.account_scope() is not None:
+        unload = functools.partial(unload, expected_account = current_account_id())
+    if expected_load_id:
+        from core.inference import media_load_ids
 
         def guarded_unload(only_if):
             # The same checks as the plain unload, once the token is known to name the load in the slot.
