@@ -16,10 +16,19 @@ Custom loop (torchrun --nproc_per_node tp):
     tp_clip_grad_norm_(params, 1.0)
     optimizer.step(); optimizer.zero_grad()
     save_tp_adapter(model, "out")  # collective: the standard 1-GPU PEFT adapter, written by rank 0
+
+Sharded loading (16-bit safetensors checkpoints): each rank reads only its slices of the attention / MLP
+projections, so the load-time peak per rank is the replicated parts plus 1 / tp of the rest:
+
+    model, tokenizer = load_tensor_parallel("unsloth/Qwen3-8B", mesh["tp"], dtype = torch.float16)
+    # = with sharded_loading(mesh["tp"]): FastLanguageModel.from_pretrained(..., load_in_4bit = False)
+    model = FastLanguageModel.get_peft_model(model, ...)  # full-size LoRA, same init as 1 GPU
+    apply_tensor_parallel(model, mesh["tp"])  # required before the first forward
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import inspect
@@ -37,6 +46,8 @@ __all__ = [
     "apply_tensor_parallel",
     "derive_tp_plan",
     "is_tensor_parallel",
+    "load_tensor_parallel",
+    "sharded_loading",
     "shard_slice",
     "tp_clip_grad_norm_",
     "tp_full_state_dict",
@@ -477,6 +488,9 @@ def _region(path, module, kind, compiled, text, tp):
 
 
 def _logical_shape(weight, base):
+    full = getattr(weight, "_unsloth_tp_full_shape", None)  # a sharded_loading slice
+    if full is not None:
+        return tuple(full)
     state = getattr(weight, "quant_state", None)
     if state is not None and getattr(state, "shape", None) is not None:
         return tuple(state.shape)
@@ -646,7 +660,11 @@ def _refuse_base(path, proj_module, weight, base):
                 f"Unsloth: tensor parallelism v1 does not support QAT fake quantization ({path}: "
                 f"{type(module).__name__})."
             )
-    if not _is_params4bit(weight) and type(weight) not in (nn.Parameter, torch.Tensor):
+    if (
+        not _is_params4bit(weight)
+        and _preloaded(weight) is None
+        and type(weight) not in (nn.Parameter, torch.Tensor)
+    ):
         raise ValueError(
             f"Unsloth: tensor parallelism v1 cannot shard '{path}' weights of type {type(weight).__name__}."
         )
@@ -1035,7 +1053,8 @@ def _sync_trainable(model, group, src):
     import torch.distributed as dist
     with torch.no_grad():
         for param in model.parameters():
-            if param.requires_grad:
+            # sharded_loading slices differ per rank (read from the same checkpoint)
+            if param.requires_grad and _preloaded(param) is None:
                 dist.broadcast(param.data, src = src, group = group)
 
 
@@ -1095,12 +1114,15 @@ def apply_tensor_parallel(
             "load it without tp_plan before apply_tensor_parallel."
         )
     tp_plan = derive_tp_plan(model, tp, plan)
+    covered = set()
     for region in tp_plan.regions:
         for proj in region.projs:
             path = f"{region.path}.{proj.name}"
             weight, base = _weight(proj.module)
             _refuse_base(path, proj.module, weight, base)
             _refuse_adapter(path, proj.module)
+            _check_preloaded(path, proj, weight, base, tp_mesh)
+            covered.update((id(weight), id(base.bias)))
             if _is_params4bit(weight):
                 _check_params4bit(path, weight, proj.style, tp)
         for name, norm in region.norms:
@@ -1109,6 +1131,12 @@ def apply_tensor_parallel(
                     raise ValueError(
                         f"Unsloth: cannot replicate {region.path}.{name} ({type(p).__name__})."
                     )
+    stray = [n for n, p in model.named_parameters() if _preloaded(p) is not None and id(p) not in covered]
+    if stray:
+        raise ValueError(
+            f"Unsloth: {stray[:3]} were sharded by sharded_loading but are not in this tensor parallel plan; "
+            "pass the same plan to sharded_loading and apply_tensor_parallel."
+        )
     chain = _tp_chain(model)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
@@ -1165,7 +1193,9 @@ def _shard_projection(region, proj, mesh, rank, tp):
     col = proj.style == COLWISE
     parts = proj.parts
     in_parts = (_logical_shape(weight, base)[1],)
-    if _is_params4bit(weight):
+    if _preloaded(weight) is not None:
+        _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
+    elif _is_params4bit(weight):
         _shard_params4bit(f"{region.path}.{proj.name}", base, weight, proj.style, parts, rank, tp)
     else:
         _set_dtensor(
@@ -1181,9 +1211,16 @@ def _shard_projection(region, proj, mesh, rank, tp):
         )
     if base.bias is not None:
         if col:
-            _set_dtensor(base, "bias", base.bias, mesh, "shard", parts, 0, rank, tp)
+            if _preloaded(base.bias) is not None:
+                _wrap_preloaded(base, "bias", base.bias, mesh, 0)
+            else:
+                _set_dtensor(base, "bias", base.bias, mesh, "shard", parts, 0, rank, tp)
         else:
+            # sharded_loading keeps row biases as plain full tensors: replicated here as in v1
             _set_dtensor(base, "bias", base.bias, mesh, "replicate")
+    guard = base.__dict__.pop("_unsloth_tp_load_guard", None)
+    if guard is not None:
+        guard.remove()
     lora_A = module._modules.get("lora_A")
     if lora_A is not None:
         for adapter in lora_A.keys():
@@ -1339,3 +1376,380 @@ def save_tp_adapter(model, save_directory, **kwargs):
         model.save_pretrained(save_directory, state_dict = state, **kwargs)
     if dist.is_initialized():
         dist.barrier()
+
+
+# Sharded loading (v2): each rank reads only its slices of the sharded projections from the checkpoint, so the
+# load-time peak is the replicated parts plus 1 / tp of the attention / MLP weights, never the whole model.
+
+_PRELOADED = "_unsloth_tp_preloaded"
+_UNSUPPORTED_LOAD_KWARGS = (
+    "load_in_4bit",
+    "load_in_8bit",
+    "quantization_config",
+    "tp_plan",
+    "tp_size",
+    "device_mesh",
+    "distributed_config",
+    "gguf_file",
+    "variant",
+    "from_tf",
+    "from_flax",
+)
+
+
+def _preloaded(t):
+    return None if t is None else getattr(t, _PRELOADED, None)
+
+
+def _check_preloaded(path, proj, weight, base, mesh):
+    """A pre-sharded projection must carry exactly the layout apply_tensor_parallel derives now."""
+    want = (proj.style, tuple(proj.parts), mesh.size())
+    for what, t in (("weight", weight), ("bias", base.bias)):
+        layout = _preloaded(t)
+        if layout is None:
+            continue
+        if tuple(layout) != want:
+            raise ValueError(
+                f"Unsloth: '{path}.{what}' was sharded by sharded_loading as {layout}, but the tensor parallel "
+                f"plan now gives {want}; pass the same plan and tp mesh to both."
+            )
+        ranks = getattr(t, "_unsloth_tp_preload_ranks", None)
+        if ranks != mesh.mesh.tolist():
+            raise ValueError(
+                f"Unsloth: '{path}.{what}' was sharded by sharded_loading over ranks {ranks}, not this tp "
+                f"mesh {mesh.mesh.tolist()}."
+            )
+
+
+def _wrap_preloaded(module, name, local, mesh, dim):
+    """A sharded_loading slice -> the DTensor parameter v1 would have built from the full tensor."""
+    DTensor, _, _, Shard = _dtensor_api()
+    shape = torch.Size(local._unsloth_tp_full_shape)
+    dt = DTensor.from_local(
+        local.detach(),
+        mesh,
+        [Shard(dim)],
+        run_check = False,
+        shape = shape,
+        stride = torch.empty(shape, device = "meta").stride(),
+    )
+    param = _as_param(dt, local)
+    parts = getattr(local, "_unsloth_tp_parts", None)
+    if parts is not None:
+        param._unsloth_tp_parts = parts
+    module._parameters[name] = param
+    return param
+
+
+def _refuse_unapplied_forward(module, args):
+    raise RuntimeError(
+        "Unsloth: this model was loaded with tensor parallel sharded loading (each rank holds slices of the "
+        "attention / MLP weights); call apply_tensor_parallel(model, tp_mesh) after get_peft_model and "
+        "before running it."
+    )
+
+
+def _checkpoint_index(name, kwargs):
+    """{tensor name: local safetensors path} of a checkpoint directory or Hub repo."""
+    import json
+    import os
+
+    sub = kwargs.get("subfolder") or ""
+
+    def keys_of(path):
+        from safetensors import safe_open
+
+        with safe_open(path, framework = "pt", device = "cpu") as f:
+            return {key: path for key in f.keys()}
+
+    if os.path.isdir(name):
+        root = os.path.join(name, sub)
+        index = os.path.join(root, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            with open(index) as f:
+                weight_map = json.load(f)["weight_map"]
+            return {k: os.path.join(root, v) for k, v in weight_map.items()}
+        single = os.path.join(root, "model.safetensors")
+        if os.path.isfile(single):
+            return keys_of(single)
+        raise ValueError(
+            f"Unsloth: tensor parallel sharded loading needs a safetensors checkpoint; none in {root}."
+        )
+    from huggingface_hub import hf_hub_download
+
+    hub = dict(
+        subfolder = sub or None,
+        revision = kwargs.get("revision"),
+        token = kwargs.get("token"),
+        cache_dir = kwargs.get("cache_dir"),
+        local_files_only = bool(kwargs.get("local_files_only", False)),
+    )
+    try:
+        index = hf_hub_download(name, "model.safetensors.index.json", **hub)
+    except Exception:
+        index = None
+    if index is None:
+        return keys_of(hf_hub_download(name, "model.safetensors", **hub))
+    with open(index) as f:
+        weight_map = json.load(f)["weight_map"]
+    paths = {v: hf_hub_download(name, v, **hub) for v in sorted(set(weight_map.values()))}
+    return {k: paths[v] for k, v in weight_map.items()}
+
+
+class _SliceReader:
+    """safetensors reads of whole tensors or of this rank's slices (only the slice's bytes are read)."""
+
+    def __init__(self, index):
+        self.index, self.handles = index, {}
+        self.full_bytes = self.slice_bytes = 0
+
+    def _open(self, key):
+        path = self.index[key]
+        if path not in self.handles:
+            from safetensors import safe_open
+
+            self.handles[path] = safe_open(path, framework = "pt", device = "cpu")
+        return self.handles[path]
+
+    def shape(self, key):
+        return tuple(self._open(key).get_slice(key).get_shape())
+
+    def full(self, key):
+        t = self._open(key).get_tensor(key)
+        self.full_bytes += t.numel() * t.element_size()
+        return t
+
+    def slice(self, key, dim, parts, rank, tp):
+        view = self._open(key).get_slice(key)
+        pieces, offset = [], 0
+        for size in parts:
+            step = size // tp
+            start = offset + rank * step
+            pieces.append(view[start : start + step] if dim == 0 else view[:, start : start + step])
+            offset += size
+        t = torch.cat(pieces, dim = dim) if len(pieces) > 1 else pieces[0]
+        self.slice_bytes += t.numel() * t.element_size()
+        return t
+
+
+def _checkpoint_key(names, model, index):
+    prefix = getattr(_unwrap(model), "base_model_prefix", "") or ""
+    for name in names:
+        candidates = [name]
+        if prefix and name.startswith(prefix + "."):
+            candidates.append(name[len(prefix) + 1 :])
+        elif prefix:
+            candidates.append(f"{prefix}.{name}")
+        for key in candidates:
+            if key in index:
+                return key
+    return None
+
+
+def _buffer_skeleton(model):
+    """The model rebuilt with meta parameters and real buffers (RoPE tables), as from_pretrained builds them."""
+    from accelerate import init_empty_weights
+
+    dtype = next((p.dtype for p in model.parameters() if p.is_floating_point()), torch.float32)
+    previous = torch.get_default_dtype()
+    with torch.random.fork_rng(devices = []), init_empty_weights(include_buffers = False):
+        torch.set_default_dtype(dtype)
+        try:
+            return type(model)(copy.deepcopy(model.config))
+        finally:
+            torch.set_default_dtype(previous)
+
+
+def _materialize_sharded(model, name, kwargs, mesh, plan, device):
+    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
+    tp, rank = mesh.size(), mesh.get_local_rank()
+    tp_plan = derive_tp_plan(model, tp, plan)
+    shards = {}
+    for region in tp_plan.regions:
+        for proj in region.projs:
+            weight, base = _weight(proj.module)
+            col = proj.style == COLWISE
+            shards[id(weight)] = (proj, 0 if col else 1, proj.parts if col else (weight.shape[1],))
+            if base.bias is not None and col:
+                shards[id(base.bias)] = (proj, 0, proj.parts)
+    index = _checkpoint_index(name, kwargs)
+    reader = _SliceReader(index)
+    slots = {}
+    for module_name, module in model.named_modules(remove_duplicate = False):
+        for pname, p in module._parameters.items():
+            if p is not None:
+                entry = slots.setdefault(id(p), (p, [], []))
+                entry[1].append((module, pname))
+                entry[2].append(f"{module_name}.{pname}" if module_name else pname)
+    sharded_numel = full_numel = 0
+    for pid, (old, where, names) in slots.items():
+        key = _checkpoint_key(names, model, index)
+        if key is None:
+            raise ValueError(
+                f"Unsloth: tensor parallel sharded loading found no checkpoint tensor for '{names[0]}'; load "
+                "this model without sharded loading (full load, then apply_tensor_parallel)."
+            )
+        if reader.shape(key) != tuple(old.shape):
+            raise ValueError(
+                f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
+                f"{tuple(old.shape)}."
+            )
+        shard = shards.get(pid)
+        if shard is None:
+            value = reader.full(key).to(device = device, dtype = old.dtype)
+            new = nn.Parameter(value, requires_grad = old.requires_grad)
+            full_numel += old.numel()
+        else:
+            proj, dim, parts = shard
+            local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
+            # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
+            # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
+            # them from the shard). apply_tensor_parallel wraps it into the DTensor.
+            new = nn.Parameter(local.contiguous(), requires_grad = old.requires_grad)
+            if len(parts) > 1:
+                new._unsloth_tp_parts = (dim, tuple(parts))
+            new._unsloth_tp_full_shape = tuple(old.shape)
+            new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
+            setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
+            sharded_numel += old.numel()
+        for module, pname in where:
+            module._parameters[pname] = new
+    skeleton = None
+    for module_name, module in model.named_modules():
+        for bname, buf in list(module._buffers.items()):
+            if buf is None or not buf.is_meta:
+                continue
+            key = f"{module_name}.{bname}" if module_name else bname
+            if bname not in module._non_persistent_buffers_set and key in index:
+                value = reader.full(key)
+            else:
+                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
+                value = skeleton.get_buffer(key)
+                if value.is_meta:
+                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
+            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    for region in tp_plan.regions:
+        for proj in region.projs:
+            base = _weight(proj.module)[1]
+            base.__dict__["_unsloth_tp_load_guard"] = base.register_forward_pre_hook(
+                _refuse_unapplied_forward
+            )
+    if isinstance(getattr(model, "hf_device_map", None), dict):
+        model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
+    stats = {
+        "tp": tp,
+        "rank": rank,
+        "sharded_numel": sharded_numel,
+        "replicated_numel": full_numel,
+        "read_bytes_full": reader.full_bytes,
+        "read_bytes_sliced": reader.slice_bytes,
+        "regions": len(tp_plan.regions),
+        "source": tp_plan.source,
+    }
+    model.__dict__["_unsloth_tp_load_stats"] = stats
+    return stats
+
+
+def _load_device(device_map, mesh):
+    if mesh.device_type != "cuda":
+        return torch.device(mesh.device_type)
+    if isinstance(device_map, dict) and len(device_map) == 1:
+        (value,) = device_map.values()
+        if isinstance(value, int) or (isinstance(value, str) and value.startswith("cuda")):
+            return torch.device(value if isinstance(value, str) else f"cuda:{value}")
+    if isinstance(device_map, (int, torch.device)) or (
+        isinstance(device_map, str) and device_map.startswith("cuda")
+    ):
+        return torch.device(f"cuda:{device_map}" if isinstance(device_map, int) else device_map)
+    return torch.device("cuda", torch.cuda.current_device())
+
+
+def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
+    if state["active"]:
+        return original(cls, name, *args, **kwargs)  # a nested load inside from_pretrained
+    config = kwargs.get("config")
+    for key in _UNSUPPORTED_LOAD_KWARGS:
+        if kwargs.get(key) or (key == "quantization_config" and getattr(config, key, None)):
+            raise ValueError(
+                f"Unsloth: tensor parallel sharded loading supports 16-bit safetensors checkpoints only "
+                f"(got {key}). Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, "
+                "or pass load_in_4bit = False."
+            )
+    mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
+    if mesh.ndim != 1:
+        raise ValueError("Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp']).")
+    device = _load_device(kwargs.get("device_map"), mesh)
+    kwargs = dict(kwargs, device_map = "meta")
+    state["active"] = True
+    try:
+        with torch.random.fork_rng(devices = []):
+            model = original(cls, name, *args, **kwargs)
+    finally:
+        state["active"] = False
+    text = _text_config(model)
+    if getattr(text, "quantization_config", None) or getattr(model.config, "quantization_config", None):
+        raise ValueError(
+            "Unsloth: tensor parallel sharded loading supports 16-bit checkpoints only; this checkpoint is "
+            "pre-quantized. Load it in full and call apply_tensor_parallel."
+        )
+    _materialize_sharded(model, name, kwargs, mesh, state["plan"], device)
+    state["models"].append(model)
+    return model
+
+
+def _world_mesh():
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    if not dist.is_initialized():
+        raise RuntimeError(
+            "Unsloth: tensor parallel sharded loading needs an initialized process group (torchrun) or a tp_mesh."
+        )
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    return init_device_mesh(device_type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
+
+
+@contextlib.contextmanager
+def sharded_loading(tp_mesh = None, plan = None):
+    """Inside this context every `from_pretrained` of a transformers model (FastLanguageModel's included)
+    builds the model on meta, then each rank reads from the safetensors checkpoint the replicated tensors
+    whole and only its own slices of the attention / MLP projections (DTensors with the full logical shape,
+    so get_peft_model sizes and seeds LoRA exactly as on one GPU). 16-bit checkpoints only.
+
+        with sharded_loading(mesh["tp"]):
+            model, tokenizer = FastLanguageModel.from_pretrained(name, load_in_4bit = False, ...)
+        model = FastLanguageModel.get_peft_model(model, ...)
+        apply_tensor_parallel(model, mesh["tp"])  # required before the first forward
+    """
+    from transformers import PreTrainedModel
+
+    descriptor = PreTrainedModel.__dict__["from_pretrained"]
+    original = descriptor.__func__
+    state = {"mesh": tp_mesh, "plan": plan, "models": [], "active": False}
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        return _from_pretrained_sharded(original, cls, pretrained_model_name_or_path, args, kwargs, state)
+
+    PreTrainedModel.from_pretrained = classmethod(from_pretrained)
+    try:
+        yield state
+    finally:
+        PreTrainedModel.from_pretrained = descriptor
+
+
+def load_tensor_parallel(model_name, tp_mesh = None, loader = None, plan = None, **kwargs):
+    """`loader(model_name, **kwargs)` under sharded_loading (default FastLanguageModel.from_pretrained, 16-bit).
+    Returns what the loader returns; raises if no model went through the sharded path."""
+    if loader is None:
+        from unsloth import FastLanguageModel
+
+        loader = FastLanguageModel.from_pretrained
+        kwargs.setdefault("load_in_4bit", False)
+    with sharded_loading(tp_mesh, plan) as state:
+        out = loader(model_name, **kwargs)
+    if not state["models"]:
+        raise RuntimeError(
+            "Unsloth: load_tensor_parallel's loader did not call transformers from_pretrained; nothing was "
+            "loaded sharded."
+        )
+    return out

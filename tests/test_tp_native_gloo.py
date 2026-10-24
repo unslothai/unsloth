@@ -404,6 +404,77 @@ def _case_save_subgroup(rank, world, tmp):
     return {"error": _raised(lambda: tpn.save_tp_adapter(model, os.path.join(tmp, "out")))}
 
 
+def _save_checkpoint(arch, directory, overrides = None):
+    """A tiny random model saved as several safetensors files (index + shards), like a Hub checkpoint."""
+    repo, base_overrides = ARCHS[arch]
+    model = build(repo, {**base_overrides, **(overrides or {})}, lora = False)
+    model.generation_config.pad_token_id = None  # tiny repos ship -1, which save_pretrained rejects
+    model.save_pretrained(directory, max_shard_size = "1MB", safe_serialization = True)
+    return directory
+
+
+def _case_sharded_load(rank, world, tmp, arch, ckpt, lora_kwargs = None):
+    """sharded_loading + get_peft_model + apply_tensor_parallel vs a full load (1 process, and v1 TP)."""
+    from peft import LoraConfig, get_peft_model
+    from safetensors.torch import load_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+
+    def peft(model):
+        torch.manual_seed(1)
+        config = dict(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
+        config.update(lora_kwargs or {})
+        return get_peft_model(model, LoraConfig(**config)).eval()
+
+    ref = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw))
+    full_tp = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw))
+    tpn.apply_tensor_parallel(full_tp, mesh["tp"])
+    model = tpn.load_tensor_parallel(ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, **kw)
+    stats = dict(model._unsloth_tp_load_stats)
+    ids = _batch(ref)
+    unapplied = _raised(lambda: model(input_ids = ids))
+    model = peft(model)
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    # Every local tensor equals the v1 shard bitwise (weights, biases, LoRA, buffers).
+    a, b = full_tp.state_dict(), model.state_dict()
+    local = lambda t: t.to_local() if tpn._is_dtensor(t) else t  # noqa: E731
+    diffs = sorted(set(a) ^ set(b)) + [
+        k for k in a if k in b and not torch.equal(local(a[k]), local(b[k]))
+    ]
+    full_local = sum(local(p).numel() for p in full_tp.parameters())
+    sharded_local = sum(local(p).numel() for p in model.parameters())
+    from test_fsdp2_native_units import _load_native
+
+    try:
+        _load_native()._refuse_tensor_parallel_model(model)
+        fsdp2_refused = None
+    except RuntimeError as e:
+        fsdp2_refused = str(e)
+    ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
+    v1_out = _train(full_tp, ids, 3, tpn.tp_clip_grad_norm_)
+    tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
+    ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
+    ref.save_pretrained(ref_dir)
+    tpn.save_tp_adapter(model, tp_dir)
+    q = tpn._weight(model._unsloth_tp_plan.regions[0].projs[0].module)[0]
+    return {
+        "ref": ref_out,
+        "tp": tp_out,
+        "v1": v1_out,
+        "diffs": diffs,
+        "stats": stats,
+        "unapplied": unapplied,
+        "local_numel": (full_local, sharded_local),
+        "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
+        "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors")) if rank == 0 else None,
+        "local_q": (tuple(q.to_local().shape), tuple(q.shape), q.placements[0].dim),
+        "fsdp2_refused": fsdp2_refused,
+    }
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -411,6 +482,7 @@ CASES = {
     "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
+    "sharded_load": _case_sharded_load,
 }
 
 
@@ -630,3 +702,42 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
 def test_save_refuses_a_tp_mesh_smaller_than_the_world():
     for res in _spawn("save_subgroup", 2):
         assert res["error"] and "data parallel > 1 is outside v1" in res["error"], res
+
+
+@pytest.mark.parametrize(
+    "arch,world,overrides",
+    [
+        ("llama", 2, None),
+        ("llama_bias", 2, None),  # colwise biases sliced on read, row biases whole
+        ("phi3", 2, None),  # fused qkv [q, kv, kv] and packed gate_up read as per-part slices
+        ("gemma2", 2, None),  # tied embeddings, softcapping
+        ("qwen3", 4, {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 64}),
+    ],
+)
+def test_sharded_loading_matches_full_load(arch, world, overrides):
+    skip_unsupported(arch)
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint(arch, ckpt, overrides)
+        results = _spawn("sharded_load", world, arch = arch, ckpt = ckpt)
+    _check_parity(results, world)
+    for res in results:
+        assert res["diffs"] == [], res["diffs"][:6]
+        # The sharded load trains exactly like v1's full load + apply_tensor_parallel.
+        assert res["tp"][2] == res["v1"][2] and res["tp"][3] == res["v1"][3]
+        torch.testing.assert_close(res["tp"][0], res["v1"][0], rtol = 0, atol = 0)
+        assert res["unapplied"] and "call apply_tensor_parallel" in res["unapplied"], res["unapplied"]
+        stats = res["stats"]
+        # Only this rank's slices of the sharded projections were read; replicated tensors were read whole.
+        assert stats["read_bytes_sliced"] * world == stats["sharded_numel"] * 4, stats
+        assert stats["read_bytes_full"] == stats["replicated_numel"] * 4, stats
+        assert stats["sharded_numel"] > 0 and stats["regions"] > 0, stats
+        full_local, sharded_local = res["local_numel"]
+        assert full_local == sharded_local
+
+
+def test_sharded_loading_refuses_quantized_loads():
+    from transformers import AutoModelForCausalLM
+
+    for key in ("load_in_4bit", "quantization_config"):
+        with pytest.raises(ValueError, match = "16-bit safetensors checkpoints only"):
+            tpn.load_tensor_parallel(LLAMA, None, loader = AutoModelForCausalLM.from_pretrained, **{key: True})
