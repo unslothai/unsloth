@@ -726,9 +726,7 @@ def _probe_dtype(dtype: Any) -> Any:
 
 
 def _projection_dtype(proj: Any) -> Any:
-    """The dtype a Q (or fused QKV) projection computes in: a layerwise-casting hook's compute dtype, a quantized
-    linear's ``compute_dtype`` (diffusers' GGUFLinear), else its weight's or bias's dtype. None when only packed or
-    fp8 storage is readable."""
+    """Compute dtype of a Q/QKV projection; None when only packed or fp8 storage is readable."""
     registry = getattr(proj, "_diffusers_hook", None)
     get_hook = getattr(registry, "get_hook", None)
     if callable(get_hook):
@@ -748,10 +746,8 @@ def _projection_dtype(proj: Any) -> Any:
 
 
 def _attention_dtype(module: Any) -> Any:
-    """The dtype attention computes in, read off the attention projections (``to_q``, or a fused ``to_qkv``) only.
-    Neither the module's first parameter nor an attention module's other parameters: MiniMax-H3 registers an fp32
-    ``proj_in`` stem first, and Krea-2 / FLUX.3 keep ``norm_q`` / ``norm_k`` in fp32, while the blocks and their
-    attention run in bf16. None when no projection says."""
+    """Read only ``to_q`` / ``to_qkv``: MiniMax-H3's ``proj_in`` and Krea-2 / FLUX.3's ``norm_q``/``norm_k`` are fp32
+    while attention runs in bf16."""
     with contextlib.suppress(Exception):
         for sub in module.modules():
             proj = getattr(sub, "to_q", None)
@@ -802,9 +798,7 @@ _PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
 
 
 def _rocm_attention_dtype(pipe: Any) -> Any:
-    """The compute dtype the SDPA probe should run at: the denoiser's attention projection dtype, else its first
-    parameter outside the fp32-pinned modules, else the pipeline's, else the denoiser's first parameter; None (the
-    probe's fp16 default) when only a quantized storage dtype is readable."""
+    """SDPA probe dtype; None (probe's fp16 default) when only quantized storage is readable."""
     from . import diffusion_multigpu as mg
 
     modules = [m for m in (getattr(pipe, n, None) for n in mg.DENOISER_ATTRS) if m is not None]
@@ -846,8 +840,7 @@ def _rocm_sdpa_math_only(
 
 
 def _rocm_fused_sdpa_kernels(ordinal: int, dtype: Any) -> Optional[tuple[str, ...]]:
-    """The fused SDPA kernels that ran on this card at this dtype, read-only (the cached probe answer when the card was
-    already asked); None when the probe did not answer or the ROCm fused-SDPA guard would not act."""
+    """Fused SDPA kernels that ran on this card (read-only); None if unanswered or the guard would not act."""
     try:
         from types import SimpleNamespace
 
@@ -889,8 +882,7 @@ def _rocm_drop_math_only(
         return cards
     dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype, read_only = True))
     mismatched: list[int] = []
-    # The fused switches are process-wide, so the kept cards must share a fused kernel with the primary: a secondary
-    # that would empty the common set is dropped like a math-only one (an unanswered card adds no constraint).
+    # Switches are process-wide: a secondary that would empty the common fused set is dropped like a math-only one.
     common = _rocm_fused_sdpa_kernels(primary, dtype)
     if common:
         for o in cards:
@@ -913,8 +905,7 @@ def _rocm_drop_math_only(
         )
     kept = tuple(o for o in cards if o not in dropped)
     if kept:
-        # The secondaries were only asked: a kept one runs blocks, so its failed fused kernels are turned off as the
-        # primary's were at load.
+        # Secondaries were probed read-only; apply the guard now that they run blocks.
         with contextlib.suppress(Exception):
             from .diffusion_attention import guard_rocm_fused_sdpa_cards
             guard_rocm_fused_sdpa_cards([f"cuda:{int(o)}" for o in (primary, *kept)], dtype, logger)

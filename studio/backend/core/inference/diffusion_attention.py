@@ -159,8 +159,7 @@ _SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def read_only_sdpa_probe():
-    """Capability checks inside report what a card runs without applying the ROCm fused-SDPA guard. The answer is
-    still cached, and ``guard_rocm_fused_sdpa`` applies it if that card is later loaded onto."""
+    """Probes inside cache their answer but do not apply the ROCm fused-SDPA guard."""
     token = _SDPA_PROBE_READ_ONLY.set(True)
     try:
         yield
@@ -178,7 +177,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer, unless it only asked; fp32 never runs fused kernels.
+        # fp32 never runs fused kernels.
         if (
             not _SDPA_PROBE_READ_ONLY.get()
             and _rocm_guard_allowed()
@@ -422,9 +421,7 @@ def guard_rocm_fused_sdpa_cards(
     dtype: Any,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """The guard for every card a layer split runs blocks on: the switches are process-wide, so only a kernel that ran
-    on ALL of them stays on. Reads each card's probe answer read-only (cached when the split already asked); a card
-    that did not answer is skipped, and fp32 never runs fused kernels."""
+    """Guard for all layer-split cards: the switches are process-wide, so only kernels that ran on ALL stay on."""
     from types import SimpleNamespace
 
     if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
