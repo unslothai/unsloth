@@ -155,7 +155,7 @@ def _unregister_cp_sharding_rules() -> None:
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
-    HYBRID_ATTENTION_CLASSES,
+    ULYSSES_ATTENTION_CLASSES,
     check_ulysses_mixer_heads,
     install_hf_attention_wrapper,
     is_ulysses_mixer,
@@ -226,11 +226,13 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
     mixers = _stateful_mixers(model)
     return (
         backend == "ulysses"
-        and bool(mixers)
+        and bool(modules)
         and all(is_ulysses_mixer(m) for m, _ in mixers)
-        # Kimi-Linear names its delta attention layers self_attn too.
+        # Kimi-Linear and MiniMax name their linear attention layers self_attn too.
         and all(
-            type(m).__name__ in HYBRID_ATTENTION_CLASSES for m in modules if not is_ulysses_mixer(m)
+            type(m).__name__ in ULYSSES_ATTENTION_CLASSES
+            for m in modules
+            if not is_ulysses_mixer(m)
         )
         and _hybrid_config_blocker(model) is None
     )
@@ -249,8 +251,8 @@ def _check_stateful_mixers(model, backend, size) -> None:
     unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet and Kimi delta "
-            f"linear attention only, not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet, Kimi delta and "
+            f"Lightning linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
         check_ulysses_mixer_heads(module, size)
@@ -299,7 +301,10 @@ class ContextParallelManager:
                 if is_ulysses_mixer(module):
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
             for name, module in model.named_modules():
-                if name.endswith("self_attn") and type(module).__name__ in HYBRID_ATTENTION_CLASSES:
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in ULYSSES_ATTENTION_CLASSES
+                ):
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
@@ -764,17 +769,26 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 size,
             )
         _check_stateful_mixers(self.model, backend, size)
-        blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
+        # MiniMax-M2 has no stateful mixer but runs on the same Ulysses attention path.
+        hf_ulysses = (
+            backend == "ulysses"
+            and isinstance(self.model, torch.nn.Module)
+            and any(type(m).__name__ in ULYSSES_ATTENTION_CLASSES for m in self.model.modules())
+        )
+        blocker = (
+            _hybrid_config_blocker(self.model)
+            if _stateful_mixers(self.model) or hf_ulysses
+            else None
+        )
         if blocker is not None:
             raise NotImplementedError(
-                "Unsloth: context parallelism on linear attention hybrids does not support "
-                f"{blocker}."
+                f"Unsloth: Ulysses context parallelism does not support {blocker}."
             )
         if not _supports_context_parallel(self.model, backend):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention "
-                "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet and Kimi-Linear "
-                "hybrids with Ulysses."
+                "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear and "
+                "MiniMax (M1 hybrids, M2)."
             )
         accelerator = getattr(self, "accelerator", None)
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
