@@ -225,6 +225,7 @@ from .diffusion_memory import (
     whole_tier_request_costs,
     pin_denoiser_for_call,
     measured_image_runtime_mib,
+    WHOLE_TIER_ATTR,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -3139,6 +3140,15 @@ def _whole_tier_for_request(
         state, "transformer_cache", None
     ):
         return None
+    try:
+        family, label, speed = _live_peak_identity(state)
+    except Exception:  # noqa: BLE001
+        return None
+    tier_info = getattr(pipe, WHOLE_TIER_ATTR, None)
+    if isinstance(tier_info, dict) and speed == SPEED_OFF:
+        # The eager renders' key, kept for after a deferred profile engages: it rewrites the load's key (speed tier,
+        # attention backend), and a render after a graph capture records under no key at all.
+        tier_info.setdefault("eager_peak_label", without_cfg_off(str(label)))
     costs = whole_tier_request_costs(
         pipe,
         steps = steps,
@@ -3155,10 +3165,6 @@ def _whole_tier_for_request(
         return None
     if not _graphs_settled_eager(state):
         return None
-    try:
-        family, label, speed = _live_peak_identity(state)
-    except Exception:  # noqa: BLE001
-        return None
     if speed is None:
         return None
     # A deferred compile tier records nothing: its first renders ran eager (speed ``off``) under the load's label,
@@ -3171,6 +3177,11 @@ def _whole_tier_for_request(
         if CFG_OFF_PART in str(label).split("|"):
             loaded_label = f"{without_cfg_off(loaded_label)}|{CFG_OFF_PART}"
         keys += [(loaded_label, tier) for tier in (loaded[2], SPEED_OFF) if tier is not None]
+    eager_label = tier_info.get("eager_peak_label") if isinstance(tier_info, dict) else None
+    if eager_label:
+        if CFG_OFF_PART in str(label).split("|"):
+            eager_label = f"{eager_label}|{CFG_OFF_PART}"
+        keys.append((eager_label, SPEED_OFF))
     activation = None
     for key_label, tier in dict.fromkeys(keys):
         activation = measured_image_runtime_mib(

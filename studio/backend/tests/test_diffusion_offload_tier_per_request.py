@@ -304,3 +304,20 @@ def test_pin_for_call_needs_the_room(monkeypatch):
     assert release is not None
     release()
     assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_request_gate_keeps_the_eager_key_once_the_profile_rewrites_the_load_key(
+    _learned, monkeypatch
+):
+    """On an RTX PRO 6000 the deferred profile rewrites the load's own key too (cuDNN attention, the compiled tier),
+    and nothing records after its graph capture: the key the eager renders recorded under is remembered."""
+    live = {"id": ("flux.2-klein", *RECORDED)}
+    monkeypatch.setattr(dif, "_live_peak_identity", lambda state: live["id"])
+    state = _state()
+    state.pipe._unsloth_peak_identity = ("flux.2-klein", *RECORDED)
+    assert _request(state, steps = 2) is None  # streamed, but the eager key is kept
+    live["id"] = LIVE
+    state.pipe._unsloth_peak_identity = LIVE
+    _learned.clear()
+    assert _request(state)[2] == 2560
+    assert _learned[-1] == (*RECORDED, "pre_decode")
