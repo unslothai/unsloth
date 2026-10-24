@@ -1442,6 +1442,24 @@ def test_a_pageable_launch_keeps_every_token_including_its_lock():
     assert out == argv and overridden == []
 
 
+class TestParseBatchOverride:
+    def test_last_spelling_wins(self):
+        from core.inference.llama_server_args import parse_batch_override
+
+        assert parse_batch_override(["--batch-size", "8192"]) == 8192
+        assert parse_batch_override(["-b", "512", "--batch-size=4096"]) == 4096
+        assert parse_batch_override(["--batch_size", "2048"]) == 2048
+
+    def test_absent_or_unusable_is_none(self):
+        from core.inference.llama_server_args import parse_batch_override
+
+        assert parse_batch_override(None) is None
+        assert parse_batch_override(["-c", "8192"]) is None
+        assert parse_batch_override(["--batch-size", "many"]) is None
+        assert parse_batch_override(["--batch-size", "0"]) is None
+        assert parse_batch_override(["--batch-size"]) is None
+
+
 @pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
 def test_custom_projector_is_allowed(flag):
     args = [flag, "/models/custom projector.gguf"]

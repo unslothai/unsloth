@@ -153,8 +153,16 @@ import { claimUntitledForkTitle } from "./utils/untitled-fork-title";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import type { OpenAIChatChunk } from "./types/api";
 import {
+  type AdmissionStatus,
+  admissionStatusLabel,
+} from "./utils/admission-status";
+import {
   budgetImpliesTruncation,
+  completedAfterGivingUp,
+  isPreemptGaveUp,
+  recomputedModelIds,
   restoredAssistantStatus,
+  withRecomputedModel,
 } from "./utils/continuation";
 import {
   generationChunkCountsTowardTiming,
@@ -1652,6 +1660,10 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
+      const preemptGaveUp =
+        isPreemptGaveUp(
+          currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+        ) && !completedAfterGivingUp(run.finishReason);
       let nextMetadata = generationRecoveryMetadata({
         current: currentMetadata,
         runId,
@@ -1659,6 +1671,7 @@ function scheduleGenerationRecovery(
         cursor,
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
+        preemptGaveUp,
         quoteCut,
         firstChunkAt,
         totalChunks,
@@ -1782,6 +1795,7 @@ function scheduleGenerationRecovery(
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
+                _admissionStatus?: AdmissionStatus;
                 _reasoningDurationMs?: unknown;
                 usage?: {
                   prompt_tokens?: unknown;
@@ -1801,6 +1815,32 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              if (chunk._admissionStatus !== undefined) {
+                if (chunk._admissionStatus === "recomputed") {
+                  const recomputedOn = update.run.requestPayload?.model;
+                  currentMetadata = {
+                    ...currentMetadata,
+                    preemptRecomputed: true,
+                    ...(typeof recomputedOn === "string" && recomputedOn
+                      ? {
+                          preemptRecomputedModelIds: withRecomputedModel(
+                            recomputedModelIds(currentMetadata),
+                            recomputedOn,
+                          ),
+                        }
+                      : {}),
+                  };
+                  continue;
+                }
+                useChatRuntimeStore
+                  .getState()
+                  .setToolStatus(
+                    threadId,
+                    admissionStatusLabel(chunk._admissionStatus),
+                    serverCancel,
+                  );
+                continue;
+              }
               if ("_reasoningDurationMs" in chunk) {
                 currentMetadata = recoveredReasoningSummaryMetadata(
                   currentMetadata,
@@ -1958,6 +1998,7 @@ function scheduleGenerationRecovery(
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
+      store.setToolStatus(threadId, null, serverCancel);
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
     }
@@ -3850,6 +3891,47 @@ function ThreadScopedSettingsSync({
 
 // Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
 // none, and a retried thread's newest stored leaf is not what the runtime would send.
+/** The recompute note follows the visible branch's last answer, not a thread flag that retries clobbered. */
+function VisibleAnswerRecomputeSync({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  // Scoped by model. One primitive per selector: a fresh object re-renders forever (React error
+  // 185).
+  const lastAnswer = useAuiState(({ thread }) => {
+    const messages = thread.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return messages[i];
+    }
+    return null;
+  });
+  const custom = lastAnswer?.metadata?.custom as Record<string, unknown> | undefined;
+  const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
+  const details = custom?.responseDetails as { modelId?: unknown } | undefined;
+  const answerRecomputed = custom?.preemptRecomputed === true;
+  const recomputedOn = recomputedModelIds(custom);
+  // No model known: keep the note, which only adds a caveat.
+  const answerModelId =
+    typeof usage?.modelId === "string"
+      ? usage.modelId
+      : typeof details?.modelId === "string" && details.modelId
+        ? details.modelId
+        : null;
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const recomputed =
+    answerRecomputed &&
+    (recomputedOn.length > 0
+      ? recomputedOn.includes(checkpoint)
+      : answerModelId === null || answerModelId === checkpoint);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+
+  useEffect(() => {
+    if (!enabled) return;
+    useChatRuntimeStore.getState().setPreemptRecompute(activeThreadId, recomputed);
+  }, [activeThreadId, enabled, recomputed]);
+
+  return null;
+}
+
 function ActiveBranchRegistrar({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -4622,6 +4704,9 @@ export function ChatRuntimeProvider({
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
         <ActiveBranchRegistrar
+          enabled={modelType === "base" && !pairId && !backgrounded}
+        />
+        <VisibleAnswerRecomputeSync
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
         <ThreadContextUsageRecount

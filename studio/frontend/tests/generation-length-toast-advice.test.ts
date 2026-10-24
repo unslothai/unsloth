@@ -39,3 +39,16 @@ test("the two remedies really are different text, so passing it through matters"
   assert.match(chatApi, HIDDEN_WINDOW_REMEDY);
   assert.match(chatApi, BOTH_REMEDIES);
 });
+
+test("a turn the backend gave up on is not thrown as a reasoning-only length error", () => {
+  const chatApi = readSrc("features/chat/api/chat-api.ts");
+  assert.match(chatApi, /let sawPreemptGaveUp = false;/);
+  assert.match(
+    chatApi,
+    /const throwIfReasoningOnlyLength = \(\) => \{\s*if \(sawPreemptGaveUp\) return;/,
+  );
+  assert.match(
+    chatApi,
+    /if \(isPreemptGaveUp\(\(parsed as OpenAIChatChunk\)\.context_truncated\)\) \{\s*sawPreemptGaveUp = true;/,
+  );
+});

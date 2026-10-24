@@ -412,12 +412,38 @@ export const BUDGET = {
   // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
   // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
   // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
-  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
-  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
-  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
-  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
-  transferBytes: 2_088_800,
-  rawBytes: 6_933_450,
+  // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
+  // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
+  // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
+  // raised by that.
+  // The exact concurrency setting, its chat chip and their strings in every eager locale add 4.5 KB
+  // raw / 1.2 KB transfer to the eager settings and chat chunks (6,572.9 -> 6,577.4 KB raw,
+  // 1,976.5 -> 1,977.7 KB transfer against bfab55021, one machine and build), raised by that.
+  // Together they measure 7,058 B raw / 2,903 B transfer against c77695db2 (6,743,283 -> 6,750,341 B
+  // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
+  // Re-measured merged with main at 3ba06aa596: +7,310 B raw / +2,259 B transfer (6,886,472 -> 6,893,782 B raw,
+  // 2,075,354 -> 2,077,613 B transfer, one machine and build, Node 24, 98 chunks). Set to main's limits plus that
+  // growth, keeping main's 528 B raw / 196 B transfer above the measured build.
+  // Merged with main at c0c0759bb9, which adds the passive Settings update check (+24 B raw / +43 B transfer):
+  // raised by that.
+  // Merged with main at f76dd22958, whose limits rose by +1,892 B raw / +702 B transfer since c0c0759bb9: raised by that.
+  // Merged with main at 3569dfa8a5, whose limits rose by +16,304 B raw / +4,589 B transfer since f76dd22958: raised by that.
+  // Merged with main at 9880bc0af9, whose limits rose by +11,301 B raw / +3,212 B transfer since 3569dfa8a5: raised by that.
+  // Merged with main at aab980fe77. CI on the previous head measured 6,765.1 KB raw / 2,037.8 KB transfer (over by 3.5 KB / 0.3 KB:
+  // the summed limits under-counted). This merge measured 6,766.0 KB raw / 2,038.1 KB transfer (Node 24, 97 chunks): set to that plus about 200 B.
+  // Merged with main at 96ccc9a256: measured 6,767.9 KB raw / 2,038.8 KB transfer (Node 24, 98 chunks), set to that plus about 200 B.
+  // Merged with main at 14e0178e00: measured 6,770.5 KB raw / 2,039.7 KB transfer (Node 24, 98 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at fb104d2b57: measured 6,774.6 KB raw / 2,041.2 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 74b699513c: measured 6,777.4 KB raw / 2,042.0 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 54ddc6932e: measured 6,770.7 KB raw / 2,040.7 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 500 B raw / 200 B transfer (CI measures about 100 B over a local build).
+  // Merged with main at 50bb320f7d: measured 6,771.6 KB raw / 2,041.0 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 500 B raw / 200 B transfer (CI measures about 100 B over a local build).
+  transferBytes: 2_090_200,
+  rawBytes: 6_934_700,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

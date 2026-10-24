@@ -103,6 +103,7 @@ import {
 import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
 import { DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED } from "../utils/keep-running-when-tab-closed";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
+import type { ExactConcurrencyState } from "../lib/exact-concurrency";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -2774,9 +2775,13 @@ type ChatRuntimeStore = {
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
+  /** "off" until a status says otherwise, so a silent backend never claims the guarantee. */
+  loadedExactConcurrency: ExactConcurrencyState;
+  loadedRequestedExactConcurrency: string | null;
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
+  preemptRecomputedByThreadId: Record<string, boolean>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
    *  Apply can tell an explicit pin from Auto. */
@@ -2966,6 +2971,7 @@ type ChatRuntimeStore = {
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
+  setPreemptRecompute: (threadId: string | null, recomputed: boolean) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setDeduplicateToolCalls: (enabled: boolean) => void;
@@ -4622,6 +4628,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvasByThreadId: {},
+  preemptRecomputedByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   deduplicateToolCalls: true,
@@ -4704,6 +4711,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
+  loadedExactConcurrency: "off",
+  loadedRequestedExactConcurrency: null,
   customContextLength: null,
   loadedCustomContextLength: null,
   defaultChatTemplate: null,
@@ -5162,6 +5171,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      move(state.preemptRecomputedByThreadId, "preemptRecomputedByThreadId");
       // Its parked calls too, or the row never trades its spinner for the approval mark.
       if (moved.runningByThreadId) {
         const confirmations = adoptFirstTurnConfirmations(
@@ -5639,6 +5649,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolLiveOutput: {},
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
+      preemptRecomputedByThreadId: {},
       kvCacheDtype: null,
       mlxKvQuant: null,
       loadedMlxKvQuantRequested: null,
@@ -5710,6 +5721,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedGpuIndexKind: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
+      loadedExactConcurrency: "off",
+      loadedRequestedExactConcurrency: null,
       customContextLength: null,
       loadedCustomContextLength: null,
       defaultChatTemplate: null,
@@ -6338,6 +6351,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.activeDiffusionCanvasByThreadId };
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
+    }),
+  setPreemptRecompute: (threadId, recomputed) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if ((state.preemptRecomputedByThreadId[key] === true) === recomputed) return state;
+      const next = { ...state.preemptRecomputedByThreadId };
+      if (recomputed) next[key] = true;
+      else delete next[key];
+      return { preemptRecomputedByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>

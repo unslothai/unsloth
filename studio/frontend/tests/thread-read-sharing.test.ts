@@ -66,6 +66,8 @@ function harness() {
         CHAT_HISTORY_REVISION_KEY: "unsloth_chat_history_revision",
       },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
+      "../utils/continuation": { isPreemptGaveUp: () => false },
+      "../utils/admission-status": { readAdmissionComment: () => null },
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },

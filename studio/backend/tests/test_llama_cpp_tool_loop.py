@@ -2881,6 +2881,35 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_a_reasoning_only_continuation_skips_gguf_rag_autoinject(monkeypatch):
+    """The gate read `trailing_assistant_text`, which is "" for a chat paused inside its
+    thought, so autoinject appended a tool exchange behind the partial and the resume, no
+    longer trailing, sent neither continuation flag and started a fresh answer."""
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("RAG autoinject must not move a resumable partial")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "use docs"},
+                {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 1,
+            continue_final_message = True,
+            session_id = "sess",
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+    assert payloads and payloads[0].get("continue_final_message") is True, payloads
+
+
 def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     """Autoinjected RAG counts as a prior tool execution, so the post-tool re-prompt cap still applies."""
 
@@ -4740,6 +4769,69 @@ def test_context_usage_frame_absent_on_a_single_pass(monkeypatch):
     assert not [e for e in events if e.get("type") == "context_usage"]
 
 
+def test_context_usage_frame_rides_an_overlapped_round_once(monkeypatch):
+    """An overlapped round refreshes the meter once, after its first tool starts, and
+    still runs each of its calls exactly once."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    first_stream = _streamed_parallel_tool_calls(
+        [
+            ("web_search", {"query": "cats"}, "call_1"),
+            ("web_search", {"query": "dogs"}, "call_2"),
+        ]
+    )
+    first_stream.insert(
+        -1, _usage_done({"prompt_tokens": 100, "completion_tokens": 30}, "tool_calls")
+    )
+    streams = [
+        first_stream,
+        [
+            _sse({"content": "Found both."}),
+            _usage_done({"prompt_tokens": 170, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    monkeypatch.setattr(
+        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda **_kwargs: True
+    )
+    calls = _record_tool_calls(monkeypatch, "result")
+    started: list[str] = []
+    real_start = llama_cpp_module._start_tool_call
+
+    def counting_start(decision, *args, **kwargs):
+        started.append(decision.tool_call_id)
+        return real_start(decision, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module, "_start_tool_call", counting_start)
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats and dogs"}],
+        [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+
+    assert len(payloads) == 2
+    assert started == ["call_1", "call_2"], "the round did not overlap"
+    assert sorted(args["query"] for _, args in calls) == ["cats", "dogs"]
+    frames = [e for e in events if e.get("type") == "context_usage"]
+    assert frames == [
+        {
+            "type": "context_usage",
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "context_tokens": 130,
+            "cached_tokens": 0,
+        }
+    ]
+    order = [
+        e["type"] for e in events if e.get("type") in ("context_usage", "tool_start", "tool_end")
+    ]
+    assert order.index("context_usage") > order.index("tool_start")
+    assert order.index("context_usage") < order.index("tool_end")
+
+
 def test_context_usage_event_reads_timings_when_usage_is_missing():
     """timings.prompt_n leaves out the KV-cache hit that usage.prompt_tokens includes."""
     from core.inference.llama_cpp import _context_usage_event
@@ -5154,7 +5246,8 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    # Calls now run together: the cap must keep the FIRST calls, in any completion order.
+    assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
     (notice,) = [
         m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")
     ]
@@ -5743,10 +5836,7 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         max_tool_iterations = 2,
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -5789,10 +5879,7 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         max_tool_iterations = 2,
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -5868,7 +5955,7 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
         max_tool_iterations = 2,
     )
 
-    assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
+    assert sorted(call["query"] for call in calls) == ["a", "b", "c"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -6561,7 +6648,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
             ],
             max_tool_iterations = 1,
             permission_mode = "off",
-            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+            on_conversation_grew = lambda conversation, _tools: seen.append(
+                copy.deepcopy(conversation)
+            ),
         )
     )
 
@@ -6580,6 +6669,93 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+def test_the_final_pass_is_recosted_with_the_catalogue_it_sends(monkeypatch):
+    first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
+    final_stream = [_sse({"content": "6.10."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "Linux 6.10."
+    )
+    seen: list = []
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Search for the kernel version."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_conversation_grew = lambda _conversation, tools: seen.append(tools),
+        )
+    )
+    sent = [t["function"]["name"] for t in payloads[-1].get("tools") or []]
+    assert sent, "the final pass this test is about carries the catalogue"
+    priced = [t["function"]["name"] for t in seen[-1] or []]
+    assert priced == sent, f"the final pass sends {sent} but was priced with {priced}"
+
+
+def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
+    first_turn = _two_edits_in_one_turn()
+    first_turn[0] = first_turn[0].replace(
+        'game.html\\", \\"old_string\\": \\"TODO', 'readme.md\\", \\"old_string\\": \\"TODO'
+    )
+    assert "readme.md" in first_turn[0]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_turn, [_sse({"content": "Done."}), _done()]],
+        payloads,
+    )
+    monkeypatch.setattr(
+        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda **_kwargs: True
+    )
+
+    def fake_count_chat_tokens(messages, *_args, **_kwargs):
+        return len(json.dumps(messages, default = str)) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count_chat_tokens)
+    executed: list[str] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append(str(arguments.get("old_string")))
+        return "Wrote game.html"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    import core.inference.llama_cpp as llama_cpp_module
+
+    compacted: list[str] = []
+    real_compact = llama_cpp_module.compact_executed_call_arguments
+
+    def recording_compact(conversation, tool_call_id):
+        if sys._getframe(1).f_code.co_name == "_settle_tool_call":
+            compacted.append(tool_call_id)
+        return real_compact(conversation, tool_call_id)
+
+    monkeypatch.setattr(llama_cpp_module, "compact_executed_call_arguments", recording_compact)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Write the game"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert executed and executed[0] == "", "the oversized call was refused instead of run"
+    assert (
+        "call_big" in compacted
+    ), "the first call's promise was dropped by the second's preparation"
+    sent = json.dumps(payloads[-1]["messages"], default = str)
+    assert _BIG_BODY not in sent
 
 
 def _mcp_image_result() -> str:
