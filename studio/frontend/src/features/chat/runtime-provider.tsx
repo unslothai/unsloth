@@ -95,6 +95,7 @@ import {
   isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
+  isTextAttachmentName,
   readTextAttachmentOnce,
   UndecodableTextError,
 } from "./text-attachment-accept";
@@ -110,6 +111,7 @@ import {
 import {
   CHAT_IMAGE_ACCEPT,
   convertedImageType,
+  getChatImageSizeError,
   normalizeChatImage,
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -147,6 +149,7 @@ import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
+import { claimUntitledForkTitle } from "./utils/untitled-fork-title";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import type { OpenAIChatChunk } from "./types/api";
 import {
@@ -299,6 +302,21 @@ const pendingRunStartReadyByMessageId = new Map<
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
+function matchesAccept(file: { name: string; type: string }, accept: string): boolean {
+  if (accept === "*") return true;
+  const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  const mime = file.type.toLowerCase();
+  return accept.split(",").some((entry) => {
+    const token = entry.trim().toLowerCase();
+    if (token.startsWith(".")) return token === extension;
+    if (token.endsWith("/*")) return mime.startsWith(token.slice(0, -1));
+    return token === mime;
+  });
+}
+
+const UNSUPPORTED_ATTACHMENT_HINT =
+  "Attach images, audio, video, PDFs, Office and OpenDocument files, e-books, email, or text and code files.";
+
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
   private readonly getThreadIds: () => Array<string | null | undefined>;
@@ -311,11 +329,23 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     this.getThreadIds = getThreadIds;
   }
 
-  get accept(): string {
-    return this.delegate.accept;
-  }
+  // "*": the runtime's own check refuses silently, so add() toasts instead.
+  readonly accept = "*";
 
   add(state: { file: File }) {
+    let file = state.file;
+    if (!matchesAccept(file, this.delegate.accept) && isTextAttachmentName(file.name)) {
+      file = new File([file], file.name, {
+        type: "text/plain",
+        lastModified: file.lastModified,
+      });
+    }
+    if (!matchesAccept(file, this.delegate.accept)) {
+      const reason = `${file.name} can't be attached`;
+      toast.error(reason, { description: UNSUPPORTED_ATTACHMENT_HINT });
+      throw new Error(reason);
+    }
+    if (file !== state.file) state = { ...state, file };
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
     // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
     // first, as the native readers do. Every other file goes straight through.
@@ -470,9 +500,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
 
-    const maxSize = 20 * 1024 * 1024;
-    if (picked.size > maxSize) {
-      throw new Error("Image size exceeds 20MB limit");
+    const sizeError = getChatImageSizeError(picked);
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
     }
     const attachment = {
       id: crypto.randomUUID(),
@@ -1488,6 +1519,7 @@ function scheduleGenerationRecovery(
             approvalId,
             sessionId,
             `${sessionId || "_default"}:${threadId}`,
+            threadId,
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),
@@ -4422,9 +4454,29 @@ function ThreadBackendAutosave({
     };
   }, []);
 
+  const nameUntitledFork = useCallback(
+    async (threadId: string) => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) return;
+      let item;
+      try {
+        item = runtime.threads.getItemById(threadId);
+      } catch {
+        return;
+      }
+      const { status, remoteId, title } = item.getState();
+      if (status !== "regular" || !remoteId || title !== "New Chat") return;
+      const record = await getStoredChatThread(remoteId).catch(() => undefined);
+      if (!claimUntitledForkTitle(record)) return;
+      await item.generateTitle().catch(() => undefined);
+    },
+    [aui],
+  );
+
   useAuiEvent("thread.runEnd", ({ threadId }) => {
     checkpoints().stop(threadId);
     queueSave(threadId);
+    void nameUntitledFork(threadId);
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {

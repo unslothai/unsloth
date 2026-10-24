@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FLUX2_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux2"
@@ -45,7 +46,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(torch.version, "hip", None):
+    if is_rocm_torch(torch):
         return False
     return _kernel() is not None
 

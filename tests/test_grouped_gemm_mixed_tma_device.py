@@ -46,6 +46,7 @@ class _Kernel:
     def __getitem__(self, grid):
         def launch(**kwargs):
             self.launches.append(self.guard_stack[-1] if self.guard_stack else None)
+            self.last_kwargs = kwargs
             return types.SimpleNamespace(name = "k", n_regs = 0, n_spills = 0, metadata = {})
 
         return launch
@@ -329,27 +330,148 @@ def test_benchmark_postprocesses_the_per_card_tuner():
     assert kernels and all(id(n) in wrapped for n in kernels)
 
 
-def test_identical_cards_tune_a_cold_shape_once(monkeypatch):
-    # Two cards of one model missing the same shape at once: the second waits for the first's result.
+def test_identical_cards_launch_concurrently(monkeypatch):
+    # Per-device autograd threads launch on two identical cards at once: a cached launch on one card
+    # must not wait on the other card's launch or tuning (no model-wide lock around run).
     import threading
-    import time
 
     module, _ = _load(monkeypatch, [H100, H100])
-    tuned = []
+    barrier = threading.Barrier(2, timeout = 5)
+    finished = []
 
     class Tuner(_Tuner):
         def run(self, key = "shape"):
-            if key not in self.cache:
-                tuned.append(key)
-                time.sleep(0.2)
-                self.cache[key] = "config"
-            return self.cache[key]
+            barrier.wait()  # both cards inside run at the same time, or BrokenBarrierError
+            finished.append(self.cache.get(key))
+            return self.cache.get(key)
 
     base = Tuner()
     tuners = [module._autotuner_for(base, torch.device("cuda", i)) for i in (0, 1)]
-    threads = [threading.Thread(target = t.run) for t in tuners]
+    tuners[0].cache["shape"] = "h100-config"  # warm: shared by both identical cards
+    errors = []
+
+    def launch(tuner):
+        try:
+            tuner.run()
+        except threading.BrokenBarrierError as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target = launch, args = (t,)) for t in tuners]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(5)
-    assert tuned == ["shape"]
+        t.join(10)
+    assert not errors and finished == ["h100-config", "h100-config"]
+
+
+def test_sm_count_is_read_once_per_card(monkeypatch):
+    module, _ = _load(monkeypatch, [H100, A100])
+    reads = []
+    real = module.torch.cuda.get_device_properties
+
+    def counting(device = None):
+        reads.append(device)
+        return real(device)
+
+    monkeypatch.setattr(module.torch.cuda, "get_device_properties", counting)
+    for _ in range(3):
+        assert module._num_sms(torch.device("cuda", 1)) == 4
+        assert module._num_sms(torch.device("cuda", 0)) == 4
+    assert sorted(reads) == [0, 1]
+
+
+def _real_autotune_cache():
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_ac_spoof", ROOT / "unsloth" / "kernels" / "moe" / "autotune_cache.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SMEM = {H100: 232448, A100: 166912, L4: 101376}
+TILES = ("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "num_stages")
+
+
+def _launch_tiles(
+    monkeypatch,
+    caps,
+    operand_index,
+    M,
+    N,
+    K,
+    stages,
+    dtype = torch.bfloat16,
+):
+    """Run the three non-autotuned impls on cuda:operand_index (current: cuda:0); return each launch's tiles."""
+    module, _ = _load(monkeypatch, caps)
+    real = torch.cuda.get_device_properties
+
+    def props(device = None):
+        p = real(device)
+        index = 0 if device is None else getattr(device, "index", device)
+        p.shared_memory_per_block_optin = SMEM[caps[index]]
+        return p
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda device = None: caps[0 if device is None else getattr(device, "index", device)],
+    )
+    ac = _real_autotune_cache()
+    monkeypatch.setattr(module, "_autotune_cache", lambda: ac)
+    E, T, Nd, Kd = 2, 8, 512, 512
+    tiles = dict(BLOCK_SIZE_M = M, BLOCK_SIZE_N = N, BLOCK_SIZE_K = K, num_stages = stages, num_warps = 8)
+    out = {}
+    with FakeTensorMode():
+        dev = torch.device("cuda", operand_index)
+        X = torch.empty(T, Kd, device = dev, dtype = dtype)
+        W = torch.empty(E, Nd, Kd, device = dev, dtype = torch.bfloat16)
+        dY = torch.empty(T, Nd, device = dev, dtype = dtype)
+        m_sizes = torch.empty(E, device = dev, dtype = torch.int32)
+        common = dict(m_sizes = m_sizes, gather_indices = None, topk = 1, autotune = False, **tiles)
+        kernels = sys.modules[f"{PKG}.kernels.forward"], sys.modules[f"{PKG}.kernels.backward"]
+        module._grouped_gemm_forward_impl(X = X, W = W, **common)
+        out["fwd"] = kernels[0]._grouped_gemm_forward_kernel.last_kwargs
+        module._grouped_gemm_dX_impl(dY = dY, W = W, **common)
+        out["dX"] = kernels[1]._grouped_gemm_dX_kernel.last_kwargs
+        module._grouped_gemm_dW_impl(X = X, dY = dY, **common)
+        per_expert = module._use_per_expert_dW_kernel()
+        dw_kernel = (
+            kernels[1]._grouped_gemm_dW_per_expert_kernel
+            if per_expert
+            else kernels[1]._grouped_gemm_dW_kernel
+        )
+        out["dW"] = dw_kernel.last_kwargs
+    return ac, {k: tuple(v[t] for t in TILES) for k, v in out.items()}
+
+
+def test_caller_tiles_fitted_for_the_current_card_are_refit_for_the_operand_card(monkeypatch):
+    # Released unsloth_zoo passes no device: an H100-fitted bf16 dX (64, 64, 256, 4) needs 122,880 B,
+    # over the L4's 101,376 B. The launch on the L4 operand shrinks it to fit; the H100 copy is untouched.
+    ac, got = _launch_tiles(monkeypatch, [H100, L4], 1, 64, 64, 256, 4)
+    assert (
+        ac._estimate_smem(
+            "dX", types.SimpleNamespace(**dict(zip(TILES, (64, 64, 256, 4)))), 2, 2, L4
+        )
+        > SMEM[L4]
+    )
+    assert got["dX"] == (64, 64, 256, 3)
+    for kind, tiles in got.items():
+        config = types.SimpleNamespace(**dict(zip(TILES, tiles)))
+        assert ac._estimate_smem(kind, config, 2, 2, L4) <= SMEM[L4]
+
+
+@pytest.mark.parametrize(
+    "caps, operand_index",
+    [
+        pytest.param([L4], 0, id = "one-gpu"),
+        pytest.param([H100, H100], 1, id = "same-model"),
+        pytest.param([H100, L4], 0, id = "operand-on-current"),
+    ],
+)
+def test_tiles_unchanged_on_one_gpu_or_the_same_model(monkeypatch, caps, operand_index):
+    _, got = _launch_tiles(monkeypatch, caps, operand_index, 64, 64, 256, 4)
+    assert got == {"fwd": (64, 64, 256, 4), "dX": (64, 64, 256, 4), "dW": (64, 64, 256, 4)}

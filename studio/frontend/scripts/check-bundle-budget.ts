@@ -412,12 +412,20 @@ export const BUDGET = {
   // Skill ZIP import/export (#14181) adds 2,721 B raw / 758 B transfer to the eager Skills dialog
   // and locale strings (6,929,934 -> 6,932,655 B raw, 2,087,782 -> 2,088,540 B transfer against
   // fb104d2b57, one machine and build, Node 22.23.2, unchanged at 99 chunks). Raised by that growth.
+<<<<<<< HEAD
   // Custom provider extra headers (#15097): the connection editor strings and extra-headers helpers in
   // the eager settings chunk add 7,374 B raw / 1,543 B transfer (6,932,655 -> 6,940,029 B raw,
   // 2,088,540 -> 2,090,083 B transfer against main, one machine and build). Raised to the measured
   // build plus the same 160 B raw / 189 B transfer margin.
   transferBytes: 2_090_272,
   rawBytes: 6_940_189,
+=======
+  // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
+  // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
+  // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
+  transferBytes: 2_088_701,
+  rawBytes: 6_933_109,
+>>>>>>> upstream/main
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
