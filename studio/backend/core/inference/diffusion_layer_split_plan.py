@@ -867,7 +867,14 @@ def _rocm_drop_math_only(
             MATH_ONLY_DECLINE,
             dtype,
         )
-    return tuple(o for o in cards if o not in dropped)
+    kept = tuple(o for o in cards if o not in dropped)
+    if kept:
+        # The secondaries were only asked: a kept one runs blocks, so its failed fused kernels are turned off as the
+        # primary's were at load.
+        with contextlib.suppress(Exception):
+            from .diffusion_attention import guard_rocm_fused_sdpa_cards
+            guard_rocm_fused_sdpa_cards([f"cuda:{int(o)}" for o in (primary, *kept)], dtype, logger)
+    return kept
 
 
 def _math_only_reason(primary: int, cards: Sequence[int]) -> str:

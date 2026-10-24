@@ -1247,6 +1247,30 @@ def test_rocm_secondary_probe_leaves_the_primary_sdpa_switches_alone(_real_rocm_
     assert flags() == (False, False)
 
 
+def test_rocm_kept_secondary_still_gets_the_fused_sdpa_guard(_real_rocm_sdpa_probe, monkeypatch):
+    # cuda:1 runs mem-efficient but its flash launch failed: it is kept and runs blocks, so flash goes off process-wide
+    # as it would had the model loaded there (the read-only probe alone would leave it on).
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    monkeypatch.setattr(
+        da,
+        "_run_rocm_sdpa_children",
+        lambda device, dtype: (
+            (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT)
+            if device == "cuda:0"
+            else (da.SDPA_MATH, da.SDPA_MEM_EFFICIENT)
+        ),
+    )
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == (1,)
+    assert flags() == (False, True)
+    # a healthy primary checked again later does not hand flash back while cuda:1 still runs blocks
+    assert lsp._rocm_drop_math_only(pipe, 0, (1,)) == (1,)
+    assert flags() == (False, True)
+
+
 class _MixedPrecisionDiT(torch.nn.Module):
     """MiniMax-H3's layout: an input stem kept in fp32 registered before bf16 blocks whose attention runs in bf16."""
 
@@ -1314,10 +1338,16 @@ def _math_at_fp32_and_on_cuda1(monkeypatch):
     return probed
 
 
-def _tiny_krea2():
+@pytest.fixture(scope = "session")
+def krea2():
+    # Session scope runs before the autouse 8-card fixture: diffusers' first import pulls in xformers / torchao, whose
+    # import-time device checks fail against the faked device count.
+    return pytest.importorskip("diffusers.models.transformers.transformer_krea2")
+
+
+def _tiny_krea2(krea2):
     """A real Krea-2 denoiser: bias-free attention projections, ``norm_q`` / ``norm_k`` pinned to fp32 the way
     ``from_pretrained(torch_dtype=bf16)`` leaves them."""
-    krea2 = pytest.importorskip("diffusers.models.transformers.transformer_krea2")
     model = krea2.Krea2Transformer2DModel(
         in_channels = 4,
         num_layers = 2,
@@ -1341,10 +1371,10 @@ def _tiny_krea2():
     return model
 
 
-def test_rocm_probe_reads_a_quantized_projection_not_its_fp32_qk_norm(monkeypatch):
+def test_rocm_probe_reads_a_quantized_projection_not_its_fp32_qk_norm(monkeypatch, krea2):
     # GGUF / packed bias-free projections beside fp32 norm_q / norm_k (Krea-2, FLUX.3): the norm's fp32 would make the
     # primary look math-only and hand a bf16-math-only secondary its blocks.
-    model = _tiny_krea2()
+    model = _tiny_krea2(krea2)
     attn = next(m for m in model.modules() if getattr(m, "to_q", None) is not None)
     assert attn.norm_q.weight.dtype == torch.float32
     pipe = _Pipe()
@@ -1355,11 +1385,13 @@ def test_rocm_probe_reads_a_quantized_projection_not_its_fp32_qk_norm(monkeypatc
     assert set(probed) == {torch.bfloat16}
 
 
-def test_rocm_probe_dtype_skips_fp32_pinned_modules_when_projections_carry_no_dtype(monkeypatch):
+def test_rocm_probe_dtype_skips_fp32_pinned_modules_when_projections_carry_no_dtype(
+    monkeypatch, krea2
+):
     # No compute_dtype on the packed projections: the first parameter outside _keep_in_fp32_modules (diffusers'
     # ModelMixin.dtype rule), never the pinned norm
     pipe = _Pipe()
-    pipe.transformer = _pack_attention(_tiny_krea2(), None)
+    pipe.transformer = _pack_attention(_tiny_krea2(krea2), None)
     assert lsp._attention_dtype(pipe.transformer) is None
     assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
     probed = _math_at_fp32_and_on_cuda1(monkeypatch)

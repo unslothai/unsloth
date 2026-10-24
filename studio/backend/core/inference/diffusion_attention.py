@@ -417,6 +417,35 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
     return _apply_rocm_guard(available, logger)
 
 
+def guard_rocm_fused_sdpa_cards(
+    devices: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """The guard for every card a layer split runs blocks on: the switches are process-wide, so only a kernel that ran
+    on ALL of them stays on. Reads each card's probe answer read-only (cached when the split already asked); a card
+    that did not answer is skipped, and fp32 never runs fused kernels."""
+    from types import SimpleNamespace
+
+    if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+        return ()
+    if dtype is None:
+        import torch
+        dtype = torch.float16  # the probe's own default (_sdpa_capability)
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        return ()
+    answers = []
+    with read_only_sdpa_probe():
+        for device in devices:
+            available = _sdpa_capability(SimpleNamespace(device = str(device), dtype = dtype))
+            if available:
+                answers.append(available)
+    if not answers:
+        return ()
+    common = tuple(k for k in answers[0] if all(k in a for a in answers[1:]))
+    return _apply_rocm_guard(common, logger)
+
+
 def _rocm_guard_allowed() -> bool:
     return os.environ.get(ROCM_FUSED_SDPA_ALLOW_ENV, "").strip().lower() not in (
         "1",
