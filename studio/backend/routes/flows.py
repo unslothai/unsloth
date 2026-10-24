@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
-from core.flows import capabilities, compiler, notebook_import, package, triggers
+from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -177,6 +177,9 @@ def _import_doc(data: bytes, name: Optional[str] = None) -> tuple[dict, dict]:
     if name:
         doc["name"] = name[:200]
     record = _save(doc, None)
+    report["replication"] = replication.notices(doc)
+    if report.get("baked_nodes") and replication.live_conversations(doc):
+        report["live_note"] = replication.LIVE_NOTE
     return record, report
 
 
