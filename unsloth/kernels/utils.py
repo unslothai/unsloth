@@ -1688,7 +1688,6 @@ try:
     # Fused optimizers (AdamW(fused = True), the transformers default on torch >= 2.8) update
     # parameters without bumping _version, so the LoRA cast cache also keys on optimizer steps.
     from torch.optim.optimizer import register_optimizer_step_post_hook
-
     register_optimizer_step_post_hook(_count_optimizer_step)
 except Exception:
     pass
