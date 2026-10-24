@@ -48,7 +48,9 @@ import http.client
 import json
 import os
 import secrets
+import ssl
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -435,10 +437,14 @@ def is_running() -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def quit_app() -> None:
-    subprocess.run(
-        ["osascript", "-e", 'tell application "Claude" to quit'], capture_output = True, timeout = 30
-    )
+def quit_app(timeout: float = 30.0) -> None:
+    # A quit Claude answers with a dialog (an unsent draft) would otherwise block the caller.
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Claude" to quit'],
+            capture_output = True,
+            timeout = timeout,
+        )
 
 
 def open_app(path: Path) -> None:
@@ -554,14 +560,23 @@ def gateway_model(entry: dict) -> GatewayModel:
     return GatewayModel(MODEL_SLOTS[0]["id"], entry["id"], max_tokens)
 
 
+NO_MODEL_MESSAGE = "No model is loaded in Unsloth Studio. Load a model in Studio, then try again."
+
+
+def _placeholder_model() -> GatewayModel:
+    return GatewayModel(MODEL_SLOTS[0]["id"], "Unsloth (no model loaded)", DEFAULT_MAX_TOKENS)
+
+
 class Gateway(ThreadingHTTPServer):
+    """``model`` is fixed (the CLI pins one) or a callable, so Studio follows whatever it has loaded."""
+
     daemon_threads = True
 
     def __init__(
         self,
         upstream: str,
         upstream_key: str,
-        model: GatewayModel,
+        model,
         token: str,
         listen: tuple = ("127.0.0.1", 0),
     ):
@@ -593,13 +608,39 @@ class Gateway(ThreadingHTTPServer):
             self.shutdown()
         self.server_close()
 
+    def current_model(self) -> Optional[GatewayModel]:
+        if isinstance(self.model, GatewayModel):
+            return self.model
+        try:
+            return self.model()
+        except Exception:
+            return None
+
     def connection(self) -> http.client.HTTPConnection:
-        cls = (
-            http.client.HTTPSConnection
-            if self.upstream.scheme == "https"
-            else http.client.HTTPConnection
+        if self.upstream.scheme != "https":
+            return http.client.HTTPConnection(
+                self.upstream.hostname, self.upstream.port, timeout = 3600
+            )
+        context = None
+        if _is_loopback_host(self.upstream.hostname):
+            # Studio's own TLS listener uses a self-signed certificate; this hop never leaves the machine.
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return http.client.HTTPSConnection(
+            self.upstream.hostname, self.upstream.port, timeout = 3600, context = context
         )
-        return cls(self.upstream.hostname, self.upstream.port, timeout = 3600)
+
+
+def _is_loopback_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def probe(base_url: str, timeout: float = 2.0) -> bool:
@@ -720,7 +761,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._error(401, "Invalid gateway key.")
             return
-        entry = self.server.model.catalog_entry()
+        entry = (self.server.current_model() or _placeholder_model()).catalog_entry()
         catalog = {
             "data": [entry],
             "first_id": entry["id"],
@@ -757,13 +798,16 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(requested, str) or not requested.strip():
             self._error(400, "decode Claude gateway request: model is required")
             return
-        model = self.server.model
+        model = self.server.current_model()
+        if model is None:
+            self._error(503, NO_MODEL_MESSAGE)
+            return
         if requested not in (model.route, model.model_id):
             self._error(400, f'unknown Claude model "{requested}"')
             return
         payload["model"] = model.model_id
         self.server.routed += 1
-        self._forward(path, payload)
+        self._forward(path, payload, model)
 
     def _upstream_headers(self, body: bytes) -> dict:
         # Claude authenticates to this gateway with a placeholder; never forward it (or cookies).
@@ -789,7 +833,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         )
         return conn, conn.getresponse()
 
-    def _forward(self, path: str, payload: dict) -> None:
+    def _forward(self, path: str, payload: dict, model: GatewayModel) -> None:
         original = copy.deepcopy(payload)
         try:
             conn, response = self._round_trip(path, payload)
@@ -801,7 +845,7 @@ class _GatewayHandler(BaseHTTPRequestHandler):
             if (
                 path == "/v1/messages"
                 and response.status in (400, 500)
-                and not self.server.model.supports_vision
+                and not model.supports_vision
             ):
                 prefix = response.read(MAX_ERROR_BODY_BYTES + 1)
                 retry = copy.deepcopy(original)
@@ -860,3 +904,172 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 
 def new_token() -> str:
     return "unsloth-claude-" + secrets.token_urlsafe(24)
+
+
+# --------------------------------------------------------------------------------------------
+# One switch, shared by `unsloth start claude --app` and the Studio app
+# --------------------------------------------------------------------------------------------
+
+DOWNLOAD_URL = "https://claude.ai/download"
+KEY_NAME = "Claude Desktop"
+BACKUP_SUFFIX = ".unsloth-backup"
+STATE_NAME = "claude-desktop.json"
+
+
+def state_path(agents_root: Path) -> Path:
+    """Where a live switch is recorded. The CLI and Studio share it, so only one runs at a time and
+    either one switches the app back after the other crashed."""
+    return Path(agents_root) / "app" / STATE_NAME
+
+
+def write_file(path: Path, text: str) -> None:
+    """Never world-readable, even briefly; refuses a symlink instead of writing through it."""
+    if path.is_symlink():
+        raise ValueError(f"{path} is a symlink, so Unsloth won't rewrite it.")
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd, temp = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
+    try:
+        with open(fd, "w", encoding = "utf-8", newline = "") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+
+
+def file_mode(path: Path) -> Optional[int]:
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        return None
+
+
+def write_state(path: Path, state: dict) -> None:
+    # It holds the Unsloth key the gateway uses, so 0600 from the first byte.
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(json.dumps(state, indent = 2) + "\n")
+
+
+def read_state(path: Path) -> Optional[dict]:
+    """The recorded switch, or None when there is nothing to switch back."""
+    try:
+        state = json.loads(Path(path).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or not isinstance(state.get("files"), dict):
+        return None
+    return state if state["files"] else None
+
+
+def owner_record(kind: str) -> dict:
+    """Who holds the switch; ``started`` tells a reused PID apart from the real owner."""
+    try:
+        import psutil
+        started = psutil.Process().create_time()
+    except Exception:
+        started = None
+    return {"pid": os.getpid(), "started": started, "kind": kind}
+
+
+def owner_alive(owner: object) -> bool:
+    try:
+        pid = int(owner["pid"])
+        started = owner.get("started")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            process = psutil.Process(pid)
+            if started is None:
+                return process.is_running()
+            return abs(process.create_time() - float(started)) < 1.0
+        except (psutil.Error, TypeError, ValueError):
+            return False
+    if os.name != "posix":
+        # No way to check without psutil; assume it lives rather than undo someone's switch.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def begin(path: Path, targets: Targets, extra: dict, owner: dict) -> dict:
+    """Snapshot the profile files, back them up and record the switch before anything is written.
+
+    Raises ValueError (nothing changed) when a profile file can't be parsed."""
+    files = snapshot(targets)
+    for name, record in files.items():
+        target = Path(name)
+        record["mode"] = file_mode(target)
+        if record["original"] is not None:
+            write_file(target.with_name(target.name + BACKUP_SUFFIX), record["original"])
+    state = {**extra, "owner": owner, "files": files}
+    write_state(path, state)
+    return state
+
+
+def switch(path: Path, state: dict, targets: Targets, token: str) -> None:
+    """Point the profile at state["gateway"]. Every write is recorded first, so a crash part way
+    through is still switched back. Raises ValueError for a symlinked profile file."""
+
+    def write(target: Path, text: str) -> None:
+        write_state(path, state)
+        write_file(target, text)
+
+    apply_profile(targets, state["files"], state["gateway"], token, write)
+    write_state(path, state)
+
+
+def abort(path: Path, state: Optional[dict]) -> None:
+    """Undo a switch that failed before Claude used it."""
+    if state is not None:
+        with contextlib.suppress(Exception):
+            restore_profile(state["files"], write_file)
+        for name in state.get("files") or {}:
+            target = Path(name)
+            target.with_name(target.name + BACKUP_SUFFIX).unlink(missing_ok = True)
+    Path(path).unlink(missing_ok = True)
+
+
+def switch_back(state: dict, quit_timeout: float = 30.0) -> list:
+    """Quit Claude Desktop if it is open, then put its profile files back. Returns notes for the
+    user; the caller revokes state["key_id"] and removes the state file."""
+    notes = []
+    # Claude writes its settings while it shuts down, so restore only after it has quit.
+    if is_running():
+        quit_app(timeout = quit_timeout)
+        if not wait_for_exit(timeout = quit_timeout):
+            notes.append(
+                "Claude Desktop did not quit; quit it yourself so it keeps the switch back."
+            )
+        else:
+            notes.append(
+                "Quit Claude Desktop to switch it back; open it again to use your usual Claude."
+            )
+    files = state.get("files") or {}
+    notes += restore_profile(files, write_file)
+    for name, record in files.items():
+        target = Path(name)
+        backup = target.with_name(target.name + BACKUP_SUFFIX)
+        original = record.get("original")
+        if original is not None and read_text(target) == original:
+            if record.get("mode") is not None:
+                with contextlib.suppress(OSError):
+                    os.chmod(target, record["mode"])
+            backup.unlink(missing_ok = True)
+        elif original is not None and backup.exists():
+            notes.append(f"Kept your original {target.name} at {backup}.")
+    return notes

@@ -12,13 +12,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 import pytest
 
-from unsloth_cli import claude_desktop_app as cda
+from utils import claude_desktop as cda
 
 MODEL_ID = "unsloth/gemma-4-E2B-it-GGUF"
 UPSTREAM_KEY = "sk-unsloth-a99a99a99a99"
@@ -511,3 +511,142 @@ def test_max_tokens_follows_a_small_context():
     assert cda.gateway_model({"id": "m", "context_length": 8192}).max_tokens == 8192
     assert cda.gateway_model({"id": "m", "context_length": 262144}).max_tokens == 64000
     assert cda.gateway_model({"id": "m"}).max_tokens == 64000
+
+
+# -- a gateway that follows the loaded model (Studio) ------------------------------------------
+
+
+@pytest.fixture
+def following_gateway():
+    upstream = _Upstream()
+    loaded = {"model": None}
+    gw = cda.Gateway(upstream.url, UPSTREAM_KEY, lambda: loaded["model"], TOKEN).start()
+    yield gw, upstream, loaded
+    gw.stop()
+    upstream.shutdown()
+    upstream.server_close()
+
+
+def test_a_following_gateway_routes_to_whatever_is_loaded_now(following_gateway):
+    gw, upstream, loaded = following_gateway
+    body = {"model": "claude-fable-5", "max_tokens": 8, "messages": []}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 503 and json.loads(reply)["error"]["message"] == cda.NO_MODEL_MESSAGE
+    assert upstream.requests == []
+    status, _, catalog = _call(gw, "GET", "/v1/models")
+    assert status == 200 and json.loads(catalog)["first_id"] == "claude-fable-5"
+
+    loaded["model"] = cda.gateway_model({"id": "unsloth/a-GGUF"})
+    assert _call(gw, "POST", "/v1/messages", body)[0] == 200
+    loaded["model"] = cda.gateway_model({"id": "unsloth/b-GGUF", "context_length": 4096})
+    assert _call(gw, "POST", "/v1/messages", body)[0] == 200
+    assert [r[2]["model"] for r in upstream.requests] == ["unsloth/a-GGUF", "unsloth/b-GGUF"]
+    assert json.loads(_call(gw, "GET", "/v1/models")[2])["data"][0]["max_tokens"] == 4096
+
+
+def test_a_broken_model_lookup_reads_as_no_model(following_gateway):
+    gw, upstream, _ = following_gateway
+    gw.model = lambda: 1 / 0
+    body = {"model": "claude-fable-5", "max_tokens": 8, "messages": []}
+    assert _call(gw, "POST", "/v1/messages", body)[0] == 503
+
+
+def test_a_loopback_https_upstream_skips_certificate_checks():
+    gw = cda.Gateway("https://127.0.0.1:8443", UPSTREAM_KEY, lambda: None, TOKEN)
+    try:
+        conn = gw.connection()
+        assert conn._context.verify_mode == cda.ssl.CERT_NONE
+    finally:
+        gw.server_close()
+    gw = cda.Gateway("https://studio.example.com", UPSTREAM_KEY, lambda: None, TOKEN)
+    try:
+        assert gw.connection()._context.verify_mode == cda.ssl.CERT_REQUIRED
+    finally:
+        gw.server_close()
+
+
+# -- the shared switch record -------------------------------------------------------------------
+
+USER_CONFIG = '{\n  "mcpServers": {"fs": {"command": "npx"}}\n}\n'
+
+
+def test_begin_switch_and_switch_back_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cda, "is_running", lambda: False)
+    targets = cda.target_paths("darwin", tmp_path)
+    _write(targets.normal_configs[0], USER_CONFIG)
+    targets.normal_configs[0].chmod(0o640)
+    state_file = cda.state_path(tmp_path / "agents")
+
+    state = cda.begin(
+        state_file, targets, {"gateway": "http://127.0.0.1:1", "key_id": 3}, {"pid": 1}
+    )
+    assert cda.read_state(state_file)["key_id"] == 3
+    assert oct(state_file.stat().st_mode & 0o777) == "0o600"
+    backup = targets.normal_configs[0].with_name(cda.CONFIG_NAME + cda.BACKUP_SUFFIX)
+    assert backup.read_text() == USER_CONFIG
+    cda.switch(state_file, state, targets, "tok")
+    assert json.loads(targets.normal_configs[0].read_text())["deploymentMode"] == "3p"
+    assert "wrote" in cda.read_state(state_file)["files"][str(targets.normal_configs[0])]
+
+    assert cda.switch_back(cda.read_state(state_file)) == []
+    assert targets.normal_configs[0].read_text() == USER_CONFIG
+    assert oct(targets.normal_configs[0].stat().st_mode & 0o777) == "0o640"
+    assert not backup.exists()
+    assert not targets.third_party[0].profile.exists()
+
+
+def test_switch_back_quits_an_open_claude_first(tmp_path, monkeypatch):
+    seen = {"running": True, "timeouts": []}
+    monkeypatch.setattr(cda, "is_running", lambda: seen["running"])
+
+    def quit_app(timeout = 30.0):
+        seen["timeouts"].append(timeout)
+        seen["running"] = False
+
+    monkeypatch.setattr(cda, "quit_app", quit_app)
+    notes = cda.switch_back({"files": {}}, quit_timeout = 2.5)
+    assert seen["timeouts"] == [2.5]
+    assert "Quit Claude Desktop" in notes[0]
+
+
+def test_abort_undoes_a_half_done_switch(tmp_path):
+    targets = cda.target_paths("darwin", tmp_path)
+    _write(targets.normal_configs[0], USER_CONFIG)
+    state_file = cda.state_path(tmp_path / "agents")
+    state = cda.begin(state_file, targets, {"gateway": "http://127.0.0.1:1"}, {"pid": 1})
+    cda.switch(state_file, state, targets, "tok")
+    cda.abort(state_file, state)
+    assert targets.normal_configs[0].read_text() == USER_CONFIG
+    assert not state_file.exists()
+    assert not targets.normal_configs[0].with_name(cda.CONFIG_NAME + cda.BACKUP_SUFFIX).exists()
+
+
+def test_write_file_refuses_a_symlink(tmp_path):
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    with pytest.raises(ValueError, match = "symlink"):
+        cda.write_file(link, "x")
+    assert real.read_text() == "{}"
+
+
+def test_read_state_ignores_missing_empty_and_broken_records(tmp_path):
+    path = tmp_path / "s.json"
+    assert cda.read_state(path) is None
+    path.write_text("{nope")
+    assert cda.read_state(path) is None
+    path.write_text('{"files": {}}')
+    assert cda.read_state(path) is None
+    path.write_text('{"files": {"a": {"original": null}}}')
+    assert cda.read_state(path) == {"files": {"a": {"original": None}}}
+
+
+def test_owner_alive_tells_a_reused_pid_apart():
+    me = cda.owner_record("studio")
+    assert me["kind"] == "studio"
+    assert cda.owner_alive(me)
+    if me["started"] is not None:
+        assert not cda.owner_alive({**me, "started": me["started"] - 3600})
+    assert not cda.owner_alive({"pid": 2**22 + 12345, "started": None})
+    assert not cda.owner_alive(None)

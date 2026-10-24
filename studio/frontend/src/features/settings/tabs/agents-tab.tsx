@@ -71,6 +71,7 @@ import {
   CommandBlock,
   useCopyButton,
 } from "../components/agent-command-block";
+import { ClaudeDesktopSection } from "../components/claude-desktop-section";
 import {
   type AgentDetails,
   NOT_AUTO_PICKED_AGENTS,
@@ -1145,6 +1146,9 @@ export function AgentsTab() {
         </a>{" "}
         {t("settings.agents.intro")}
       </p>
+
+      {/* Desktop apps the backend switches itself (no terminal): Claude Desktop on macOS. */}
+      <ClaudeDesktopSection />
 
       {/* Shared track + pill selector. The legend is sr-only: the two shell
           names already say what the control picks. */}

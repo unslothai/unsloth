@@ -1219,7 +1219,7 @@ def claude_desktop(studio, monkeypatch, tmp_path):
     app = tmp_path / "Applications" / "Claude.app"
     desktop = {"running": False, "opened": [], "quit": 0, "app": app}
 
-    def quit_app():
+    def quit_app(timeout = 30.0):
         desktop["quit"] += 1
         desktop["running"] = False
 
@@ -1261,7 +1261,7 @@ def test_claude_app_switches_the_app_while_running_and_back_on_exit(studio, clau
             .read_text()
         )
         seen["probe"] = cda.probe(profile["inferenceGatewayBaseUrl"])
-        seen["state"] = json.loads((start._app_state_path("claude-desktop")).read_text())
+        seen["state"] = json.loads((start._claude_app_state_path()).read_text())
 
     studio["while_running"] = while_running
 
@@ -1290,9 +1290,9 @@ def test_claude_app_switches_the_app_while_running_and_back_on_exit(studio, clau
     assert (
         not claude_desktop["config"].with_name("claude_desktop_config.json.unsloth-backup").exists()
     )
-    assert not start._app_state_path("claude-desktop").exists()
+    assert not start._claude_app_state_path().exists()
     assert APP_KEY not in studio["keys"]
-    assert any(c[0] == "POST" and c[2] == {"name": "Claude app"} for c in studio["calls"])
+    assert any(c[0] == "POST" and c[2] == {"name": "Claude Desktop"} for c in studio["calls"])
     assert "Switched Claude Desktop back" in result.output
 
 
@@ -1388,8 +1388,8 @@ def test_claude_app_recovers_from_a_session_that_was_killed(studio, claude_deskt
     cda = start._claude_desktop
     targets = cda.target_paths()
     files = cda.snapshot(targets)
-    cda.apply_profile(targets, files, "http://127.0.0.1:9", "tok", start._write_app_file)
-    state_path = start._app_state_path("claude-desktop")
+    cda.apply_profile(targets, files, "http://127.0.0.1:9", "tok", cda.write_file)
+    state_path = start._claude_app_state_path()
     start._write_private_json(
         state_path,
         {
@@ -1415,7 +1415,7 @@ def test_claude_app_recovers_from_a_session_that_was_killed(studio, claude_deskt
 
 def test_claude_app_refuses_a_second_session(studio, claude_desktop, monkeypatch):
     start._write_private_json(
-        start._app_state_path("claude-desktop"),
+        start._claude_app_state_path(),
         {"base": BASE, "files": {"x": {"original": None}}, "owner": {"pid": 4242, "started": 1.0}},
     )
     monkeypatch.setattr(start, "_codex_app_owner_alive", lambda owner: True)
@@ -1435,7 +1435,7 @@ def test_claude_app_is_switched_back_when_the_switch_fails(studio, claude_deskto
     assert result.exit_code != 0
     assert claude_desktop["config"].read_text() == USER_CLAUDE
     assert not claude_desktop["profile"].exists()
-    assert not start._app_state_path("claude-desktop").exists()
+    assert not start._claude_app_state_path().exists()
     assert APP_KEY not in studio["keys"]
 
 

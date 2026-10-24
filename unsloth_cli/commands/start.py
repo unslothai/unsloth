@@ -31,11 +31,11 @@ import click
 import typer
 from typer.core import TyperCommand
 
+from studio.backend.utils import claude_desktop as _claude_desktop
 from studio.backend.utils.coding_agents import (
     deepseek_harness_executables_on_path,
     is_deepseek_harness_executable,
 )
-from unsloth_cli import claude_desktop_app as _claude_desktop
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -6805,7 +6805,7 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
 
 
 _CLAUDE_APP_AGENT = "claude-desktop"
-_CLAUDE_APP_LABEL = "Claude app"
+_CLAUDE_APP_LABEL = _claude_desktop.KEY_NAME
 
 
 def _claude_app_preflight() -> Path:
@@ -6816,65 +6816,39 @@ def _claude_app_preflight() -> Path:
     if path is None:
         _fail(
             "Claude Desktop isn't installed (looked for /Applications/Claude.app and "
-            "~/Applications/Claude.app). Install it from https://claude.ai/download and re-run."
+            f"~/Applications/Claude.app). Install it from {_claude_desktop.DOWNLOAD_URL} and re-run."
         )
     return path
 
 
-def _claude_app_write(path: Path, text: str) -> None:
-    if path.is_symlink():
-        _fail(f"{path} is a symlink, so Unsloth won't rewrite it.")
-    _write_app_file(path, text)
+def _claude_app_state_path() -> Path:
+    # Shared with the Studio app's Claude Desktop switch, so only one of them holds Claude at a time.
+    return _claude_desktop.state_path(_agents_config_root())
 
 
 def _switch_claude_app_back(state_path: Path, state: dict) -> list:
-    """Quit Claude Desktop if it is open, then put its profile files back."""
-    notes = []
-    # Claude writes its settings while it shuts down, so restore only after it has quit.
-    if _claude_desktop.is_running():
-        _claude_desktop.quit_app()
-        if not _claude_desktop.wait_for_exit():
-            notes.append(
-                "Claude Desktop did not quit; quit it yourself so it keeps the switch back."
-            )
-        else:
-            notes.append(
-                "Quit Claude Desktop to switch it back; open it again to use your usual Claude."
-            )
-    files = state.get("files") or {}
-    notes += _claude_desktop.restore_profile(files, _write_app_file)
-    for name, record in files.items():
-        path = Path(name)
-        backup = path.with_name(path.name + ".unsloth-backup")
-        original = record.get("original")
-        if original is not None and _claude_desktop.read_text(path) == original:
-            if record.get("mode") is not None:
-                with contextlib.suppress(OSError):
-                    os.chmod(path, record["mode"])
-            backup.unlink(missing_ok = True)
-        elif original is not None and backup.exists():
-            notes.append(f"Kept your original {path.name} at {backup}.")
+    """Quit Claude Desktop if it is open, then put its profile files back and revoke the key."""
+    notes = _claude_desktop.switch_back(state)
     revoked = state.get("key_id") is None or _revoke_app_key(state.get("base", ""), state["key_id"])
     state_path.unlink(missing_ok = True)
     if not revoked:
         notes.append(
-            "Couldn't reach Unsloth to revoke the app's key; delete 'Claude app' in "
+            f"Couldn't reach Unsloth to revoke the app's key; delete '{_CLAUDE_APP_LABEL}' in "
             "Unsloth → Settings → API."
         )
     return notes
 
 
 def _recover_claude_app() -> Optional[dict]:
-    state_path = _app_state_path(_CLAUDE_APP_AGENT)
-    state = _read_json_object(state_path) or {}
-    if not state.get("files"):
+    state_path = _claude_app_state_path()
+    state = _claude_desktop.read_state(state_path)
+    if state is None:
         return None
     if _codex_app_owner_alive(state.get("owner")):
         return state
     notes = _switch_claude_app_back(state_path, state)
     typer.echo(
-        "Switched Claude Desktop back from an earlier `unsloth start claude --app` that did not "
-        "exit cleanly."
+        "Switched Claude Desktop back from an earlier Unsloth session that did not exit cleanly."
     )
     for note in notes:
         typer.echo(note)
@@ -6894,10 +6868,10 @@ def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app
             "so pass the key for that server with --api-key."
         )
     target = _AppTarget(_CLAUDE_APP_AGENT, _CLAUDE_APP_LABEL, Path())
-    state_path = _app_state_path(_CLAUDE_APP_AGENT)
+    state_path = _claude_app_state_path()
     targets = _claude_desktop.target_paths()
     try:
-        files = _claude_desktop.snapshot(targets)
+        _claude_desktop.snapshot(targets)
     except ValueError as exc:
         _shutdown_auto_served()
         _fail(f"{exc} Fix it and re-run; nothing was changed.")
@@ -6908,30 +6882,18 @@ def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app
         gateway = _claude_desktop.Gateway(
             base, key, _claude_desktop.gateway_model(entry), token
         ).start()
-        for name, record in files.items():
-            record["mode"] = _app_file_mode(Path(name))
-            if record["original"] is not None:
-                path = Path(name)
-                _write_app_file(path.with_name(path.name + ".unsloth-backup"), record["original"])
-        new_state = {
-            "base": base,
-            "key": key,
-            "key_id": key_id,
-            "gateway": gateway.base_url,
-            "owner": _codex_app_owner(),
-            "files": files,
-        }
-        # Saved before any write, so a crash part way through is still switched back.
-        _write_private_json(state_path, new_state)
-
-        def write(path: Path, text: str) -> None:
-            # Each record names what it is about to write first, so a crash mid-switch is undone.
-            _write_private_json(state_path, new_state)
-            _claude_app_write(path, text)
+        new_state = _claude_desktop.begin(
+            state_path,
+            targets,
+            {"base": base, "key": key, "key_id": key_id, "gateway": gateway.base_url},
+            {**_codex_app_owner(), "kind": "cli"},
+        )
 
         def switch() -> None:
-            _claude_desktop.apply_profile(targets, files, gateway.base_url, token, write)
-            _write_private_json(state_path, new_state)
+            try:
+                _claude_desktop.switch(state_path, new_state, targets, token)
+            except ValueError as exc:
+                _fail(str(exc))
 
         if _claude_desktop.is_running():
             if _confirm_claude_restart():
@@ -6951,9 +6913,7 @@ def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app
             _claude_desktop.open_app(app)
     except BaseException:
         if new_state is not None:
-            with contextlib.suppress(Exception):
-                _claude_desktop.restore_profile(files, _write_app_file)
-            state_path.unlink(missing_ok = True)
+            _claude_desktop.abort(state_path, new_state)
         if gateway is not None:
             gateway.stop()
         _revoke_new_app_key(base, key_id, {})
@@ -6963,7 +6923,7 @@ def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app
         typer.echo(
             f"Claude Desktop is on {entry['id']} from Unsloth at {base} until this command exits "
             "(Ctrl+C). It shows up as the Unsloth profile. If this command is killed instead, "
-            "the next `unsloth start claude` switches the app back."
+            "the next `unsloth start claude` (or the Studio app) switches the app back."
         )
         _hold_codex_app(base)
     finally:
@@ -7440,8 +7400,13 @@ def claude(
     if app:
         if running is not None:
             _fail(
-                "Claude Desktop is already on Unsloth for another `unsloth start claude --app` "
-                f"(PID {running['owner']['pid']}). Stop that one first."
+                "Claude Desktop is already on Unsloth for "
+                + (
+                    "the Studio app; disconnect it in Settings → Agents"
+                    if (running.get("owner") or {}).get("kind") == "studio"
+                    else f"another `unsloth start claude --app` (PID {running['owner']['pid']})"
+                )
+                + ". Stop that one first."
             )
         # Before any model load: there is nothing to switch on another OS or without the app.
         claude_app = _claude_app_preflight()

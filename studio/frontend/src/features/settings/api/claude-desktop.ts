@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
+
+const BASE = "/api/settings/claude-desktop";
+
+// Mirrors routes/claude_desktop.py ClaudeDesktopStatus. The backend owns the switch: it runs the
+// gateway Claude talks to, and switches Claude back on Disconnect, on quit and after a crash.
+export type ClaudeDesktopStatus = {
+  supported: boolean;
+  installed: boolean;
+  app_path: string | null;
+  download_url: string;
+  connected: boolean;
+  // "cli" while `unsloth start claude --app` in a terminal holds Claude Desktop.
+  held_by: string | null;
+  held_by_pid: number | null;
+  running: boolean;
+  model: string | null;
+  // The request came straight from this computer (the desktop app, or a local browser).
+  local: boolean;
+};
+
+export type ClaudeDesktopConnectStatus =
+  | "connected"
+  | "pending_restart"
+  | "needs_restart";
+
+export type ClaudeDesktopConnectResult = {
+  status: ClaudeDesktopConnectStatus;
+  claude: ClaudeDesktopStatus;
+};
+
+export type ClaudeDesktopDisconnectResult = {
+  notes: string[];
+  claude: ClaudeDesktopStatus;
+};
+
+// A backend without the route (an older Studio) or a non-owner session: hide the card.
+export class ClaudeDesktopUnavailable extends Error {}
+
+export async function fetchClaudeDesktopStatus(): Promise<ClaudeDesktopStatus> {
+  const res = await authFetch(BASE);
+  if (res.status === 404 || res.status === 403) {
+    throw new ClaudeDesktopUnavailable(String(res.status));
+  }
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to load Claude Desktop status"),
+    );
+  }
+  return (await res.json()) as ClaudeDesktopStatus;
+}
+
+/** restart: undefined asks first (status "needs_restart" changes nothing), true restarts an open
+ *  Claude, false switches it for its next launch. */
+export async function connectClaudeDesktop(
+  restart?: boolean,
+): Promise<ClaudeDesktopConnectResult> {
+  const res = await authFetch(`${BASE}/connect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ restart: restart ?? null }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to connect Claude Desktop"),
+    );
+  }
+  return (await res.json()) as ClaudeDesktopConnectResult;
+}
+
+export async function disconnectClaudeDesktop(): Promise<ClaudeDesktopDisconnectResult> {
+  const res = await authFetch(`${BASE}/disconnect`, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to disconnect Claude Desktop"),
+    );
+  }
+  return (await res.json()) as ClaudeDesktopDisconnectResult;
+}
