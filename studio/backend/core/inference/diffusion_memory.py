@@ -251,6 +251,12 @@ def _wrap_cpu_offload_hooks(
             continue
         try:
             _wrap_cpu_offload_hook(hook, module, logger)
+            module.__dict__[_KEEP_ATTR]["exact_pin"] = bool(
+                getattr(pipe, _FAST_PIN_REQUEST_ATTR, False)
+            )
+            module.__dict__[_KEEP_ATTR]["exact_pin_device"] = getattr(
+                hook, "execution_device", None
+            )
             wrapped += 1
         except Exception as exc:  # noqa: BLE001 - that module keeps the stock copy
             if logger is not None:
@@ -312,9 +318,12 @@ def _pin_host_weights(
     logger: Any = None,
     buffer_host: Optional[dict] = None,
     layout: Optional[list] = None,
+    exact: bool = False,
+    device: Any = None,
 ) -> int:
     """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides.
-    ``layout`` (if given) receives ``(chunk, [(name, start, view), ...])`` per chunk for ``_upload_pinned_chunks``."""
+    ``layout`` (if given) receives ``(chunk, [(name, start, view), ...])`` per chunk for ``_upload_pinned_chunks``.
+    ``exact`` (video loads, see ``_exact_pin_supported``) sizes each chunk to its bytes instead of a power of two."""
     import torch
 
     mode = _pin_mode()
@@ -358,6 +367,13 @@ def _pin_host_weights(
         slots.append((len(chunks) - 1, off))
         off += size
         left -= size
+    exact = exact and _exact_pin_supported()
+    if exact:
+        # The same slots, so the device copies are unchanged; only the host side loses the rounding.
+        used = [0] * len(chunks)
+        for size, (index, start) in zip(sizes, slots):
+            used[index] = max(used[index], start + size)
+        chunks = [-(-n // _EXACT_PIN_PAGE) * _EXACT_PIN_PAGE for n in used]
     need = sum(chunks)
     if mode == "auto":
         # Pinned pages are charged to an enforcing cgroup: size from the cgroup-capped readings.
@@ -376,6 +392,19 @@ def _pin_host_weights(
                     available / 2**30,
                 )
             return 0
+    if exact:
+        try:
+            return _pin_host_weights_exact(
+                module, host, logger, buffer_host, layout, params, slots, chunks, device
+            )
+        except Exception as exc:  # noqa: BLE001 - registration refused before any weight moved: the pinned allocator
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: exact pin of %s failed (%s); using the pinned allocator",
+                    type(module).__name__,
+                    exc,
+                )
+            return _pin_host_weights(module, host, logger, buffer_host = buffer_host, layout = layout)
     bufs: list = []
     placed: list = []
     try:
@@ -423,6 +452,118 @@ def _pin_host_weights(
     if layout is not None:
         layout[:] = [(buf, entries) for buf, entries in zip(bufs, members) if entries]
     return need
+
+
+# Video loads only. "0" restores the power-of-two pinned chunks of the whole-module offload tier.
+EXACT_PIN_ENV = "UNSLOTH_VIDEO_EXACT_PIN"
+_EXACT_PIN_PAGE = 4096
+
+
+def _exact_pin_supported() -> bool:
+    if (os.environ.get(EXACT_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    return _fast_pin_supported()
+
+
+def _pin_host_weights_exact(
+    module: Any,
+    host: dict,
+    logger: Any,
+    buffer_host: Optional[dict],
+    layout: Optional[list],
+    params: list,
+    slots: list,
+    chunks: list,
+    device: Any = None,
+) -> int:
+    """``_pin_host_weights`` into chunks of registered host memory sized to their bytes (torch's pinned allocator rounds
+    each chunk up to a power of two: Wan2.2-5B's offloaded TE / DiT / VAE pinned 16.11 GB for 14.53 GB of weights).
+
+    Chunk by chunk, and each chunk's weights move to it as soon as it is registered, so their pageable copies can go
+    before the next chunk is filled instead of the whole module being held twice. A chunk refused after the first one
+    ends the pin there: the moved weights stay pinned (and in ``layout``), the rest stay pageable."""
+    import torch
+
+    target = torch.device(device) if device is not None else None
+    # The onload device's context registers each chunk (and its teardown syncs that device).
+    scope = (
+        torch.cuda.device(target)
+        if target is not None and target.type == "cuda" and target.index is not None
+        else contextlib.nullcontext()
+    )
+    with scope:
+        return _fill_exact_chunks(module, host, logger, buffer_host, layout, params, slots, chunks)
+
+
+def _fill_exact_chunks(
+    module: Any,
+    host: dict,
+    logger: Any,
+    buffer_host: Optional[dict],
+    layout: Optional[list],
+    params: list,
+    slots: list,
+    chunks: list,
+) -> int:
+    import numpy as np
+    import torch
+
+    members: list = [[] for _ in chunks]
+    for item, (index, start) in zip(range(len(params)), slots):
+        members[index].append((item, start))
+    done: list = []
+    pinned = 0
+    for index, size in enumerate(chunks):
+        try:
+            holder = _RegisteredHostBuffer(size)
+            buf = torch.from_numpy(np.asarray(holder))
+            placed = []
+            for item, start in members[index]:
+                name, p, attr, src = params[item]
+                view = buf[start : start + src.nbytes].view(src.dtype)
+                view = (
+                    view.view(src.shape)
+                    if src.is_contiguous()
+                    else view.as_strided(src.shape, src.stride())
+                )
+                view.copy_(src)
+                placed.append((item, start, view))
+            holder.register()
+        except Exception:
+            if not done:
+                raise
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: pinned %d of %d chunks of %s; the rest stays pageable",
+                    len(done),
+                    len(chunks),
+                    type(module).__name__,
+                )
+            break
+        entries = []
+        wrapped: dict = {}
+        for item, start, view in placed:
+            name, p, attr, _src = params[item]
+            params[item] = None  # the last reference to the pageable copy, once re-pointed
+            entries.append((name, start, view))
+            if name.startswith("\0"):
+                name = name[1:]
+                _set_buffer(module, name, view)
+                buffer_host[name] = view
+                continue
+            if attr is not None:
+                setattr(p, attr, view)
+                wrapped[name] = p
+                continue
+            p.data = view
+            host[name] = view
+        for name, p in wrapped.items():
+            host[name] = p.data  # the kept host weight now reads the pinned inner tensors
+        done.append((buf, entries))
+        pinned += size
+    if layout is not None:
+        layout[:] = [(buf, entries) for buf, entries in done if entries]
+    return pinned
 
 
 OFFLOAD_FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_FAST_UPLOAD"
@@ -783,7 +924,13 @@ def _wrap_cpu_offload_hook(
             layout: list = []
             try:
                 pinned = _pin_host_weights(
-                    mod, host, logger, buffer_host = buffer_host, layout = layout
+                    mod,
+                    host,
+                    logger,
+                    buffer_host = buffer_host,
+                    layout = layout,
+                    exact = bool(state.get("exact_pin")),
+                    device = state.get("exact_pin_device"),
                 )
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
                 pinned = 0
@@ -6178,6 +6325,21 @@ def registered_host_copy(src: Any) -> Any:
     return out
 
 
+def _registered_pin(src: Any) -> Any:
+    """``src.pin_memory()`` for the background pinner, in registered host memory where the type allows. GGUF weights
+    (packed bytes + quant type) are re-wrapped like their own ``pin_memory()``: torch's allocator rounded each one up to
+    a power of two (a Q4_K 3072x3072 weight, 5.3 MB, took 8 MiB)."""
+    import torch
+
+    if type(src) is torch.Tensor:
+        return registered_host_copy(src)
+    gguf = _gguf_parameter_class()
+    if gguf is not None and type(src) is gguf and _exact_pin_supported():
+        pinned = registered_host_copy(src.as_tensor())
+        return gguf(pinned, requires_grad = False, quant_type = src.quant_type)
+    return src.pin_memory()
+
+
 class _GroupPinner:
     """Pins a streamed module's offload groups on a worker thread, first block first.
 
@@ -6298,12 +6460,7 @@ class _GroupPinner:
                         (
                             tensor,
                             src,
-                            pool.submit(
-                                registered_host_copy
-                                if type(src) is torch.Tensor
-                                else src.pin_memory,
-                                *((src,) if type(src) is torch.Tensor else ()),
-                            ),
+                            pool.submit(_registered_pin, src),
                         )
                         for tensor, src in self._unpinned(group)
                     ]
