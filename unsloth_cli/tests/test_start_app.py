@@ -487,6 +487,18 @@ def test_openclaw_app_preserves_json5_values_and_original_backup(studio, origina
     assert config.read_text() == updated
 
 
+def test_openclaw_app_writes_an_escaped_surrogate_pair(studio):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text("{ agents: { defaults: { workspace: '~/\\ud83d\\ude80' } } }")
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text(encoding = "utf-8"))
+    assert data["agents"]["defaults"]["workspace"] == "~/\U0001f680"
+
+
 @pytest.mark.parametrize("name", ["custom.settings", "custom.yaml", "custom.toml"])
 def test_openclaw_json5_format_is_selected_by_agent(studio, tmp_path, name):
     import json5
