@@ -1789,9 +1789,8 @@ def is_gguf_repo_partial(
             ):
                 variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves only torn shards. An `hf download`
-        # stopped between shards leaves no marker or .incomplete blob, so the files decide. A
-        # sibling revision holding a whole quant still serves the row: the loader selects it.
+        # No marker names a quant (an `hf download` stopped between shards), so the files decide;
+        # a sibling revision with a whole quant still serves the row, as the loader picks it.
         return has_legacy_partial or (
             _snapshot_cannot_serve_its_payload(snapshot_dir, quants = True)
             and not _sibling_snapshot_has_complete_gguf(snapshot_dir)
