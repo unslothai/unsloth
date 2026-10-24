@@ -104,7 +104,7 @@ def cached_gguf(
         return None
     root = _repo_dir(cache, repo) / "snapshots" / revision
     try:
-        files = [str(p.relative_to(root)) for p in root.rglob("*.gguf")]
+        files = [p.relative_to(root).as_posix() for p in root.rglob("*.gguf")]
     except OSError:
         return None
     # The loader's own matching, so F16 never records a BF16 file.
