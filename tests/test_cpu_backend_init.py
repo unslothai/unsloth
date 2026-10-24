@@ -249,6 +249,8 @@ def test_cpu_backend_imports_without_trl():
     env.update(
         {
             "UNSLOTH_FORCE_CPU": "1",
+            # Keeps an Apple Silicon host off the MLX backend, as in the test above.
+            "UNSLOTH_FORCE_GPU_PATH": "1",
             "PYTHONPATH": os.pathsep.join(filter(None, [str(_ROOT), env.get("PYTHONPATH")])),
         }
     )
