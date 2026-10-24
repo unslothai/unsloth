@@ -223,6 +223,7 @@ export function ExampleCodeBox({
   pills,
   os,
   onOsChange,
+  fitContent = false,
 }: {
   code: string;
   language: string;
@@ -231,6 +232,8 @@ export function ExampleCodeBox({
   pills: ReactNode;
   os: ExampleOs;
   onOsChange: (os: ExampleOs) => void;
+  /** Show the whole example up to most of the viewport instead of starting eight lines tall. */
+  fitContent?: boolean;
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -289,7 +292,9 @@ export function ExampleCodeBox({
         className={cn(
           "relative [&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
           height === null
-            ? tall && "[&>section]:h-46"
+            ? fitContent
+              ? "[&>section]:max-h-[60dvh]"
+              : tall && "[&>section]:h-46"
             : "[&>section]:h-(--example-h)",
         )}
       >
