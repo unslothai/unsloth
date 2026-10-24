@@ -11,6 +11,7 @@ import {
   loadedEngineChoice,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -89,6 +90,16 @@ test("the loaded build's select value follows the backend's engine provenance", 
   assert.equal(loadedEngineChoice(resolved({ source: "auto", requested: null, value: "diffusers" })), "auto");
   assert.equal(loadedEngineChoice(ggufOnDiffusers), "auto");
   assert.equal(loadedEngineChoice({ loaded: false, resolved: { engine: { source: "explicit", requested: "sd_cpp" } } }), "auto");
+});
+
+test("the LoRA note offers a plain reload once Speed=Auto compiled LoRA off", () => {
+  const compiled = { loaded: true, engine: "diffusers", supports_lora: false, lora_after_reload: true };
+  assert.equal(offersCompiledLoraReload(compiled), true);
+  assert.equal(offersCompiledLoraReload({ ...compiled, lora_after_reload: false }), false);
+  assert.equal(offersCompiledLoraReload({ ...compiled, supports_lora: true }), false);
+  // An older backend sends no field.
+  assert.equal(offersCompiledLoraReload({ loaded: true, supports_lora: false }), false);
+  assert.equal(offersCompiledLoraReload({ loaded: false, lora_after_reload: true }), false);
 });
 
 test("the LoRA note offers a native reload only where it would turn LoRA on", () => {
@@ -279,6 +290,33 @@ test("Reapply resolves its target against the checkpoint status reports", () => 
   assert.equal(reapplyTarget(own, { loaded: false }), own);
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /const l = reapplyTarget\(lastLoad\.current, status\);/);
+});
+
+test("a reload of the resident GGUF keeps the base repo it was loaded with", () => {
+  const status = {
+    loaded: true,
+    model_kind: "gguf",
+    repo_id: "org/flux-gguf",
+    gguf_filename: "flux-Q4_K_M.gguf",
+    display_repo_id: null,
+    base_repo: "org/custom-base",
+    component_files: {},
+  };
+  const seeded = residentReloadTarget(status);
+  assert.equal(seeded?.baseRepo, "org/custom-base");
+  assert.equal(nativeReloadTarget(seeded, status)?.baseRepo, "org/custom-base");
+  assert.equal(reapplyTarget(seeded, status)?.baseRepo, "org/custom-base");
+  // A target seeded without it (an older page, or status that named none then) picks it up from status.
+  const bare = { repoId: "org/flux-gguf", kind: "gguf" as const, filename: "flux-Q4_K_M.gguf" };
+  assert.deepEqual(nativeReloadTarget(bare, status), { ...bare, baseRepo: "org/custom-base" });
+  assert.deepEqual(reapplyTarget(bare, status), { ...bare, baseRepo: "org/custom-base" });
+  // A base the page chose itself is kept, and a pipeline carries none.
+  const own = { ...bare, baseRepo: "org/other-base" };
+  assert.equal(reapplyTarget(own, status), own);
+  const pipe = { repoId: "org/P", kind: "pipeline" as const };
+  assert.equal(reapplyTarget(pipe, { loaded: true, model_kind: "pipeline", repo_id: "org/P", base_repo: "org/x" }), pipe);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /const resident = residentReloadTarget\(\{[\s\S]{0,300}base_repo: status\?\.base_repo,[\s\S]{0,120}\}\);/);
 });
 
 test("a server pin never strips options: its native route falls back to diffusers when native cannot run", () => {

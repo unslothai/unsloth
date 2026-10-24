@@ -61,6 +61,7 @@ export interface VideoStatus {
   repo_id: string | null;
   /** Logical Hub identity when repo_id is an exact local snapshot. */
   display_repo_id?: string | null;
+  resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
   /** Pipeline-capable families whose loader accepts a Modular Diffusers manifest on this host. */

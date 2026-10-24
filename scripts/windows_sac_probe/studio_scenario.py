@@ -245,7 +245,7 @@ def discover_port(explicit: Optional[int]) -> int:
         if status == 200 and isinstance(body, dict) and body.get("service") == "Unsloth UI Backend":
             return port
     raise SystemExit(
-        "no Studio backend answered /api/liveness on "
+        "no Unsloth Studio backend answered /api/liveness on "
         + ", ".join(str(p) for p in ports)
         + ". Start Unsloth Studio first, or pass --port."
     )
@@ -332,7 +332,7 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> Credenti
     if not password:
         raise SystemExit(
             "no password given. Pass --password (or set UNSLOTH_STUDIO_PASSWORD): on a "
-            "Studio that has never been opened it becomes the account password, on one "
+            "Unsloth Studio that has never been opened it becomes the account password, on one "
             "that has it must be the password you sign in with."
         )
     # Before any password is sent: the port may be held by something other than Studio.
@@ -561,7 +561,7 @@ def main() -> int:
     parser.add_argument(
         "--home",
         default = default_studio_home(),
-        help = "Studio home (where auth/ lives); follows UNSLOTH_STUDIO_HOME like Studio does",
+        help = "Unsloth Studio home (where auth/ lives); follows UNSLOTH_STUDIO_HOME like Unsloth Studio does",
     )
     parser.add_argument(
         "--poll-seconds",
@@ -576,7 +576,7 @@ def main() -> int:
 
     port = discover_port(args.port)
     base_url = f"http://127.0.0.1:{port}"
-    print(f"Studio on {base_url}")
+    print(f"Unsloth Studio on {base_url}")
 
     token = authenticate(base_url, resolve_studio_home(args.home), args.password)
     print("authenticated")

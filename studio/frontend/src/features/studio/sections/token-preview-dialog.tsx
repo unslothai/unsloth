@@ -127,7 +127,7 @@ function SampleCard({
     }
   };
   return (
-    <div className="flex flex-col gap-2 rounded-xl border bg-card p-3">
+    <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {label ? <span className="font-medium">{label}</span> : null}
         <span className="text-muted-foreground">
@@ -189,7 +189,7 @@ function MaskingSummary({
         {data.masking.response_part ? (
           <span className="text-muted-foreground">
             {t("studio.dataset.tokenPreview.responseMarker")}{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono">
+            <code className="rounded-sm bg-muted px-1 py-0.5 font-mono">
               {JSON.stringify(data.masking.response_part)}
             </code>
           </span>
@@ -404,7 +404,7 @@ function TokenPreviewContent() {
     <DialogContent className="sm:max-w-4xl w-[90vw] max-sm:w-[calc(100vw-1rem)] max-h-[88dvh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle">
       <DialogHeader className="px-6 max-sm:px-4 pt-5 pb-3 shrink-0">
         <div className="flex items-center gap-3 pr-10">
-          <div className="rounded-xl corner-squircle p-2 ring-1 ring-emerald-200 bg-emerald-50 text-emerald-600 dark:ring-emerald-800 dark:bg-emerald-950 dark:text-emerald-400 shrink-0">
+          <div className="rounded-md corner-squircle p-2 ring-1 ring-emerald-200 bg-emerald-50 text-emerald-600 dark:ring-emerald-800 dark:bg-emerald-950 dark:text-emerald-400 shrink-0">
             <TextSelectIcon className="size-4" />
           </div>
           <div className="min-w-0">

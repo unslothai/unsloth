@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,9 +25,6 @@ import {
   FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -122,6 +120,8 @@ export interface ExportRunPanelProps {
   onClose: () => void;
   /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
   decisionNote?: string;
+  /** REAP expert pruning on this export, e.g. "25% of experts removed (96 of 128 kept)"; hidden when null. */
+  reapLabel?: string | null;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -139,6 +139,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     saveDirectoryOverridden,
     onSaveDirectoryChange,
     decisionNote,
+    reapLabel,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -218,6 +219,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const summaryFormats = (summary?.mergedFormats ?? []).map(
     (v) => findMergedFormat(v)?.label ?? v,
   );
+  const summaryReap = summary ? (summary.reapLabel ?? null) : (reapLabel ?? null);
   const showProgress = isExporting || isTerminal;
   const hubRepoMissing =
     destination === "hub" &&
@@ -374,7 +376,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <ChevronRightIcon className="size-3" />
+                        <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                       </a>
                     </div>
                     <InputGroup>
@@ -486,7 +488,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       )}
 
       {/* Summary */}
-      <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
+      <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
           <span className="font-medium text-foreground">
@@ -518,6 +520,14 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <span>Quantizations</span>
             <span className="font-medium text-foreground">
               {summaryQuants.join(", ")}
+            </span>
+          </div>
+        )}
+        {summaryReap && (
+          <div className="flex justify-between gap-3">
+            <span>Expert pruning</span>
+            <span className="font-medium text-foreground text-right">
+              REAP, {summaryReap}
             </span>
           </div>
         )}
@@ -629,7 +639,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart} disabled={hubRepoMissing}>
+            <Button variant="dark" onClick={onStart} disabled={hubRepoMissing}>
               Start Export
             </Button>
           </>

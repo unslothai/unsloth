@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass, replace as _dataclass_replace
 from typing import Optional, Dict, Any
+from utils import gguf_names as _gguf_names
 from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
     normalize_path,
@@ -57,7 +58,9 @@ import structlog
 from loggers import get_logger
 import contextlib as _contextlib
 from contextvars import ContextVar
+import functools
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -979,7 +982,7 @@ def _build_vision_check_inline_helpers() -> str:
     )
 
 
-# Subprocess script run with transformers 5.x active: model_name + token via argv, JSON out.
+# Subprocess script run with transformers 5.x active: model_name via argv, token via env, JSON out.
 def _build_vision_check_script() -> str:
     return (
         r"""
@@ -1102,8 +1105,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # Only an explicit token travels in argv; the env below enforces the boundary.
-    token_arg = hf_token if isinstance(hf_token, str) else ""
+    # Token only via the child env (argv is world-readable); the empty slot keeps the argv layout.
+    token_arg = ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -1274,7 +1277,7 @@ _vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(
+def _is_vision_model_or_none(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
@@ -1282,7 +1285,7 @@ def is_vision_model(
     gguf_variant: Optional[str] = None,
     require_image: bool = True,
     gguf_companion_roots: Optional[Tuple[str, ...]] = None,
-) -> bool:
+) -> Optional[bool]:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
     local_files_only, revision) minus transient failures; local_files_only is in the
@@ -1376,7 +1379,41 @@ def is_vision_model(
         with _vision_cache_lock:
             _vision_detection_cache[cache_key] = result
         return result
-    return False
+    return None
+
+
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
+    require_image: bool = True,
+    gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+) -> bool:
+    """Whether model_name takes images; a transient probe failure reads as False (see _is_vision_model_or_none)."""
+    return bool(
+        _is_vision_model_or_none(
+            model_name,
+            hf_token,
+            local_files_only,
+            revision,
+            gguf_variant,
+            require_image,
+            gguf_companion_roots,
+        )
+    )
+
+
+def is_vision_model_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """is_vision_model, plus whether the answer is definitive (False after a transient probe failure)."""
+    result = _is_vision_model_or_none(model_name, hf_token, local_files_only, revision)
+    return bool(result), result is not None
 
 
 def _is_vision_model_uncached(
@@ -1884,62 +1921,22 @@ def _detect_audio_from_tokenizer(
 
 def _is_mmproj(filename: str) -> bool:
     """Check if a GGUF filename is a vision projection (mmproj) file."""
-    return "mmproj" in filename.lower()
+    return _gguf_names.is_mmproj_filename(filename)
 
 
-# Mirrors hub.utils.gguf._IMATRIX_TOKEN_RE (utils cannot import hub).
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_imatrix_path(path: str) -> bool:
-    """True for a calibration imatrix published beside the weights
-    (``imatrix_unsloth.gguf``, ``imatrix.gguf``, ``<model>.imatrix``).
-
-    Activation statistics for llama-quantize, not a model, so it is excluded
-    everywhere mmproj is: a GGUF-suffixed one is a valid container that a
-    size-ranked scan would otherwise hand to llama-server.
-
-    Mirrors hub.utils.gguf.is_imatrix_filename.
-    """
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+    return _gguf_names.is_imatrix_filename(path)
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather
-    than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the
-    ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai), the
-    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss) or the ``lilicorr-*.gguf``
-    drafters (NVIDIA Nemotron 3.5).
-
-    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
-    excluded everywhere mmproj is, or the drafter leaks into variant menus (a
-    phantom quant) and quant-matched file lookups -- a ``Q8_0`` request must not
-    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
-    or to ``dspark/dspark-...-Q8_0.gguf``.
-
-    Prefix, an exact directory for ``_DRAFTER_DIR_KINDS``, or
-    ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names
-    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
-    as is anything in a user's ``dflash/`` folder).
-    """
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    return (
-        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
-        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
-        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
-    )
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -2011,6 +2008,77 @@ def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
     if model_fam is None or mmproj_fam is None:
         return True
     return model_fam == mmproj_fam
+
+
+# MiMo-VL's F16 projector overflows to NaN on GPU: every image, then the rest of the chat, answers "!!!!".
+_F16_UNSAFE_MMPROJ_RE = _re.compile(r"mimo[-_ ]?vl", _re.IGNORECASE)
+_MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)(?:[-_.]mmproj)?\.gguf$", _re.IGNORECASE)
+_NAME_DELIMS = "-_. "
+_MMPROJ_PRECISION_TAIL_RE = _re.compile(r"(?:[-_.](?:bf16|f16|f32))?(?:[-_.]mmproj)?$")
+# None = a projector name with no precision tag.
+MMPROJ_ORDER_BF16 = ("bf16", "f16", "f32", None)
+MMPROJ_ORDER_NO_F16 = ("bf16", "f32", None, "f16")
+
+
+def mmproj_f16_unsafe(name: Optional[str]) -> bool:
+    return bool(name) and _F16_UNSAFE_MMPROJ_RE.search(str(name)) is not None
+
+
+@functools.lru_cache(maxsize = 1)
+def device_mmproj_precision() -> str:
+    """BF16 on ROCm and pre-Ampere NVIDIA, else F16 (Mac, Ampere and newer, CPU, Vulkan, unknown)."""
+    try:
+        if platform.system() == "Darwin":
+            return "f16"
+        from utils.hardware.hardware import _installed_llama_backend
+
+        backend = _installed_llama_backend()
+        if backend == "rocm":
+            return "bf16"
+        if backend == "cuda":
+            from core.inference.llama_cpp import LlamaCppBackend
+            caps = LlamaCppBackend._cuda_compute_caps()
+            if caps and min(caps.values()) < 80:
+                return "bf16"
+    except Exception as e:
+        logger.debug(f"device_mmproj_precision probe failed: {e}")
+    return "f16"
+
+
+def mmproj_order(*model_names: Optional[str]) -> Optional[tuple]:
+    """None keeps the F16-first default."""
+    if any(mmproj_f16_unsafe(n) for n in model_names):
+        return MMPROJ_ORDER_NO_F16
+    return MMPROJ_ORDER_BF16 if device_mmproj_precision() == "bf16" else None
+
+
+def mmproj_precision(mmproj_name: str) -> Optional[str]:
+    m = _MMPROJ_PRECISION_RE.search(Path(mmproj_name).name)
+    return m.group(1).lower() if m else None
+
+
+def _pairing_stem(name: str) -> str:
+    stem = _re.sub(r"^mmproj[-_]", "", Path(name).stem.lower())
+    return _MMPROJ_PRECISION_TAIL_RE.sub("", stem)
+
+
+def mmproj_weight_match(weight: Optional[str], mmproj_name: str) -> int:
+    """Whole-token prefix shared past ``mmproj-`` and before the precision tag (an F16 weight must
+    not pull the F16 projector); an exact checkpoint name beats a longer one (``Model-7B-v2``)."""
+    if not weight:
+        return 0
+    a, b = _pairing_stem(weight), _pairing_stem(mmproj_name)
+    k = _shared_prefix_len(a, b)
+    while k and not (
+        (k == len(a) or a[k] in _NAME_DELIMS) and (k == len(b) or b[k] in _NAME_DELIMS)
+    ):
+        k -= 1
+    return 2 * k + (k == len(b))
+
+
+def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
+    precision = mmproj_precision(mmproj_name)
+    return -order.index(precision) if precision in order else -len(order)
 
 
 def _shared_prefix_len(a: str, b: str) -> int:
@@ -2298,11 +2366,15 @@ def detect_mmproj_file(
 
     # Score first, then longest shared prefix, then shorter stem. The prefix is read past
     # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
+    order = mmproj_order(str(p))
     best = max(
         scored,
         key = lambda sc: (
             sc[0],
-            _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
+            mmproj_weight_match(p.name, sc[1].name)
+            if order
+            else _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
+            mmproj_order_rank(sc[1].name, order) if order else 0,
             -len(sc[1].stem),
         ),
     )
@@ -2812,22 +2884,8 @@ def _extract_quant_label(filename: str) -> str:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
-_GGUF_KNOWN_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
-# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_mtp_drafter.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_KNOWN_QUANT_RE = _gguf_names.GGUF_QUANT_RE
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
@@ -3487,7 +3545,7 @@ def _gguf_repo_unreadable_message(
 ) -> str:
     if error is None:
         return (
-            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            f"Could not load the GGUF repo '{repo_id}': Unsloth is offline and the repo is not "
             "in the local cache. Connect to the internet once to download it, then try again."
         )
     status = getattr(getattr(error, "response", None), "status_code", None)
@@ -3501,7 +3559,7 @@ def _gguf_repo_unreadable_message(
         # Anonymous access could not answer either: private, gated or missing without it.
         return (
             f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
-            f"{HUB_TOKEN_REJECTED_ERROR} If Studio reaches the Hub through a proxy, mirror "
+            f"{HUB_TOKEN_REJECTED_ERROR} If Unsloth reaches the Hub through a proxy, mirror "
             "or HF_ENDPOINT, check that as well."
         )
     return (

@@ -132,6 +132,8 @@ def _render(
     torch, FirstBlockCacheConfig, *_ = _diffusers()
     if threshold is not None:
         model.enable_cache(FirstBlockCacheConfig(threshold = threshold))
+        # diffusers 0.39/0.40 cache the child-registry list across renders, as apply_step_cache does
+        dc._invalidate_child_registry_cache(model)
     tail_attn = model.single_transformer_blocks[-1].attn
     calls = []
     handle = tail_attn.register_forward_hook(lambda *_: calls.append(1))

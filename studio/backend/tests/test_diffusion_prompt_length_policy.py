@@ -20,6 +20,7 @@ VARIABLE = (
     "QwenImage21Transformer2DModel",
     "ZImageTransformer2DModel",
     "MiniMaxH3Transformer3DModel",
+    "MOSSImageTransformer",
 )
 
 
@@ -62,12 +63,32 @@ def test_prompt_length_varies_reads_the_policy():
 
 
 def test_the_compile_arms_only_its_own_sources():
-    # the classification adds no compile sources: FLUX.1 and Z-Image compile as before
+    # every classified family is armed
     assert set(dt._FAMILY_SOURCES) == {
+        "FluxTransformer2DModel",
+        "ZImageTransformer2DModel",
         "Flux3Transformer2DModel",
         "QwenImage21Transformer2DModel",
         "QwenImageTransformer2DModel",
         "MiniMaxH3Transformer3DModel",
+        # MOSS-Image never pads its prompt (true text length per branch), so it is armed from day one.
+        "MOSSImageTransformer",
     }
     for name, sources in dt._FAMILY_SOURCES.items():
         assert dt.PROMPT_LENGTH_POLICY[name] == sources, name
+
+
+def test_qwen_image_arms_its_sources_on_the_dynamic_tier_too():
+    class Qwen:
+        pass
+
+    class Flux3:
+        pass
+
+    Qwen.__name__ = "QwenImageTransformer2DModel"
+    Flux3.__name__ = "Flux3Transformer2DModel"
+    if not dt.supported():
+        return
+    assert dt._armed_when_dynamic(Qwen()) and not dt._armed_when_dynamic(Flux3())
+    assert dt.fingerprint(Qwen(), True) == dt.fingerprint(Qwen(), None)
+    assert dt.fingerprint(Flux3(), True) != dt.fingerprint(Flux3(), None)

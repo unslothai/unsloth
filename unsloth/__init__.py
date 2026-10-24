@@ -140,6 +140,10 @@ class _UnslothDeviceStats:
         self.multi_processor_count = 0
 
 
+class _CPUBackendSelected(Exception):
+    """Raised by _gpu_init when unsloth_zoo found no accelerator and selected the CPU backend."""
+
+
 def _bytes_to_gb(value):
     """Convert byte counts to GiB rounded"""
     return round(float(value or 0) / 1024 / 1024 / 1024, 3)
@@ -252,11 +256,13 @@ if _IS_MLX:
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
-        del _fix_untrusted_config, _fix_template_names
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:
@@ -370,11 +376,23 @@ if _IS_MLX:
     _raw_text_spec.loader.exec_module(_raw_text)
     RawTextDataLoader = _raw_text.RawTextDataLoader
     TextPreprocessor = _raw_text.TextPreprocessor
+    _ebook_path = _Path(__file__).resolve().parent / "dataprep" / "ebooks.py"
+    _ebook_spec = importlib.util.spec_from_file_location("unsloth._mlx_ebooks", _ebook_path)
+    _ebook = importlib.util.module_from_spec(_ebook_spec)
+    _ebook_spec.loader.exec_module(_ebook)
+    load_ebook_dataset = _ebook.load_ebook_dataset
+    del _ebook, _ebook_spec, _ebook_path
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
-        if not is_bfloat16_supported():
+        # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
+        try:
+            bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
+            full_finetuning = bound.arguments.get("full_finetuning", False)
+        except Exception:
+            full_finetuning = kwargs.get("full_finetuning", False)
+        if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])
@@ -1666,18 +1684,46 @@ if _IS_MLX:
     _install_mlx_unsloth_trainer_shim()
 
 else:
-    # GPU path: load everything from _gpu_init
-    from ._gpu_init import *
-    from ._gpu_init import __version__
+    try:
+        # GPU path: load everything from _gpu_init
+        from ._gpu_init import *
+        from ._gpu_init import __version__
+        _IS_CPU_BACKEND = False
+    except _CPUBackendSelected:
+        _IS_CPU_BACKEND = True
+        _sys_mod = __import__("sys").modules
+        _sys_mod.pop(f"{__name__}._gpu_init", None)
+        del _sys_mod
+        from ._cpu_init import *  # __all__ carries __version__
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:
-        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
-        _install_fsdp2_hooks()
-        del _install_fsdp2_hooks
+        if not _IS_CPU_BACKEND:
+            from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+            _install_fsdp2_hooks()
+            del _install_fsdp2_hooks
     except Exception:
         pass
+
+    # UNSLOTH_FSDP2=1 shards natively inside the Trainer; a custom loop's own Accelerator keeps
+    # accelerate's FSDP2 (fsdp2_launch.install_raw_accelerator_fsdp2_fallback). Env reads only.
+    try:
+        from .fsdp2_launch import (
+            install_raw_accelerator_fsdp2_fallback as _install_raw_accelerator_fallback,
+        )
+        _install_raw_accelerator_fallback()
+        del _install_raw_accelerator_fallback
+    except Exception:
+        pass
+
+    # Native FSDP2 shards inside the Trainer.__init__ wrapper that FastLanguageModel / FastModel loads
+    # install. A FastSentenceTransformer encoder never loads through them, so under UNSLOTH_FSDP2=1 its
+    # Trainer trained with DDP instead, silently. Install the wrapper up front under the flag.
+    from .fsdp2_launch import install_native_fsdp2_trainer_init as _install_native_trainer_init
+
+    _install_native_trainer_init()
+    del _install_native_trainer_init
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

@@ -298,6 +298,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
     "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED": "on",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
+    "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
     "UNSLOTH_DIFFUSION_Q21_REAL_ROPE": "on",
@@ -402,6 +403,10 @@ def _weight_signature(module: Any, weight: Any) -> str:
         parts.append(f"rot{rot}")
     if getattr(module, "act_int8", False):
         parts.append("act_int8")
+    fmt = getattr(module, "fp8_format", None)
+    if isinstance(fmt, str) and fmt != "float8_e4m3fn":
+        # Stored E5M2 codes decode through a different integer graph; E4M3 keeps the key it always had.
+        parts.append(fmt)
     fwd = module.__dict__.get("forward") if hasattr(module, "__dict__") else None
     if fwd is not None:
         func = getattr(fwd, "__func__", fwd)

@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, Union, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -1083,6 +1083,16 @@ class ModelOverridePayload(BaseModel):
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
+    # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
+    mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
+    mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
+
+    @field_validator("mlx_ple_offload", "mlx_expert_offload", mode = "before")
+    @classmethod
+    def _mlx_offload_amount(cls, value: Any) -> Any:
+        from models.inference import _mlx_offload_amount
+        return _mlx_offload_amount(value)
+
     # Default-engine 16-bit load; only False is stored.
     load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
@@ -1875,15 +1885,9 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
-        values = _systemone_values(payload)
-        if values:
-            try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
-                raise HTTPException(status_code = 409, detail = exc.message) from None
+        _systemone_values(payload)
 
 
 @_owner_settings_router.get(
@@ -2734,6 +2738,8 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and payload.load_in_4bit
+                # null clears just that knob, so naming one is not a forget.
+                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -2811,7 +2817,8 @@ def update_openai_auto_switch_override(
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
-        if _carried_fields and not is_removal:
+        _alias_row: dict = {}
+        if not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2829,12 +2836,12 @@ def update_openai_auto_switch_override(
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
             for _alias_id in _alias_ids:
-                _stored_tuning = get_model_override(_alias_id)
-                if not _stored_tuning:
+                _alias_row = get_model_override(_alias_id)
+                if not _alias_row:
                     continue
                 for name in _carried_fields:
                     if _kept_tuning[name] is None:
-                        _kept_tuning[name] = _stored_tuning.get(name)
+                        _kept_tuning[name] = _alias_row.get(name)
                 break
         removed_keys: list[str] = []
         if payload.remove is True:
@@ -2944,6 +2951,13 @@ def update_openai_auto_switch_override(
                         "engine_gpu_memory_utilization",
                     )
                 },
+                # Omitted keeps what the row a load reads holds, which may be an alias retired below.
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else (_alias_row or get_model_override(target_id)).get(field)
+                    for field in ("mlx_ple_offload", "mlx_expert_offload")
+                },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -2994,6 +3008,54 @@ def update_openai_auto_switch_override(
             log = logger,
         ) from exc
     return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
+
+
+class ModelSamplingDefaultsPayload(BaseModel):
+    """One model's saved sampling defaults. A null or missing field follows the model's recommendation;
+    all of them null forgets the model."""
+
+    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    sampling: Optional[dict[str, Optional[float]]] = None
+
+
+class ModelSamplingDefaultsResponse(BaseModel):
+    defaults: dict[str, dict]
+    # What a request naming the given model gets, resolved here so the browser need not mirror the key rules.
+    resolved: Optional[dict] = None
+
+
+@_account_settings_router.get(
+    "/model-sampling-defaults", response_model = ModelSamplingDefaultsResponse
+)
+def get_model_sampling_defaults_route(
+    model_id: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+) -> ModelSamplingDefaultsResponse:
+    from utils.model_sampling_defaults import get_model_sampling_defaults, saved_sampling_defaults
+    return ModelSamplingDefaultsResponse(
+        defaults = get_model_sampling_defaults(),
+        resolved = saved_sampling_defaults(model_id) if model_id else None,
+    )
+
+
+@_account_settings_router.put(
+    "/model-sampling-defaults", response_model = ModelSamplingDefaultsResponse
+)
+def update_model_sampling_defaults_route(
+    payload: ModelSamplingDefaultsPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelSamplingDefaultsResponse:
+    from utils.model_sampling_defaults import (
+        get_model_sampling_defaults,
+        saved_sampling_defaults,
+        set_model_sampling_defaults,
+    )
+    try:
+        set_model_sampling_defaults(payload.model_id, payload.sampling)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ModelSamplingDefaultsResponse(
+        defaults = get_model_sampling_defaults(),
+        resolved = saved_sampling_defaults(payload.model_id),
+    )
 
 
 class EmbeddingModelPayload(BaseModel):
@@ -4070,6 +4132,7 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+    suspended_by_accounts: bool = False
 
 
 class McpAccessPayload(BaseModel):
@@ -4111,6 +4174,20 @@ class CurrentDatePromptPayload(BaseModel):
 class CurrentDatePromptResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
+
+
+class ChatMemoryPayload(BaseModel):
+    enabled: Optional[StrictBool] = None
+    text: Optional[StrictStr] = None
+
+
+class ChatMemoryResponse(BaseModel):
+    enabled: bool
+    text: str
+    path: str
+    max_bytes: int
+    # UNSLOTH_STUDIO_AGENTS_MD=0 keeps every AGENTS.md out of chats, whatever the switch says.
+    locked_by_environment: bool
 
 
 class RemoteAccessAutoStartPayload(BaseModel):
@@ -4451,6 +4528,56 @@ def update_current_date_prompt(
     return CurrentDatePromptResponse(enabled = enabled)
 
 
+def _chat_memory_response() -> ChatMemoryResponse:
+    from core import agents_md
+    return ChatMemoryResponse(
+        enabled = agents_md.memory_enabled(),
+        text = agents_md.read_memory(),
+        path = agents_md._label(agents_md.global_agents_md_path()),
+        max_bytes = agents_md.MAX_AGENTS_MD_BYTES,
+        locked_by_environment = not agents_md.agents_md_enabled(),
+    )
+
+
+@_account_settings_router.get("/chat-memory", response_model = ChatMemoryResponse)
+def get_chat_memory(current_subject: str = Depends(get_current_subject)) -> ChatMemoryResponse:
+    return _chat_memory_response()
+
+
+@_account_settings_router.put("/chat-memory", response_model = ChatMemoryResponse)
+def update_chat_memory(
+    payload: ChatMemoryPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Text here reaches every chat's system prompt: a remote key must not be able to plant it.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ChatMemoryResponse:
+    """Edit the notes every chat reads (the account's global AGENTS.md) and whether chats read them."""
+    from core import agents_md
+    from utils.paths.storage_roots import RetiredAccountError
+
+    try:
+        if payload.text is not None:
+            agents_md.write_memory(payload.text)
+        if payload.enabled is not None:
+            agents_md.set_memory_enabled(payload.enabled)
+    except (ValueError, OSError, RetiredAccountError) as exc:
+        raise log_and_http_error(
+            exc,
+            400 if isinstance(exc, ValueError) else 500,
+            # Our own ValueError messages name what to change; the rest may carry a host path.
+            str(exc) if isinstance(exc, ValueError) else "Could not save memory.",
+            event = "settings.update_chat_memory_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.chat_memory_updated subject=%s text=%s enabled=%s",
+        current_subject,
+        payload.text is not None,
+        payload.enabled,
+    )
+    return _chat_memory_response()
+
+
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
     """Only a signed-in UI session may change who needs a key. An sk-unsloth key must not be able to switch
     authentication off for the whole install, and a keyless caller must not be able to widen its own scope;
@@ -4468,6 +4595,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
         scope = scope,
         tools = tools,
         exposure = access_exposure(request.app.state),
+        suspended_by_accounts = policy.installation_has_managed_accounts(),
     )
 
 

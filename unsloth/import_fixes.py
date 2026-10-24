@@ -1909,6 +1909,61 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
+# Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
+_TOKENIZER_FILES_READ_BY_LOADER = (
+    "tokenizer_config_file",
+    "added_tokens_file",
+    "special_tokens_map_file",
+)
+
+
+def fix_transformers_tokenizer_config_vocab_file_override():
+    """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
+    `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
+    resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
+    save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
+    which apply after the config, so only an explicit caller path overrides them."""
+    try:
+        import transformers
+
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.17.0"):
+            return
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        if getattr(original, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, False):
+            return
+        # The wrapper reads the resolved files from the first argument after cls.
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer vocab path fix (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer vocab path fix ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        for args_name, file_path in dict(resolved_vocab_files or {}).items():
+            # chat_template_file and chat_template_<name> are read by the loader as well.
+            read_by_loader = args_name in _TOKENIZER_FILES_READ_BY_LOADER
+            if read_by_loader or args_name.startswith("chat_template"):
+                continue
+            if kwargs.get(args_name) is None:
+                kwargs[args_name] = file_path
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -7198,6 +7253,86 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
+    # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
+    if custom_graph_pass is None:
+        # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
+        inductor_config.fx_graph_cache = False
+        return
+
+    class ReadbackBarrierCacheKey(custom_graph_pass):
+        def __call__(self, graph):
+            return None
+
+        def uuid(self):
+            return "unsloth-inductor-readback-barrier-v1"
+
+    if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
+        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+
+
+def fix_inductor_reduction_readback_race():
+    """torch < 2.14 Inductor reloads a buffer stored by an earlier loop of the same reduction kernel with no
+    barrier, and Triton may give the store and the reload different warps: silently wrong gradients
+    (pytorch/pytorch#198562). Backports pytorch/pytorch#190519."""
+    try:
+        import torch
+        from torch._inductor.codegen import triton as triton_codegen
+        from torch._inductor import config as inductor_config
+        from torch._inductor.virtualized import V
+    except Exception:
+        return
+    kernel = getattr(triton_codegen, "TritonKernel", None)
+    deferred_line = getattr(triton_codegen, "DeferredLine", None)
+    if kernel is None or deferred_line is None or not hasattr(kernel, "get_load_buffer"):
+        return
+    if getattr(kernel.load, "_unsloth_readback_barrier", False):
+        return
+    try:
+        if "invalidated_stores" in inspect.getsource(kernel.load):
+            return
+    except Exception:
+        return
+
+    original_load = kernel.load
+    original_get_load_buffer = kernel.get_load_buffer
+
+    @functools.wraps(original_load)
+    def load(self, name, index, *args, **kwargs):
+        previous = self.__dict__.get("_unsloth_readback_name")
+        self._unsloth_readback_name = name
+        try:
+            return original_load(self, name, index, *args, **kwargs)
+        finally:
+            self._unsloth_readback_name = previous
+
+    @functools.wraps(original_get_load_buffer)
+    def get_load_buffer(self, indexing):
+        buffer = original_get_load_buffer(self, indexing)
+        name = self.__dict__.get("_unsloth_readback_name")
+        if name is not None and name in self.cse.invalidated_stores:
+            try:
+                device = V.graph.get_current_device_or_throw().type
+            except Exception:
+                device = None
+            if device != "cpu":
+                buffer.writeline(deferred_line(name, "tl.debug_barrier()"))
+                self._unsloth_readback_name = None
+        return buffer
+
+    load._unsloth_readback_barrier = True
+    kernel.load = load
+    kernel.get_load_buffer = get_load_buffer
+    try:
+        from torch._inductor.custom_graph_pass import CustomGraphPass
+    except ImportError:
+        CustomGraphPass = None
+    _key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
+    logger.info(
+        "Unsloth: Patched Inductor to sync before re-reading a buffer stored in a reduction loop."
+    )
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
@@ -9486,6 +9621,29 @@ def patch_peft_float8_adapter_upcast():
 
     cast_adapter_dtype._unsloth_float8_upcast = True
     tu.cast_adapter_dtype = cast_adapter_dtype
+
+
+def patch_peft_shared_active_adapter():
+    """Compiled layers guard on peft's shared active-adapter str; TRL DPO's ref switch broke Gemma 4 E2B recompute."""
+    try:
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    layer_cls = getattr(tu, "BaseTunerLayer", None)
+    original = getattr(layer_cls, "set_adapter", None)
+    if original is None or getattr(original, "_unsloth_shared_active_adapter", False):
+        return
+
+    @functools.wraps(original)
+    def set_adapter(self, adapter_names, *args, **kwargs):
+        out = original(self, adapter_names, *args, **kwargs)
+        active = self.__dict__.get("_active_adapter")
+        if type(active) is list and len(active) == 1 and type(active[0]) is str:
+            self._active_adapter = sys.intern(active[0])
+        return out
+
+    set_adapter._unsloth_shared_active_adapter = True
+    layer_cls.set_adapter = set_adapter
 
 
 def patch_peft_weight_converter_compatibility():

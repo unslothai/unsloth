@@ -180,8 +180,27 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--video-ffmpeg-dir",
         # Not a path: llama-server sends the model's tensors to these hosts.
         "--rpc",
+        # Not a path either: llama-server downloads these Hub drafters with the installation's HF token.
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
+        "--spec-draft-hf",
+        "-hffd",
+        "--hf-file-draft",
     }
 )
+
+# Built-in presets (--*-default, older --fim-qwen-7b-spec) fetch a Hub repo with the HF token; --spec-default stays open.
+_PRESET_FLAG_RE = re.compile(r"^--[a-z0-9.-]+-default$|^--fim-[a-z0-9.-]+-spec$")
+_NON_PRESET_DEFAULT_FLAGS: frozenset[str] = frozenset({"--spec-default"})
+
+
+def _is_preset_flag(flag: Optional[str]) -> bool:
+    return (
+        flag is not None
+        and flag not in _NON_PRESET_DEFAULT_FLAGS
+        and _PRESET_FLAG_RE.match(flag.lower()) is not None
+    )
 
 
 def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
@@ -193,6 +212,8 @@ def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]
         if flag in OWNER_ONLY_PATH_FLAGS:
             _, eq, inline = raw.partition("=")
             found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+        elif _is_preset_flag(flag):
+            found.append((flag, ""))
     return found
 
 

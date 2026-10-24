@@ -32,8 +32,9 @@ import time
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
@@ -42,6 +43,8 @@ from core.inference.diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from core.inference.diffusion_families import (
+    krea2_raw_checkpoint,
+    krea2_sd_cpp_flow_shift,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -59,6 +62,7 @@ from core.inference.diffusion_families import (
     named_variant_base,
     resolve_base_repo,
     resolve_local_gguf_child,
+    sd_cpp_text_encoder_cached_alternatives,
     sd_cpp_text_encoders_for,
     supported_family_names,
     _family_override_resolved,
@@ -354,8 +358,31 @@ def _apple_performance_cores() -> Optional[int]:
     return total or _sysctl("hw.perflevel0.physicalcpu") or _sysctl("hw.physicalcpu")
 
 
+def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[int]:
+    """Physical cores among the CPUs this process may run on: distinct ``thread_siblings_list`` sets over the affinity
+    mask, so a host without SMT counts every core and a taskset / container cpuset counts only its own. None when the
+    mask or the topology is unreadable."""
+    try:
+        allowed = os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        return None
+    cores: set[str] = set()
+    for cpu in allowed:
+        try:
+            with open(f"{sysfs}/cpu{cpu}/topology/thread_siblings_list", encoding = "utf-8") as f:
+                siblings = f.read().strip()
+        except OSError:
+            return None
+        if not siblings:
+            return None
+        cores.add(siblings)
+    return len(cores) or None
+
+
 def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else ``os.cpu_count() // 2`` capped by the cgroup quota."""
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
+    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
+    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -365,15 +392,45 @@ def _default_threads() -> int:
     performance_cores = _apple_performance_cores()
     if performance_cores:
         return performance_cores
-    cpu = os.cpu_count()
-    threads = cpu // 2 if cpu else 8
-    limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
+    linux = sys.platform.startswith("linux")
+    physical = _linux_physical_cores() if linux else None
+    if physical:
+        threads = physical
+    else:
+        cpu = os.cpu_count()
+        threads = cpu // 2 if cpu else 8
+    limit = _cgroup_cpu_limit() if linux else None
     return max(1, min(threads, limit) if limit else threads)
 
 
+def _sd_cpp_default_threads(cpu: Optional[int]) -> Optional[int]:
+    """What an sd.cpp build without its own topology read runs (``hardware_concurrency`` halved above 4 CPUs)."""
+    if not cpu:
+        return None
+    return cpu if cpu <= 4 else cpu // 2
+
+
+def _allowed_cpus() -> Optional[int]:
+    """CPUs in this process's affinity mask, or None when unreadable."""
+    try:
+        return len(os.sched_getaffinity(0)) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _cpus_restricted(cpu: Optional[int]) -> bool:
+    """True when a cpuset / taskset or a cgroup quota leaves this process fewer CPUs than the host has."""
+    if not cpu:
+        return False
+    allowed = _allowed_cpus()
+    limit = _cgroup_cpu_limit()
+    return (allowed is not None and allowed < cpu) or (limit is not None and limit < cpu)
+
+
 def _explicit_threads() -> Optional[int]:
-    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or a cgroup quota below sd.cpp's physical-core default; None
-    keeps that default."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
+    sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
+    the logical CPUs and ignore the affinity mask, so a host without SMT or a cpuset needs the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -384,10 +441,16 @@ def _explicit_threads() -> Optional[int]:
     if performance_cores:
         return performance_cores
     if sys.platform.startswith("linux"):
-        limit = _cgroup_cpu_limit()
         cpu = os.cpu_count()
-        if limit and cpu and limit < cpu // 2:
-            return max(1, limit)
+        threads = _default_threads()
+        sd_default = _sd_cpp_default_threads(cpu)
+        if threads == sd_default:
+            return None
+        # Fewer threads than sd.cpp's all-CPU default at 4 CPUs or fewer, only because of SMT: the extra siblings
+        # measured faster (2 vCPU / 1 core, 4 vCPU / 2 cores), so keep sd.cpp's count unless something restricts us.
+        if sd_default is not None and threads < sd_default and not _cpus_restricted(cpu):
+            return None
+        return threads
     return None
 
 
@@ -693,6 +756,63 @@ def torch_cuda_compute_capability(
     return result[0] if result else None
 
 
+def _torch_cuda_capabilities(
+    ordinal: Optional[int], *, timeout_s: Optional[float] = None
+) -> list[tuple[int, int]]:
+    """Capability of ``ordinal`` (None = every visible card); a stalled driver call reads as unknown, not a hang."""
+    import threading
+
+    result: list = []
+    worker = threading.Thread(
+        target = lambda: result.append(_read_torch_cuda_capabilities(ordinal)),
+        daemon = True,
+        name = "sd-cpp-torch-ccs",
+    )
+    worker.start()
+    worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
+    return result[0] if result else []
+
+
+def _read_torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return []
+        cards = [int(ordinal)] if ordinal is not None else list(range(torch.cuda.device_count()))
+        return [tuple(int(v) for v in torch.cuda.get_device_capability(i)) for i in cards]
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default
+        return []
+
+
+def _sd_cpp_quant_cublas_env(
+    ordinal: Optional[int], weight_types: Optional[frozenset[str]]
+) -> dict[str, str]:
+    if not weight_types or not weight_types <= sd_cpp_args_mod.QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    return sd_cpp_args_mod.quant_cublas_env(
+        _torch_cuda_capabilities(ordinal), weight_types = weight_types
+    )
+
+
+def _sd_cpp_spawn_env(
+    off_torch: Any,
+    device: str,
+    ordinal: Optional[int],
+    offload: "tuple[str, ...] | list[str]",
+    pinned: "tuple[str, ...] | list[str]",
+    weight_types: Any,
+) -> Optional[dict[str, str]]:
+    """The child env for the FINAL placement and argv. The ordinal counts only when the argv carries its pin;
+    without one sd.cpp picks its own default card, so every visible card must qualify."""
+    if off_torch is not None:
+        return off_torch.child_env()
+    if device != "cuda":
+        return None
+    pin_applied = len(pinned) > len(offload)
+    return _sd_cpp_quant_cublas_env(ordinal if pin_applied else None, weight_types()) or None
+
+
 def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
     try:
         import torch
@@ -748,8 +868,13 @@ def sd_cpp_vulkan_device_is_uma(
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
 
+_TRADEMARK_RE = re.compile(r"\((?:tm|r)\)|[\u2122\u00ae]", re.IGNORECASE)
+
+
 def _normalized_card_name(text: str) -> str:
-    """Letters and digits only, lowercased: `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    """Letters and digits only, lowercased, trademark marks dropped (HIP's `AMD Radeon(TM) Graphics` is RADV's
+    `AMD Radeon Graphics`): `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    text = _TRADEMARK_RE.sub(" ", text)
     return "".join(character for character in text.lower() if character.isalnum())
 
 
@@ -803,14 +928,14 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     if opaque is not None:
         return None, True
     visible: "Optional[list[int]]" = None
-    for raw in (rocr, hip):
+    for is_hip, raw in ((False, rocr), (True, hip)):
         if raw is None:
             continue
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
         # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
-        if raw is hip:
+        if is_hip:
             entries = list(dict.fromkeys(entries))
         elif len(set(entries)) < len(entries):
             entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
@@ -2704,6 +2829,10 @@ class _SdGen:
     step: int = 0
     first_step_at: float = 0.0
     eta_seconds: Optional[float] = None
+    # Per sampling pass denominators (Hires fix: base, refine); empty = one pass of ``total_steps``.
+    passes: tuple[int, ...] = ()
+    pass_index: int = 0
+    pass_offset: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -2714,7 +2843,21 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
+    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
+        state.gguf_filename,
+        getattr(state, "display_repo_id", None),
+        state.repo_id,
+        state.base_repo,
+    ):
+        return krea2_sd_cpp_flow_shift(width, height)
+    return state.flow_shift
+
+
 _EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
+# diffusers computes cond + g * (cond - uncond): g is standard CFG minus 1, and any g > 0 enables guidance.
+_CFG_MINUS_ONE_FAMILIES = ("z-image", "krea-2")
 
 
 def _map_guidance(
@@ -2724,8 +2867,7 @@ def _map_guidance(
     (FLUX.2-klein included: no guidance embedder) use real CFG, 1.0 when <= 1. Always explicit: sd.cpp defaults to 7.0."""
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return 1.0, (float(guidance) if guidance is not None else None)
-    if fam.name == "z-image":
-        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
+    if fam.name in _CFG_MINUS_ONE_FAMILIES:
         return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
@@ -2735,7 +2877,7 @@ def _negative_prompt_guidance_threshold(fam: DiffusionFamily) -> Optional[float]
     """sd.cpp drops a negative prompt unless _map_guidance gives cfg > 1; embedded-guidance families never use one."""
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return None
-    return 0.0 if fam.name == "z-image" else 1.0
+    return 0.0 if fam.name in _CFG_MINUS_ONE_FAMILIES else 1.0
 
 
 def _assert_shards_beside_index(kind: str, path: str) -> None:
@@ -2830,6 +2972,22 @@ class _NeverRaised(Exception):
     """Placeholder ``except`` target for a hub layout with no LocalEntryNotFoundError."""
 
 
+def _cached_text_encoder_alternative(repo: str, filename: str, kind: str) -> Optional[str]:
+    """A cached other precision of this encoder when *filename* itself is not loadable from the
+    cache, else None. Network-free (``try_to_load_from_cache``)."""
+    alternatives = sd_cpp_text_encoder_cached_alternatives(repo, filename, kind)
+    if not alternatives:
+        return None
+    from core.inference.diffusion import DiffusionBackend
+
+    if DiffusionBackend._hub_file_is_loadable(repo, filename):
+        return None
+    for alternative in alternatives:
+        if DiffusionBackend._hub_file_is_loadable(repo, alternative):
+            return alternative
+    return None
+
+
 def _local_entry_not_found_error() -> type[BaseException]:
     """huggingface_hub's "not cached and downloads are disabled" error, or an unraisable stand-in.
     Resolved lazily and defensively for the same reason the rest of this module imports
@@ -2879,6 +3037,8 @@ _UNREAD_LOADING_CARD = object()
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
+    # sd.cpp parses A1111 attention syntax ((word:1.2), [word]) in every prompt; it cannot be turned off.
+    parses_prompt_attention = True
     # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
     _loading_cards = None
     _committed_loading_card: Optional[str] = None
@@ -3155,6 +3315,7 @@ class SdCppDiffusionBackend:
             )
         return upgraded
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -3394,7 +3555,9 @@ class SdCppDiffusionBackend:
             inner_dim = self._flux2_inner_dim(
                 repo_id, gguf_filename, fam, hf_token, allow_network = not local_files_only
             )
-            specs = self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
+            specs = self._asset_specs(
+                repo_id, gguf_filename, fam, inner_dim, local_only = local_files_only
+            )
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
             with self._lock:
@@ -3471,6 +3634,7 @@ class SdCppDiffusionBackend:
                 llm = paths.get("llm"),
                 llm_vision = paths.get("llm_vision"),
                 qwen2vl = paths.get("qwen2vl"),
+                tokenizer = paths.get("tokenizer"),
             )
             device = (
                 off_torch.accelerator
@@ -3512,6 +3676,11 @@ class SdCppDiffusionBackend:
 
             device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
+
+            @functools.lru_cache(maxsize = 1)
+            def _diffusion_weight_types() -> Optional[frozenset[str]]:
+                return sd_cpp_args_mod.model_files_quantized_weight_types(files)
+
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
@@ -3635,12 +3804,21 @@ class SdCppDiffusionBackend:
                     # install that later overwrites the executable underneath the live server.
                     started_ok = False
                     try:
+                        server_offload = _offload_with_device_pin_impl(
+                            offload, server_binary, _ordinal()
+                        )
+                        spawn_env = _sd_cpp_spawn_env(
+                            off_torch,
+                            device,
+                            _ordinal(),
+                            offload,
+                            server_offload,
+                            _diffusion_weight_types,
+                        )
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = _offload_with_device_pin_impl(
-                                offload, server_binary, _ordinal()
-                            ),
+                            offload = server_offload,
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
@@ -3718,6 +3896,15 @@ class SdCppDiffusionBackend:
                         server_binary if mode == "server" else getattr(engine, "binary", None),
                         _ordinal(),
                     )
+                )
+                # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
+                spawn_env = _sd_cpp_spawn_env(
+                    off_torch,
+                    device,
+                    _ordinal(),
+                    offload,
+                    committed_offload_flags,
+                    _diffusion_weight_types,
                 )
                 state = _SdState(
                     repo_id = repo_id,
@@ -3807,10 +3994,11 @@ class SdCppDiffusionBackend:
             logger.error("sd_cpp.load_failed: %s", exc)
             if self._state is not None:
                 # Displaced pipeline: give its account back GPU residency, drop its records.
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata("diffusion")
             # Redact filesystem paths before this reaches /images/load-progress (as diffusers does).
             from utils.native_path_leases import redact_native_paths
@@ -4070,18 +4258,29 @@ class SdCppDiffusionBackend:
         gguf_filename: str,
         fam: DiffusionFamily,
         inner_dim: Optional[int] = None,
+        local_only: bool = False,
     ) -> list[tuple[str, str, str]]:
         """(repo, filename, kind) for every file sd-cli needs. ``kind`` is the SdCppModelFiles
-        field; the transformer reuses the diffusers GGUF."""
+        field; the transformer reuses the diffusers GGUF. Offline / ``local_only`` swaps an uncached
+        encoder for a cached other precision so the UI plan and the load agree."""
         specs: list[tuple[str, str, str]] = [(repo_id, gguf_filename, "diffusion_model")]
         if fam.sd_cpp_vae:
             specs.append((fam.sd_cpp_vae[0], fam.sd_cpp_vae[1], "vae"))
+        offline = local_only
+        if not offline:
+            from utils.utils import hf_env_offline
+            offline = hf_env_offline()
         # Pick the encoder per variant so a 9B GGUF fetches the right one: from the header when the caller read it,
         # else from the load identity, which a renamed file makes silent.
         for terepo, tefile, kind in sd_cpp_text_encoders_for(
             fam, repo_id, gguf_filename, inner_dim = inner_dim
         ):
+            if offline:
+                tefile = _cached_text_encoder_alternative(terepo, tefile, kind) or tefile
             specs.append((terepo, tefile, kind))
+        tokenizer = getattr(fam, "sd_cpp_tokenizer", None)
+        if tokenizer:
+            specs.append((tokenizer[0], tokenizer[1], "tokenizer"))
         return specs
 
     def _set_expected_bytes(
@@ -4159,25 +4358,40 @@ class SdCppDiffusionBackend:
                         gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
-                    # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can
-                    # only fire under local_files_only. Its own text names neither the repo nor the file, and this
-                    # string is what /images/load-progress toasts, so restate it with both. Re-raised untouched in the
-                    # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
-                    if not local_files_only:
-                        raise
-                    if kind == "llm_vision" and vision_optional:
-                        # Only editing reads the projector, and edit is offered only when it is loaded. A
-                        # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
-                        # text-to-image; opening it from the Images page fetches the projector.
-                        logger.info(
-                            "sd_cpp.llm_vision_not_cached: %s/%s, editing unavailable", repo, fn
+                    # Not fetchable: an encoder whose default precision changed may be cached as an older quant.
+                    alternative = _cached_text_encoder_alternative(repo, fn, kind)
+                    if alternative is not None:
+                        logger.warning(
+                            "sd_cpp.text_encoder_cached_quant: %s/%s is not cached and cannot be "
+                            "downloaded; using the cached %s",
+                            repo,
+                            fn,
+                            alternative,
                         )
-                        continue
-                    raise RuntimeError(
-                        f"'{fn}' is not in the local cache for '{repo}', and this load may not "
-                        f"download (it was not user-initiated). Open the model from the Images "
-                        f"page to fetch it."
-                    ) from exc
+                        path = hf_hub_download_with_xet_fallback(
+                            repo,
+                            alternative,
+                            hf_token,
+                            cancel_event = cancel,
+                            reuse_other_cache_root = True,
+                            local_files_only = True,
+                            gguf_header_delta = True,
+                        )
+                    else:
+                        # Only fires under local_files_only; hub text omits repo/file and this string is the UI toast.
+                        if not local_files_only:
+                            raise
+                        if kind == "llm_vision" and vision_optional:
+                            # Only edit reads the projector; text-to-image still loads without it.
+                            logger.info(
+                                "sd_cpp.llm_vision_not_cached: %s/%s, editing unavailable", repo, fn
+                            )
+                            continue
+                        raise RuntimeError(
+                            f"'{fn}' is not in the local cache for '{repo}', and this load may not "
+                            f"download (it was not user-initiated). Open the model from the Images "
+                            f"page to fetch it."
+                        ) from exc
             paths[kind] = path
             if kind.endswith("_shard"):
                 shard_paths[fn.rsplit("/", 1)[-1]] = path
@@ -4233,6 +4447,8 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
+            if getattr(fam, "sd_cpp_tokenizer", None):
+                repos.append(fam.sd_cpp_tokenizer[0])
             # Same per-variant selection as _asset_specs (the header dim this load committed, else repo id AND GGUF
             # filename) so the delete guard protects the encoder repo this load actually downloaded. Read off the
             # state, never re-probed: this runs under _lock.
@@ -4289,6 +4505,7 @@ class SdCppDiffusionBackend:
             and workflow in (None, "reference")
         )
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -4322,6 +4539,7 @@ class SdCppDiffusionBackend:
         expected_load: Optional[LoadIdentity] = None,
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
+        hires: Any = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -4466,6 +4684,24 @@ class SdCppDiffusionBackend:
                 else:
                     from core.inference.diffusion_conditioning import check_output_size
                     check_output_size(state.family, int(width), int(height))
+                hires_plan = None
+                if hires is not None:
+                    from core.inference import diffusion_hires
+
+                    if conditioned:
+                        raise ValueError("Hires fix runs on text to image only.")
+                    hires_plan = diffusion_hires.plan_sd_cpp(
+                        state.family,
+                        hires,
+                        mode = state.mode,
+                        binary = getattr(state.server, "binary", None),
+                        width = int(width),
+                        height = int(height),
+                        steps = int(steps),
+                    )
+                    # sd.cpp samples the base and Hires schedules separately, each reporting its own denominator.
+                    passes = (int(steps), int(hires_plan.refine_steps))
+                    self._gen = _SdGen(total_steps = sum(passes), passes = passes)
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
@@ -4511,6 +4747,7 @@ class SdCppDiffusionBackend:
                             cancel = cancel,
                             ref_pngs = ref_pngs,
                             layers = _layer_count(state.family) or None,
+                            hires_plan = hires_plan,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -4584,6 +4821,8 @@ class SdCppDiffusionBackend:
                     if conditioned
                     else None,
                 }
+                if hires_plan is not None:
+                    result["hires"] = diffusion_hires.result_block(hires_plan)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -4621,6 +4860,7 @@ class SdCppDiffusionBackend:
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
         layers: Optional[int] = None,
+        hires_plan: Any = None,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
 
@@ -4653,24 +4893,57 @@ class SdCppDiffusionBackend:
         # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
         # leak in); removed after.
         lora_payload: Optional[list[dict]] = None
-        lora_stage: Optional[Path] = None
-        if lora_resolved:
-            server_lora_dir = state.server.lora_dir
-            if server_lora_dir:
-                lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
-                materialized = diffusion_lora.materialize_native_dir(lora_resolved, lora_stage)
-                lora_payload = [
-                    {
-                        "path": f"{lora_stage.name}/{Path(m.path).name}",
-                        "multiplier": float(m.weight),
-                    }
-                    for m in materialized
-                ]
+        lora_stages: list[Path] = []
+
+        def _stage_loras(server: Any) -> Optional[list[dict]]:
+            """The ``lora`` block, with the adapters staged into THIS server's lora-model-dir."""
+            if not lora_resolved or not server.lora_dir:
+                return None
+            stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
+            lora_stages.append(stage)
+            materialized = diffusion_lora.materialize_native_dir(
+                lora_resolved, stage, real_files = True
+            )
+            return [
+                {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
+                for m in materialized
+            ]
+
         # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
+        hires_payload: Optional[dict] = None
+        hires_staged: list[Path] = []
+
+        def _stage_hires(server: Any) -> Optional[dict]:
+            """The ``hires`` block, with a model upscaler staged into THIS server's upscaler dir."""
+            if hires_plan is None:
+                return None
+            from core.inference import diffusion_hires, diffusion_upscalers
+
+            upscaler_id = hires_plan.params.upscaler
+            staged_name = None
+            if diffusion_upscalers.is_model_upscaler(upscaler_id):
+                if not server.lora_dir:
+                    raise ValueError(
+                        "The native server has no upscaler directory for a model upscaler."
+                    )
+                staged_name, staged = diffusion_hires.stage_sd_cpp_upscaler(
+                    upscaler_id, server.lora_dir, cancel = cancel
+                )
+                hires_staged.append(staged)
+            return diffusion_hires.sd_cpp_payload(
+                hires_plan.params,
+                int(steps),
+                hires_plan.target,
+                diffusion_hires.sd_cpp_upscaler_name(upscaler_id, staged_name),
+                request_steps = hires_plan.request_steps,
+            )
+
         try:
+            lora_payload = _stage_loras(state.server)
+            hires_payload = _stage_hires(state.server)
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
                     raise SdCppCancelled("sd-server generation was cancelled.")
@@ -4685,7 +4958,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
-                    flow_shift = state.flow_shift,
+                    flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
                         if state.sample_sigmas
@@ -4699,6 +4972,7 @@ class SdCppDiffusionBackend:
                         for b in ref_pngs or []
                     ],
                     qwen_image_layers = layers,
+                    hires = hires_payload,
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -4717,6 +4991,18 @@ class SdCppDiffusionBackend:
                     with self._lock:
                         if self._state is not None and self._state.server is not None:
                             self._state = state
+                    if lora_payload is not None:
+                        # The replacement server has its own scratch dir: stage the LoRAs there again.
+                        lora_payload = _stage_loras(server)
+                        if lora_payload is None:
+                            raise RuntimeError(
+                                "The CPU-backend native server has no LoRA directory for the selected LoRAs."
+                            )
+                        payload["lora"] = list(lora_payload)
+                    if hires_plan is not None:
+                        # The replacement server has its own scratch dir: stage the upscaler there again.
+                        hires_payload = _stage_hires(server)
+                        payload["hires"] = dict(hires_payload)
                     blobs = server.img_gen(
                         payload,
                         on_step = self._on_log,
@@ -4739,8 +5025,13 @@ class SdCppDiffusionBackend:
                     (chunk_seed + i // max(1, per)) & ((1 << 63) - 1) for i in range(len(kept))
                 )
         finally:
-            if lora_stage is not None:
-                shutil.rmtree(lora_stage, ignore_errors = True)
+            for stage in lora_stages:
+                shutil.rmtree(stage, ignore_errors = True)
+            for staged in hires_staged:
+                try:
+                    staged.unlink()
+                except OSError:
+                    pass
         return images, seeds
 
     def _restart_server_on_cpu_backend(
@@ -4836,8 +5127,9 @@ class SdCppDiffusionBackend:
         extra_args: list[str] = []
         if state.vae_format:
             extra_args += ["--vae-format", state.vae_format]
-        if state.flow_shift is not None:
-            extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+        flow_shift = _request_flow_shift(state, int(width), int(height))
+        if flow_shift is not None:
+            extra_args += ["--flow-shift", repr(float(flow_shift))]
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
@@ -4931,12 +5223,30 @@ class SdCppDiffusionBackend:
         if gen is None or gen.total_steps <= 0:
             return
         for a, b in _STEP_RE.findall(line):
-            if int(b) == gen.total_steps:
-                now = time.time()
-                gen.step = min(int(a), gen.total_steps)
-                if gen.first_step_at == 0.0:
-                    gen.first_step_at = now
-                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
+            a, b = int(a), int(b)
+            if gen.passes:
+                i = gen.pass_index
+                nxt = (i + 1) % len(gen.passes)
+                # The next pass (the next image's base pass after the last one) starts once this one completed; a
+                # repeat of this pass's last line is not a start.
+                if (
+                    nxt != i
+                    and b == gen.passes[nxt]
+                    and gen.step >= gen.pass_offset + gen.passes[i]
+                    and (b != gen.passes[i] or a < b)
+                ):
+                    gen.pass_offset = gen.pass_offset + gen.passes[i] if nxt else 0
+                    gen.pass_index = i = nxt
+                if b != gen.passes[i]:
+                    continue
+                a += gen.pass_offset
+            elif b != gen.total_steps:
+                continue
+            now = time.time()
+            gen.step = min(a, gen.total_steps)
+            if gen.first_step_at == 0.0:
+                gen.first_step_at = now
+            gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
 
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
@@ -4978,8 +5288,16 @@ class SdCppDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("sd.cpp unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
@@ -5149,7 +5467,23 @@ class SdCppDiffusionBackend:
             # txt2img always; reference and edit only where this build and its loaded assets run them.
             "workflows": workflows,
             "conditioning": conditioning,
+            **_native_hires_status(state),
         }
+
+
+def _native_hires_status(state: Any) -> dict[str, Any]:
+    try:
+        from core.inference import diffusion_hires
+        hires, reason = diffusion_hires.sd_cpp_capability(
+            state.family,
+            mode = state.mode,
+            binary = getattr(getattr(state, "server", None), "binary", None),
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken probe hides the control, never the status
+        logger.debug("sd_cpp.hires: capability probe failed: %s", exc)
+        hires, reason = None, None
+    # No img2img on this engine, so the Upscale workflow (and its model upscalers) is not offered.
+    return {"hires": hires, "hires_unavailable_reason": reason, "upscale_models": []}
 
 
 def _install_allowed() -> bool:

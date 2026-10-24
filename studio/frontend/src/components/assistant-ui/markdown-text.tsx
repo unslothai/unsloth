@@ -8,6 +8,7 @@ import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
 import {
   ArtifactCard,
+  readIncompleteInfo,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -51,7 +52,6 @@ import {
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
   type ReactNode,
@@ -93,6 +93,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
 import { useThinkingCodeColour } from "./use-thinking-code-colour";
@@ -128,6 +129,7 @@ import {
   type DiscreteInputTracker,
 } from "./discrete-input";
 import {
+  FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
@@ -327,7 +329,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         <button
           type="button"
           title="Download image"
-          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
             // Reuse fetched bytes under the desktop CSP.
             try {
@@ -353,7 +355,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
 });
 
 const LINK_CLASS =
-  "text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer";
+  "text-foreground underline underline-offset-2 decoration-foreground/40 hover:decoration-foreground transition-colors cursor-pointer";
 
  /** A link in an answer; a file the chat's tools wrote opens the file rather than routing the app to its path. */
 function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
@@ -1489,6 +1491,7 @@ type MarkdownTextRendererProps = {
   messageId: string;
   messageTextKey: string;
   precedingText: string;
+  cut?: boolean;
   searchImagesKey: string;
   statusType: string;
   text: string;
@@ -1500,6 +1503,7 @@ function MarkdownTextRenderer({
   messageId,
   messageTextKey,
   precedingText,
+  cut = !isStreaming,
   searchImagesKey,
   statusType,
   text,
@@ -1568,10 +1572,6 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const pendingLinkRepair = useMemo(
-    () => !isStreaming && hasIncompleteLinkRepair(processedText),
-    [isStreaming, processedText],
-  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1586,10 +1586,16 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
+            remend={
+              !cut
+                ? FINISHED_TEXT_REMEND
+                : hasIncompleteLinkRepair(processedText)
+                  ? LITERAL_LINK_REMEND
+                  : undefined
+            }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks
@@ -1646,6 +1652,13 @@ const MarkdownTextImpl = () => {
       ? partsTextKey(message.parts)
       : "[]",
   );
+  // Every streamed yield carries the incomplete stamp and only a normal finish clears it.
+  const cut = useAuiState(
+    ({ message }) =>
+      message.status?.type !== "running" &&
+      !!readIncompleteInfo(message.metadata) &&
+      !message.parts.slice(partIndex + 1).some((part) => part.type === "text"),
+  );
 
   return (
     <MarkdownTextRenderer
@@ -1654,6 +1667,7 @@ const MarkdownTextImpl = () => {
       messageId={messageId}
       messageTextKey={messageTextKey}
       precedingText={precedingText}
+      cut={cut}
       searchImagesKey={searchImagesKey}
       statusType={status.type}
       text={text}

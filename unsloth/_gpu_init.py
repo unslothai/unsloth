@@ -257,6 +257,12 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
+# No accelerator at all: zoo chose its CPU backend and skipped every GPU patch. Stop here, before
+# any CUDA/Triton work, and let __init__ load the CPU backend instead (as the MLX branch does).
+if unsloth_zoo.__dict__.get("_IS_CPU_BACKEND", False):
+    from . import _CPUBackendSelected
+    raise _CPUBackendSelected()
+
 try:
     import torch
 except ModuleNotFoundError:
@@ -350,6 +356,7 @@ from .import_fixes import (
     fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
+    fix_transformers_tokenizer_config_vocab_file_override,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -376,6 +383,7 @@ from .import_fixes import (
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
+    fix_inductor_reduction_readback_race,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -398,6 +406,7 @@ from .import_fixes import (
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
     patch_peft_float8_adapter_upcast,
+    patch_peft_shared_active_adapter,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -413,9 +422,11 @@ fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
-# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+# CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once
+# transformers carries the fix; before any config or tokenizer loads.
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
+fix_transformers_tokenizer_config_vocab_file_override()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -471,6 +482,7 @@ fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
+fix_inductor_reduction_readback_race()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -497,6 +509,7 @@ fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 patch_peft_float8_adapter_upcast()
+patch_peft_shared_active_adapter()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -509,6 +522,7 @@ del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
+del fix_transformers_tokenizer_config_vocab_file_override
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
@@ -533,6 +547,7 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
+del fix_inductor_reduction_readback_race
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
@@ -553,6 +568,7 @@ del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 del patch_peft_float8_adapter_upcast
+del patch_peft_shared_active_adapter
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply
@@ -802,6 +818,9 @@ from .trainer import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
+from .dataprep import ebooks as _ebooks
+
+load_ebook_dataset = _ebooks.load_ebook_dataset
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,
