@@ -1487,15 +1487,19 @@ export function ApiMonitorPage(): ReactElement {
             </div>
           ) : (
             <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <Fact label="Model" className="group/copy max-w-full">
+              <Fact label="Model" className="max-w-full">
                 {served.length === 1 ? (
                   <>
-                    <span className="truncate font-mono">{served[0].name}</span>
-                    <CopyButton
-                      value={served[0].name}
-                      label="Copy model name"
-                      revealOnHover={true}
-                    />
+                    {/* The reveal group is the name and its copy button only, so hovering the
+                        settings or code buttons beside them does not light up Copy. */}
+                    <span className="group/copy flex min-w-0 items-center gap-1">
+                      <span className="truncate font-mono">{served[0].name}</span>
+                      <CopyButton
+                        value={served[0].name}
+                        label="Copy model name"
+                        revealOnHover={true}
+                      />
+                    </span>
                     {settingsButton(served[0])}
                     {exampleButton(served[0])}
                   </>
