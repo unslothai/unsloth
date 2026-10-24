@@ -1271,11 +1271,8 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return repo_id
 
 
-# The official-provenance files are byte-identical to the ones this build's predecessors fetched under the pre-move
-# names: the same unsloth repo's original paths, and before that the Comfy-Org repack they were copied from. An install
-# staged before the move holds only those names, so a cache-only load (offline, or a load that may not download) found
-# nothing at the new path and failed. Read ONLY on such a miss and only when the cached bytes carry the pinned sha256 of
-# the unsloth file; a network fetch never goes anywhere but the unsloth repo. Unsloth's own copy is preferred.
+# Official-provenance files are byte-identical to their pre-move names (unsloth paths, then the Comfy-Org repack), so a
+# cache-only load of a pre-move install reads those, ONLY on a miss and only with the pinned sha256; fetches stay unsloth.
 # filename -> (sha256, size in bytes, unsloth repo, ((repo, pre-move filename), ...) in preference order).
 H3_PRE_MOVE_COPIES: dict[str, tuple[str, int, str, tuple[tuple[str, str], ...]]] = {
     H3_VIDEO_VAE: (
@@ -1326,10 +1323,8 @@ def _file_sha256(
     *,
     compute: bool = True,
 ) -> Optional[str]:
-    """sha256 of ``path``. An HF cache snapshot entry links to ``blobs/<sha256>``, its content address, so that name is
-    the answer without reading GBs; a copied entry (no symlinks, e.g. Windows) is hashed once per process, checking
-    ``cancel_event`` between chunks so an unload is not held for a 27 GB disk scan. Without ``compute`` only those
-    cheap answers are given (blob name, or this process's memo), else None: a planner never reads the bytes."""
+    """sha256 of ``path``: the ``blobs/<sha256>`` link name when present, else hashed once per process (cancellable).
+    Without ``compute`` only those cheap answers (blob name, memo), else None: a planner never reads the bytes."""
     import hashlib
     import re
 
@@ -1361,9 +1356,8 @@ def _matches_pinned(
     *,
     verify: bool = True,
 ) -> bool:
-    """Whether ``path`` holds the pinned bytes of ``filename``. Without ``verify`` (the size planners) the pinned size
-    decides unless a cheap sha256 (blob name, memo) is already known: no multi-GB read inside a plan request. The load
-    always verifies, so a same-size file with other bytes is still refused there."""
+    """Whether ``path`` holds the pinned bytes of ``filename``. Without ``verify`` (planners) the pinned size decides
+    unless a cheap sha256 is known; the load always verifies, so a same-size file with other bytes is refused there."""
     pinned = H3_PRE_MOVE_COPIES.get(filename)
     if pinned is None or path is None:
         return False
@@ -1385,8 +1379,7 @@ def h3_pre_move_bundle_file(
     verify: bool = True,
     cancel_event: Any = None,
 ) -> Optional[Path]:
-    """``filename`` under a local bundle ``root`` by its pre-move name, when the bundle predates the move. Without
-    ``verify`` only the name and size are checked (the pure request builder); the load verifies the hash."""
+    """``filename`` under a local bundle ``root`` by its pre-move name. Without ``verify`` only name and size."""
     pinned = H3_PRE_MOVE_COPIES.get(filename)
     if pinned is None:
         return None
@@ -1433,20 +1426,14 @@ def h3_pre_move_copy_if_uncached(
     cancel_event: Any = None,
     verify: bool = True,
 ) -> Optional[Path]:
-    """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None.
-
-    Only when the official-path file is not cached under any root: a cached official copy always wins, and a file with
-    no pre-move copy is fetched as usual. The planners and the loaders ask this one question, so a plan never stages a
-    download the load then skips (or the reverse). Cache lookups only, no network. ``verify=False`` (planners) skips
-    hashing a copied file not yet hashed in this process (see ``_matches_pinned``); loaders keep the default."""
+    """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None (a cached
+    official copy wins). Planners and loaders share this one question so plan and load never disagree. No network."""
     if filename not in H3_PRE_MOVE_COPIES or Path(repo_id).expanduser().exists():
         return None
     from huggingface_hub import try_to_load_from_cache
 
     roots = _h3_cache_roots() if cache_dirs is None else cache_dirs
-    # Only an official copy the fetch can actually resolve wins: hf_hub_download_with_xet_fallback reads the live root
-    # and huggingface_hub's import-time root (None), never Studio's legacy or platform-default roots, so a hit there
-    # must not suppress a pre-move copy the load could read.
+    # Only roots the fetch resolves (live + huggingface_hub's import-time None) count; a legacy-root hit must not win.
     reachable = (roots[0], None) if cache_dirs is None and roots else roots
     for cache_dir in dict.fromkeys(reachable):
         try:
@@ -1465,8 +1452,7 @@ def h3_pre_move_cached_copy(
     cancel_event: Any = None,
     verify: bool = True,
 ) -> Optional[Path]:
-    """A hash-identical copy of ``filename`` already in an HF cache under its pre-move name, else None. Cache lookup
-    only: no network, and nothing is downloaded from any of the listed repos."""
+    """A hash-identical copy of ``filename`` already in an HF cache under its pre-move name, else None. No network."""
     pinned = H3_PRE_MOVE_COPIES.get(filename)
     if pinned is None:
         return None

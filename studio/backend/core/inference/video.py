@@ -5315,8 +5315,7 @@ class VideoBackend:
             elif (
                 pre_move := _h3_pre_move_copy_if_uncached(repo, wanted, cancel_event)
             ) is not None:
-                # An install staged before the official-provenance move holds the same bytes under the old name
-                # (hash-checked): a cache read, not a download, and the plan already counted it as present.
+                # Pre-move install: same bytes under the old name (hash-checked), already counted present by the plan.
                 local = pre_move
             else:
                 try:
@@ -7173,8 +7172,7 @@ class VideoBackend:
                 _h3_pre_move_copy_if_uncached(h3_te_repo, name, verify = False) is not None
                 for name, _ in h3_te_files
             ):
-                # On disk under its pre-move name: nothing to stage, but still part of the footprint required_bytes
-                # reports (the picker derives the companion size from it).
+                # Nothing to stage, but still in required_bytes (the picker derives the companion size from it).
                 total += sum(int(size) for _name, size in h3_te_files)
             elif h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)
@@ -7301,9 +7299,8 @@ class VideoBackend:
             except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
                 from .video_minimax_h3 import h3_pre_move_bundle_file
 
-                # A bundle cloned before the official-provenance move holds the same bytes under the old name.
-                # Hash-checked here, not only at load: a same-size file with other bytes must keep the Hub copy rather
-                # than route the load to a bundle it then refuses. Memoized, so the plan and the load hash it once.
+                # Hash-checked here, not only at load: a same-size impostor must keep the Hub copy, not route the load
+                # to a bundle it then refuses. Memoized, so plan and load hash once.
                 if h3_pre_move_bundle_file(root, filename, cancel_event = cancel_event) is None:
                     return hub_repo
             return repo_id
@@ -7410,9 +7407,8 @@ class VideoBackend:
                     revision = getattr(info, "sha", None) if meta_repo == repo else None
                     if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
                         if _h3_pre_move_copy_if_uncached(repo, filename, verify = False) is not None:
-                            # Satisfied by a pre-move copy the load reads in place. Staging the official name would
-                            # make snapshot_download (which only reuses the target repo's cache) fetch it again while
-                            # the plan advertises zero bytes for it, so it leaves the file list too.
+                            # Read in place; staging the official name would make snapshot_download refetch it
+                            # while the plan advertises zero bytes.
                             entry["files"].remove(filename)
                         else:
                             missing_files.setdefault(repo, set()).add(filename)
