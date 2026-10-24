@@ -121,13 +121,11 @@ def _import_torchao_blockwise_gemm():
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-
         return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-
         return blockwise_fp8_gemm
     except Exception:
         pass
