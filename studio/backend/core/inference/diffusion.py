@@ -3126,6 +3126,7 @@ def _whole_tier_for_request(
     batch_size: int,
     cfg: Optional[bool],
     condition_pixels: int,
+    workflow: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[tuple[float, float, int]]:
     """``(whole s, streamed s, activation MiB)`` when this request runs the streamed denoiser whole for the call (its
@@ -3139,6 +3140,9 @@ def _whole_tier_for_request(
     if getattr(state, "offload_policy", None) != OFFLOAD_GROUP or getattr(
         state, "transformer_cache", None
     ):
+        return None
+    if int(condition_pixels or 0) > 0:
+        # no learned peak covers this request's own condition images: it streams as placed
         return None
     try:
         family, label, speed = _live_peak_identity(state)
@@ -3190,7 +3194,8 @@ def _whole_tier_for_request(
             width = width,
             height = height,
             batch_size = batch_size,
-            quant = key_label,
+            # a non-text-to-image request reads the peak recorded under its own workflow
+            quant = with_workflow(key_label, workflow),
             static_seed = False,
             phase = "pre_decode",
         )
@@ -14213,9 +14218,11 @@ class DiffusionBackend:
                             steps = denoise_steps,
                             width = guard_width,
                             height = guard_height,
-                            batch_size = guard_batch,
+                            # the largest forward this request runs, not the activation guard's singleton floor
+                            batch_size = max((len(chunk) for chunk in chunks), default = 1),
                             cfg = getattr(state.pipe, "_unsloth_peak_cfg", None),
                             condition_pixels = guard_condition_pixels,
+                            workflow = workflow,
                             logger = logger,
                         )
                     except Exception as exc:  # noqa: BLE001 - the load's streamed plan

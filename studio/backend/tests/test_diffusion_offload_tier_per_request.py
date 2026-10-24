@@ -229,6 +229,53 @@ def test_request_gate_without_a_learned_peak_streams(_learned, monkeypatch):
     assert _request(_state()) is None
 
 
+def test_request_gate_declines_condition_images(_learned):
+    """No learned peak covers a request's own condition images: it streams as the load placed it."""
+    state = _state()
+    state.pipe._unsloth_peak_identity = LOADED
+    assert (
+        dif._whole_tier_for_request(
+            state,
+            steps = 8,
+            width = 1024,
+            height = 1024,
+            batch_size = 1,
+            cfg = False,
+            condition_pixels = 1 << 20,
+        )
+        is None
+    )
+    assert _learned == []
+
+
+def test_request_gate_reads_the_workflow_peak(_learned):
+    """An img2img request is sized from the peak recorded under its own workflow, never the text-to-image one."""
+    state = _state()
+    state.pipe._unsloth_peak_identity = LOADED
+    out = dif._whole_tier_for_request(
+        state,
+        steps = 8,
+        width = 1024,
+        height = 1024,
+        batch_size = 1,
+        cfg = False,
+        condition_pixels = 0,
+        workflow = "img2img",
+    )
+    assert out is None  # only the text-to-image key holds a peak in the fixture
+    assert _learned and all(q.endswith("|wf:img2img") for q, _, _ in _learned)
+
+
+def test_the_request_gate_prices_the_largest_chunk():
+    """The tier is priced on the forward the request runs, not the activation guard's singleton floor."""
+    import inspect
+
+    src = inspect.getsource(dif)
+    call = src.split("whole_tier = _whole_tier_for_request(", 1)[1].split(")\n", 1)[0]
+    assert "batch_size = max((len(chunk) for chunk in chunks), default = 1)" in call
+    assert "guard_batch" not in call
+
+
 def _cuda_net():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
