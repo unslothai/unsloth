@@ -1676,6 +1676,24 @@ def _rows_plans(quant_state):
     return plans
 
 
+_OPTIMIZER_STEPS = 0
+
+
+def _count_optimizer_step(optimizer, args, kwargs):
+    global _OPTIMIZER_STEPS
+    _OPTIMIZER_STEPS += 1
+
+
+try:
+    # Fused optimizers (AdamW(fused = True), the transformers default on torch >= 2.8) update
+    # parameters without bumping _version, so the LoRA cast cache also keys on optimizer steps.
+    from torch.optim.optimizer import register_optimizer_step_post_hook
+
+    register_optimizer_step_post_hook(_count_optimizer_step)
+except Exception:
+    pass
+
+
 def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.dtype == dtype and lora_B.dtype == dtype:
         return lora_A, lora_B
@@ -1684,7 +1702,14 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
     if lora_A.is_inference() or lora_B.is_inference():
         key = (None, None, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
     else:
-        key = (lora_A._version, lora_B._version, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+        key = (
+            _OPTIMIZER_STEPS,
+            lora_A._version,
+            lora_B._version,
+            lora_A.data_ptr(),
+            lora_B.data_ptr(),
+            dtype,
+        )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
         cache = (key, lora_A.to(dtype), lora_B.to(dtype))
