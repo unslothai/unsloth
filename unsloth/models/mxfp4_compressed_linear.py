@@ -66,7 +66,10 @@ _FP4_VALUES = (
 _LUT_CACHE = {}
 # torch < 2.12's ldexp forms 2^e in the input dtype: in fp16 2^16 is inf (0 * 2^16 -> NaN, 2^-10 * 2^20 -> inf)
 # and 2^-25 is 0. Decode fp16 in fp32 there, then round once.
-_LDEXP_IN_INPUT_DTYPE = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (2, 12)
+_LDEXP_IN_INPUT_DTYPE = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (
+    2,
+    12,
+)
 
 
 def mxfp4_keep_packed_enabled() -> bool:
