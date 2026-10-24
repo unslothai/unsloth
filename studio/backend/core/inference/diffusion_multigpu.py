@@ -3004,8 +3004,7 @@ class CfgParallelRouter:
         return mirror
 
     def _secondary_free_total_mib(self) -> tuple[Optional[int], Optional[int]]:
-        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks, less any CUDA
-        graph pool on that card (another pipeline's), which only its graphs may reuse."""
+        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks, minus CUDA graph pools."""
         free, total = _free_total_mib(self.secondary.index)
         if free is not None:
             with contextlib.suppress(Exception):

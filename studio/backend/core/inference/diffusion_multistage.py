@@ -37,8 +37,8 @@ def _denoisers(pipe: Any) -> list:
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
     """Whether the denoiser a call onloaded can stay while ``companions`` (the modules that run before it is needed
-    again) are onloaded beside it: free memory plus the allocator's idle cache (less CUDA graph pools) covers them with
-    a margin."""
+    again) are onloaded beside it: free memory plus the allocator's idle cache (minus CUDA graph pools) covers them
+    with a margin."""
     try:
         import torch
 
@@ -49,7 +49,6 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
         free, total = torch.cuda.mem_get_info(param.device)
         from .diffusion_memory import _user_budget_reserve_mib, cuda_reusable_cache_bytes
 
-        # A live CUDA graph pool is cached but only its graphs may reuse it.
         idle = cuda_reusable_cache_bytes(param.device)
 
         reserve = _user_budget_reserve_mib(int(total) >> 20) << 20

@@ -753,7 +753,7 @@ def test_denoiser_hold_fit_does_not_count_graph_held_cache(monkeypatch):
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
-    # 1000 free + 100 reusable cached = 1100 MiB, under the 1200 MiB need; crediting the 500 graph-held made it 1600.
+    # 1000 free + 100 reusable = 1100 MiB < 1200 need; counting the 500 graph-held gave 1600.
     assert MS.companions_fit_beside_denoiser(object(), ()) is False
     monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 0)
     assert MS.companions_fit_beside_denoiser(object(), ()) is True  # no graph pool: unchanged
