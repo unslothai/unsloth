@@ -18,6 +18,8 @@ import { useUiStore } from "../stores/ui-store";
 import { failedSteps, modelSignature, planCheck } from "../ux-rules";
 
 let follower: AbortController | null = null;
+// flowId -> the model picks of the last run that had nothing to download: the same picks skip the plan request.
+const checkedModels = new Map<string, string>();
 
 export function attachRun(runId: string, afterSeq = 0): void {
   follower?.abort();
@@ -76,6 +78,8 @@ function reportFailure(): void {
 export function detachRun(): void {
   follower?.abort();
   follower = null;
+  // Leaving the editor is where models get deleted (Hub): the next visit asks the plan again.
+  checkedModels.clear();
 }
 
 export interface RunOptions {
@@ -87,8 +91,6 @@ export interface RunOptions {
   downloadsConfirmed?: boolean;
 }
 
-// flowId -> the model picks of the last run that had nothing to download: the same picks skip the plan request.
-const checkedModels = new Map<string, string>();
 const PLAN_CHECK_TIMEOUT_MS = 4000;
 
 /**
