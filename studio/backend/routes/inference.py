@@ -3204,6 +3204,10 @@ def _openai_llama_publish_round_charge(
             if awaited and participant is not None:
                 participant.awaiting_victims = awaited
                 _openai_llama_wait_for_armed_victims(controller, gen_id)
+    except LlamaAdmissionTimeout as exc:
+        # The round's prompt would land beside a victim still decoding: refused as a round with no
+        # room is, the tool loop ending the turn on its partial answer.
+        raise LlamaAdmissionRecostRefused(str(exc)) from exc
     except Exception:
         pass
 
@@ -3361,12 +3365,16 @@ def _openai_llama_armed_victims_pending(controller, gen_id: str) -> bool:
 
 
 def _openai_llama_wait_for_armed_victims(controller, gen_id: str) -> None:
-    """Blocking: hold an armed chat's prefill until the chats its plan paused let go. Never
-    refuses it: a victim still decoding when the wait runs out leaves the chat as it was."""
+    """Blocking: hold an armed chat's prefill until the chats its plan paused let go. A victim
+    still decoding when the wait runs out still holds the cells the prefill needs, so the chat is
+    refused with ``LlamaAdmissionTimeout`` as an unpausable holder is, not sent beside it."""
     if not _openai_llama_armed_victims_pending(controller, gen_id):
         return
     if not _openai_llama_wait_for_victims(controller, gen_id):
         _llama_preemption_log("armed-victims-late", level = "warning", gen_id = gen_id)
+        raise LlamaAdmissionTimeout(
+            "Timed out waiting for the local llama-server cache to free room for this request"
+        )
 
 
 async def _openai_llama_let_victims_go(llama_backend, gen_id: Optional[str]) -> None:
@@ -3510,9 +3518,14 @@ def _openai_llama_preemption_arm(
     controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
     if controller is None:
         return None
-    _refresh_residency_before_planning(controller)
-    policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
-    _openai_llama_wait_for_armed_victims(controller, gen_id)
+    try:
+        _refresh_residency_before_planning(controller)
+        policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+        _openai_llama_wait_for_armed_victims(controller, gen_id)
+    except BaseException:
+        # Refused or interrupted mid-arm, the stream never starts, so no disarm would drop it.
+        controller.unregister(gen_id)
+        raise
     return policy
 
 
@@ -36639,6 +36652,20 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+            except LlamaAdmissionTimeout as exc:
+                # The arm's victims never let go of the cells this prompt needs.
+                _llama_admission_log(
+                    "timeout",
+                    reservation,
+                    request = request,
+                    mode = _tool_admission_mode,
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                if reservation is not None:
+                    reservation.cancel()
+                api_monitor.fail(monitor_id, str(exc))
+                raise _openai_admission_http_exception(exc, status_code = 503)
             except BaseException as exc:
                 if reservation is not None:
                     reservation.cancel()
@@ -38343,6 +38370,19 @@ async def produce_openai_chat_completions(
                 await _drain_cancelled_gguf_task()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except LlamaAdmissionTimeout as exc:
+                # The arm's victims never let go of the cells this prompt needs; the finally
+                # below gives the lease back.
+                _llama_admission_log(
+                    "timeout",
+                    reservation,
+                    request = request,
+                    mode = "chat_standard_nonstream",
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                raise _openai_admission_http_exception(exc, status_code = 503)
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))

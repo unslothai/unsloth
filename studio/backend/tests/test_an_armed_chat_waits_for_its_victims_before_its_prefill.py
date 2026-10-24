@@ -92,15 +92,31 @@ def test_the_sync_arm_waits_inline(armed):
     assert controller.participant("chat").state == ParticipantState.PAUSED
 
 
-def test_a_victim_that_never_lets_go_does_not_refuse_the_chat(armed, monkeypatch):
+def test_a_victim_that_never_lets_go_refuses_the_chat(armed, monkeypatch):
+    """Its prefill would land in cells the victim still holds: refused as an admission timeout,
+    the error a queued chat that never got room ends on, and the enrolment dropped."""
     fake, controller = armed
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.1)
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.3)
-    policy = inference._openai_llama_preemption_arm(
-        llama_backend = fake, gen_id = "new", signal = PreemptSignal()
-    )
-    assert policy is not None
+    with pytest.raises(inference.LlamaAdmissionTimeout):
+        inference._openai_llama_preemption_arm(
+            llama_backend = fake, gen_id = "new", signal = PreemptSignal()
+        )
     assert controller.participant("chat").state == ParticipantState.PREEMPTING
+    assert controller.participant("new") is None, "a refused chat stayed counted"
+
+
+def test_the_async_arm_refuses_the_same_way(armed, monkeypatch):
+    fake, controller = armed
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.1)
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.3)
+    with pytest.raises(inference.LlamaAdmissionTimeout):
+        asyncio.run(
+            inference._openai_llama_preemption_arm_async(
+                llama_backend = fake, gen_id = "new", signal = PreemptSignal()
+            )
+        )
+    assert controller.participant("new") is None, "a refused chat stayed counted"
 
 
 class _Lease:
@@ -133,3 +149,93 @@ def test_a_tool_round_waits_for_the_chats_its_sweep_paused(armed, monkeypatch):
     )
     assert time.monotonic() - started >= 0.25
     assert controller.participant("chat").state == ParticipantState.PAUSED
+
+
+def test_a_tool_round_whose_victim_never_lets_go_is_refused(armed, monkeypatch):
+    """The round's prefill is refused the way a round with no room is, not sent beside the
+    victim: the tool loop ends the turn on its partial answer for this refusal."""
+    fake, controller = armed
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.1)
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.3)
+    controller.register("round", tokens = 100, signal = PreemptSignal())
+    controller.note_measured("round")
+    monkeypatch.setattr(
+        inference, "_openai_llama_admission_charged_prompt_tokens", lambda *a, **k: 3000
+    )
+    with pytest.raises(inference.LlamaAdmissionRecostRefused):
+        inference._openai_llama_publish_round_charge(
+            llama_backend = fake,
+            gen_id = "round",
+            reservation = _Reservation(),
+            payload = None,
+            conversation = [],
+            rendered_tools = None,
+            observe_tokens = lambda generated: controller.plan_preemptions(
+                needed = 0, exclude = "round"
+            ),
+        )
+    assert controller.participant("chat").state == ParticipantState.PREEMPTING
+
+
+def test_every_arm_site_answers_a_refusal_as_an_admission_timeout():
+    """Each awaited arm sits in a try that turns LlamaAdmissionTimeout into the admission 503,
+    not a generic 500 or an escaped exception."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(inference))
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def _names(handler):
+        kind = handler.type
+        items = kind.elts if isinstance(kind, ast.Tuple) else [kind]
+        return {getattr(item, "id", getattr(item, "attr", None)) for item in items}
+
+    sites = 0
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_openai_llama_preemption_arm_async"
+            and isinstance(parents.get(node), ast.Await)
+        ):
+            continue
+        sites += 1
+        handled = False
+        child, parent = node, parents.get(node)
+        while parent is not None and not isinstance(
+            parent, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            if isinstance(parent, ast.Try) and child in parent.body:
+                if any(
+                    h.type is not None and "LlamaAdmissionTimeout" in _names(h)
+                    for h in parent.handlers
+                ):
+                    handled = True
+                    break
+            child, parent = parent, parents.get(parent)
+        if not handled and isinstance(parent, ast.AsyncFunctionDef):
+            # A helper such as `_arm_anthropic`: every caller must handle it instead.
+            callers = [
+                call
+                for call in ast.walk(tree)
+                if isinstance(call, ast.Call) and getattr(call.func, "id", None) == parent.name
+            ]
+            assert callers, parent.name
+            handled = True
+            for call in callers:
+                c, p = call, parents.get(call)
+                ok = False
+                while p is not None and not isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if isinstance(p, ast.Try) and c in p.body and any(
+                        h.type is not None and "LlamaAdmissionTimeout" in _names(h)
+                        for h in p.handlers
+                    ):
+                        ok = True
+                        break
+                    c, p = p, parents.get(p)
+                handled = handled and ok
+        assert handled, f"the arm at line {node.lineno} lets a refusal escape as a 500"
+    assert sites >= 6
