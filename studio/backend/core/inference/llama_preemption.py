@@ -1376,7 +1376,8 @@ class PreemptionController:
 
         A chosen chat keeps decoding into its cells until its stream sees the signal and
         closes upstream, so the room a plan projected is not free yet. True when every one
-        has paused, finished, or declined. Blocking: never call it on the event loop."""
+        has paused, finished, or declined and been replaced by chats that have. Blocking: never
+        call it on the event loop."""
         deadline = time.monotonic() + max(0.0, float(timeout))
         pending = list(gen_ids or ())
         while True:
@@ -1395,7 +1396,11 @@ class PreemptionController:
                             seen.add(new)
                             work.append(new)
                     p = self._participants.get(gid)
-                    if p is not None and p.state == ParticipantState.PREEMPTING:
+                    if p is not None and (
+                        p.state == ParticipantState.PREEMPTING
+                        # Declined with nobody to stop in its place: its cells never left.
+                        or (gid in self._replaced_by and not replaced and p.holds_kv)
+                    ):
                         still.append(gid)
                 pending = still
             if not pending:
