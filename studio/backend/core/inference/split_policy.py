@@ -216,14 +216,16 @@ def _pick_pair(
     """Up to max_gpus matching idle cards with the most free memory, else (None, why)."""
     idle = []
     busy = []
+    unknown = []
     for g in gpus:
-        if (
-            thresholds.max_util_pct is not None
-            and g.util_pct is not None
-            and g.util_pct > thresholds.max_util_pct
-        ):
-            busy.append(g.index)
-            continue
+        if thresholds.max_util_pct is not None:
+            # Free memory does not prove a card idle: an unread / N/A utilisation is not idle.
+            if g.util_pct is None:
+                unknown.append(g.index)
+                continue
+            if g.util_pct > thresholds.max_util_pct:
+                busy.append(g.index)
+                continue
         if thresholds.refuse_shared_gpus and g.index in shared_gpus:
             busy.append(g.index)
             continue
@@ -237,12 +239,15 @@ def _pick_pair(
         idle.append(g)
     need = max(2, thresholds.min_gpus)
     if len(idle) < need:
-        return None, (
-            f"GPU(s) {sorted(busy)} are busy (another model, under {thresholds.min_free_frac:.0%} free, "
-            f"or over {thresholds.max_util_pct}% utilisation)"
-            if busy
-            else f"{len(idle)} idle GPU(s), tensor split needs {need}"
-        )
+        why = []
+        if busy:
+            why.append(
+                f"GPU(s) {sorted(busy)} are busy (another model, under {thresholds.min_free_frac:.0%} free, "
+                f"or over {thresholds.max_util_pct}% utilisation)"
+            )
+        if unknown:
+            why.append(f"GPU(s) {sorted(unknown)} utilisation unknown, not proven idle")
+        return None, ("; ".join(why) or f"{len(idle)} idle GPU(s), tensor split needs {need}")
     groups: list[list] = []
     for g in sorted(idle, key = lambda x: -x.free_mib):
         for grp in groups:

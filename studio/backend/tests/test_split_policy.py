@@ -40,9 +40,10 @@ NO_ENV: dict = {}
 
 
 def _gpus(*specs):
-    """specs: (name, total_mib, free_mib) per GPU, indexed 0.."""
+    """specs: (name, total_mib, free_mib) per GPU, indexed 0.., measured idle."""
     return [
-        sp.GpuInfo(index = i, name = n, total_mib = t, free_mib = f) for i, (n, t, f) in enumerate(specs)
+        sp.GpuInfo(index = i, name = n, total_mib = t, free_mib = f, util_pct = 0.0)
+        for i, (n, t, f) in enumerate(specs)
     ]
 
 
@@ -322,7 +323,8 @@ def _wired_backend(
     backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
     backend._gpu_names_by_physical_id = lambda: dict(names)
     backend._auto_tensor_platform_reason = lambda: None
-    backend._gpu_utilization_by_physical_id = lambda: {}
+    # Measured idle on every card, unless a cell says otherwise.
+    backend._gpu_utilization_by_physical_id = lambda: dict.fromkeys(range(16), 0.0)
     real_probe = LlamaCppBackend.probe_server_capabilities
 
     def probe(binary = None):
@@ -477,9 +479,27 @@ def test_busy_by_utilisation_blocks_the_pair():
     assert d.mode == "layer" and "busy" in d.reason
 
 
-def test_unknown_utilisation_falls_back_to_the_memory_check():
+@pytest.mark.parametrize("unknown", [(0, 1), (1,)])
+def test_unknown_utilisation_is_not_idle(unknown):
+    # Free memory does not prove a card is idle: a failed / N/A reading keeps layer split.
+    gpus = [
+        sp.GpuInfo(i, T4, 15_360, 15_000, util_pct = None if i in unknown else 0.0) for i in range(2)
+    ]
+    d = _decide(gpus = gpus)
+    assert d.mode == "layer" and "utilisation unknown" in d.reason
+
+
+def test_unknown_utilisation_on_a_third_gpu_keeps_the_verified_pair():
+    gpus = [sp.GpuInfo(i, T4, 15_360, 15_000, util_pct = 0.0) for i in range(2)]
+    gpus.append(sp.GpuInfo(2, T4, 15_360, 15_300, util_pct = None))
+    d = _decide(gpus = gpus)
+    assert d.mode == "tensor" and d.gpu_indices == (0, 1)
+
+
+def test_unknown_utilisation_allowed_when_the_check_is_off():
     gpus = [sp.GpuInfo(i, T4, 15_360, 15_000, util_pct = None) for i in range(2)]
-    assert _decide(gpus = gpus).mode == "tensor"
+    th = sp.SplitPolicyThresholds(max_util_pct = None)
+    assert _decide(gpus = gpus, thresholds = th).mode == "tensor"
 
 
 def test_utilisation_check_can_be_switched_off():
@@ -595,6 +615,18 @@ def test_wired_busy_gpu1_by_utilisation_blocks_the_pair(tmp_path, monkeypatch):
     backend._gpu_utilization_by_physical_id = lambda: {0: 0.0, 1: 95.0}
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
+
+
+@pytest.mark.parametrize("util", [{}, {0: 0.0}])
+def test_wired_unread_utilisation_blocks_the_pair(tmp_path, monkeypatch, util):
+    # nvidia-smi failed, timed out, or answered N/A for a card: not proven idle.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    backend._gpu_utilization_by_physical_id = lambda: dict(util)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+    assert "utilisation unknown" in backend._auto_split_decision.reason
 
 
 def test_wired_rocm_or_windows_keeps_layer(tmp_path, monkeypatch):
