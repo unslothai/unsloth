@@ -484,7 +484,12 @@ except Exception:
     _TensorDescriptor = None
 
 # UNSLOTH_FP8_TMA_GEMM=0 keeps the pointer kernel above on every GPU.
-_FP8_TMA_GEMM = os.environ.get("UNSLOTH_FP8_TMA_GEMM", "1").strip().lower() not in ("0", "false", "no", "off")
+_FP8_TMA_GEMM = os.environ.get("UNSLOTH_FP8_TMA_GEMM", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 _TL_OUT_DTYPES = {torch.bfloat16: tl.bfloat16, torch.float16: tl.float16, torch.float32: tl.float32}
 
 
@@ -547,7 +552,9 @@ def _fp8_tma_gemm_disable(reason):
     global _FP8_TMA_GEMM
     if _FP8_TMA_GEMM:
         _FP8_TMA_GEMM = False
-        logger.warning(f"Unsloth: TMA block FP8 GEMM disabled ({reason}); using the pointer kernel.")
+        logger.warning(
+            f"Unsloth: TMA block FP8 GEMM disabled ({reason}); using the pointer kernel."
+        )
 
 
 def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
@@ -619,6 +626,7 @@ _FP8_TMA_SELF_CHECKED = {}
 def _fp8_tma_gemm_self_check(index):
     # Once per device: the TMA kernel must reproduce the pointer kernel bit for bit (ragged M, K tail).
     from torch.utils._python_dispatch import _disable_current_modes
+
     device = torch.device("cuda", index)
     try:
         with _disable_current_modes(), torch.no_grad():
@@ -632,11 +640,33 @@ def _fp8_tma_gemm_self_check(index):
             out = torch.empty_like(ref)
         with _disable_current_modes(), torch.no_grad(), _fp8_triton_device_context(A):
             _w8a8_block_fp8_matmul[(2 * 2,)](
-                A, B, ref, As, Bs, M, N, K, 128, 128,
-                A.stride(-2), A.stride(-1), B.stride(1), B.stride(0),
-                ref.stride(-2), ref.stride(-1), As.stride(-2), As.stride(-1), Bs.stride(1), Bs.stride(0),
-                BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 128, GROUP_SIZE_M = 8,
-                LONG_INDEXING = False, num_warps = 8, enable_fp_fusion = True,
+                A,
+                B,
+                ref,
+                As,
+                Bs,
+                M,
+                N,
+                K,
+                128,
+                128,
+                A.stride(-2),
+                A.stride(-1),
+                B.stride(1),
+                B.stride(0),
+                ref.stride(-2),
+                ref.stride(-1),
+                As.stride(-2),
+                As.stride(-1),
+                Bs.stride(1),
+                Bs.stride(0),
+                BLOCK_SIZE_M = 128,
+                BLOCK_SIZE_N = 128,
+                BLOCK_SIZE_K = 128,
+                GROUP_SIZE_M = 8,
+                LONG_INDEXING = False,
+                num_warps = 8,
+                enable_fp_fusion = True,
             )
             _launch_fp8_tma_gemm(A, B, out, As, Bs, M, N, K, 128, 128)
             ok = torch.equal(out.view(torch.int16), ref.view(torch.int16))

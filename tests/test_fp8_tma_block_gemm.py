@@ -12,7 +12,12 @@ if not torch.cuda.is_available() or torch.version.hip is not None:
 from unsloth.kernels import fp8 as fp8_mod
 
 
-def _inputs(M, N, K, seed = 0):
+def _inputs(
+    M,
+    N,
+    K,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     A = torch.randn(M, K, device = "cuda", generator = g, dtype = torch.float32).to(torch.bfloat16)
     W = torch.randn(N, K, device = "cuda", generator = g) * 0.05
@@ -38,16 +43,29 @@ def _blackwell():
 
 
 @pytest.mark.skipif(not _blackwell(), reason = "TMA block FP8 GEMM only routes on sm_100")
-@pytest.mark.parametrize("M, N, K", [(8192, 4096, 4096), (200, 256, 512), (1000, 6144, 4096), (4096, 4160, 1024), (300, 1024, 14336)])
+@pytest.mark.parametrize(
+    "M, N, K",
+    [
+        (8192, 4096, 4096),
+        (200, 256, 512),
+        (1000, 6144, 4096),
+        (4096, 4160, 1024),
+        (300, 1024, 14336),
+    ],
+)
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_tma_matches_pointer_kernel_bitwise(M, N, K, dtype, monkeypatch):
     _, Wq, Ws, qa, sa = _inputs(M, N, K)
     calls = []
     real = fp8_mod._launch_fp8_tma_gemm
-    monkeypatch.setattr(fp8_mod, "_launch_fp8_tma_gemm", lambda *a: (calls.append(a[5]), real(*a))[1])
+    monkeypatch.setattr(
+        fp8_mod, "_launch_fp8_tma_gemm", lambda *a: (calls.append(a[5]), real(*a))[1]
+    )
     out = fp8_mod.w8a8_block_fp8_matmul_triton(qa, Wq, sa, Ws, [128, 128], output_dtype = dtype)
     monkeypatch.undo()
-    assert M in calls, "TMA path did not run for this GEMM"  # a[5] is M; the self check uses M = 200
+    assert (
+        M in calls
+    ), "TMA path did not run for this GEMM"  # a[5] is M; the self check uses M = 200
     assert fp8_mod._FP8_TMA_GEMM, "self check disabled the TMA path"
     ref = _pointer(qa, Wq, sa, Ws, dtype, monkeypatch)
     bits = {2: torch.int16, 4: torch.int32}[out.element_size()]
