@@ -336,8 +336,8 @@ def test_background_swap_places_the_cutout_on_the_new_scene():
     assert im.getpixel((200, 248)) == (255, 0, 0)
     assert im.getpixel((10, 10)) == (0, 255, 0)
     assert saved and saved[0][0]["ref"] == placed["ref"]
-    sheet = rs.nodes["sheet"].outputs["image"]
-    assert pixels(sheet).size[0] >= 3 * 512
+    shown = rs.nodes["show"].outputs["value"]
+    assert [v["ref"] for v in shown][1:] == [rs.nodes["cut"].outputs["image"]["ref"], placed["ref"]]
 
 
 def _run_example_b(name: str, stubs: dict) -> tuple[Any, dict]:

@@ -3594,7 +3594,8 @@ def background_swap() -> B:
         label = "Place product",
         x = 0.5,
         y = 0.62,
-        scale = 0.5,
+        # Width as a share of the scene: most products are taller than wide, so a third keeps them on the counter.
+        scale = 0.32,
     )
     b.e("backdrop.image", "place.image")
     b.e("cut.image", "place.overlay")
@@ -3602,20 +3603,9 @@ def background_swap() -> B:
     b.e("photo.image", "steps.items")
     b.e("cut.image", "steps.items")
     b.e("place.image", "steps.items")
-    b.n(
-        "sheet",
-        "image.grid",
-        4,
-        0.4,
-        columns = 3,
-        caption_style = "none",
-        cell_size = 512,
-        background = "#ffffff",
-        column_labels = ["Original", "Cut out", "New background"],
-    )
-    b.e("steps.list", "sheet.images")
-    b.n("show", "output.preview", 5, 0.4)
-    b.e("sheet.image", "show.value")
+    # A list, not a grid: grid cells crop square, which would cut into the trimmed cut-out.
+    b.n("show", "output.preview", 4, 0.4, label = "Before and after")
+    b.e("steps.list", "show.value")
     b.n("save", "output.library", 3, 1.6, folder = "Product shots")
     b.e("place.image", "save.value")
     b.note(
