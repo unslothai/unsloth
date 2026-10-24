@@ -522,7 +522,7 @@ _ROCM_CONTIGUOUS_KV_L2: dict[int, int] = {}  # device index -> L2 bytes, gfx1151
 
 
 def _rocm_contiguous_kv_wanted(key: Any, value: Any) -> bool:
-    """Whether the strided k/v of one head (``[B, S, H, D]`` in, as SDPA sees them after the permute) exceed L2."""
+    """True when one head of the strided ``[B, S, H, D]`` k/v exceeds L2."""
     try:
         if key.dim() != 4 or value.dim() != 4:
             return False
@@ -536,15 +536,14 @@ def _rocm_contiguous_kv_wanted(key: Any, value: Any) -> bool:
 
 
 def _heads_major(t: Any) -> Any:
-    """``[B, S, H, D]`` with ``[B, H, S, D]`` memory: the native backend's permute then passes SDPA a dense tensor."""
+    """``[B, H, S, D]`` memory so the native backend's permute hands SDPA a dense tensor."""
     if t.permute(0, 2, 1, 3).is_contiguous():
         return t
     return t.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
 
 
 def install_rocm_contiguous_kv(target: Any) -> bool:
-    """On gfx1151 only, wrap diffusers' registered native backend so k/v larger than L2 reach SDPA contiguous.
-    Idempotent; False (nothing installed) everywhere else, so other GPUs keep the stock call."""
+    """gfx1151 only: k/v over L2 reach SDPA contiguous (q is not copied). False elsewhere: other GPUs untouched."""
     if os.environ.get(ROCM_CONTIGUOUS_KV_ENV, "").strip().lower() in ("0", "false", "no", "off"):
         return False
     if not _is_cuda_rocm(target) or _rocm_gfx_arch(target) not in ROCM_CONTIGUOUS_KV_ARCHES:

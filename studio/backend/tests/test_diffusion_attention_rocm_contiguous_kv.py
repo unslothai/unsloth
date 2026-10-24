@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""gfx1151 contiguous k/v wrapper on diffusers' native attention backend: arch gate, L2 size gate, kill switch,
-outputs unchanged. CPU tensors stand in for the card (the L2 table is keyed by device index, None on CPU)."""
+"""gfx1151 contiguous k/v wrapper. CPU tensors stand in for the card (L2 table key is None on CPU)."""
 
 from types import SimpleNamespace
 
@@ -84,13 +83,9 @@ def test_size_gate_matches_one_head_of_strided_kv_against_l2(monkeypatch):
     assert not da._rocm_contiguous_kv_wanted(at, at)
     assert da._rocm_contiguous_kv_wanted(over, over)
     dense = over.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
-    assert not da._rocm_contiguous_kv_wanted(
-        dense, dense
-    )  # already [B, H, S, D] in memory: nothing to copy
+    assert not da._rocm_contiguous_kv_wanted(dense, dense)
     monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_KV_L2", {5: l2})
-    assert not da._rocm_contiguous_kv_wanted(
-        over, over
-    )  # a card without an L2 entry (not gfx1151): no copy
+    assert not da._rocm_contiguous_kv_wanted(over, over)  # no L2 entry: not gfx1151
 
 
 def test_wrapper_hands_sdpa_contiguous_kv_and_keeps_outputs(registry, monkeypatch):
@@ -116,4 +111,4 @@ def test_wrapper_hands_sdpa_contiguous_kv_and_keeps_outputs(registry, monkeypatc
     assert seen.pop() == (True, True)
     small = (t[:, :8] for t in (q, k, v))
     wrapped(*small)
-    assert seen.pop() == (False, False)  # under L2: no copy
+    assert seen.pop() == (False, False)
