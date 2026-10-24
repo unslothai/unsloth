@@ -50,3 +50,56 @@ def test_cudagraphs_opt_in_flag(monkeypatch):
     finally:
         monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS", raising = False)
         importlib.reload(bc)
+
+
+def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
+    """Variable lengths recorded a graph set per new length: 3.5x slower steps and a pool that
+    grew every step on an L4. Past the cap a new shape runs the compiled block without graphs."""
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def run(*args, **kw):
+            calls.append(tag)
+            return fn(*args, **kw)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    monkeypatch.setattr(bc, "_CUDAGRAPH_MAX_SHAPES", 2)
+
+    class CapDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    bc._wrap(CapDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = CapDecoderLayer().train()
+
+    def step(L):
+        calls.clear()
+        x = torch.randn(2, L, 8, requires_grad = True)
+        layer(x).sum().backward()
+        assert x.grad is not None and x.grad.shape == x.shape
+        return set(calls)
+
+    assert step(16) == {"graphs"}
+    assert step(24) == {"graphs"}
+    assert step(32) == {"plain"}  # third shape: over the cap
+    assert step(16) == {"graphs"}  # admitted shapes keep their graphs
+    assert step(40) == {"plain"}
+
+
+def test_cap_reads_the_environment(monkeypatch):
+    try:
+        monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "3")
+        assert importlib.reload(bc)._CUDAGRAPH_MAX_SHAPES == 3
+        monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "junk")
+        assert importlib.reload(bc)._CUDAGRAPH_MAX_SHAPES == 8
+    finally:
+        monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", raising = False)
+        importlib.reload(bc)

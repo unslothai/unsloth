@@ -25,6 +25,13 @@ _COMPILE_OPTIONS = {
 # shapes only pay off (each new sequence length records another graph and holds its memory).
 if os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS", "0") == "1":
     _COMPILE_OPTIONS["triton.cudagraphs"] = True
+# Block input shapes that may record graphs. Variable-length batches (padding, padding-free) would
+# otherwise record a graph set per new length: 3.5x slower steps and a pool that grows every step.
+# Shapes past the cap run the same compiled block without graphs.
+try:
+    _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "8")))
+except ValueError:
+    _CUDAGRAPH_MAX_SHAPES = 8
 
 
 class _CloneGrad(torch.autograd.Function):
@@ -745,6 +752,14 @@ def _wrap(cls, compile_options):
     # under no_grad, the recompute inside backward), so the next block's replay overwrites this block's
     # outputs and the gradient it returns for its input while the checkpoint still holds them.
     graphs = bool(compile_options.get("triton.cudagraphs"))
+    if graphs:
+        plain = torch.compile(
+            original,
+            fullgraph = False,
+            dynamic = None,
+            options = {**compile_options, "triton.cudagraphs": False},
+        )
+    graph_shapes = set()
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -754,6 +769,11 @@ def _wrap(cls, compile_options):
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
             with capture_scratch():
                 if graphs:
+                    shape = tuple(hidden_states.shape)
+                    if shape not in graph_shapes:
+                        if len(graph_shapes) >= _CUDAGRAPH_MAX_SHAPES:
+                            return plain(self, hidden_states, *args, **kwargs)
+                        graph_shapes.add(shape)
                     if hidden_states.requires_grad and torch.is_grad_enabled():
                         hidden_states = _CloneGrad.apply(hidden_states)
                     return _clone_outputs(compiled(self, hidden_states, *args, **kwargs))
