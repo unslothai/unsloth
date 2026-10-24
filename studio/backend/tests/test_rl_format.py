@@ -129,6 +129,12 @@ def test_warmup_steps_are_bounded():
         _request(grpo_format_warmup_steps = 5000, grpo_reasoning_format = True)
 
 
+def test_resume_payload_keeps_the_reasoning_format_and_warmup():
+    stored = {"reasoning_format": True, "format_warmup_steps": 50}
+    req = _request(rl_settings = stored, max_seq_length = 2048)
+    assert req.grpo_reasoning_format and req.grpo_format_warmup_steps == 50
+
+
 @pytest.mark.parametrize(
     "reply, expected",
     [

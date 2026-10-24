@@ -154,6 +154,8 @@ _STORED_RL_SETTINGS = (
     ("mask_truncated_completions", "grpo_mask_truncated_completions"),
     ("epsilon_high", "grpo_epsilon_high"),
     ("python_reward_isolation", "grpo_python_reward_isolation"),
+    ("reasoning_format", "grpo_reasoning_format"),
+    ("format_warmup_steps", "grpo_format_warmup_steps"),
 )
 
 
