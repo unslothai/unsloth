@@ -1558,8 +1558,7 @@ def test_training_flex_options_keep_a_callers_backend(backend):
     reason = "torch < 2.13: no isolate_recompiles",
 )
 def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
-    """A block whose guards fail every call compiled up to the global recompile_limit (1024 under
-    Unsloth). Its own region now stops at _region_recompile_limit and runs eager, still correct."""
+    """A recompile storm stops at _region_recompile_limit (not the global 1024) and runs eager."""
     M = _load()
     from torch._dynamo.testing import CompileCounter
 
@@ -1607,8 +1606,7 @@ def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
 
 
 def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
-    # UNSLOTH_BLOCK_CUDAGRAPHS adds a second (graphs-off) compile per block; it must carry the same
-    # isolate_recompiles / recompile_limit as the main one.
+    # The graphs-off compile from UNSLOTH_BLOCK_CUDAGRAPHS needs the same isolation options.
     M = _load()
     if not M._ISOLATE_RECOMPILES:
         pytest.skip("torch < 2.13: no per-region recompile limit")

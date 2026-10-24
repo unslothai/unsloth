@@ -63,9 +63,7 @@ _ISOLATE_RECOMPILES = _isolate_supported()
 
 
 def _region_recompile_limit(kinds):
-    """Graphs one block region may hold before it runs eager. Real workloads measured at most 4 per
-    kind (Gemma3 GRPO: 20 for 2 kinds), so 16 per kind plus slack; a recompile storm in one block
-    stops here instead of at the global 1024."""
+    """Graphs per block region before eager. Measured at most 4 per kind (Gemma3 GRPO: 20 for 2)."""
     env = os.environ.get("UNSLOTH_BLOCK_COMPILE_RECOMPILE_LIMIT", "")
     try:
         if int(env) > 0:
