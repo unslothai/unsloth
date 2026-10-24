@@ -176,6 +176,10 @@ from .diffusion_small_host import (
 from .model_ids import hf_cache_repo_id
 from .safetensors_pread import pread_available
 from .diffusion_memory import (
+    commit_load_budget_fraction,
+    release_load_budget_fraction,
+    vram_budget_scope,
+    carry_load_budget,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
@@ -2413,7 +2417,7 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
     pipeline carries no split record). Raises the guard's refusal (a ValueError); returns the number of cards
     checked. Fails open on anything unknown."""
     from .diffusion_layer_split_plan import applied_layer_split, secondary_block_cards
-    from .diffusion_memory import _oversized_generate_override
+    from .diffusion_memory import _device_user_budget_reserve_mib, _oversized_generate_override
 
     split = applied_layer_split(pipe)
     if split is None or guard_kwargs.get("allow_oversized") or _oversized_generate_override():
@@ -2438,16 +2442,18 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         if working + reserve <= 0:
             continue
         with diffusion_device_scope(int(ordinal)):
-            free = reclaimable_snapshot_device_memory(guard_target).free_mib
+            card = reclaimable_snapshot_device_memory(guard_target)
+        free = card.free_mib
         if free is None:
             continue
+        free = int(free) - _device_user_budget_reserve_mib(card, card.total_mib or free)
         checked += 1
         need = int(working * scale) + reserve
         if need > int(free):
             raise ImageActivationShortfallError(
                 f"Generating at {guard_kwargs.get('width')}x{guard_kwargs.get('height')} needs about "
                 f"{need / 1024:.2f} GB of working memory on cuda:{int(ordinal)}, which runs part of the model split "
-                f"across GPUs, but only about {int(free) / 1024:.2f} GB is free there. Generate at a smaller "
+                f"across GPUs, but only about {max(0, int(free)) / 1024:.2f} GB is free there. Generate at a smaller "
                 "resolution, or free GPU memory on that GPU. To try anyway, turn on 'Allow oversized generations' "
                 "under Advanced on the Images page."
             )
@@ -2588,8 +2594,11 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
 
 
 def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
-    """MiB short for encoding ``x`` untiled, the decode's rule; None off CUDA or on unknown figures."""
+    """MiB short for encoding ``x`` untiled, the decode's rule (free less the VRAM Budget reserve); None off CUDA
+    or on unknown figures."""
+    from .diffusion_memory import user_budget_reserve_bytes
     from .diffusion_vae_tiling import FREE_FRACTION, _fused, _geometry, encode_mib_per_latent
+
     try:
         import torch
 
@@ -2599,8 +2608,9 @@ def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
         per_latent = encode_mib_per_latent(ratio, _fused(vae), type(vae).__name__)
         if per_latent is None or ratio <= 0:
             return None
-        free, _ = torch.cuda.mem_get_info(x.device)
+        free, total = torch.cuda.mem_get_info(x.device)
         free += torch.cuda.memory_reserved(x.device) - torch.cuda.memory_allocated(x.device)
+        free -= user_budget_reserve_bytes(x.device, total)
         elem = next(vae.encoder.parameters()).element_size()
         # enable_fp16_vae_decode's fp32_encode upcasts the fp16 encoder and input for the encode itself
         if getattr(vae, "_unsloth_fp16_decode", False):
@@ -5072,6 +5082,7 @@ class DiffusionBackend:
 
     @_account_owned_load
     @pauses_background_embedding
+    @vram_budget_scope("image", load = True)
     def begin_load(
         self,
         repo_id: str,
@@ -5192,7 +5203,7 @@ class DiffusionBackend:
             )
 
         account_thread(
-            target = self._run_load,
+            target = carry_load_budget(self._run_load),
             kwargs = dict(
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
@@ -5230,6 +5241,7 @@ class DiffusionBackend:
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
+    @vram_budget_scope("image", load = True)
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -6546,6 +6558,7 @@ class DiffusionBackend:
                 failures_out.append(exc)
         return total, base_files
 
+    @vram_budget_scope("image", load = True)
     def download_plan(
         self,
         repo_id: str,
@@ -7838,6 +7851,7 @@ class DiffusionBackend:
     @_plans_at_requested_speed
     @scoped_local_files_only
     @_with_supplied_components
+    @vram_budget_scope("image", load = True)
     def load_pipeline(
         self,
         repo_id: str,
@@ -10662,6 +10676,7 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                        commit_load_budget_fraction("image")
                     try:
                         from . import diffusion_vae_prebuild
                         diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
@@ -12936,6 +12951,7 @@ class DiffusionBackend:
     @_release_render_on_unload
     @holds_inference
     @with_hires
+    @vram_budget_scope("image")
     def generate(
         self,
         *,
@@ -14356,6 +14372,7 @@ class DiffusionBackend:
         return self.status()
 
     def _unload_locked(self) -> None:
+        release_load_budget_fraction("image")
         state = self._state
         if state is None:
             return
