@@ -102,6 +102,9 @@ export function normalizeChatGenerationChunkPayload(
     if (frameType === "context_usage") {
       return { _contextUsage: payload } as unknown as OpenAIChatChunk;
     }
+    if (frameType === "generation_progress") {
+      return { _generationProgress: payload } as unknown as OpenAIChatChunk;
+    }
   }
   return payload;
 }

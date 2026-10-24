@@ -22,6 +22,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._utils import _refuse_tensor_parallel_for_inference
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
@@ -996,9 +997,9 @@ def LlamaAttention_fast_forward(
         del self.attention
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -2374,6 +2375,16 @@ class _PerDeviceRopeCache:
         position_ids = None,
         seq_len = None,
     ):
+        if position_ids is not None and seq_len is None:
+            # Stock transformers call (a plain model built after the patch): per-position cos/sin.
+            rows = int(position_ids.max()) + 1
+            if rows > self.current_rope_size:
+                self._grow_rope_cache(rows, x.dtype)
+            self._need_rope_rows(rows)
+            device_index = self._ensure_rope_cache(x.device.index)
+            cos, sin = self._slice_rope_cache(device_index, rows)
+            position_ids = position_ids.to(cos.device)
+            return cos[position_ids].to(x.dtype), sin[position_ids].to(x.dtype)
         if seq_len is not None and seq_len > self.current_rope_size:
             self._grow_rope_cache(seq_len, x.dtype)
         self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
@@ -3094,6 +3105,43 @@ def _record_pre_patch_changes(snapshot):
                     changed_attrs.setdefault((cls, name), saved.get(name, _MISSING))
 
 
+def _gate_pre_patch_to_unsloth_models(snapshot):
+    """pre_patch edits transformers classes; run patched methods only on Unsloth-marked modules, else
+    the pre-patch original (a plain model built later lacks the state the fast paths need)."""
+    for modeling in snapshot:
+        record = vars(modeling).get("_unsloth_pre_patch_originals")
+        if record is None:
+            continue
+        for (cls, name), original in record[1].items():
+            fast = vars(cls).get(name, _MISSING)
+            if name.startswith("__") or not inspect.isfunction(fast):
+                continue
+            if getattr(fast, "_unsloth_gated", False):
+                continue
+            if original is not _MISSING and not callable(original):
+                continue
+            setattr(cls, name, _gated_method(cls, name, fast, original))
+
+
+def _gated_method(cls, name, fast, original):
+    @functools.wraps(fast)
+    def gated(self, *args, **kwargs):
+        if getattr(self, "_unsloth_fast_path", False):
+            return fast(self, *args, **kwargs)
+        if original is _MISSING:
+            return getattr(super(cls, self), name)(*args, **kwargs)
+        return original(self, *args, **kwargs)
+
+    gated._unsloth_gated = True
+    return gated
+
+
+def mark_unsloth_fast_path(model):
+    """Opt every module of an Unsloth-loaded model into the patched forwards."""
+    for module in model.modules():
+        module._unsloth_fast_path = True
+
+
 def restore_transformers_family(model_types):
     """Undo pre_patch before FastModel compiles a family: the compiler copies whatever forwards the classes hold."""
     for model_type in model_types:
@@ -3373,6 +3421,7 @@ class FastLlamaModel:
         snapshot = _snapshot_transformers_modules(model_patcher)
         model_patcher.pre_patch()
         _record_pre_patch_changes(snapshot)
+        _gate_pre_patch_to_unsloth_models(snapshot)
         # A download counter, to see whether environments are breaking or HF is down.
         get_statistics(kwargs.get("local_files_only", False))
 
@@ -4121,6 +4170,7 @@ class FastLlamaModel:
             **_tokenizer_cache_kwargs,
         )
 
+        mark_unsloth_fast_path(model)
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
         set_deepspeed_moe_leaf_modules(model)
@@ -4246,6 +4296,10 @@ class FastLlamaModel:
             "    try:\n"
             "        from unsloth.models._utils import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
             "        _unsloth_reset_cc(self)\n"
+            "    except Exception: pass\n"
+            "    try:\n"
+            "        from unsloth.models._utils import _unsloth_non_blocking_batches\n"
+            "        _unsloth_non_blocking_batches(self)\n"
             "    except Exception: pass",
             1,
         )
@@ -5259,6 +5313,7 @@ class FastLlamaModel:
         # Since transformers 4.53, must turn off explicitly
         for module in model.modules():
             module.max_seq_length = max_seq_length
+        mark_unsloth_fast_path(model)
 
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -5291,6 +5346,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
+        _refuse_tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):

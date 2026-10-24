@@ -1115,6 +1115,14 @@ class NativeAudioBackend:
     def _load_moss_nano(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
+        # Read the guard's sentinel, not sys.platform: the env var overrides the platform default.
+        if "sentencepiece" in sys.modules and sys.modules["sentencepiece"] is None:
+            raise RuntimeError(
+                "MOSS-TTS-Nano requires SentencePiece, which is disabled in this Unsloth "
+                "process. Restart Unsloth with UNSLOTH_DISABLE_SENTENCEPIECE=0 to enable "
+                "its native tokenizer."
+            )
+
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
         token_kwargs = self._token_kwargs(hf_token)

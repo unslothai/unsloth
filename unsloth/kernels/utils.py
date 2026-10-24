@@ -445,7 +445,11 @@ def _is_packed_state(quant_state):
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
+    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
     """
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
@@ -513,6 +517,9 @@ def get_lora_parameters(proj):
 
 
 def get_lora_parameters_bias(proj):
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj, bias = True)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
     packed = _packed_base(base_layer)
