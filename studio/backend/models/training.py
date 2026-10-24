@@ -153,6 +153,7 @@ _STORED_RL_SETTINGS = (
     ("system_prompt", "rl_system_prompt"),
     ("mask_truncated_completions", "grpo_mask_truncated_completions"),
     ("epsilon_high", "grpo_epsilon_high"),
+    ("python_reward_isolation", "grpo_python_reward_isolation"),
 )
 
 
