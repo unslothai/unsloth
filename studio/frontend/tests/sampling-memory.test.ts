@@ -100,3 +100,25 @@ test("the Sampling section ends with the footer, not a lone Save button", () => 
   );
   assert.doesNotMatch(sheet, /SaveForModelButton|Save for this model/);
 });
+
+test("a save or forget that finishes after a model switch leaves the new model's state alone", () => {
+  const footer = readFileSync(
+    new URL(
+      "../src/features/chat/components/sampling-footer.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    footer,
+    /const stillOn = \(\) => store\.getState\(\)\.params\.checkpoint === modelId;/,
+  );
+  assert.match(
+    footer,
+    /await writeSavedSampling\(modelId, sampling\);\s*if \(stillOn\(\)\) \{\s*setSaved\(sampling\);/,
+  );
+  assert.match(
+    footer,
+    /await writeSavedSampling\(modelId, null\);\s*if \(stillOn\(\)\) \{\s*setSaved\(null\);/,
+  );
+});

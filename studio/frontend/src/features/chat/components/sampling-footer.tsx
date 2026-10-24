@@ -109,12 +109,17 @@ export default function SamplingFooter({
       .finally(() => setBusy(false));
   };
 
+  // A request that finishes after a model switch must not write its model's state into the next one.
+  const stillOn = () => store.getState().params.checkpoint === modelId;
+
   const save = () =>
     run(async () => {
       const snapshot = store.getState().params;
       const sampling = samplingPayload(snapshot);
       await writeSavedSampling(modelId, sampling);
-      setSaved(sampling);
+      if (stillOn()) {
+        setSaved(sampling);
+      }
       const remembered = {
         temperature: snapshot.temperature,
         topP: snapshot.topP,
@@ -138,7 +143,9 @@ export default function SamplingFooter({
   const forget = () =>
     run(async () => {
       await writeSavedSampling(modelId, null);
-      setSaved(null);
+      if (stillOn()) {
+        setSaved(null);
+      }
       notify.success("Saved sampling forgotten for this model.");
     });
 
@@ -156,11 +163,10 @@ export default function SamplingFooter({
         );
       }
       const status = (await res.json()) as InferenceStatusResponse;
-      const state = store.getState();
-      // A model switch during the request: these values belong to the previous one.
-      if (state.params.checkpoint !== modelId) {
+      if (!stillOn()) {
         return;
       }
+      const state = store.getState();
       state.setParams({
         ...state.params,
         ...recommendedSampling(
