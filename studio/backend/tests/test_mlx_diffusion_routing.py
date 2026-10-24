@@ -984,7 +984,7 @@ def _refuse_for_unified_memory(rig, *messages):
 
 
 def test_a_coexist_fallback_refused_for_memory_retries_once_with_mlx_unloaded(rig):
-    # The estimate said both fit; the loader's free-memory reading (another resident) says no.
+    # Estimate says both fit; the loader's real free-memory reading says no.
     rig.fit["coexist"] = True
     _refuse_for_unified_memory(rig, "needs about 12 GB of unified memory")
     assert _img2img(rig.engine)["engine"] == "diffusers"

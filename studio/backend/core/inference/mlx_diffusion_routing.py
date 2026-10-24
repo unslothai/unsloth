@@ -698,7 +698,7 @@ class RoutedMlxEngine:
                 except UnifiedMemoryShortfallError:
                     if route.unload_mlx:
                         raise
-                    # The coexist estimate ignores other residents (a chat model); the loader read real free memory.
+                    # Coexist estimate ignores other residents; the loader measured real free memory.
                     logger.info("mlx_routing.coexist_refused: retrying with MLX unloaded")
                     self._coexist = False
                     fallback_identity = self._load_fallback(unload_mlx = True, epoch = epoch)
