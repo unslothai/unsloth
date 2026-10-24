@@ -3447,11 +3447,13 @@ def _video_prefer_whole_module(
     text_encoder_mib: Optional[int],
     vae_mib: Optional[int],
     runtime_mib: int,
+    resident_mib: int = 0,
 ) -> Any:
     """Swap a streamed-DiT plan for whole-module offload when every component fits whole, one at a time.
 
     Wan2.2-5B at 16 GiB: 0.14-0.28 s per forward whole-module vs 0.28-0.33 s int8 streamed, so streaming only wins
-    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. An explicit memory mode is left as asked."""
+    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. ``resident_mib`` stays on the card in every
+    phase (LTX-2.5's encoder worker context), excluded from ``vae_mib``. An explicit memory mode is left as asked."""
     if (
         getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
         or not bool(getattr(plan, "stream_transformer", True))
@@ -3464,14 +3466,17 @@ def _video_prefer_whole_module(
     budget = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib")
     if budget is None:
         return plan
+    resident = max(0, int(resident_mib))
     phases = (
-        int(text_encoder_mib) + DEFAULT_BASE_OVERHEAD_MIB,
+        int(text_encoder_mib) + resident + DEFAULT_BASE_OVERHEAD_MIB,
         int(denoiser_mib)
         + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB)
+        + resident
         + DEFAULT_BASE_OVERHEAD_MIB,
         # the decode holds only the decoded-clip share; the denoise base is already in the DiT phase
         int(vae_mib)
         + max(0, int(runtime_mib) - _VIDEO_DENOISE_ACTIVATION_MIB)
+        + resident
         + DEFAULT_BASE_OVERHEAD_MIB,
     )
     if max(phases) > int(budget):
@@ -8532,16 +8537,19 @@ class VideoBackend:
             # pins the VAE to fp32 either way, so scaling it counts those bytes twice (2.8 GB on Wan TI2V-5B) against a
             # hard refusal.
             vae_gb = components[2] if components is not None else 0.0
+            worker_gb = 0.0
             if components is not None and fam.name == "ltx-2.5":
                 from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
                 # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
                 # resident on every tier, even when its weights are off the card. The latent upsampler a dev (single
                 # stage) load never attaches is already out of components[2] (video_components_gb(dev=...)).
-                vae_gb += LTX25_WORKER_RESIDENT_GB
+                worker_gb = LTX25_WORKER_RESIDENT_GB
+                vae_gb += worker_gb
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
+            worker_mib = int(worker_gb * vae_scale * mib_per_gb)
             scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
@@ -8591,8 +8599,9 @@ class VideoBackend:
                 ),
                 denoiser_mib = None if dit_mib is None else dit_mib // experts,
                 text_encoder_mib = text_encoder_mib,
-                vae_mib = vae_mib,
+                vae_mib = None if vae_mib is None else vae_mib - worker_mib,
                 runtime_mib = runtime_mib,
+                resident_mib = worker_mib,
             )
             # Re-plan with the scheme factor: the bf16-table plan can offload a DiT the quantised one would not.
             dense_plan = planned
@@ -8654,8 +8663,9 @@ class VideoBackend:
                         ),
                         denoiser_mib = int(components[0] * factor * mib_per_gb) // experts,
                         text_encoder_mib = text_encoder_mib,
-                        vae_mib = vae_mib,
+                        vae_mib = None if vae_mib is None else vae_mib - worker_mib,
                         runtime_mib = runtime_mib,
+                        resident_mib = worker_mib,
                     )
                     if _video_plan_rank(replanned) < _video_plan_rank(planned):
                         if log:
