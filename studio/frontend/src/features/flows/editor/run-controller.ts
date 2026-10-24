@@ -7,12 +7,15 @@ import {
   followRunEvents,
   latestOutputs,
   listRuns,
+  planFlow,
   startRun,
 } from "../api";
+import { useCatalogStore } from "../stores/catalog-store";
 import { documentFromState, useDocStore } from "../stores/doc-store";
 import { pinsForRun } from "../stores/pins-store";
 import { createEventBatcher, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
+import { failedSteps, modelSignature, modelsToDownload } from "../ux-rules";
 
 let follower: AbortController | null = null;
 
@@ -36,9 +39,38 @@ export function attachRun(runId: string, afterSeq = 0): void {
       if (follower === controller) follower = null;
       const { runStatus } = useRuntimeStore.getState();
       if (!controller.signal.aborted && runStatus === "failed") {
-        toast.error(useRuntimeStore.getState().runError ?? "The flow failed");
+        reportFailure();
       }
     });
+}
+
+/** Name the block that failed and why, with a way to jump to it; the run error when no block failed. */
+function reportFailure(): void {
+  const { graph } = useDocStore.getState();
+  const runtime = useRuntimeStore.getState();
+  const specs = useCatalogStore.getState().specs;
+  const failed = failedSteps(
+    graph.nodeOrder,
+    graph.nodes,
+    runtime.nodes,
+    (type) => specs[type]?.title,
+  );
+  const first = failed[0];
+  if (!first) {
+    toast.error(runtime.runError ?? "The flow failed");
+    return;
+  }
+  const more = failed.length > 1 ? ` (and ${failed.length - 1} more)` : "";
+  toast.error(`${first.title} failed${more}`, {
+    description: first.error,
+    action: {
+      label: "Open block",
+      onClick: () => {
+        useUiStore.getState().setSelection([first.id], []);
+        useUiStore.getState().openInspector(first.id);
+      },
+    },
+  });
 }
 
 export function detachRun(): void {
@@ -51,6 +83,39 @@ export interface RunOptions {
   forceNodes?: string[];
   params?: Record<string, unknown>;
   bake?: boolean;
+  /** The user already agreed to download the models this run needs. */
+  downloadsConfirmed?: boolean;
+}
+
+// flowId -> the model picks of the last run that had nothing to download: the same picks skip the plan request.
+const checkedModels = new Map<string, string>();
+const PLAN_CHECK_TIMEOUT_MS = 4000;
+
+/**
+ * True when the run must wait for the user: some model it needs is not on this computer yet. Asks the plan once per
+ * set of model picks; a slow or failed plan never blocks the run (the run reports its own errors).
+ */
+async function heldForDownloads(
+  flowId: string,
+  options: RunOptions,
+): Promise<boolean> {
+  if (options.downloadsConfirmed) return false;
+  const docState = useDocStore.getState();
+  const signature = modelSignature(docState.graph.nodes);
+  if (checkedModels.get(flowId) === signature) return false;
+  const plan = await Promise.race([
+    planFlow(flowId, options.params ?? {}, documentFromState(docState)),
+    new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), PLAN_CHECK_TIMEOUT_MS),
+    ),
+  ]).catch(() => null);
+  if (!plan) return false;
+  if (modelsToDownload(plan.models).length === 0) {
+    checkedModels.set(flowId, signature);
+    return false;
+  }
+  useUiStore.getState().setPendingRun({ options: { ...options }, plan });
+  return true;
 }
 
 // Set before the start request is awaited: a double-click on Run must not start two runs.
@@ -72,6 +137,7 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
   }
   starting = true;
   try {
+    if (await heldForDownloads(flowId, options)) return;
     const { run_id } = await startRun(flowId, {
       doc: documentFromState(docState),
       params: options.params,

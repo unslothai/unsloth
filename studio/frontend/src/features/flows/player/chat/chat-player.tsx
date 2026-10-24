@@ -141,6 +141,7 @@ export function ChatPlayer({
           type="button"
           onClick={onExit}
           aria-label="Back to the editor"
+          title="Back to the editor"
           className="rounded-full p-1.5 text-white/60 hover:bg-white/10 hover:text-white"
         >
           <ArrowLeftIcon className="size-4" />
@@ -219,6 +220,7 @@ export function ChatPlayer({
             type="submit"
             disabled={thinking || !loaded || !draft.trim()}
             aria-label="Send"
+            title="Send"
             className="rounded-xl bg-teal-500 p-2.5 text-black disabled:opacity-40"
           >
             <SendIcon className="size-4" />

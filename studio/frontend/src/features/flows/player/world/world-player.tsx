@@ -131,6 +131,7 @@ function Panel({
           onClick={onClose}
           className="rounded-full p-1 text-white/60 hover:bg-white/10"
           aria-label="Close"
+          title="Close"
         >
           <XIcon className="size-4" />
         </button>
@@ -1050,6 +1051,7 @@ export function WorldPlayer({
                   disabled={thinking || !draft.trim()}
                   className="rounded-full bg-white px-4 text-black disabled:opacity-40"
                   aria-label="Send"
+                  title="Send"
                 >
                   <SendIcon className="size-4" />
                 </button>

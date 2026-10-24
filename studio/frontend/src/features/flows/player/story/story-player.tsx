@@ -260,6 +260,7 @@ function Overlay({
             onClick={onClose}
             className="absolute top-4 right-4 rounded-full p-1.5 text-white/60 hover:bg-white/10 hover:text-white"
             aria-label="Close"
+            title="Close"
           >
             <XIcon className="size-4" />
           </button>
