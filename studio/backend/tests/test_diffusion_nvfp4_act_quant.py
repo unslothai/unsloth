@@ -176,9 +176,7 @@ def test_per_load_reset_drops_the_tag_for_a_non_nvfp4_load(monkeypatch):
     assert aq.install_nvfp4_act_quant_patch() is True
     aq.reset_compile_cache_tag()
     assert cc.cache_key_tag == "other=1"
-    assert (
-        aq.install_nvfp4_act_quant_patch() is True
-    )
+    assert aq.install_nvfp4_act_quant_patch() is True
     assert cc.cache_key_tag == "other=1;unsloth_nvfp4_act_quant=1"
 
 
