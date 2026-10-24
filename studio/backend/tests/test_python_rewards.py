@@ -156,6 +156,15 @@ def test_notebook_correctness_scores_a_raw_gsm8k_answer(worker_factory):
     ) == {"correctness": [2.0], "raw": [3.0]}
 
 
+def test_answer_raw_only_reaches_a_reward_that_takes_it(worker_factory):
+    code = "def reward(prompts, completions, answer):\n    return [float(answer[0])]\n"
+    specs = [_spec("strict", code)]
+    worker = worker_factory(specs)
+    completions = [[{"role": "assistant", "content": GOOD}]]
+    got = worker.score(["strict"], [[]], completions, {"answer": ["x\n#### 72"]})
+    assert got == {"strict": [72.0]}
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
