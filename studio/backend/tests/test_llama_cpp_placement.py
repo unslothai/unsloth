@@ -5026,6 +5026,12 @@ _QWEN38_PLE = int(26.82 * _GIB)  # per_layer_token_embd.weight, TENSOR_READ_LAZY
 _QWEN38_EXPERTS = int(37.11 * _GIB)
 
 
+# DeepSeek-V4.1-Flash-1017 UD-IQ1_S (arch deepseek41), sizes from its GGUF headers: every
+# Engram table is one IQ4_NL per_layer_token_embd.weight of 256 x 768022850.
+_DSV41_TOTAL = 232_979_608_475
+_DSV41_ENGRAM = 110_595_290_400
+
+
 class _RamStub:
     """Only what the load-mode predicate touches."""
 
@@ -5075,11 +5081,40 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
     assert _qwen38_mode(_QWEN38_PLE, host_only_bytes = _QWEN38_EXPERTS) is None
 
 
+def test_the_deepseek41_engram_is_not_pinned_ram(monkeypatch):
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+
+    def mode(lazy_bytes):
+        # 32 GiB card (31 free, 1 GiB margin), 120 GiB RAM available, 2 GiB KV + compute.
+        return LlamaCppBackend._fit_derived_load_mode(
+            _RamStub(120 * 1024),
+            model_size = _DSV41_TOTAL,
+            kv_cache_bytes = _GIB,
+            compute_buffer_flat = _GIB,
+            host_only_bytes = 0,
+            gpus = [(0, 31 * 1024)],
+            gpu_indices = [0],
+            fit_margin_mib = 1024,
+            lazy_read_bytes = lazy_bytes,
+            extra_args = [],
+            env = {},
+        )
+
+    # 217 GiB of weights against 120 GiB of RAM: only mmap pages it.
+    assert mode(0) is None
+    # The 103 GiB Engram stays on disk: 114 GiB less the 28 GiB on the card fits pinned.
+    assert mode(_DSV41_ENGRAM) == LlamaCppBackend._FIT_LOAD_MODE
+
+
 @pytest.mark.parametrize(
     "arch, size, extra_args, env, expected",
     [
         ("qwen4exp", _QWEN38_PLE, [], {}, _QWEN38_PLE),
         ("gemma4", _QWEN38_PLE, [], {}, _QWEN38_PLE),
+        ("deepseek41", _DSV41_ENGRAM, [], {}, _DSV41_ENGRAM),
+        ("deepseek41", _DSV41_ENGRAM, ["-lzm", "off"], {}, 0),
         # Another architecture's table of the same name is read like any tensor.
         ("qwen3moe", _QWEN38_PLE, [], {}, 0),
         # At or under 4 GiB, auto loads it normally; "on" reads it lazily anyway.
@@ -5100,6 +5135,8 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
     ids = [
         "qwen4exp",
         "gemma4",
+        "deepseek41_engram",
+        "deepseek41_engram_off",
         "other_arch",
         "under_4gib",
         "on",
@@ -5300,18 +5337,41 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         # llama.cpp drops an iGPU from its default list once a discrete GPU is seen.
         (True, None, {1}, set(), set(), False),
         (False, [0], set(), {0}, set(), True),
+        # A CUDA/HIP pick is a visibility mask, so the default list over it drops the
+        # APU beside a discrete card (src/llama.cpp llama_prepare_model_devices).
         (False, [0, 1], set(), {0}, set(), False),
         (False, [0], set(), set(), {0}, True),
         (False, None, set(), set(), {0, 1}, True),
+        # A Vulkan pick is emitted as --device, used as given: auto turns off if ANY
+        # listed device lacks mmap support (src/llama-model.cpp load_tensors).
+        (True, [0, 1], {1}, set(), set(), True),
+        (True, [0, 1], set(), set(), set(), False),
+        (True, [0, 1], {0, 1}, set(), set(), True),
+        (True, None, set(), set(), set(), False),
+        (True, None, {0, 1}, set(), set(), True),
+        (False, [0, 1], set(), set(), {1}, False),
+        (False, [0, 1], set(), set(), set(), False),
+        (False, None, set(), set(), set(), False),
+        # Unpinned mixed CUDA: the default list drops the iGPU once a dGPU is seen.
+        (False, None, set(), set(), {1}, False),
     ],
     ids = [
         "discrete",
         "vulkan_igpu",
-        "vulkan_mixed",
+        "vulkan_mixed_default",
         "rocm_apu",
         "rocm_mixed",
         "cuda_soc",
         "cuda_soc_unpinned",
+        "vulkan_mixed_explicit",
+        "vulkan_all_discrete_explicit",
+        "vulkan_all_integrated_explicit",
+        "vulkan_discrete_default",
+        "vulkan_all_integrated_default",
+        "cuda_mixed_mask",
+        "cuda_all_discrete_explicit",
+        "cuda_discrete_default",
+        "cuda_mixed_default",
     ],
 )
 def test_lazy_auto_resolves_off_only_where_llama_cpp_does(
@@ -5346,6 +5406,224 @@ def test_lazy_auto_resolves_off_only_where_llama_cpp_does(
         "/m.gguf", caps = caps, extra_args = ["-lzm", "on"], env = {}, auto_resolves_off = got
     )
     assert (auto, on) == ((0 if expected else _QWEN38_PLE), _QWEN38_PLE)
+
+
+def _mixed_cuda_soc_host(monkeypatch):
+    """A discrete card (0) beside an integrated SoC GPU (1) on a CUDA build."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+
+
+@pytest.mark.parametrize(
+    "load_kwargs",
+    [dict(), dict(gpu_ids = [0, 1])],
+    ids = ["default_selection", "picker_mask"],
+)
+def test_a_mixed_cuda_host_keeps_the_lazy_discount_through_the_preflight(
+    tmp_path, _moe_cache_host, monkeypatch, load_kwargs
+):
+    """No --device list: llama.cpp's default enumeration over the visible set drops the
+    iGPU once a discrete GPU is seen (src/llama.cpp llama_prepare_model_devices), so lazy
+    auto stays on. The host preflight must agree with the fit rather than treat the GPU
+    inventory, or a CUDA visibility mask, as an explicit device list."""
+    _mixed_cuda_soc_host(monkeypatch)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    backend, cmd = _cache_launch(
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        memory = [(0, 8_000, 16_000), (1, 1_000, 1_000)],
+        host_guard = True,
+        **load_kwargs,
+    )
+    assert _load_mode(cmd) == "none", cmd
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_an_explicit_device_list_naming_an_igpu_turns_lazy_auto_off(monkeypatch):
+    """A real --device list is used as given, iGPU included, so ANY integrated device
+    turns auto off; the same ids as a visibility mask follow the default rule."""
+    _mixed_cuda_soc_host(monkeypatch)
+    backend = LlamaCppBackend()
+    kw = dict(
+        gpu_indices = [0, 1],
+        detected_gpus = [(0, 8_000), (1, 1_000)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = False,
+    )
+    assert backend._lazy_auto_resolves_off(**kw) is False
+    for extra_args, env in (
+        (["--device", "CUDA0,CUDA1"], {}),
+        ([], {"LLAMA_ARG_DEVICE": "CUDA0,CUDA1"}),
+        (["-dev", "CUDA1"], {}),
+    ):
+        assert backend._lazy_auto_resolves_off(**kw, extra_args = extra_args, env = env) is True, (
+            extra_args,
+            env,
+        )
+    # Naming only the discrete card leaves the iGPU out of the model devices.
+    assert backend._lazy_auto_resolves_off(**kw, extra_args = ["--device", "CUDA0"], env = {}) is False
+    # The masked child re-indexes from 0: CUDA0 under CUDA_VISIBLE_DEVICES=1 is the iGPU.
+    assert (
+        backend._lazy_auto_resolves_off(
+            **kw, extra_args = ["--device", "CUDA0"], env = {"CUDA_VISIBLE_DEVICES": "1"}
+        )
+        is True
+    )
+    # --device none offloads nothing, so no device can turn auto off.
+    assert backend._lazy_auto_resolves_off(**kw, extra_args = ["--device", "none"], env = {}) is False
+    # Vulkan: Studio's own pick is emitted as --device Vulkan<i>, an explicit list.
+    vk = dict(kw, is_vulkan_backend = True, shared_gpu_ids = {1})
+    assert backend._lazy_auto_resolves_off(**vk) is True
+    assert backend._lazy_auto_resolves_off(**dict(vk, gpu_indices = None)) is False
+    # The host preflight passes the inventory, not a pick: only its argv can pin.
+    assert backend._lazy_auto_resolves_off(**vk, device_list = False) is False
+    assert (
+        backend._lazy_auto_resolves_off(
+            **vk, device_list = False, extra_args = ["--device", "Vulkan0,Vulkan1"], env = {}
+        )
+        is True
+    )
+
+
+def test_an_explicit_pick_reaches_every_lazy_decision(tmp_path, _moe_cache_host, monkeypatch):
+    """gpu_ids becomes the child's selection, so the fit's lazy decisions must see it
+    even before the fit narrows anything, as the later checks already do."""
+    _mixed_cuda_soc_host(monkeypatch)
+    seen = []
+    real = LlamaCppBackend._lazy_auto_resolves_off
+
+    def spy(self, **kw):
+        seen.append(kw.get("gpu_indices"))
+        return real(self, **kw)
+
+    monkeypatch.setattr(LlamaCppBackend, "_lazy_auto_resolves_off", spy)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    _cache_launch(
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        memory = [(0, 8_000, 16_000), (1, 1_000, 1_000)],
+        gpu_ids = [0, 1],
+    )
+    assert seen, "no lazy decision ran"
+    assert all(sel is not None and set(sel) <= {0, 1} for sel in seen), seen
+
+
+def test_split_mode_none_checks_only_the_main_device(monkeypatch):
+    """-sm none keeps only devices[main_gpu] of the model list (src/llama.cpp
+    llama_prepare_model_devices, main_gpu 0 by default, no device below 0), so an
+    integrated device the split mode discards cannot turn lazy auto off."""
+    _mixed_cuda_soc_host(monkeypatch)
+    backend = LlamaCppBackend()
+    vk = dict(
+        gpu_indices = None,
+        detected_gpus = [(0, 8_000), (1, 1_000)],
+        shared_gpu_ids = {1},
+        is_vulkan_backend = True,
+        env = {},
+    )
+    dev = ["--device", "Vulkan0,Vulkan1"]
+    assert backend._lazy_auto_resolves_off(**vk, extra_args = dev) is True
+    assert backend._lazy_auto_resolves_off(**vk, extra_args = [*dev, "-sm", "none"]) is False
+    assert (
+        backend._lazy_auto_resolves_off(**vk, extra_args = [*dev, "-sm", "none", "-mg", "1"]) is True
+    )
+    assert (
+        backend._lazy_auto_resolves_off(
+            **vk, extra_args = [*dev, "--split-mode", "none", "-mg", "-1"]
+        )
+        is False
+    )
+    # Studio's own Vulkan pick, in the order it emits it.
+    pick = dict(vk, extra_args = ["-sm", "none"])
+    assert backend._lazy_auto_resolves_off(**dict(pick, gpu_indices = [0, 1])) is False
+    assert backend._lazy_auto_resolves_off(**dict(pick, gpu_indices = [1, 0])) is True
+    # CUDA, with the split mode from the env and the list in --device order.
+    cuda = dict(vk, is_vulkan_backend = False, shared_gpu_ids = set())
+    env = {"LLAMA_ARG_SPLIT_MODE": "none"}
+    assert (
+        backend._lazy_auto_resolves_off(
+            **dict(cuda, env = env), extra_args = ["--device", "CUDA1,CUDA0"]
+        )
+        is True
+    )
+    assert (
+        backend._lazy_auto_resolves_off(
+            **dict(cuda, env = env), extra_args = ["--device", "CUDA0,CUDA1"]
+        )
+        is False
+    )
+
+
+def test_the_apu_guard_reads_the_childs_device_list(tmp_path, monkeypatch):
+    """APU 0 beside a discrete card 1, the user naming the APU with --device ROCm0:
+    llama.cpp uses the list as given, lazy auto turns off and the whole file loads
+    into RAM, so the APU guard has to price it in full and remap the unmapped load."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+    memory = [(0, 60_000, 60_000), (1, 8_000, 8_000)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(i, f) for i, f, _t in memory]
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--device", "ROCm0"])["cmd"]
+
+    assert "unified-memory APU" in (backend.last_load_warning or ""), backend.last_load_warning
+    assert not _unmapped_tokens(cmd), cmd
+
+
+def test_the_arch_crash_retry_prices_ram_against_its_own_mask():
+    """The retry's RAM checks read --device ordinals through the retry's mask, so they
+    run after the mask, companion-device and split rewrites, and hand the retry argv and
+    env to the lazy check; RAM is still read before the kill, as it always was. Checked
+    at the source, like the other arch-crash retry tests, because this arm only runs
+    behind a real kernel-image crash."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    retry = src[src.index("_retry_wants_unified = self._amd_apu_wants_unified_memory(") :]
+    retry = retry[: retry.index('label = "-archfallback"')]
+    host = retry.index("_retry_host_msg = self._launch_host_shortfall_message(")
+    apu = retry.index("_retry_apu_msg = self._apu_ram_shortfall_message(")
+    for rewrite in (
+        "self._emit_child_gpu_visibility(",
+        "_widen_pin_ids_for_companion_devices(",
+        "self._clear_split_placement_env(env)",
+        "self._without_tensor_split(cmd)",
+    ):
+        assert retry.index(rewrite) < min(host, apu), rewrite
+    lazy = retry[retry.rindex("self._lazy_auto_resolves_off(", 0, apu) : apu]
+    assert "extra_args = cmd" in lazy and "env = env" in lazy, lazy
+    kill = retry.index("self._kill_process()")
+    assert retry.index("_retry_host_avail_mib = self._available_system_memory_mib()") < kill
+    assert "avail_mib = _retry_host_avail_mib" in retry[host:]
 
 
 @pytest.mark.parametrize("lazy_args, warned", [(["-lzm", "on"], False), ([], True)])

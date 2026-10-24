@@ -7609,9 +7609,11 @@ _MOE_CACHE_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# TENSOR_READ_LAZY tensors (src/models/gemma4.cpp, qwen4exp.cpp): under --lazy-mode auto one
-# over 4 GiB stays mmap'd under every load mode (lazy_read::add), needing no pinned RAM or VRAM.
+# TENSOR_READ_LAZY tensors (src/models/gemma4.cpp, qwen4exp.cpp, deepseek41.cpp): under
+# --lazy-mode auto one over 4 GiB stays mmap'd under every load mode (lazy_read::add), needing
+# no pinned RAM or VRAM. deepseek41 keeps every Engram table in this one tensor.
 _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
+    "deepseek41": ("per_layer_token_embd.weight",),
     "gemma4": ("per_layer_token_embd.weight",),
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
@@ -11632,11 +11634,60 @@ class LlamaCppBackend:
         shared_gpu_ids: Optional[Iterable[int]],
         is_vulkan_backend: bool,
         probe_integrated_cuda: bool = True,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        device_list: Optional[bool] = None,
     ) -> bool:
-        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: a model
-        device without mmap support (ggml-org/llama.cpp#28160), i.e. every selected device
-        integrated, since the default list holds iGPUs only when no discrete GPU is seen.
+        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: ANY
+        model device without mmap support (ggml-org/llama.cpp#28160; integrated Vulkan and
+        CUDA devices report none).
+
+        Which devices are model devices follows llama_prepare_model_devices. A real
+        ``--device`` list (argv, then ``LLAMA_ARG_DEVICE``) is used as given, so it is
+        checked device by device. Otherwise llama.cpp enumerates the visible devices and
+        keeps iGPUs only when no discrete GPU is seen, so every visible device must be
+        integrated; a CUDA/HIP visibility mask only narrows that visible set.
+        ``device_list`` says whether ``gpu_indices`` reaches the child as ``--device``:
+        by default only on Vulkan, where Studio pins with ``--device Vulkan<i>``; the
+        host preflight passes False, its ``gpu_indices`` being the inventory.
         ``probe_integrated_cuda`` False uses only a cached SoC answer (no new context)."""
+        selected = None
+        override = self._effective_device_ids(extra_args, env)
+        if override is not None:
+            gpu_names = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
+            ordinals = [self._device_ordinal(d) for d in gpu_names]
+            if all(o is not None for o in ordinals):
+                # --device names the child's compact ids; residency is keyed physical.
+                selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
+        elif device_list if device_list is not None else is_vulkan_backend:
+            try:
+                selected = list(gpu_indices or ()) or None
+            except TypeError:
+                selected = None
+        if selected is not None:
+            # Split mode none keeps only devices[main_gpu] of the list (main_gpu 0 by
+            # default, none below 0), and only the kept device is checked.
+            if selected and _split_mode_confines_to_one_device(extra_args, env):
+                main = self._effective_main_gpu(extra_args, env)
+                main = 0 if main is None else main
+                selected = selected[main : main + 1] if main >= 0 else []
+            selected = set(selected)
+            if not selected:
+                return False
+        if selected:
+            if is_vulkan_backend:
+                return bool(selected & set(shared_gpu_ids or ()))
+            try:
+                if selected & LlamaCppBackend._rocm_unified_memory_gpu_ids():
+                    return True
+            except Exception:
+                pass
+            if not probe_integrated_cuda and not self._integrated_cuda_probe_is_free():
+                return False
+            try:
+                return bool(selected & LlamaCppBackend._integrated_cuda_gpu_ids())
+            except Exception:
+                return False
         rows = [(row[0], row[1]) for row in (detected_gpus or ())]
         if self._offload_target_shares_system_memory(
             is_vulkan_backend = is_vulkan_backend,
@@ -16413,12 +16464,17 @@ class LlamaCppBackend:
                     caps = self.probe_server_capabilities(argv[0]),
                     extra_args = argv,
                     env = _env,
+                    # The reachable rows are the visible set, not a device list: only
+                    # a --device in this argv or env pins the child, as in the fit.
                     auto_resolves_off = self._lazy_auto_resolves_off(
                         gpu_indices = [row[0] for row in gpus] if gpus else None,
                         detected_gpus = gpus,
                         shared_gpu_ids = shared,
                         is_vulkan_backend = bool(shared) or self._is_vulkan_backend(argv[0]),
                         probe_integrated_cuda = False,
+                        extra_args = argv,
+                        env = _env,
+                        device_list = False,
                     ),
                 ),
             )
@@ -30140,11 +30196,18 @@ class LlamaCppBackend:
                             caps = server_caps,
                             extra_args = _child_extras,
                             env = _child_env,
+                            # An explicit pick pins the child even before a fit narrows it.
                             auto_resolves_off = self._lazy_auto_resolves_off(
-                                gpu_indices = gpu_indices,
+                                gpu_indices = (
+                                    gpu_indices
+                                    if gpu_indices is not None or not gpu_ids
+                                    else [int(i) for i in gpu_ids]
+                                ),
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = is_vulkan_backend,
+                                extra_args = _child_extras,
+                                env = _child_env,
                             ),
                         )
                         _need = (
@@ -30617,11 +30680,18 @@ class LlamaCppBackend:
                         caps = server_caps,
                         extra_args = _fit_extras,
                         env = _fit_env,
+                        # An explicit pick pins the child even before a fit narrows it.
                         auto_resolves_off = self._lazy_auto_resolves_off(
-                            gpu_indices = gpu_indices,
+                            gpu_indices = (
+                                gpu_indices
+                                if gpu_indices is not None or not gpu_ids
+                                else [int(i) for i in gpu_ids]
+                            ),
                             detected_gpus = _detected_gpus,
                             shared_gpu_ids = _shared_gpu_ids,
                             is_vulkan_backend = is_vulkan_backend,
+                            extra_args = _fit_extras,
+                            env = _fit_env,
                         ),
                     )
                     _fit_load_mode_kwargs = dict(
@@ -30937,6 +31007,18 @@ class LlamaCppBackend:
                     _apu_ram_part = (
                         "APU" if self._amd_apu_wants_unified_memory(gpu_indices) else "SoC"
                     )
+                    # The device flags and env as the child gets them, built like the
+                    # fit's: a gpu_ids pin strips both, Manual mode clears its env twins.
+                    _apu_lazy_extras = (
+                        self._strip_device_extra_args(extra_args)
+                        if _gpu_ids_own_device_flags
+                        else extra_args
+                    )
+                    _apu_lazy_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_apu_lazy_env)
+                    if _gpu_ids_own_device_flags:
+                        self._clear_device_placement_env(_apu_lazy_env)
                     _apu_resident_model_size = max(
                         1,
                         model_size
@@ -30951,6 +31033,8 @@ class LlamaCppBackend:
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = False,
                                 probe_integrated_cuda = False,
+                                extra_args = _apu_lazy_extras,
+                                env = _apu_lazy_env,
                             ),
                         ),
                     )
@@ -34448,47 +34532,17 @@ class LlamaCppBackend:
                         _apu_ram_msg = None
                         _host_ram_msg = None
                         _apu_avail_mib = None
-                        # The APU RAM preflight upstream ran against the CRASHED
-                        # selection. The mirror shape (crash on the dGPU, retry on the
-                        # unified-memory sibling) makes the respawn the first load into
-                        # system RAM, so price it here too. Advisory: the respawn goes
-                        # ahead either way.
-                        _retry_apu_msg = None
-                        if model_size is not None and _retry_wants_unified:
-                            _apu_avail_mib = self._available_system_memory_mib()
-                            _apu_resident_model_size = max(
-                                1,
-                                model_size
-                                - self._lazy_read_host_bytes(
-                                    model_path,
-                                    caps = server_caps,
-                                    extra_args = cmd,
-                                    env = env,
-                                    auto_resolves_off = self._lazy_auto_resolves_off(
-                                        gpu_indices = _remaining,
-                                        detected_gpus = _detected_gpus,
-                                        shared_gpu_ids = _shared_gpu_ids,
-                                        is_vulkan_backend = is_vulkan_backend,
-                                        probe_integrated_cuda = False,
-                                    ),
-                                ),
-                            )
-                            _retry_apu_msg = self._apu_ram_shortfall_message(
-                                _apu_resident_model_size + _mmproj_pinned_bytes,
-                                _apu_avail_mib,
-                            )
-                            # Same contract as the preflight above: the opt-out takes
-                            # the message and nothing else. _retry_apu_msg itself stays
-                            # set, so _retry_is_oversized below still sees the
-                            # shortfall and the pageable rewrite still happens.
-                            if not self._host_offload_warning_opted_out():
-                                _apu_ram_msg = _retry_apu_msg
-                                self._record_load_warning(_retry_apu_msg)
+                        # Read now, before the kill frees the crashed child's memory, as
+                        # the preflights always have; priced below, once `cmd` and `env`
+                        # carry the retry's own mask and device flags.
+                        _retry_apu_avail_mib = (
+                            self._available_system_memory_mib()
+                            if model_size is not None and _retry_wants_unified
+                            else None
+                        )
+                        _retry_host_avail_mib = self._available_system_memory_mib()
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
-                        _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)
-                        _host_ram_msg = _retry_host_msg
-                        self._record_load_warning(_retry_host_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
@@ -34634,6 +34688,51 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
+                        # Priced here, after the mask, companion-device and split rewrites,
+                        # so a --device ordinal resolves against the retry's own mask.
+                        # The APU RAM preflight upstream ran against the CRASHED
+                        # selection. The mirror shape (crash on the dGPU, retry on the
+                        # unified-memory sibling) makes the respawn the first load into
+                        # system RAM, so price it here too. Advisory: the respawn goes
+                        # ahead either way.
+                        _retry_apu_msg = None
+                        if model_size is not None and _retry_wants_unified:
+                            _apu_avail_mib = _retry_apu_avail_mib
+                            _apu_resident_model_size = max(
+                                1,
+                                model_size
+                                - self._lazy_read_host_bytes(
+                                    model_path,
+                                    caps = server_caps,
+                                    extra_args = cmd,
+                                    env = env,
+                                    auto_resolves_off = self._lazy_auto_resolves_off(
+                                        gpu_indices = _remaining,
+                                        detected_gpus = _detected_gpus,
+                                        shared_gpu_ids = _shared_gpu_ids,
+                                        is_vulkan_backend = is_vulkan_backend,
+                                        probe_integrated_cuda = False,
+                                        extra_args = cmd,
+                                        env = env,
+                                    ),
+                                ),
+                            )
+                            _retry_apu_msg = self._apu_ram_shortfall_message(
+                                _apu_resident_model_size + _mmproj_pinned_bytes,
+                                _apu_avail_mib,
+                            )
+                            # Same contract as the preflight above: the opt-out takes
+                            # the message and nothing else. _retry_apu_msg itself stays
+                            # set, so _retry_is_oversized below still sees the
+                            # shortfall and the pageable rewrite still happens.
+                            if not self._host_offload_warning_opted_out():
+                                _apu_ram_msg = _retry_apu_msg
+                                self._record_load_warning(_retry_apu_msg)
+                        _retry_host_msg = self._launch_host_shortfall_message(
+                            cmd, _retry_rows, env, avail_mib = _retry_host_avail_mib
+                        )
+                        _host_ram_msg = _retry_host_msg
+                        self._record_load_warning(_retry_host_msg)
                         # The fit chose "none" because the WHOLE footprint fit the
                         # devices this launch PINNED, and the retry runs on a set that
                         # proof never covered. The two guards above are weights-only
