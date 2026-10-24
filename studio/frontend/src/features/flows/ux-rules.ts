@@ -133,10 +133,8 @@ export function modelsToDownload(
 }
 
 /**
- * What a download check answered: `stale` when the user moved to another flow or changed a model pick while it was
- * out (drop it, so a confirmation never covers models it did not list),
- * `download` when a model must download first, `clear` when nothing must (safe to remember for these picks) and
- * `unchecked` when the plan had errors, so it listed no models and proves nothing.
+ * `stale`: the flow or a model pick changed while the check was out; `clear`: nothing to download (safe to
+ * remember); `unchecked`: the plan had errors, so its empty model list proves nothing.
  */
 export function planCheck(
   plan: { models?: PlanModel[] | null; errors?: unknown[] | null },
