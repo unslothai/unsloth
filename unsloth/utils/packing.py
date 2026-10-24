@@ -1685,7 +1685,7 @@ def _stage_packed_metadata(seq_lengths: torch.Tensor) -> Tuple[torch.Tensor, Tup
     """Host int32 [2n+1] = lengths ++ cu_seqlens (same cumsum as the device path), plus the lengths as ints."""
     host_lengths = seq_lengths.reshape(-1).to(torch.int32)
     n = host_lengths.numel()
-    staged = torch.zeros(2 * n + 1, dtype = torch.int32)
+    staged = torch.zeros(2 * n + 1, dtype = torch.int32, device = "cpu")
     staged[:n] = host_lengths
     torch.cumsum(host_lengths, dim = 0, dtype = torch.int32, out = staged[n + 1 :])
     return staged, tuple(host_lengths.tolist())

@@ -62,6 +62,18 @@ def test_stage_packed_metadata_matches_device_cumsum():
         assert all(type(x) is int for x in host)
 
 
+def test_stage_packed_metadata_stays_on_host_under_a_default_device():
+    # torch.set_default_device("cuda") must not move the host staging buffer (it is pinned next).
+    seq = torch.tensor([3, 1, 4], dtype = torch.int32)
+    torch.set_default_device("meta")
+    try:
+        staged, host = packing._stage_packed_metadata(seq)
+    finally:
+        torch.set_default_device(None)
+    assert staged.device.type == "cpu" and host == (3, 1, 4)
+    assert staged.tolist() == [3, 1, 4, 0, 3, 4, 8]
+
+
 def test_packed_info_and_consumers_match_old_values():
     cpu = torch.device("cpu")
     for i, seq in enumerate(_random_batches()):
