@@ -29,9 +29,7 @@ FP16_GRAD = 40000.0  # one GPU's scaled per-token output gradient: below the flo
 
 def _data(world):
     torch.manual_seed(0)
-    x = (
-        torch.rand(TOKENS, 8) * 1e-3
-    )
+    x = torch.rand(TOKENS, 8) * 1e-3
     weight = torch.randn(8, 8) * 0.1
     coef = FP16_GRAD * TOKENS / SCALE
     return x, weight, coef
@@ -120,9 +118,7 @@ def test_native_fp16_takes_the_step_one_gpu_takes(ranks):
         assert not isinstance(res["native"], str), res["native"]
         found_inf, scale, weight = res["native"]
         assert found_inf == 0.0, "native FSDP2 overflowed where one GPU did not"
-        assert (
-            scale == SCALE / 2
-        ), scale
+        assert scale == SCALE / 2, scale
         _, one_gpu_weight = res["one_gpu"]
         torch.testing.assert_close(weight, one_gpu_weight, rtol = 1e-3, atol = 1e-6)
 
