@@ -2787,6 +2787,11 @@ export const es = {
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
+      showGenerationDetails: "Detalles de generación",
+      showGenerationDetailsDescription:
+        "Muestra la velocidad y los tokens en vivo mientras se genera una respuesta, y dónde quedaron las capas de un modelo local.",
+      showGenerationDetailsKeywords:
+        "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",

@@ -2813,6 +2813,11 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
+      showGenerationDetails: "Generation details",
+      showGenerationDetailsDescription:
+        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+      showGenerationDetailsKeywords:
+        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
