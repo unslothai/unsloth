@@ -561,7 +561,9 @@ def test_derive_split_and_parts_are_structural_or_from_the_plan():
     assert parts.source == "transformers" and parts.layers_name == "layers"
     assert [n for n, _ in parts.norms] == ["norm"]
     bounds = ppn.derive_pp_split(model, 2)
-    assert bounds[0][0] == 0 and bounds[-1][1] == 8
+    # tiny Llama: lm_head (32000 x 16) outweighs the 8 tiny layers, so the last stage keeps one layer.
+    assert bounds == [(0, 7), (7, 8)], bounds
+    assert ppn.derive_pp_split(model, 2, ppn.PPConfig(lm_head_cost = 0.0)) == [(0, 4), (4, 8)]
     assert ppn.derive_pp_split(model, 2, ppn.PPConfig(layers_per_stage = [5, 3])) == [(0, 5), (5, 8)]
     with pytest.raises(ValueError, match = "layers_per_stage"):
         ppn.derive_pp_split(model, 2, ppn.PPConfig(layers_per_stage = [4, 3]))
