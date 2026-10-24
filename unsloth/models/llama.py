@@ -775,8 +775,12 @@ def LlamaAttention_fast_forward_inference(
     if static is not None:
         # Captured step: the cache slot is on the device; the attention itself runs eagerly
         # between two captured segments (static.attention), over the true length.
-        self.paged_attention_K.index_copy_(0, static.slot, K_slot.view(1, bsz, n_kv_heads, head_dim))
-        self.paged_attention_V.index_copy_(0, static.slot, V_slot.view(1, bsz, n_kv_heads, head_dim))
+        self.paged_attention_K.index_copy_(
+            0, static.slot, K_slot.view(1, bsz, n_kv_heads, head_dim)
+        )
+        self.paged_attention_V.index_copy_(
+            0, static.slot, V_slot.view(1, bsz, n_kv_heads, head_dim)
+        )
         A = static.attention(
             lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
         )

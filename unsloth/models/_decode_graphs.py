@@ -108,17 +108,7 @@ def _no_inference_tensors():
 
 
 def alloc_decode_buffers(
-    attn,
-    K1,
-    V1,
-    bsz,
-    n_heads,
-    n_kv_heads,
-    head_dim,
-    hidden_size,
-    dtype,
-    device,
-    increment,
+    attn, K1, V1, bsz, n_heads, n_kv_heads, head_dim, hidden_size, dtype, device, increment
 ):
     """The decode buffers the first decode step allocates. Eager (graphs off) is unchanged; with
     graphs on they persist per (bsz, dtype, device) and are sized for the whole generate() call."""
@@ -160,9 +150,13 @@ def alloc_decode_buffers(
             with _no_inference_tensors():
                 # Zeroed: a captured step reads every row of its bucket, and a masked row still
                 # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
-                paged = torch.zeros((rows, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = device)
+                paged = torch.zeros(
+                    (rows, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = device
+                )
                 temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
-                temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
+                temp_KV = torch.empty(
+                    (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
+                )
                 RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
                 if attention_size != hidden_size:
                     temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
@@ -352,7 +346,11 @@ def _fingerprint(model, layers, rope_len):
     for module in model.modules():
         if hasattr(module, "disable_adapters") or hasattr(module, "active_adapter"):
             try:
-                active = module.active_adapters if hasattr(module, "active_adapters") else module.active_adapter
+                active = (
+                    module.active_adapters
+                    if hasattr(module, "active_adapters")
+                    else module.active_adapter
+                )
                 items.append(
                     (
                         id(module),
@@ -442,7 +440,10 @@ def decode_step(
     for the eager path."""
     if torch.is_grad_enabled() or not input_ids.is_cuda:
         return None
-    if getattr(fast_forward_inference, "_unsloth_graph_attention", None) not in _SUPPORTED_ATTENTION:
+    if (
+        getattr(fast_forward_inference, "_unsloth_graph_attention", None)
+        not in _SUPPORTED_ATTENTION
+    ):
         return None
     if position_ids is None or os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
         return None
@@ -627,7 +628,9 @@ def _capture(
         st.attention = split
         _begin(graph, state.pool)
         try:
-            step.logits = _run_step(model, fast_forward_inference, logits_fn, s, st, past_key_values)
+            step.logits = _run_step(
+                model, fast_forward_inference, logits_fn, s, st, past_key_values
+            )
         finally:
             st.attention = _run_now
             if torch.cuda.is_current_stream_capturing():

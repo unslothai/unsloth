@@ -36,7 +36,9 @@ def _attention(dtype, device):
         hidden_size = HIDDEN,
         sliding_window = None,
     )
-    rotary = types.SimpleNamespace(extend_rope_embedding = lambda x, n: None, get_cached = lambda n, i: (cos, sin))
+    rotary = types.SimpleNamespace(
+        extend_rope_embedding = lambda x, n: None, get_cached = lambda n, i: (cos, sin)
+    )
     return (
         types.SimpleNamespace(
             config = config,
@@ -67,7 +69,11 @@ def test_kv_slot_holds_rotated_k_and_raw_v(dtype, bsz, ignore_out, monkeypatch):
     if ignore_out:
         # Quantized projections (NVFP4 / FP8) return a fresh tensor: the slot must still be filled.
         real = llama.fast_linear_forward
-        monkeypatch.setattr(llama, "fast_linear_forward", lambda proj, X, temp_lora = None, out = None: real(proj, X).clone())
+        monkeypatch.setattr(
+            llama,
+            "fast_linear_forward",
+            lambda proj, X, temp_lora = None, out = None: real(proj, X).clone(),
+        )
     attn, cos, sin = _attention(dtype, "cuda")
     cached = 5
     K1 = torch.randn(bsz, N_KV, cached, HEAD_DIM, dtype = dtype, device = "cuda")
@@ -77,13 +83,24 @@ def test_kv_slot_holds_rotated_k_and_raw_v(dtype, bsz, ignore_out, monkeypatch):
         seq_len = cached + step
         X = torch.randn(bsz, 1, HIDDEN, dtype = dtype, device = "cuda")
         out, past = llama.LlamaAttention_fast_forward_inference(
-            attn, X, past, torch.full((bsz, 1), seq_len, device = "cuda"), attention_mask = None, do_prefill = step == 0,
+            attn,
+            X,
+            past,
+            torch.full((bsz, 1), seq_len, device = "cuda"),
+            attention_mask = None,
+            do_prefill = step == 0,
         )
         k = (X @ attn.k_proj.weight.t()).view(bsz, N_KV, HEAD_DIM)
         v = (X @ attn.v_proj.weight.t()).view(bsz, N_KV, HEAD_DIM)
-        torch.testing.assert_close(attn.paged_attention_K[seq_len], _rotate(k, cos, sin, seq_len), atol = 2e-2, rtol = 2e-2)
+        torch.testing.assert_close(
+            attn.paged_attention_K[seq_len], _rotate(k, cos, sin, seq_len), atol = 2e-2, rtol = 2e-2
+        )
         torch.testing.assert_close(attn.paged_attention_V[seq_len], v, atol = 0, rtol = 0)
         assert past[0].shape[-2] == seq_len + 1
-        torch.testing.assert_close(past[0][:, :, -1], attn.paged_attention_K[seq_len], atol = 0, rtol = 0)
+        torch.testing.assert_close(
+            past[0][:, :, -1], attn.paged_attention_K[seq_len], atol = 0, rtol = 0
+        )
         # Earlier slots are untouched by later steps.
-        torch.testing.assert_close(attn.paged_attention_K[:cached].permute(1, 2, 0, 3), K1, atol = 0, rtol = 0)
+        torch.testing.assert_close(
+            attn.paged_attention_K[:cached].permute(1, 2, 0, 3), K1, atol = 0, rtol = 0
+        )

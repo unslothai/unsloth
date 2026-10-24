@@ -19,12 +19,26 @@ import unsloth.models._decode_graphs as G
 from unsloth.kernels import utils as kernel_utils
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
-MODELS = ("trl-internal-testing/tiny-LlamaForCausalLM-3.2", "trl-internal-testing/tiny-Qwen3ForCausalLM")
-PROMPTS = ["Once upon a time there was", "The capital of France is Paris and", "def f(x):", "1, 2, 3,"]
+MODELS = (
+    "trl-internal-testing/tiny-LlamaForCausalLM-3.2",
+    "trl-internal-testing/tiny-Qwen3ForCausalLM",
+)
+PROMPTS = [
+    "Once upon a time there was",
+    "The capital of France is Paris and",
+    "def f(x):",
+    "1, 2, 3,",
+]
 
 
-def _load(name, load_in_4bit, lora = False):
-    model, tok = FastLanguageModel.from_pretrained(name, max_seq_length = 2048, load_in_4bit = load_in_4bit)
+def _load(
+    name,
+    load_in_4bit,
+    lora = False,
+):
+    model, tok = FastLanguageModel.from_pretrained(
+        name, max_seq_length = 2048, load_in_4bit = load_in_4bit
+    )
     if lora:
         model = FastLanguageModel.get_peft_model(
             model, r = 8, lora_alpha = 16, random_state = 0,
@@ -47,7 +61,14 @@ def _causal(model):
     return base.model if hasattr(base, "model") and hasattr(base.model, "lm_head") else model
 
 
-def _generate(model, tok, enc, enabled, monkeypatch, new = 40):
+def _generate(
+    model,
+    tok,
+    enc,
+    enabled,
+    monkeypatch,
+    new = 40,
+):
     monkeypatch.setattr(G, "ENABLED", enabled)
     out = model.generate(
         **enc, max_new_tokens = new, min_new_tokens = new, do_sample = False, use_cache = True,
@@ -56,11 +77,29 @@ def _generate(model, tok, enc, enabled, monkeypatch, new = 40):
     return out.sequences.cpu(), torch.stack(out.logits).cpu()
 
 
-def _plain(model, tok, enc, new = 20):
-    return model.generate(**enc, max_new_tokens = new, min_new_tokens = new, do_sample = False, pad_token_id = tok.pad_token_id)
+def _plain(
+    model,
+    tok,
+    enc,
+    new = 20,
+):
+    return model.generate(
+        **enc,
+        max_new_tokens = new,
+        min_new_tokens = new,
+        do_sample = False,
+        pad_token_id = tok.pad_token_id,
+    )
 
 
-def _manual_loop(model, ids, enabled, monkeypatch, steps = 12, start = None):
+def _manual_loop(
+    model,
+    ids,
+    enabled,
+    monkeypatch,
+    steps = 12,
+    start = None,
+):
     monkeypatch.setattr(G, "ENABLED", enabled)
     with torch.inference_mode():
         out = model(ids, use_cache = True, return_dict = True)
@@ -68,7 +107,9 @@ def _manual_loop(model, ids, enabled, monkeypatch, steps = 12, start = None):
         for i in range(steps):
             p = (ids.shape[1] if start is None else start) + i
             pos = torch.full((ids.shape[0], 1), p, device = "cuda", dtype = torch.long)
-            out = model(nxt, past_key_values = past, position_ids = pos, use_cache = True, return_dict = True)
+            out = model(
+                nxt, past_key_values = past, position_ids = pos, use_cache = True, return_dict = True
+            )
             past = out.past_key_values
             logits.append(out.logits[:, -1].float().cpu())
             nxt = out.logits[:, -1:].argmax(-1)
@@ -107,7 +148,13 @@ def test_returned_cache_is_not_overwritten(monkeypatch):
     model, tok = _load(MODELS[0], False)
     monkeypatch.setattr(G, "ENABLED", True)
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
-    out = model.generate(**enc, max_new_tokens = 20, do_sample = False, pad_token_id = tok.pad_token_id, return_dict_in_generate = True)
+    out = model.generate(
+        **enc,
+        max_new_tokens = 20,
+        do_sample = False,
+        pad_token_id = tok.pad_token_id,
+        return_dict_in_generate = True,
+    )
     K, V = out.past_key_values[0]
     kept = K.clone(), V.clone()
     other = tok(PROMPTS[1:2], return_tensors = "pt").to("cuda")
@@ -127,8 +174,14 @@ def test_shift_labels_decode_loss(monkeypatch):
             past, nxt, res = out.past_key_values, out.logits[:, -1:].argmax(-1), []
             for i in range(6):
                 pos = torch.full((1, 1), ids.shape[1] + i, device = "cuda", dtype = torch.long)
-                out = model(nxt, past_key_values = past, position_ids = pos, use_cache = True, return_dict = True,
-                            shift_labels = torch.full((1, 1), 7, device = "cuda", dtype = torch.long))
+                out = model(
+                    nxt,
+                    past_key_values = past,
+                    position_ids = pos,
+                    use_cache = True,
+                    return_dict = True,
+                    shift_labels = torch.full((1, 1), 7, device = "cuda", dtype = torch.long),
+                )
                 past, nxt = out.past_key_values, out.logits[:, -1:].argmax(-1)
                 res.append(out.loss)
         return res
@@ -171,9 +224,14 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
     with torch.no_grad():
         for p in params:
             p.mul_(-1.0)
-    assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+    assert torch.equal(
+        _manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch)
+    )
     with model.disable_adapter():
-        assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+        assert torch.equal(
+            _manual_loop(model, ids, False, monkeypatch),
+            _manual_loop(model, ids, True, monkeypatch),
+        )
 
 
 @cuda
@@ -190,7 +248,9 @@ def test_manual_decode_loop_grows_cache(monkeypatch):
             past, nxt, logits = out.past_key_values, out.logits[:, -1:].argmax(-1), []
             for i in range(steps):
                 pos = torch.full((1, 1), ids.shape[1] + i, device = "cuda", dtype = torch.long)
-                out = model(nxt, past_key_values = past, position_ids = pos, use_cache = True, return_dict = True)
+                out = model(
+                    nxt, past_key_values = past, position_ids = pos, use_cache = True, return_dict = True
+                )
                 past = out.past_key_values
                 logits.append(out.logits[:, -1].float().cpu())
                 nxt = out.logits[:, -1:].argmax(-1)
@@ -210,15 +270,25 @@ def test_manual_loop_adapter_toggle_and_merge(monkeypatch):
     merged adapter is never replayed from graphs captured with it active."""
     model, tok = _load(MODELS[0], False, lora = True)
     ids = tok(PROMPTS[:1], return_tensors = "pt").input_ids.to("cuda")
-    assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+    assert torch.equal(
+        _manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch)
+    )
     with model.disable_adapter():
-        assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+        assert torch.equal(
+            _manual_loop(model, ids, False, monkeypatch),
+            _manual_loop(model, ids, True, monkeypatch),
+        )
     model.merge_adapter()
     try:
-        assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+        assert torch.equal(
+            _manual_loop(model, ids, False, monkeypatch),
+            _manual_loop(model, ids, True, monkeypatch),
+        )
     finally:
         model.unmerge_adapter()
-    assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+    assert torch.equal(
+        _manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch)
+    )
 
 
 @cuda
@@ -232,7 +302,9 @@ def test_explicit_positions_past_rope_table(monkeypatch):
     eager = _manual_loop(model, ids, False, monkeypatch, start = far)
     graph = _manual_loop(model, ids, True, monkeypatch, start = far)
     assert torch.equal(eager, graph)
-    assert torch.equal(_manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch))
+    assert torch.equal(
+        _manual_loop(model, ids, False, monkeypatch), _manual_loop(model, ids, True, monkeypatch)
+    )
 
 
 @cuda
@@ -244,7 +316,10 @@ def test_release_drops_graphs_and_buffers(monkeypatch):
     assert G.stats(_causal(model))["graphs"] == 0
     assert not any("_unsloth_graph_buffers" in m.__dict__ for m in model.modules())
     torch.cuda.empty_cache()
-    assert torch.equal(_generate(model, tok, enc, False, monkeypatch)[1], _generate(model, tok, enc, True, monkeypatch)[1])
+    assert torch.equal(
+        _generate(model, tok, enc, False, monkeypatch)[1],
+        _generate(model, tok, enc, True, monkeypatch)[1],
+    )
 
 
 @cuda
