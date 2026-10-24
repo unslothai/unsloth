@@ -5133,7 +5133,6 @@ class UnslothTrainer:
                     rl_settings, objective, bool(training_args.get("resume_from_checkpoint"))
                 )
                 if warmup_steps > 0:
-
                     self._update_progress(
                         status_message = f"Format warm-up ({warmup_steps} SFT steps)..."
                     )
