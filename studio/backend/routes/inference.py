@@ -3063,7 +3063,11 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             contended = controller.contended()
             victims = controller.observe(completion_id, generated, plan = not contended)
             if contended:
-                _gguf_refresh_residency(controller, force = _gguf_idle_residue_wanted(controller))
+                _gguf_refresh_residency(
+                    controller,
+                    force = _gguf_idle_residue_wanted(controller)
+                    or controller.reading_would_settle(),
+                )
                 victims = controller.plan_preemptions(needed = 0)
             if victims:
                 base = str(getattr(llama_backend, "base_url", "") or "")

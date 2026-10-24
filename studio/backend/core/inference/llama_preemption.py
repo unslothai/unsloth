@@ -212,6 +212,11 @@ def resumes_exhausted(resumes: int) -> bool:
 # become never finishing.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 
+# A resumed chat ranks behind every other candidate until it has decoded this many tokens: a
+# pause costs a whole re-prefill, and newest-first otherwise picked the chat it had just let back
+# in after 8 tokens. Ranked, not exempt: with nobody else to pause it is still taken.
+RESUME_GRACE_TOKENS = 256
+
 # Without it a chat that outgrew the shared ceiling can never be admitted or resumed.
 SOLO_MARGIN_DIVISOR = 200
 
@@ -639,6 +644,12 @@ class Participant:
     # left behind by an earlier round is never consulted.
     preempted_from: str = ""
     awaiting_victims: List[str] = field(default_factory = list)
+    # No token yet since admission or the last resume grant: its prompt may not be in the cache
+    # at all, and its resume books only `replay_tokens()`, so the rest of its charge is room a
+    # pause cannot free.
+    fresh: bool = True
+    # Tokens a resumed attempt still decodes before it is an ordinary candidate again.
+    resume_grace: int = 0
 
     def in_reading_tokens(self) -> int:
         """The part of the charge a reading taken now can hold: none until measured, and not a
@@ -693,6 +704,11 @@ class Participant:
         return self.state in _HOLDS_KV and not self.cells_reclaimed
 
     @property
+    def unstarted(self) -> bool:
+        """Decoding but no token since admission or the last grant: the last victim taken."""
+        return self.fresh and self.state == ParticipantState.DECODING
+
+    @property
     def preemptable(self) -> bool:
         return self.state in _PREEMPTABLE
 
@@ -744,6 +760,7 @@ class PreemptionController:
         "_resident_seq",
         "_last_sample_seq",
         "_last_sample_started",
+        "_last_probe_epoch",
         "_resident_at",
         "_clock",
         "_resume_tickets",
@@ -772,6 +789,7 @@ class PreemptionController:
         self._resident_seq = 0
         self._last_sample_seq = 0
         self._last_sample_started = 0
+        self._last_probe_epoch = 0
         self._resident_at = 0.0
         self._clock = time.monotonic
         self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
@@ -942,6 +960,9 @@ class PreemptionController:
                 participant.measured_at_seq = None
                 participant.unconfirmed_growth = 0
                 participant.growth_at_seq = None
+                participant.generated_seen = 0
+                participant.fresh = True
+                participant.resume_grace = RESUME_GRACE_TOKENS
                 participant.state = ParticipantState.RESUMING
                 participant.announce_prefill(need)
             return True
@@ -1012,7 +1033,10 @@ class PreemptionController:
                 reported = max(0, int(generated or 0))
                 previous = participant.generated_seen
                 participant.generated_seen = reported
-                self._progress_tokens += (reported - previous) if reported >= previous else reported
+                decoded = (reported - previous) if reported >= previous else reported
+                self._progress_tokens += decoded
+                if participant.resume_grace > 0:
+                    participant.resume_grace = max(0, participant.resume_grace - decoded)
                 participant.tokens = participant.resident_tokens(reported)
                 if reported > 0:
                     if not participant.measured and participant.measured_at_seq is None:
@@ -1023,6 +1047,7 @@ class PreemptionController:
                         participant.growth_at_seq = self._resident_seq
                     participant.cells_reclaimed = False
                     participant.replay_pending = False
+                    participant.fresh = False
                     participant.prefill_done()
                 if participant.state in _DECODES_WHEN_TOKENS_ARRIVE:
                     participant.state = ParticipantState.DECODING
@@ -1063,6 +1088,7 @@ class PreemptionController:
         """The ordering clock, taken before a `/slots` probe is sent."""
         with self._lock:
             self._resident_seq += 1
+            self._last_probe_epoch = self._resident_seq
             return self._resident_seq
 
     def note_resident(
@@ -1169,6 +1195,7 @@ class PreemptionController:
                     self._progress_tokens += growth
                 participant.base_tokens = charge
                 participant.generated_seen = 0
+                participant.fresh = False
                 if replayed:
                     participant.unconfirmed_growth = 0
                     participant.growth_at_seq = None
@@ -1316,6 +1343,8 @@ class PreemptionController:
             participant.cells_reclaimed = False
             participant.replay_pending = False
             participant.consecutive_preemptions = 0
+            participant.fresh = True
+            participant.resume_grace = 0
             participant.state = ParticipantState.DECODING
             participant.preempt_event.clear()
             participant.announce_prefill(participant.prompt_tokens or participant.tokens)
@@ -1426,6 +1455,7 @@ class PreemptionController:
                 self._resident_seq += 1
                 participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
+            participant.fresh = False
             participant.prefill_done()
 
     def note_resumed(self, gen_id: str) -> None:
@@ -1550,6 +1580,29 @@ class PreemptionController:
                     return True
         return False
 
+    def reading_would_settle(self) -> bool:
+        """Whether the ledger is over the ceiling while a holder's tokens wait on a reading to
+        confirm them. Its cells can already be in the last reading AND counted on top of it, so a
+        plan made now pauses somebody for room that exists: a chat let back in was paused again
+        after 8 tokens. A fresh reading settles it, so the sweep should take one first. Once per
+        such holder: a probe started since answers it, whether or not `/slots` replied."""
+        with self._lock:
+            if not self._kv_unified or self._budget <= 0 or self._resident is None:
+                return False
+            if self._server_mode or not self._contended_locked():
+                return False
+            probed = self._last_probe_epoch
+            if not any(
+                p.holds_kv
+                and (
+                    (p.measured_at_seq is not None and p.measured_at_seq > probed)
+                    or (p.growth_at_seq is not None and p.growth_at_seq > probed)
+                )
+                for p in self._participants.values()
+            ):
+                return False
+            return self._committed_locked() > max(0, self._budget - self._buffer_locked())
+
     def contended(self) -> bool:
         """Cheap enough for the token path: no HTTP, one lock, no arithmetic."""
         with self._lock:
@@ -1578,6 +1631,15 @@ class PreemptionController:
                 p.tokens
                 for p in self._participants.values()
                 if p.holds_kv and p.state == ParticipantState.PREEMPTING and not p.parked_on_a_tool
+            )
+            # An unstarted holder at what a pause could take back: its resume books its replay
+            # alone, so the rest of its admission charge is room no pause frees. Counted whole,
+            # four chats armed together paused one of them before its first token, to be
+            # granted again 4 ms later. Its output is counted as it decodes.
+            total -= sum(
+                max(0, p.on_top_tokens() - p.replay_tokens())
+                for p in self._participants.values()
+                if p.holds_kv and p.unstarted
             )
             want = max(0, int(needed or 0))
             ledger = sum(p.tokens for p in self._participants.values() if p.holds_kv)
@@ -1615,11 +1677,17 @@ class PreemptionController:
                 for p in self._participants.values()
                 if p.preemptable and p.holds_kv and p.gen_id != exclude
             ]
-            # A THRESHOLD promotion, so repeatedly losing does not become never finishing.
+            # A THRESHOLD promotion, so repeatedly losing does not become never finishing. A
+            # resume still in its grace ranks behind the rest, so newest-first does not undo it.
+            # An unstarted holder goes last of all: it has no output to keep, its cells may not
+            # be in the cache yet (vLLM never preempts a request holding no blocks), and a pause
+            # with nothing kept counts toward ending its turn.
             victims.sort(
                 key = lambda p: (
                     p.state != ParticipantState.PARKED_ON_TOOL,
+                    p.unstarted,
                     p.promoted,
+                    p.resume_grace > 0,
                     -p.seq,
                 )
             )
