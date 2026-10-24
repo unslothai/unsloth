@@ -415,8 +415,10 @@ export const BUDGET = {
   // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
   // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
   // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
-  transferBytes: 2_088_701,
-  rawBytes: 6_933_109,
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  transferBytes: 2_088_750,
+  rawBytes: 6_933_134,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

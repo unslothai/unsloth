@@ -78,6 +78,7 @@ import {
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   type ReactNode,
   type Ref,
@@ -255,10 +256,6 @@ const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[
 // .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
-const FOOTER_BUTTON_CLASS =
-  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -3660,18 +3657,17 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  // Never mounted on demand: the click that saves would move Load.
+  // Never mounted on demand: the click that saves would move Load. Empty where the checkbox already
+  // says it all (nothing saved, ticked or not).
   const saveStatus = savedRemember
     ? remember
       ? matchesStored
         ? "Saved for this model"
         : "Unsaved changes"
       : "Saved settings will be forgotten"
-    : remember
-      ? "Not saved yet"
-      : atDefault
-        ? "Using default settings"
-        : "Not remembered for this model";
+    : !remember && atDefault
+      ? "Using default settings"
+      : "";
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
     ? remember
@@ -3930,14 +3926,14 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
-        // the same left edge as the rows below.
+        // -ml-2.75 cancels the icon's 6px inset in its 28px circle plus the glyph's own ~5px, so the
+        // chevron's stroke starts on the same left edge as the rows below.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
               <HugeiconsIcon
@@ -4147,8 +4143,18 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
-        <div className="flex min-w-0 flex-col gap-1">
+      <div
+        className={cn(
+          "mt-5",
+          // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
+          // Sticky offsets start inside the scroller's 24px bottom padding: -bottom-6 puts the footer on
+          // the panel's edge, and the negative margins cover that padding with the panel's own fill.
+          variant === "page" &&
+            "sticky -bottom-6 z-10 -mb-6 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-6 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+        )}
+      >
+      {/* pt-4.75 puts the Remember text's cap top 24px under the rule, the same as the space under the buttons. */}
+      <div className="flex flex-col gap-3.5 border-t border-border pt-4.75">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -4167,15 +4173,15 @@ export function ModelConfigPage({
           >
             Remember for this model
           </label>
-        </div>
-        <p
-          id={saveStatusId}
-          aria-live="polite"
-          data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-          className="truncate pl-6 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
-        >
-          {saveStatus}
-        </p>
+          {/* On the checkbox's row, so a status appearing or clearing never moves the buttons. */}
+          <p
+            id={saveStatusId}
+            aria-live="polite"
+            data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          >
+            {saveStatus}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
@@ -4183,7 +4189,6 @@ export function ModelConfigPage({
             variant="dark"
             type="button"
             size="sm"
-            className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
               ((config.engine ?? "auto") !== "auto" && !engineReady) ||
@@ -4207,7 +4212,6 @@ export function ModelConfigPage({
               type="button"
               variant="outline"
               size="sm"
-              className={FOOTER_BUTTON_CLASS}
               // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
               // settings the load path strips or has already captured. Forget stores nothing, so
               // broken saved arguments must not lock it.
@@ -4229,7 +4233,7 @@ export function ModelConfigPage({
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
+            className="text-muted-foreground"
             disabled={atDefault}
             onClick={() => {
               handleSharedConfigEdit();
@@ -4250,7 +4254,7 @@ export function ModelConfigPage({
           </Button>
           {target.isGguf && (
             <SharedRunConfigControls
-              className={FOOTER_BUTTON_CLASS}
+              className="text-muted-foreground"
               target={target}
               config={config}
               ready={!extraArgsHydrating}
@@ -4264,6 +4268,7 @@ export function ModelConfigPage({
             />
           )}
         </div>
+      </div>
       </div>
 
       <ChatTemplateEditorDialog

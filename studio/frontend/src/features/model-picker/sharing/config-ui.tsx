@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Share01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
@@ -58,13 +59,20 @@ export function SharedRunConfigActions({
     <>
       <Button
         type="button"
-        size="sm"
-        variant="outline"
-        className={className}
+        size="icon-sm"
+        variant="ghost"
+        // The ghost dark hover is too faint on the picker panel; this is its filled buttons' hover.
+        className={`dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] ${className}`}
+        aria-label="Share"
+        title="Share"
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >
-        Share
+        <HugeiconsIcon
+          icon={Share01Icon}
+          strokeWidth={1.75}
+          className="size-[calc(1rem*var(--ui-space-scale,1))]"
+        />
       </Button>
       {sharing && (
         <ShareRunConfigDialog

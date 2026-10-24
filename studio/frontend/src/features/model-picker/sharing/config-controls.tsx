@@ -4,6 +4,8 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
+import { Share01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, Suspense, lazy, useLayoutEffect } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import {
@@ -97,12 +99,19 @@ export function SharedRunConfigControls({
   const fallback = (
     <Button
       type="button"
-      size="sm"
-      variant="outline"
-      className={props.className}
+      size="icon-sm"
+      variant="ghost"
+      // The ghost dark hover is too faint on the picker panel; this is its filled buttons' hover.
+      className={`dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] ${props.className}`}
+      aria-label="Share"
+      title="Share"
       disabled
     >
-      Share
+      <HugeiconsIcon
+        icon={Share01Icon}
+        strokeWidth={1.75}
+        className="size-[calc(1rem*var(--ui-space-scale,1))]"
+      />
     </Button>
   );
   return (
