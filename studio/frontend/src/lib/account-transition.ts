@@ -26,10 +26,7 @@ const CHAT_PREFERENCES_KEY = "unsloth_chat_preferences";
 const ACCOUNT_CHAT_PREFERENCES_PREFIX = "unsloth.account-chat-preferences.v1:";
 
 function chatPreferencesKey(account: MarkedAccount): string {
-  const owner =
-    account.accountId === "owner" ||
-    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
-  const identity = owner
+  const identity = isOwnerAccount(account)
     ? ["id", "owner"]
     : account.accountId
       ? ["id", account.accountId]
@@ -114,13 +111,18 @@ export function accountDatabaseName(
   const account = parseAccountMarker(
     storage?.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
-  const owner =
-    account.accountId === "owner" ||
-    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
-  return owner ? name : `${name}:${account.accountId ?? account.username}`;
+  return isOwnerAccount(account)
+    ? name
+    : `${name}:${account.accountId ?? account.username}`;
 }
 
 type MarkedAccount = { accountId: string | null; username: string };
+function isOwnerAccount(account: MarkedAccount): boolean {
+  return (
+    account.accountId === "owner" ||
+    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT)
+  );
+}
 function parseAccountMarker(marker: string): MarkedAccount {
   const legacy = {
     accountId: null,
