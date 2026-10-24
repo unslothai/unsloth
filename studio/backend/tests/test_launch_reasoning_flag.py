@@ -510,9 +510,7 @@ class TestThePreserveThinkingLaunchDefault:
         assert not self._preserve(tmp_path, monkeypatch, template = THINKING_TEMPLATE)
 
     @pytest.mark.parametrize("flag", ["--no-reasoning-preserve", "--no_reasoning_preserve"])
-    def test_no_reasoning_preserve_turns_the_qwen38_default_off(
-        self, tmp_path, monkeypatch, flag
-    ):
+    def test_no_reasoning_preserve_turns_the_qwen38_default_off(self, tmp_path, monkeypatch, flag):
         assert not self._preserve(
             tmp_path,
             monkeypatch,
