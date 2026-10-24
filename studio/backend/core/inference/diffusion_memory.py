@@ -2917,9 +2917,13 @@ def _calibrated_faster_tier(
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
-    A flat resident-transformer pick whose measured 2048 denoise does not fit beside the weights (the flat runtime
-    headroom undercounts it) is demoted to the fastest tier that does fit, as ComfyUI offloads weights against its
-    activation estimate. Every check grows with the budget, so more VRAM never picks a slower tier."""
+    A flat all-resident pick whose measured 2048 denoise does not fit beside the weights (the flat runtime headroom
+    undercounts it) is demoted to the fastest tier that does fit: nothing it holds has offload hooks, so a request
+    could not release any of it. A flat pick that keeps the transformer resident with the text encoders streamed is
+    never demoted for the 2048 canvas: like ComfyUI, which sizes each sampling call's weight residency from that
+    call's own activation estimate, the generation guard re-checks the requested resolution and releases resident
+    offload groups (then tiles the decode) for an oversized request, so a 1024 render does not pay a whole-module
+    upload for a 2048 worst case. Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -2999,12 +3003,8 @@ def _calibrated_faster_tier(
         ),
     )
     # Only the 2048 denoise is checked here: it cannot tile, while an oversized decode is tiled by the generation guard.
-    denoise_fits = (
-        transformer + te + others <= room
-        if flat_rank == 0
-        else te > 0 and transformer + others <= room
-    )
-    if flat_rank <= 1 and not denoise_fits:
+    # Only the all-resident pick: its weights carry no hooks a request could release.
+    if flat_rank == 0 and transformer + te + others > room:
         for fits, (tier_policy, stream_te, stream_tr, tile, reason) in candidates[flat_rank + 1 :]:
             if fits:
                 return (
