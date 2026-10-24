@@ -280,10 +280,16 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalSentAttachments =
             remote.sentAttachmentsSaved === false ||
             remote.appearance.customization?.sentAttachments === undefined;
+          const keepLocalMascots =
+            remote.mascotsSaved === false ||
+            remote.appearance.customization?.showMascots === undefined;
           const nextCustomization = keepLocalCustomization
             ? localCustomization
             : {
                 ...remoteCustomization,
+                ...(keepLocalMascots && {
+                  showMascots: localCustomization.showMascots,
+                }),
                 ...(keepLocalChatWidth && {
                   chatWidth: localCustomization.chatWidth,
                 }),
