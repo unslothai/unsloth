@@ -1054,6 +1054,20 @@ def test_a_run_skips_a_speech_primary_for_the_text_model_kept_alongside(monkeypa
     assert scheduler_module._sole_kept_model() is None
 
 
+def test_a_run_never_loads_a_model_and_a_vanished_kept_model_means_no_model(monkeypatch):
+    request = scheduler_module._producer_request(None, "run-1", threading.Event(), "UTC")
+    assert request.scope[inference_routes.LOADED_MODELS_ONLY_SCOPE_KEY] is True
+
+    # Named the kept model, which was unloaded before the request reached it.
+    names = iter(["kept/model", None])
+    monkeypatch.setattr(scheduler_module, "_sole_kept_model", lambda: next(names))
+    producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert failure.value.code == "no_model"
+
+
 def test_a_run_skips_whisper_which_refuses_a_request_without_audio(monkeypatch):
     from core.inference import model_slots
 

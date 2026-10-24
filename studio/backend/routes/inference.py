@@ -9635,6 +9635,8 @@ def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+# Routes a named model to the slot already serving it but never loads one (scheduled runs).
+LOADED_MODELS_ONLY_SCOPE_KEY = "_unsloth_loaded_models_only"
 # Sentinel a raw-body endpoint passes when the request omits ``model``: it must
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
@@ -11804,7 +11806,10 @@ async def _maybe_auto_switch_model(
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
-    if _auto_switch_opted_out(fastapi_request):
+    if _auto_switch_opted_out(fastapi_request) or (
+        isinstance(getattr(fastapi_request, "scope", None), dict)
+        and fastapi_request.scope.get(LOADED_MODELS_ONLY_SCOPE_KEY)
+    ):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
 

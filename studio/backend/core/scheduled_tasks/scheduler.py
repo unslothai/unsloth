@@ -103,7 +103,7 @@ def system_prompt(task: dict, now_ms: int) -> str:
 def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: str) -> Request:
     from utils.current_date_prompt_settings import CURRENT_DATE_TIMEZONE_HEADER
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
-    from routes.inference import REQUIRE_TEXT_HEADER
+    from routes.inference import LOADED_MODELS_ONLY_SCOPE_KEY, REQUIRE_TEXT_HEADER
 
     path = f"/api/scheduled-tasks/runs/{run_id}"
     scope = {
@@ -122,6 +122,8 @@ def _producer_request(app: Any, run_id: str, cancel_event: threading.Event, tz: 
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
+        # The kept model it names may be unloaded before routing: never load it back.
+        LOADED_MODELS_ONLY_SCOPE_KEY: True,
         "state": {
             "generation_cancel_event": cancel_event,
             "api_monitor_via_api_key": False,
@@ -259,8 +261,11 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         try:
             response = producer.result()
         except HTTPException as exc:
-            # A named kept model answered for itself, so its refusal is not "nothing loaded".
-            if "model" not in payload.model_fields_set and not _chat_model_loaded():
+            # A named kept model answered for itself, so its refusal is not "nothing loaded",
+            # unless it was unloaded before the request reached it.
+            if not _chat_model_loaded() and (
+                "model" not in payload.model_fields_set or _sole_kept_model() is None
+            ):
                 raise RunFailed("no_model") from None
             raise RunFailed(None, _error_text(exc.detail)) from None
         except GpuBusyForAnotherAccountError as exc:

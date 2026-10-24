@@ -3892,6 +3892,33 @@ def test_preview_scope_disables_auto_switch(monkeypatch):
     assert len(rec.calls) == 1
 
 
+def test_loaded_models_only_scope_routes_but_never_loads(monkeypatch):
+    # Scheduled runs name the model kept alongside; one unloaded before routing must not come back.
+    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("/p/B", "Q8_0", "org/B-GGUF"))
+    routed = []
+
+    async def route(requested):
+        routed.append(requested)
+        return None
+
+    monkeypatch.setattr(inference_route, "_route_to_extra_slot", route)
+
+    class _Req:
+        def __init__(self, scope):
+            self.scope = scope
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", _Req({inference_route.LOADED_MODELS_ONLY_SCOPE_KEY: True}), "tester"
+        )
+    )
+    assert routed == ["org/B-GGUF"] and rec.calls == []
+
+    # Control: without the flag the same request loads it.
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", _Req({}), "tester"))
+    assert len(rec.calls) == 1
+
+
 def test_preview_chat_is_tracked_as_inference_path():
     # Keep-warm counts long preview streams so the idle loop cannot unload mid-response.
 
