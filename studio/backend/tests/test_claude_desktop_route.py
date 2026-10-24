@@ -130,6 +130,8 @@ def test_status_reports_an_installed_idle_claude(mac, monkeypatch):
         "held_by_pid": None,
         "running": False,
         "model": "unsloth/gemma-4-E2B-it-GGUF",
+        "mappings": {"claude-fable-5": ":loaded"},
+        "routes": cd.route_names(),
         "local": True,
     }
 
@@ -349,3 +351,128 @@ def test_main_wires_the_route_and_both_lifecycle_hooks():
     startup, shutdown = source.split("    yield\n", 1)
     assert "_claude_desktop.recover()" in startup
     assert "_claude_desktop.shutdown" in shutdown
+
+
+# -- the per-slot model mapping ----------------------------------------------------------------
+
+MAPPED = {
+    "claude-fable-5": "unsloth/a-GGUF",
+    "claude-opus-5": "unsloth/b-GGUF:UD-Q4_K_XL",
+    "claude-sonnet-5": "unsloth/a-GGUF",
+    "claude-haiku-4-5-20251001": ":loaded",
+    "claude-sonnet-4-6": "unsloth/c-GGUF",
+}
+
+
+def test_mappings_are_saved_while_disconnected(mac, monkeypatch, tmp_path):
+    client = _client(monkeypatch)
+    response = client.put(f"{URL}/mappings", json = {"mappings": {**MAPPED, "bogus": "x"}})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "saved"
+    assert response.json()["claude"]["mappings"] == MAPPED
+    saved = tmp_path / "studio" / "auth" / "agents" / "app" / session.MAPPINGS_NAME
+    assert json.loads(saved.read_text()) == {"mappings": MAPPED}
+    assert saved.stat().st_mode & 0o777 == 0o600
+    # Nothing touched Claude.
+    assert mac["minted"] == [] and mac["opened"] == [] and mac["quit"] == []
+    assert client.get(URL).json()["mappings"] == MAPPED
+
+
+def test_at_least_one_slot_must_be_mapped(mac, monkeypatch):
+    client = _client(monkeypatch)
+    response = client.put(f"{URL}/mappings", json = {"mappings": {"claude-opus-5": ""}})
+    assert response.status_code == 400
+    assert "at least one" in response.json()["detail"]
+
+
+def test_mappings_need_the_computer_running_studio(mac, monkeypatch):
+    response = _client(monkeypatch, local = False).put(f"{URL}/mappings", json = {"mappings": MAPPED})
+    assert response.status_code == 403
+
+
+def test_a_broken_mappings_file_falls_back_to_following_the_loaded_model(mac, tmp_path):
+    saved = tmp_path / "studio" / "auth" / "agents" / "app" / session.MAPPINGS_NAME
+    saved.parent.mkdir(parents = True, exist_ok = True)
+    saved.write_text("{not json")
+    assert session.saved_mappings() == cd.DEFAULT_MAPPINGS
+
+
+def test_the_connected_gateway_follows_the_saved_mapping(mac, monkeypatch):
+    loads = []
+    monkeypatch.setattr(cd, "load_model", lambda up, key, model_id: loads.append((key, model_id)))
+    monkeypatch.setattr(session, "is_loaded", lambda model_id: model_id == "unsloth/a-GGUF")
+    client = _client(monkeypatch)
+    client.put(f"{URL}/mappings", json = {"mappings": MAPPED})
+    assert client.post(f"{URL}/connect", json = {}).json()["status"] == "connected"
+    gateway = session._live.gateway
+    routes = [(route, model.model_id if model else None) for route, model, _ in gateway.routes()]
+    assert routes == [
+        ("claude-fable-5", "unsloth/a-GGUF"),
+        ("claude-opus-5", "unsloth/b-GGUF:UD-Q4_K_XL"),
+        ("claude-sonnet-5", "unsloth/a-GGUF"),
+        ("claude-haiku-4-5-20251001", "unsloth/gemma-4-E2B-it-GGUF"),
+        ("claude-sonnet-4-6", "unsloth/c-GGUF"),
+    ]
+    gateway.ready("unsloth/a-GGUF")
+    gateway.ready("unsloth/b-GGUF:UD-Q4_K_XL")
+    # Loaded with the session's own key, only when it isn't loaded yet.
+    assert loads == [(STUDIO_KEY, "unsloth/b-GGUF:UD-Q4_K_XL")]
+
+
+def test_changing_the_mapping_while_claude_is_open_asks_to_restart(mac, monkeypatch):
+    client = _client(monkeypatch)
+    client.post(f"{URL}/connect", json = {})
+    assert mac["running"] is True
+    response = client.put(f"{URL}/mappings", json = {"mappings": MAPPED})
+    assert response.json()["status"] == "needs_restart"
+    assert response.json()["claude"]["mappings"] == cd.DEFAULT_MAPPINGS  # nothing saved yet
+
+    response = client.put(f"{URL}/mappings", json = {"mappings": MAPPED, "restart": False})
+    assert response.json()["status"] == "pending_restart"
+    assert [r[0] for r in session._live.gateway.routes()] == list(cd.ROUTE_IDS)
+    assert mac["quit"] == []
+
+    changed = {**MAPPED, "claude-opus-5": "unsloth/a-GGUF"}
+    response = client.put(f"{URL}/mappings", json = {"mappings": changed, "restart": True})
+    assert response.json()["status"] == "connected"
+    assert len(mac["quit"]) == 1 and mac["opened"] == [mac["app"], mac["app"]]
+    # The same gateway and key carry on: no new session.
+    assert len(mac["minted"]) == 1
+
+
+def test_a_closed_connected_claude_takes_the_mapping_without_asking(mac, monkeypatch):
+    client = _client(monkeypatch)
+    client.post(f"{URL}/connect", json = {})
+    mac["running"] = False
+    response = client.put(f"{URL}/mappings", json = {"mappings": MAPPED})
+    assert response.json()["status"] == "connected"
+    assert mac["quit"] == []
+
+
+def test_models_lists_studios_chat_catalog_loaded_first(mac, monkeypatch):
+    import routes.llama_compat as llama_compat
+
+    async def catalog():
+        return [
+            {"id": "unsloth/z-GGUF", "loaded": False, "quant": "Q8_0"},
+            {"id": "unsloth/a-GGUF", "loaded": False},
+            {"id": "unsloth/m-GGUF", "loaded": True},
+            {"id": ""},
+        ]
+
+    monkeypatch.setattr(llama_compat, "_chat_catalog", catalog)
+    body = _client(monkeypatch).get(f"{URL}/models").json()
+    assert body == [
+        {"id": "unsloth/m-GGUF", "loaded": True, "quant": None},
+        {"id": "unsloth/a-GGUF", "loaded": False, "quant": None},
+        {"id": "unsloth/z-GGUF", "loaded": False, "quant": "Q8_0"},
+    ]
+
+
+def test_start_claude_opens_a_closed_connected_claude(mac, monkeypatch):
+    client = _client(monkeypatch)
+    client.post(f"{URL}/connect", json = {})
+    mac["running"] = False
+    response = client.put(f"{URL}/mappings", json = {"mappings": MAPPED, "restart": True})
+    assert response.json()["status"] == "connected"
+    assert mac["quit"] == [] and mac["opened"] == [mac["app"], mac["app"]]

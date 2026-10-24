@@ -26,16 +26,48 @@ import {
   fetchClaudeDesktopStatus,
 } from "../api/claude-desktop";
 import { AgentIcon } from "./agent-command-block";
+import { ClaudeDesktopModels } from "./claude-desktop-models";
 import { claudeDesktopView } from "./claude-desktop-state";
+import { CodexDesktopCard } from "./codex-desktop-card";
+import { pinnedModels } from "./desktop-app-models";
 import { SettingsSection } from "./settings-section";
 
 const POLL_MS = 5000;
 
 type Busy = "connect" | "disconnect" | null;
 
-/** Settings → Agents → Desktop apps: switch Claude Desktop on this Mac to Studio and back. The
- *  backend owns the switch, so it lasts exactly as long as Studio runs; no terminal involved. */
+/** Settings → Agents → Desktop apps: switch Claude Desktop and the Codex app on this Mac to
+ *  Studio and back. The backend owns each switch, so it lasts exactly as long as Studio runs; no
+ *  terminal involved. A card for an app this Studio can't offer (an older backend, a non-owner)
+ *  hides itself, and the section goes with the last one. */
 export function ClaudeDesktopSection() {
+  const t = useT();
+  const [hiddenApps, setHiddenApps] = useState<string[]>([]);
+  const hide = useCallback(
+    (app: string) =>
+      setHiddenApps((apps) => (apps.includes(app) ? apps : [...apps, app])),
+    [],
+  );
+  return (
+    <div hidden={hiddenApps.length >= 2}>
+      <SettingsSection
+        title={t("settings.agents.desktopApps.title")}
+        description={t("settings.agents.desktopApps.description")}
+      >
+        <div className="mt-2 flex min-w-0 flex-col gap-2">
+          <ClaudeDesktopCard onUnavailable={hide} />
+          <CodexDesktopCard onUnavailable={hide} />
+        </div>
+      </SettingsSection>
+    </div>
+  );
+}
+
+function ClaudeDesktopCard({
+  onUnavailable,
+}: {
+  onUnavailable: (app: string) => void;
+}) {
   const t = useT();
   const [status, setStatus] = useState<ClaudeDesktopStatus | null>(null);
   const [hidden, setHidden] = useState(false);
@@ -58,9 +90,10 @@ export function ClaudeDesktopSection() {
     } catch (err) {
       if (mounted.current && err instanceof ClaudeDesktopUnavailable) {
         setHidden(true);
+        onUnavailable("claude");
       }
     }
-  }, []);
+  }, [onUnavailable]);
 
   useEffect(() => {
     mounted.current = true;
@@ -140,9 +173,11 @@ export function ClaudeDesktopSection() {
     case "connected":
       detail = view.pendingRestart
         ? t("settings.agents.desktopApps.pendingRestart")
-        : view.model
-          ? t("settings.agents.desktopApps.connected", { model: view.model })
-          : t("settings.agents.desktopApps.connectedNoModel");
+        : status && pinnedModels(status.mappings ?? {}).length > 0
+          ? t("settings.agents.desktopApps.connectedMapped")
+          : view.model
+            ? t("settings.agents.desktopApps.connected", { model: view.model })
+            : t("settings.agents.desktopApps.connectedNoModel");
       break;
     case "idle":
       detail = view.model
@@ -155,14 +190,11 @@ export function ClaudeDesktopSection() {
   const canConnect = view.kind === "idle";
 
   return (
-    <SettingsSection
-      title={t("settings.agents.desktopApps.title")}
-      description={t("settings.agents.desktopApps.description")}
-    >
+    <>
       <div
         data-testid="claude-desktop-card"
         data-state={view.kind}
-        className="mt-2 flex min-w-0 flex-col gap-2 rounded-2xl border border-border/60 px-3.5 py-3"
+        className="flex min-w-0 flex-col gap-2 rounded-2xl border border-border/60 px-3.5 py-3"
       >
         <div className="flex min-w-0 items-center gap-3">
           <AgentIcon logo="anthropic" />
@@ -232,6 +264,16 @@ export function ClaudeDesktopSection() {
             </Button>
           )}
         </div>
+        {status && (view.kind === "idle" || connected) ? (
+          <ClaudeDesktopModels
+            status={status}
+            disabled={busy !== null}
+            onStatus={(next, pending) => {
+              setStatus(next);
+              if (pending !== undefined) setPendingRestart(pending);
+            }}
+          />
+        ) : null}
         {connected ? (
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.desktopApps.lifecycle")}
@@ -288,6 +330,6 @@ export function ClaudeDesktopSection() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </SettingsSection>
+    </>
   );
 }

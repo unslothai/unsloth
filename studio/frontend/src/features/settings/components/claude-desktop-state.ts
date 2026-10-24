@@ -12,9 +12,22 @@ export type ClaudeDesktopView =
   | { kind: "connected"; model: string | null; pendingRestart: boolean }
   | { kind: "idle"; model: string | null };
 
-/** What the Claude Desktop card shows, in priority order: what blocks Connect comes first. */
+// The fields every Desktop apps card's status has (Claude Desktop, Codex Desktop).
+export type DesktopAppStatus = Pick<
+  ClaudeDesktopStatus,
+  | "supported"
+  | "installed"
+  | "download_url"
+  | "connected"
+  | "held_by"
+  | "held_by_pid"
+  | "model"
+  | "local"
+>;
+
+/** What a Desktop apps card shows, in priority order: what blocks Connect comes first. */
 export function claudeDesktopView(
-  status: ClaudeDesktopStatus | null,
+  status: DesktopAppStatus | null,
   pendingRestart = false,
 ): ClaudeDesktopView {
   if (status === null) {

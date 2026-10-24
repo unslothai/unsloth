@@ -12,6 +12,7 @@ so only one of them holds Claude at a time and either one cleans up after the ot
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -52,6 +53,48 @@ def agents_root() -> Path:
 
 def _state_path() -> Path:
     return cd.state_path(agents_root())
+
+
+MAPPINGS_NAME = "claude-desktop-models.json"
+
+
+def _mappings_path() -> Path:
+    return agents_root() / "app" / MAPPINGS_NAME
+
+
+def saved_mappings() -> dict:
+    """The slot → model choice from the card, kept across sessions (not secret). Defaults to the
+    first slot following whatever Studio has loaded."""
+    try:
+        data = json.loads(_mappings_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        data = None
+    mappings = cd.normalize_mappings(
+        (data or {}).get("mappings") if isinstance(data, dict) else None
+    )
+    return mappings or dict(cd.DEFAULT_MAPPINGS)
+
+
+def save_mappings(mappings: dict) -> dict:
+    normalized = cd.normalize_mappings(mappings)
+    if not normalized:
+        raise ClaudeDesktopError(400, "no_mapping", "Choose a model for at least one Claude model.")
+    path = _mappings_path()
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    cd.write_file(path, json.dumps({"mappings": normalized}, indent = 2) + "\n")
+    return normalized
+
+
+def loaded_models() -> list:
+    from routes.inference import _openai_model_objects
+    return [entry for entry in _openai_model_objects() or () if isinstance(entry, dict)]
+
+
+def is_loaded(model_id: str) -> bool:
+    try:
+        return cd.loaded_matches(model_id, loaded_models())
+    except Exception:
+        return False
 
 
 def loaded_model() -> Optional[cd.GatewayModel]:
@@ -102,16 +145,11 @@ def status(model_provider: Optional[Callable] = None) -> dict:
     app = cd.app_path() if supported else None
     owner = (state or {}).get("owner") or {}
     held_elsewhere = state is not None and live is None and cd.owner_alive(owner)
-    model = None
-    if live is not None:
-        current = live.gateway.current_model()
+    try:
+        current = model_provider()
         model = current.model_id if current is not None else None
-    else:
-        try:
-            current = model_provider()
-            model = current.model_id if current is not None else None
-        except Exception:
-            model = None
+    except Exception:
+        model = None
     return {
         "supported": supported,
         "installed": app is not None,
@@ -122,6 +160,8 @@ def status(model_provider: Optional[Callable] = None) -> dict:
         "held_by_pid": owner.get("pid") if held_elsewhere else None,
         "running": cd.is_running() if supported else False,
         "model": model,
+        "mappings": saved_mappings(),
+        "routes": cd.route_names(),
     }
 
 
@@ -208,7 +248,15 @@ def connect(
         try:
             key, key_id = mint(username)
             token = cd.new_token()
-            gateway = cd.Gateway(upstream, key, model_provider, token).start()
+            gateway = cd.Gateway(
+                upstream,
+                key,
+                model_provider,
+                token,
+                mappings = saved_mappings,
+                is_loaded = is_loaded,
+                ensure_loaded = lambda model_id: cd.load_model(upstream, key, model_id),
+            ).start()
             state = cd.begin(
                 path,
                 targets,
@@ -241,6 +289,41 @@ def connect(
         _live = _Live(gateway, state)
         logger.info("Claude Desktop switched to Unsloth (gateway %s).", gateway.base_url)
         return {"status": "pending_restart" if running and not restart else "connected"}
+
+
+def set_mappings(mappings: dict, restart: Optional[bool]) -> dict:
+    """Save the slot → model choice. Requests follow it at once; Claude reads the model names it
+    shows only at startup, so an open, connected Claude is restarted (``restart`` True), left for
+    its next launch (False) or asked about first (None → ``needs_restart``, nothing saved)."""
+    normalized = cd.normalize_mappings(mappings)
+    if not normalized:
+        raise ClaudeDesktopError(400, "no_mapping", "Choose a model for at least one Claude model.")
+    with _lock:
+        live = _live
+        running = live is not None and cd.is_running()
+        if running and restart is None and normalized != saved_mappings():
+            return {"status": "needs_restart"}
+        save_mappings(normalized)
+        if live is None:
+            return {"status": "saved"}
+        if not running:
+            # "Start Claude" on the card, as in Ollama's settings: open it on the new mapping.
+            if restart:
+                app = cd.app_path()
+                if app is not None:
+                    cd.open_app(app)
+            return {"status": "connected"}
+        if not restart:
+            return {"status": "pending_restart"}
+        cd.quit_app()
+        if not cd.wait_for_exit(timeout = QUIT_TIMEOUT):
+            raise ClaudeDesktopError(
+                409, "quit_failed", "Claude Desktop did not quit. Quit it yourself to apply."
+            )
+        app = cd.app_path()
+        if app is not None:
+            cd.open_app(app)
+        return {"status": "connected"}
 
 
 def disconnect(revoke: Optional[Callable] = None, quit_timeout: float = QUIT_TIMEOUT) -> list:

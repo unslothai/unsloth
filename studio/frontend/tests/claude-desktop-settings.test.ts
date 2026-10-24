@@ -22,6 +22,14 @@ const STATUS: ClaudeDesktopStatus = {
   held_by_pid: null,
   running: false,
   model: "unsloth/gemma-4-E2B-it-GGUF",
+  mappings: { "claude-fable-5": ":loaded" },
+  routes: [
+    { id: "claude-fable-5", name: "Fable 5" },
+    { id: "claude-opus-5", name: "Opus 5" },
+    { id: "claude-sonnet-5", name: "Sonnet 5" },
+    { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5" },
+    { id: "claude-sonnet-4-6", name: "Sonnet 4.6" },
+  ],
   local: true,
 };
 

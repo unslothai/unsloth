@@ -1461,3 +1461,26 @@ def test_claude_app_keeps_the_backup_when_the_user_changed_a_setting(studio, cla
     assert f"Kept your original claude_desktop_config.json at {backup}" in result.output.replace(
         "\n", ""
     )
+
+
+def test_codex_app_held_by_studio_points_at_its_settings(studio, tmp_path):
+    config = _codex_config(studio)
+    state_path = tmp_path / "agents" / "app" / "codex.json"
+    state_path.parent.mkdir(parents = True, exist_ok = True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "path": str(config),
+                "base": BASE,
+                "owner": start._claude_desktop.owner_record("studio"),
+                "key_id": 9,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--app"])
+
+    assert result.exit_code == 1
+    assert "from the Studio app" in result.output and "Codex Desktop" in result.output
+    assert config.read_text() == USER_CODEX
+    assert state_path.exists() and studio["minted"] == 0

@@ -610,8 +610,38 @@ def gateway_model(entry: dict) -> GatewayModel:
 
 NO_MODEL_MESSAGE = "No model is loaded in Unsloth Studio. Load a model in Studio, then try again."
 
+# A slot mapped to this follows whatever Studio has loaded, the behavior before slots could be
+# mapped. It can't collide with a model id: no catalog id starts with a colon.
+FOLLOW_LOADED = ":loaded"
+# Nothing chosen yet: the first slot follows the loaded model, as `ollama launch claude-desktop`
+# gives a single user-picked local model the first slot.
+DEFAULT_MAPPINGS = {MODEL_SLOTS[0]["id"]: FOLLOW_LOADED}
+ROUTE_IDS = tuple(slot["id"] for slot in MODEL_SLOTS)
+MAX_MODEL_ID_LENGTH = 512
 
-def no_model_reply(requested: str, stream: bool) -> tuple:
+
+def normalize_mappings(mappings: object) -> dict:
+    """Known slots mapped to a non-empty model id (or FOLLOW_LOADED), in Claude's slot order.
+    Empty slots are dropped: like Ollama's SaveClaudeDesktopModelMappings, sparse is valid."""
+    if not isinstance(mappings, dict):
+        return {}
+    out = {}
+    for route in ROUTE_IDS:
+        value = mappings.get(route)
+        if isinstance(value, str) and value.strip() and len(value) <= MAX_MODEL_ID_LENGTH:
+            out[route] = value.strip()
+    return out
+
+
+def route_names() -> list:
+    return [{"id": slot["id"], "name": slot["display"]} for slot in MODEL_SLOTS]
+
+
+def no_model_reply(
+    requested: str,
+    stream: bool,
+    text: str = NO_MODEL_MESSAGE,
+) -> tuple:
     """(content type, body) of an assistant turn that says no model is loaded.
 
     An error here reaches the user as Claude's opaque "provider rejected a test request" (its
@@ -624,7 +654,7 @@ def no_model_reply(requested: str, stream: bool) -> tuple:
         "type": "message",
         "role": "assistant",
         "model": requested,
-        "content": [{"type": "text", "text": NO_MODEL_MESSAGE}],
+        "content": [{"type": "text", "text": text}],
         "stop_reason": "end_turn",
         "stop_sequence": None,
         "usage": usage,
@@ -649,7 +679,7 @@ def no_model_reply(requested: str, stream: bool) -> tuple:
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {"type": "text_delta", "text": NO_MODEL_MESSAGE},
+                "delta": {"type": "text_delta", "text": text},
             },
         ),
         ("content_block_stop", {"type": "content_block_stop", "index": 0}),
@@ -667,8 +697,79 @@ def no_model_reply(requested: str, stream: bool) -> tuple:
     return "text/event-stream", body.encode()
 
 
-def _placeholder_model() -> GatewayModel:
-    return GatewayModel(MODEL_SLOTS[0]["id"], "Unsloth (no model loaded)", DEFAULT_MAX_TOKENS)
+def _placeholder_model(route: str = MODEL_SLOTS[0]["id"]) -> GatewayModel:
+    return GatewayModel(route, "Unsloth (no model loaded)", DEFAULT_MAX_TOKENS)
+
+
+def load_model(
+    upstream: str,
+    key: str,
+    model_id: str,
+    timeout: float = 1800.0,
+) -> None:
+    """Load a downloaded model in Studio by its catalog id, with its saved launch settings: the
+    same POST /models/load Open WebUI uses, so "Keep multiple models loaded" decides whether it
+    loads beside the resident model or replaces it. Raises RuntimeError with Studio's reason."""
+    parsed = urlparse(upstream)
+    if parsed.scheme == "https":
+        context = None
+        if _is_loopback_host(parsed.hostname):
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        conn = http.client.HTTPSConnection(
+            parsed.hostname, parsed.port, timeout = timeout, context = context
+        )
+    else:
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout = timeout)
+    body = json.dumps({"model": model_id}).encode()
+    try:
+        conn.request(
+            "POST",
+            parsed.path.rstrip("/") + "/models/load",
+            body,
+            {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        raw = response.read()
+    except (OSError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"Unsloth Studio didn't answer: {exc}") from exc
+    finally:
+        conn.close()
+    # A long load may be padded with leading whitespace to keep a tunnel open.
+    text = raw.decode("utf-8", "replace").strip()
+    try:
+        data = json.loads(text) if text else {}
+    except ValueError:
+        data = {}
+    if response.status == 200 and isinstance(data, dict) and data.get("success", True):
+        return
+    detail = data.get("detail") if isinstance(data, dict) else None
+    if isinstance(detail, dict):
+        detail = detail.get("message") or detail.get("error") or json.dumps(detail)
+    if response.status == 404:
+        detail = "it isn't downloaded on this computer"
+    raise RuntimeError(str(detail or f"HTTP {response.status}"))
+
+
+def loaded_matches(model_id: str, loaded: list) -> bool:
+    """Whether ``model_id`` (a catalog id, maybe pinned as ``id:QUANT``) is among the loaded model
+    objects (``{"id", "quant"?}``)."""
+    wanted = model_id.strip().lower()
+    base, _, quant = wanted.rpartition(":")
+    for entry in loaded or ():
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        current = entry["id"].strip().lower()
+        if current == wanted:
+            return True
+        if base and current == base and str(entry.get("quant") or "").lower() == quant:
+            return True
+    return False
 
 
 class Gateway(ThreadingHTTPServer):
@@ -683,6 +784,10 @@ class Gateway(ThreadingHTTPServer):
         model,
         token: str,
         listen: tuple = ("127.0.0.1", 0),
+        *,
+        mappings = None,
+        is_loaded: Optional[Callable] = None,
+        ensure_loaded: Optional[Callable] = None,
     ):
         parsed = urlparse(upstream)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -690,6 +795,12 @@ class Gateway(ThreadingHTTPServer):
         self.upstream = parsed
         self.upstream_key = upstream_key
         self.model = model
+        # Claude slot → Studio model id (or FOLLOW_LOADED): a dict, or a callable so Studio's
+        # card can change it while connected. None keeps the one-slot "follow" behavior.
+        self.mappings = mappings
+        self.is_loaded = is_loaded
+        self.ensure_loaded = ensure_loaded
+        self.load_lock = threading.Lock()
         self.token = token
         self.routed = 0
         self._thread: Optional[threading.Thread] = None
@@ -719,6 +830,48 @@ class Gateway(ThreadingHTTPServer):
             return self.model()
         except Exception:
             return None
+
+    def current_mappings(self) -> dict:
+        mappings = self.mappings
+        if callable(mappings):
+            try:
+                mappings = mappings()
+            except Exception:
+                mappings = None
+        return normalize_mappings(mappings) or dict(DEFAULT_MAPPINGS)
+
+    def routes(self) -> list:
+        """[(slot id, GatewayModel or None, pinned model id or None)] for every mapped slot, in
+        Claude's slot order. A following slot carries the loaded model (None when nothing is)."""
+        out = []
+        for route, target in self.current_mappings().items():
+            if target == FOLLOW_LOADED:
+                current = self.current_model()
+                out.append((route, current._replace(route = route) if current else None, None))
+            else:
+                out.append((route, GatewayModel(route, target, DEFAULT_MAX_TOKENS), target))
+        return out
+
+    def resolve(self, requested: str) -> Optional[tuple]:
+        """The route a request names, by slot id or by the model id it shows as."""
+        routes = self.routes()
+        for route in routes:
+            if route[0] == requested:
+                return route
+        for route in routes:
+            if route[1] is not None and route[1].model_id == requested:
+                return route
+        return None
+
+    def ready(self, model_id: str) -> None:
+        """Load a pinned slot's model if Studio doesn't have it loaded. One load at a time, so two
+        slots on different models take turns instead of racing."""
+        if self.ensure_loaded is None:
+            return
+        with self.load_lock:
+            if self.is_loaded is not None and self.is_loaded(model_id):
+                return
+            self.ensure_loaded(model_id)
 
     def connection(self) -> http.client.HTTPConnection:
         if self.upstream.scheme != "https":
@@ -865,11 +1018,14 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._error(401, "Invalid gateway key.")
             return
-        entry = (self.server.current_model() or _placeholder_model()).catalog_entry()
+        entries = [
+            (model or _placeholder_model(route)).catalog_entry()
+            for route, model, _ in self.server.routes()
+        ]
         catalog = {
-            "data": [entry],
-            "first_id": entry["id"],
-            "last_id": entry["id"],
+            "data": entries,
+            "first_id": entries[0]["id"] if entries else None,
+            "last_id": entries[-1]["id"] if entries else None,
             "has_more": False,
         }
         self._send(200, json.dumps(catalog).encode())
@@ -902,18 +1058,38 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(requested, str) or not requested.strip():
             self._error(400, "decode Claude gateway request: model is required")
             return
-        model = self.server.current_model()
+        resolved = self.server.resolve(requested)
+        if resolved is None:
+            self._error(400, f'unknown Claude model "{requested}"')
+            return
+        _, model, pinned = resolved
+        estimate = json.dumps({"input_tokens": max(1, len(body) // 4)}).encode()
+        stream = payload.get("stream") is True
         if model is None:
             if path == "/v1/messages/count_tokens":
                 # A rough count keeps Claude's preflight from failing before the turn that explains.
-                self._send(200, json.dumps({"input_tokens": max(1, len(body) // 4)}).encode())
+                self._send(200, estimate)
                 return
-            content_type, reply = no_model_reply(requested, payload.get("stream") is True)
+            content_type, reply = no_model_reply(requested, stream)
             self._send(200, reply, content_type, {"Cache-Control": "no-cache"})
             return
-        if requested not in (model.route, model.model_id):
-            self._error(400, f'unknown Claude model "{requested}"')
-            return
+        if pinned is not None:
+            if path == "/v1/messages/count_tokens":
+                if self.server.is_loaded is not None and not self.server.is_loaded(pinned):
+                    # Never load a model for a preflight count.
+                    self._send(200, estimate)
+                    return
+            else:
+                try:
+                    self.server.ready(pinned)
+                except Exception as exc:
+                    content_type, reply = no_model_reply(
+                        requested,
+                        stream,
+                        f"Unsloth Studio couldn't load {pinned} for this chat: {exc}",
+                    )
+                    self._send(200, reply, content_type, {"Cache-Control": "no-cache"})
+                    return
         payload["model"] = model.model_id
         self.server.routed += 1
         self._forward(path, payload, model)

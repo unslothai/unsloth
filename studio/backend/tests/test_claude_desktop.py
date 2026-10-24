@@ -743,3 +743,213 @@ def test_open_and_quit_do_not_pass_studios_environment(monkeypatch, tmp_path):
         assert "VIRTUAL_ENV" not in env
     if os.name == "posix":
         assert all(kw["env"]["HOME"] != str(tmp_path) for _, kw in calls)
+
+
+# -- per-slot model mapping, like Ollama's Claude Desktop model settings ----------------------
+
+
+def test_mappings_keep_known_non_empty_slots_in_claude_order():
+    assert cda.normalize_mappings(
+        {
+            "claude-sonnet-4-6": " unsloth/b ",
+            "claude-fable-5": "unsloth/a",
+            "claude-opus-5": "",
+            "gpt-5": "unsloth/c",
+            "claude-haiku-4-5-20251001": 7,
+        }
+    ) == {"claude-fable-5": "unsloth/a", "claude-sonnet-4-6": "unsloth/b"}
+    assert cda.normalize_mappings(None) == {}
+    assert [r["id"] for r in cda.route_names()] == list(cda.ROUTE_IDS)
+    assert cda.route_names()[0] == {"id": "claude-fable-5", "name": "Fable 5"}
+
+
+def test_loaded_matches_understands_quant_pins():
+    loaded = [{"id": "unsloth/Qwen3.5-4B-GGUF", "quant": "UD-Q4_K_XL"}]
+    assert cda.loaded_matches("unsloth/qwen3.5-4b-gguf", loaded)
+    assert cda.loaded_matches("unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL", loaded)
+    assert not cda.loaded_matches("unsloth/Qwen3.5-4B-GGUF:Q8_0", loaded)
+    assert not cda.loaded_matches("unsloth/other", loaded)
+
+
+@pytest.fixture
+def mapped_gateway():
+    upstream = _Upstream()
+    state = {
+        "mappings": {
+            "claude-fable-5": cda.FOLLOW_LOADED,
+            "claude-opus-5": "unsloth/big-GGUF",
+            "claude-sonnet-5": "unsloth/small-GGUF",
+            "claude-haiku-4-5-20251001": "unsloth/small-GGUF",
+        },
+        "loaded": {"unsloth/small-GGUF"},
+        "loads": [],
+        "fail": None,
+    }
+
+    def ensure_loaded(model_id):
+        state["loads"].append(model_id)
+        if state["fail"]:
+            raise RuntimeError(state["fail"])
+        state["loaded"] = {model_id}  # "Keep multiple models loaded" off: a load replaces
+
+    gw = cda.Gateway(
+        upstream.url,
+        UPSTREAM_KEY,
+        lambda: cda.gateway_model({"id": next(iter(state["loaded"]))}) if state["loaded"] else None,
+        TOKEN,
+        mappings = lambda: state["mappings"],
+        is_loaded = lambda model_id: model_id in state["loaded"],
+        ensure_loaded = ensure_loaded,
+    ).start()
+    yield gw, upstream, state
+    gw.stop()
+    upstream.shutdown()
+    upstream.server_close()
+
+
+def test_the_catalog_lists_every_mapped_slot_under_its_model_name(mapped_gateway):
+    gw, _, state = mapped_gateway
+    catalog = json.loads(_call(gw, "GET", "/v1/models")[2])
+    assert [(e["id"], e["display_name"]) for e in catalog["data"]] == [
+        ("claude-fable-5", "unsloth/small-GGUF"),
+        ("claude-opus-5", "unsloth/big-GGUF"),
+        ("claude-sonnet-5", "unsloth/small-GGUF"),
+        ("claude-haiku-4-5-20251001", "unsloth/small-GGUF"),
+    ]
+    assert catalog["first_id"] == "claude-fable-5"
+    assert catalog["last_id"] == "claude-haiku-4-5-20251001"
+    # Changed while connected: the next catalog read follows.
+    state["mappings"] = {"claude-sonnet-4-6": "unsloth/x"}
+    catalog = json.loads(_call(gw, "GET", "/v1/models")[2])
+    assert [e["id"] for e in catalog["data"]] == ["claude-sonnet-4-6"]
+
+
+def test_each_slot_goes_to_its_own_model_loading_it_first(mapped_gateway):
+    gw, upstream, state = mapped_gateway
+    for route in ("claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"):
+        body = {"model": route, "max_tokens": 8, "messages": []}
+        assert _call(gw, "POST", "/v1/messages", body)[0] == 200
+    assert [r[2]["model"] for r in upstream.requests] == [
+        "unsloth/small-GGUF",
+        "unsloth/big-GGUF",
+        "unsloth/small-GGUF",
+    ]
+    # small was loaded; big replaced it; small came back for haiku.
+    assert state["loads"] == ["unsloth/big-GGUF", "unsloth/small-GGUF"]
+
+
+def test_a_slot_can_be_named_by_the_model_it_shows(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    body = {"model": "unsloth/big-GGUF", "max_tokens": 8, "messages": []}
+    assert _call(gw, "POST", "/v1/messages", body)[0] == 200
+    assert upstream.requests[-1][2]["model"] == "unsloth/big-GGUF"
+
+
+def test_an_unmapped_slot_is_unknown(mapped_gateway):
+    gw, upstream, _ = mapped_gateway
+    body = {"model": "claude-sonnet-4-6", "max_tokens": 8, "messages": []}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    assert status == 400 and "claude-sonnet-4-6" in json.loads(reply)["error"]["message"]
+    assert upstream.requests == []
+
+
+def test_count_tokens_never_loads_a_model(mapped_gateway):
+    gw, upstream, state = mapped_gateway
+    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi" * 40}]}
+    status, _, reply = _call(gw, "POST", "/v1/messages/count_tokens", body)
+    assert status == 200 and json.loads(reply)["input_tokens"] > 1
+    assert state["loads"] == [] and upstream.requests == []
+
+
+def test_a_failed_load_is_a_turn_that_says_why(mapped_gateway):
+    gw, upstream, state = mapped_gateway
+    state["fail"] = "not enough memory"
+    body = {"model": "claude-opus-5", "max_tokens": 8, "messages": []}
+    status, _, reply = _call(gw, "POST", "/v1/messages", body)
+    text = json.loads(reply)["content"][0]["text"]
+    assert status == 200 and "unsloth/big-GGUF" in text and "not enough memory" in text
+    assert upstream.requests == []
+
+
+def test_concurrent_slots_load_one_at_a_time(mapped_gateway):
+    gw, _, state = mapped_gateway
+    active, peak = [0], [0]
+    plain = gw.ensure_loaded
+
+    def slow(model_id):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        threading.Event().wait(0.05)
+        plain(model_id)
+        active[0] -= 1
+
+    gw.ensure_loaded = slow
+    threads = [
+        threading.Thread(
+            target = _call,
+            args = (gw, "POST", "/v1/messages", {"model": r, "max_tokens": 8, "messages": []}),
+        )
+        for r in ("claude-opus-5", "claude-sonnet-5", "claude-opus-5")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 1
+
+
+def test_without_mappings_the_gateway_keeps_one_following_slot(gateway):
+    gw, _ = gateway
+    assert gw.current_mappings() == cda.DEFAULT_MAPPINGS
+    catalog = json.loads(_call(gw, "GET", "/v1/models")[2])
+    assert [e["id"] for e in catalog["data"]] == ["claude-fable-5"]
+
+
+class _LoadHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.seen.append((self.path, self.headers.get("Authorization"), body))
+        status, text = self.server.reply
+        data = text.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+@pytest.mark.parametrize(
+    "reply, error",
+    [
+        ((200, '   \n{"success": true, "model": "m"}'), None),
+        ((404, '{"detail": "Model not found"}'), "isn't downloaded"),
+        ((409, '{"detail": "Model is not downloaded"}'), "not downloaded"),
+        ((500, '{"detail": {"message": "out of memory"}}'), "out of memory"),
+        ((200, '{"success": false}'), "HTTP 200"),
+    ],
+)
+def test_load_model_posts_to_studios_models_load(reply, error):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LoadHandler)
+    server.seen, server.reply = [], reply
+    threading.Thread(target = server.serve_forever, args = (0.05,), daemon = True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        if error is None:
+            cda.load_model(url, "sk-unsloth-k", "unsloth/m-GGUF", timeout = 5)
+        else:
+            with pytest.raises(RuntimeError, match = error):
+                cda.load_model(url, "sk-unsloth-k", "unsloth/m-GGUF", timeout = 5)
+        assert server.seen == [("/models/load", "Bearer sk-unsloth-k", {"model": "unsloth/m-GGUF"})]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_load_model_reports_studio_down():
+    with pytest.raises(RuntimeError, match = "didn't answer"):
+        cda.load_model("http://127.0.0.1:9", "k", "m", timeout = 2)

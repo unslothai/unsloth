@@ -19,6 +19,10 @@ export type ClaudeDesktopStatus = {
   held_by_pid: number | null;
   running: boolean;
   model: string | null;
+  // Claude slot id → Studio model id, or FOLLOW_LOADED (":loaded") to follow the loaded model.
+  mappings: Record<string, string>;
+  // Claude's five model slots, in the order Claude lists them.
+  routes: { id: string; name: string }[];
   // The request came straight from this computer (the desktop app, or a local browser).
   local: boolean;
 };
@@ -80,4 +84,43 @@ export async function disconnectClaudeDesktop(): Promise<ClaudeDesktopDisconnect
     );
   }
   return (await res.json()) as ClaudeDesktopDisconnectResult;
+}
+
+// One row of Studio's chat catalog (GET /models): loaded models first, then every downloaded one.
+export type DesktopAppModel = {
+  id: string;
+  loaded: boolean;
+  quant: string | null;
+};
+
+export async function fetchClaudeDesktopModels(): Promise<DesktopAppModel[]> {
+  const res = await authFetch(`${BASE}/models`);
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, "Failed to load models"));
+  }
+  return (await res.json()) as DesktopAppModel[];
+}
+
+export type ClaudeDesktopMappingsResult = {
+  status: "saved" | ClaudeDesktopConnectStatus;
+  claude: ClaudeDesktopStatus;
+};
+
+/** Save which Studio model each Claude slot uses. restart works as for connect: undefined asks
+ *  first when a connected Claude is open, true restarts (or starts) it, false waits. */
+export async function setClaudeDesktopMappings(
+  mappings: Record<string, string>,
+  restart?: boolean,
+): Promise<ClaudeDesktopMappingsResult> {
+  const res = await authFetch(`${BASE}/mappings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mappings, restart: restart ?? null }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to save the Claude model choices"),
+    );
+  }
+  return (await res.json()) as ClaudeDesktopMappingsResult;
 }

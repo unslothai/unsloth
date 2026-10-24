@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from auth import policy
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core import claude_desktop as session
+from routes.desktop_app_models import DesktopAppModel, available_models
 from utils import client_ip
 
 
@@ -49,6 +50,9 @@ class ClaudeDesktopStatus(BaseModel):
     held_by_pid: Optional[int] = None
     running: bool
     model: Optional[str] = None
+    # Claude slot id → Studio model id, or ":loaded" to follow whatever Studio has loaded.
+    mappings: dict[str, str] = {}
+    routes: list[dict[str, str]] = []
     local: bool
 
 
@@ -59,6 +63,17 @@ class ConnectRequest(BaseModel):
 
 class ConnectResponse(BaseModel):
     status: str  # connected | pending_restart | needs_restart
+    claude: ClaudeDesktopStatus
+
+
+class MappingsRequest(BaseModel):
+    mappings: dict[str, str]
+    # As for Connect: None asks before restarting an open, connected Claude.
+    restart: Optional[bool] = None
+
+
+class MappingsResponse(BaseModel):
+    status: str  # saved | connected | pending_restart | needs_restart
     claude: ClaudeDesktopStatus
 
 
@@ -110,3 +125,20 @@ async def disconnect_claude_desktop(request: Request) -> DisconnectResponse:
     except session.ClaudeDesktopError as exc:
         _raise(exc)
     return DisconnectResponse(notes = notes, claude = await _status(request))
+
+
+@router.get("/models", response_model = list[DesktopAppModel])
+async def claude_desktop_models() -> list[DesktopAppModel]:
+    return await available_models()
+
+
+@router.put("/mappings", response_model = MappingsResponse)
+async def set_claude_desktop_mappings(
+    payload: MappingsRequest, request: Request
+) -> MappingsResponse:
+    _require_local(request)
+    try:
+        result = await asyncio.to_thread(session.set_mappings, payload.mappings, payload.restart)
+    except session.ClaudeDesktopError as exc:
+        _raise(exc)
+    return MappingsResponse(status = result["status"], claude = await _status(request))
