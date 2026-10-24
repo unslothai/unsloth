@@ -442,7 +442,6 @@ def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, t
     ],
 )
 def test_openclaw_profile_environment_alone(studio, monkeypatch, version, profile, selected):
-    # OpenClaw 2026.10.7 ignores OPENCLAW_PROFILE alone; later builds select ~/.openclaw-<profile> (openclaw#133252).
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/bin/" + name)
     monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
     monkeypatch.setenv("OPENCLAW_PROFILE", profile)

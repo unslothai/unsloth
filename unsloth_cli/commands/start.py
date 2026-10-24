@@ -6808,8 +6808,7 @@ def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
     home = Path.home()
 
     def user_path(value: str) -> Path:
-        # OpenClaw expands only a leading home prefix, against OPENCLAW_HOME
-        # when set. abspath preserves symlinks for _read_app_file to refuse.
+        # Only a leading ~ expands (against OPENCLAW_HOME); abspath keeps symlinks for _read_app_file to refuse.
         if value == "~":
             value = str(home)
         elif value.startswith(("~/", "~\\")):
