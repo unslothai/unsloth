@@ -40,14 +40,19 @@ function switchChatPreferences(
   previous: MarkedAccount,
   next: MarkedAccount,
 ): void {
-  const current = storage.getItem(CHAT_PREFERENCES_KEY);
-  const saved = storage.getItem(chatPreferencesKey(next));
-  if (current === null) {
-    if (storage.getItem(chatPreferencesKey(previous)) !== null)
-      storage.removeItem(chatPreferencesKey(previous));
-  } else storage.setItem(chatPreferencesKey(previous), current);
-  if (saved === null && current !== null) storage.removeItem(CHAT_PREFERENCES_KEY);
-  else if (saved !== null) storage.setItem(CHAT_PREFERENCES_KEY, saved);
+  try {
+    const current = storage.getItem(CHAT_PREFERENCES_KEY);
+    const saved = storage.getItem(chatPreferencesKey(next));
+    if (current === null) {
+      if (storage.getItem(chatPreferencesKey(previous)) !== null)
+        storage.removeItem(chatPreferencesKey(previous));
+    } else storage.setItem(chatPreferencesKey(previous), current);
+    if (saved === null && current !== null) storage.removeItem(CHAT_PREFERENCES_KEY);
+    else if (saved !== null) storage.setItem(CHAT_PREFERENCES_KEY, saved);
+  } catch {
+    // Optional, so a full storage never fails a sign-in; defaults beat the previous account's.
+    storage.removeItem(CHAT_PREFERENCES_KEY);
+  }
 }
 
 /** Browser chrome only. Never add credentials, content, model choices or profile data. */
@@ -251,7 +256,6 @@ export async function transitionBrowserAccount(
       if (
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
-        // Swap the active preferences only after cleanup succeeds, so a failed switch can retry.
         key === CHAT_PREFERENCES_KEY ||
         key.startsWith(ACCOUNT_CHAT_PREFERENCES_PREFIX) ||
         ACCOUNT_CHROME_KEYS.has(key) ||
@@ -270,7 +274,6 @@ export async function transitionBrowserAccount(
         deleteAccountDatabase(browser.indexedDB, name),
       ),
     );
-    switchChatPreferences(storage, previous, next);
   }
   // Fence first: peers see it before the tokens, so nothing of the previous account goes out
   // under the new credentials while their reload is pending.
@@ -278,6 +281,8 @@ export async function transitionBrowserAccount(
   commitSession();
   if (storage.getItem(BROWSER_ACCOUNT_KEY) !== marker)
     storage.setItem(BROWSER_ACCOUNT_KEY, marker);
+  // After the marker: until then the active preferences stay the account it names, so a retry is safe.
+  if (changed) switchChatPreferences(storage, previous, next);
   if (changed) storage.removeItem(BROWSER_ACCOUNT_FENCE_KEY);
   if (changed) browser.location.replace(postAuthRoute);
   return changed;

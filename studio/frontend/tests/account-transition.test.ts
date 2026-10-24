@@ -708,3 +708,43 @@ test("failed account cleanup leaves chat preferences available for a retry", asy
   ));
   assert.equal(b.data.get("unsloth_chat_preferences"), saved);
 });
+
+test("a failed session publication keeps each account's chat preferences its own", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const bobPrefs = JSON.stringify({ state: { sendShortcut: "mod-enter-multiline" }, version: 1 });
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice) });
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", alicePrefs);
+  await assert.rejects(transitionBrowserAccount(bob, "/chat", () => {
+    throw new Error("token storage failed");
+  }, b.browser));
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+});
+
+test("a full storage never blocks an account switch or leaks preferences", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice",
+    unsloth_chat_preferences: alicePrefs,
+  });
+  const setItem = b.browser.localStorage.setItem;
+  b.browser.localStorage.setItem = (key: string, value: string) => {
+    if (key.startsWith("unsloth.account-chat-preferences.v1:"))
+      throw new DOMException("full", "QuotaExceededError");
+    setItem(key, value);
+  };
+  assert.equal(
+    await transitionBrowserAccount({ username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser),
+    true,
+  );
+  assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "account:bob-id:bob");
+  assert.equal(b.data.has("unsloth_chat_preferences"), false);
+});
