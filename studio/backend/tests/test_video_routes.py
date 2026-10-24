@@ -309,7 +309,11 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     devmod = _shared_setup_3(monkeypatch)
     acquired: list = []
 
-    def _fake_acquire(role, register = None, admit = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
         if admit is not None:
             admit()

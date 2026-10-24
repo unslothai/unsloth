@@ -72,7 +72,11 @@ class PreparingLoad:
 
     ``load_token`` is the request's own token, so an unload naming it cancels this POST and no other."""
 
-    def __init__(self, media: str, load_token: Optional[str] = None):
+    def __init__(
+        self,
+        media: str,
+        load_token: Optional[str] = None,
+    ):
         self.media = media
         self.load_token = load_token or None
         self._cancelled = threading.Event()

@@ -663,7 +663,11 @@ def _post_in_thread(client, url, body):
 
 @pytest.mark.parametrize("media", ["image", "video"])
 def test_a_token_unload_while_the_acquire_waits_stops_that_load_before_the_eviction(
-    client, env, monkeypatch, healthy_diffusers, media  # noqa: F811
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
 ):
     from core.inference import media_load_ids
 
@@ -705,7 +709,11 @@ def test_a_token_unload_while_the_acquire_waits_stops_that_load_before_the_evict
 
 @pytest.mark.parametrize("media", ["image", "video"])
 def test_a_token_unload_leaves_a_preparing_load_with_another_token_alone(
-    client, env, monkeypatch, healthy_diffusers, media  # noqa: F811
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    media,  # noqa: F811
 ):
     from core.inference import media_load_ids
 
@@ -742,7 +750,10 @@ def test_a_token_unload_leaves_a_preparing_load_with_another_token_alone(
 
 
 def test_a_token_unload_during_the_image_preflight_stops_it_before_the_engine_switch(
-    client, env, monkeypatch, healthy_diffusers  # noqa: F811
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,  # noqa: F811
 ):
     import core.inference.diffusion_engine_router as router
     import core.inference.diffusion_hub_evidence as evidence
@@ -787,7 +798,10 @@ def test_an_engine_switch_waits_for_a_cancel_or_refuses_after_it(monkeypatch):
 
     calls = []
     with cs.preparing_load("image", "t1") as preflight:
-        assert routes._activate_unless_cancelled(preflight, None, lambda: calls.append(1) or "e") == "e"
+        assert (
+            routes._activate_unless_cancelled(preflight, None, lambda: calls.append(1) or "e")
+            == "e"
+        )
         cs.cancel_preparing_loads("image", current_account_id(), load_token = "t2")
         assert not preflight.cancelled
         cs.cancel_preparing_loads("image", current_account_id(), load_token = "t1")
@@ -795,7 +809,6 @@ def test_an_engine_switch_waits_for_a_cancel_or_refuses_after_it(monkeypatch):
 
         def _switching():
             from core.inference.diffusion_engine_router import before_engine_switch
-
             before_engine_switch.get()()
             calls.append(2)
 
