@@ -11,7 +11,6 @@ import {
   exportBulkConversationsSeparate,
 } from "../prompt-storage/prompt-storage-dialog";
 
-/** Export choices for several chats: one combined file, or one per chat. */
 export function BulkExportItems({
   onExport,
 }: {
@@ -35,7 +34,6 @@ export function BulkExportItems({
   );
 }
 
-/** Exports threads as chosen in BulkExportItems; a lone thread is one file either way. */
 export async function exportThreads(
   threadIds: string[],
   format: ConvExportFormat,

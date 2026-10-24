@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Message action bar glyphs, rescaled about the centre (stroke unchanged) so they match the stock
-// ones' optical size. Hugeicons (MIT).
+// Rescaled about the centre (stroke unchanged) to match the stock icons. Hugeicons (MIT).
 
 const path = (d: string, key: string) =>
   ["path", { d, stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", key }] as const;
@@ -25,13 +24,13 @@ export const ReadAloudIcon = [
   ),
 ] as unknown as IconSvgElement;
 
-// arrow-right-02 at 1.25x: the stock one draws small and thin beside the other icons.
+// arrow-right-02 at 1.25x: the stock one draws small and thin.
 export const ContinueArrowIcon = [
   path("M20.125 12L3.25 12", "0"),
   path("M13.25 19.5C13.25 19.5 20.75 13.9764 20.75 12C20.75 10.0235 13.25 4.5 13.25 4.5", "1"),
 ] as unknown as IconSvgElement;
 
-// edit-03 at 0.92x: its corner-to-corner diagonal reads larger than the other icons.
+// edit-03 at 0.92x: its diagonal reads larger than the other icons.
 export const EditResponseIcon = [
   path(
     "M4.4393 15.9645L3.72 20.28L8.0356 19.5607C8.785 19.4359 9.4767 19.08 10.0139 18.5427L19.7462 8.8102C20.4579 8.0985 20.4579 6.9445 19.7461 6.2328L17.7672 4.2538C17.0554 3.5421 15.9014 3.5421 15.1895 4.2538L5.4573 13.9863C4.9201 14.5235 4.5642 15.2151 4.4393 15.9645Z",
@@ -40,7 +39,6 @@ export const EditResponseIcon = [
   path("M13.84 6.48L17.52 10.16", "1"),
 ] as unknown as IconSvgElement;
 
-// Plain straight chevrons for the branch picker.
 export const BranchPrevIcon = [path("M15 6L9 12L15 18", "0")] as unknown as IconSvgElement;
 
 export const BranchNextIcon = [path("M9 6L15 12L9 18", "0")] as unknown as IconSvgElement;

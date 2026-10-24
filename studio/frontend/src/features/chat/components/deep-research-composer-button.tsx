@@ -113,7 +113,6 @@ function DomainList({
           {description}
         </p>
       </div>
-      {/* One Input-styled field with the domains as chips. A click anywhere focuses it. */}
       <div
         onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
@@ -309,7 +308,6 @@ export function DeepResearchComposerButton({
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
-      {/* Same caret as the other composer pills, so the arrows match. */}
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
@@ -392,7 +390,6 @@ function DeepResearchWebsiteAccessContent({
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        {/* Icon and title, as in the Skills dialog. */}
         <div className="flex items-center gap-2">
           <HugeiconsIcon icon={Telescope02Icon} strokeWidth={1.75} className="size-5 text-primary" />
           <DialogTitle>Deep research</DialogTitle>
@@ -414,7 +411,6 @@ function DeepResearchWebsiteAccessContent({
                   : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
               </p>
             </div>
-            {/* A switch: it is a state, so its label never flips. */}
             <label
               htmlFor="research-no-time-limit"
               className="flex shrink-0 cursor-pointer items-center gap-2 pt-0.5 text-sm text-muted-foreground"

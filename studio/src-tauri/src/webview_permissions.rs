@@ -1,28 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-//! Clearing a saved microphone decision so the next request can ask again.
-//!
-//! WebView2 saves "Don't allow" in its profile and ships no site-settings UI, so on Windows
-//! one accidental deny blocked dictation for good (#9001): the profile survives reinstalls,
-//! and the request never reaches the OS, so Windows privacy settings never list the app to
-//! toggle either. Resetting to DEFAULT erases the saved answer and nothing more, so the next
-//! getUserMedia prompts exactly as the first one did.
-//!
-//! Only Windows has this trap. WKWebView defers to the system permission, which macOS
-//! exposes in System Settings, and webkit2gtk asks per session, so both are no-ops here.
+//! Clears a saved microphone decision so the next request prompts again. Only WebView2 persists
+//! "Don't allow" with no UI to undo it; macOS and webkit2gtk are no-ops.
 
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// The reset is one profile write on the UI thread. Long enough to outlast a busy thread,
-/// short enough that a stuck WebView cannot hang the settings button.
 const RESET_TIMEOUT: Duration = Duration::from_secs(10);
 
 type Reply = mpsc::Sender<Result<(), String>>;
 
-/// Origin to key the permission on. None when the URL cannot have one, which
-/// SetPermissionState rejects with E_INVALIDARG.
+/// None when the URL has no origin, which SetPermissionState rejects with E_INVALIDARG.
 pub(crate) fn permission_origin(url: &tauri::Url) -> Option<String> {
     if !matches!(url.scheme(), "http" | "https") {
         return None;
@@ -32,18 +21,13 @@ pub(crate) fn permission_origin(url: &tauri::Url) -> Option<String> {
     (origin != "null").then_some(origin)
 }
 
-/// Forget a saved microphone decision for this window's origin.
-///
-/// Never grants access: DEFAULT restores the unanswered state, so consent still comes from
-/// the prompt the next request raises.
+/// Never grants access: DEFAULT restores the unanswered state.
 #[tauri::command]
 pub async fn reset_microphone_permission(webview: tauri::Webview) -> Result<(), String> {
     let url = webview.url().map_err(|error| error.to_string())?;
     let origin =
         permission_origin(&url).ok_or_else(|| format!("no origin to reset in window URL {url}"))?;
 
-    // with_webview hops to the UI thread and the platform call answers later still, so both
-    // report back through this channel.
     let (tx, rx) = mpsc::channel();
     let failed = tx.clone();
     webview
@@ -78,8 +62,7 @@ fn clear_saved_answer(
             .controller()
             .CoreWebView2()
             .map_err(|error| error.to_string())?;
-        // Profile4 carries the permission APIs. A runtime without it also has no way to
-        // undo the deny, so say so rather than fail silently.
+        // Profile4 carries the permission APIs; without it the deny cannot be undone, so say so.
         let profile = core
             .cast::<ICoreWebView2_13>()
             .and_then(|core| core.Profile())
@@ -109,7 +92,6 @@ fn clear_saved_answer(
     _origin: &str,
     tx: Reply,
 ) -> Result<(), String> {
-    // Nothing to forget: neither WKWebView nor webkit2gtk keeps a saved answer of its own.
     let _ = tx.send(Ok(()));
     Ok(())
 }
@@ -124,8 +106,6 @@ mod tests {
 
     #[test]
     fn the_packaged_and_dev_pages_both_yield_an_origin() {
-        // What the window actually loads: tauri.localhost when bundled, the vite port in
-        // dev. The path is dropped, which is what SetPermissionState keys on.
         assert_eq!(
             origin_of("http://tauri.localhost/index.html"),
             Some("http://tauri.localhost".to_string())
@@ -142,8 +122,6 @@ mod tests {
 
     #[test]
     fn a_url_without_a_usable_origin_is_refused_rather_than_sent() {
-        // SetPermissionState rejects these with E_INVALIDARG, so catching them here keeps
-        // the failure readable instead of surfacing a bare HRESULT.
         assert_eq!(origin_of("file:///C:/index.html"), None);
         assert_eq!(origin_of("data:text/html,hi"), None);
         assert_eq!(origin_of("about:blank"), None);

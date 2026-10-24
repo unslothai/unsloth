@@ -12,7 +12,6 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Mounted only while the prompt's actions are revealed, with no clock subscription. */
 export const UserMessageTime: FC = () => {
   const t = useT();
   const locale = useLocale();
@@ -25,8 +24,7 @@ export const UserMessageTime: FC = () => {
     dateStyle: "full",
     timeStyle: "short",
   });
-  // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
-  // cursor stays an arrow, even with pointer cursors on.
+  // A button only so the keyboard reaches the tooltip; the cursor stays an arrow.
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
@@ -40,7 +38,6 @@ export const UserMessageTime: FC = () => {
             className="aui-user-message-time block truncate select-none"
           >
             {formatMessageDate(createdAt, Date.now(), locale, {
-              // Today reads as just the time.
               today: (time) => time,
               yesterday: (time) => t("common.yesterdayAt", { time }),
             })}

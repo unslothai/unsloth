@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Import-free payload types and parsers for the llama.cpp backend picker. */
-
-/** Backends a user can ask for. "auto" means hardware detection. */
 export const LLAMA_BACKENDS = [
   "auto",
   "cpu",
@@ -13,7 +10,7 @@ export const LLAMA_BACKENDS = [
 ] as const;
 export type LlamaBackend = (typeof LLAMA_BACKENDS)[number];
 
-/** Backends an install can report running on. Metal is macOS-only and not selectable. */
+/** Metal is macOS-only and not selectable. */
 export type LlamaEffectiveBackend = Exclude<LlamaBackend, "auto"> | "metal";
 
 export function isLlamaBackend(value: unknown): value is LlamaBackend {
@@ -26,7 +23,6 @@ export function isLlamaBackend(value: unknown): value is LlamaBackend {
 export interface LlamaBackendOption {
   backend: LlamaBackend;
   available: boolean;
-  /** For "auto", the backend detection picks right now, so it can be labelled. */
   resolvedBackend: LlamaEffectiveBackend | null;
   releaseTag: string | null;
   downloadSizeBytes: number | null;
@@ -45,17 +41,14 @@ export interface LlamaBackendJob {
 }
 
 export interface LlamaBackendStatus {
-  /** Whether this install's backend can be switched from here at all. */
   supported: boolean;
-  /** Why switching is unavailable. */
   reason: string | null;
-  /** Backend pinned by the environment, which overrides anything chosen here. */
+  /** Pinned by the environment; overrides anything chosen here. */
   envBackend: LlamaBackend | null;
-  /** What the install runs on now. */
   backend: LlamaEffectiveBackend | null;
-  /** The recorded choice; null when this client does not recognize it. */
+  /** Null when this client does not recognize the recorded choice. */
   backendRequest: LlamaBackend | null;
-  /** Whether that choice resolves to the installed bundle and paired sidecars. */
+  /** The choice resolves to the installed bundle and paired sidecars. */
   selectionApplied: boolean;
   installedTag: string | null;
   options: LlamaBackendOption[];
@@ -64,7 +57,6 @@ export interface LlamaBackendStatus {
 
 export interface LlamaBackendSwitchStarted {
   started: boolean;
-  /** already_running | already_selected | not_prebuilt | unknown_backend | ... */
   reason: string | null;
   message: string | null;
   job: LlamaBackendJob;
@@ -104,7 +96,6 @@ export function parseLlamaBackendJob(value: unknown): LlamaBackendJob {
 function parseOption(value: unknown): LlamaBackendOption | null {
   const option = (value ?? {}) as ApiObject;
   if (!isLlamaBackend(option.backend)) {
-    // Older clients cannot label or submit unknown backends.
     return null;
   }
   return {
@@ -148,8 +139,7 @@ export function llamaBackendSelectionNeedsApply(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
 ): boolean {
-  // A null backendRequest is a choice written by a newer Unsloth. Untouched it is
-  // not dirty, but picking a backend over it is an explicit replacement.
+  // A null backendRequest was written by a newer Unsloth; picking over it is an explicit replace.
   const requested = selected ?? status?.backendRequest ?? null;
   if (!status || requested === null) {
     return false;
@@ -169,7 +159,6 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Show installable options and preserve the selected value if it became unavailable. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,

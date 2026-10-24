@@ -80,7 +80,6 @@ export function KnowledgeBaseDialog({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
-  // Handed-over files not yet uploading; nothing else holds them.
   const handoffRef = useRef<RagUploadItem[]>([]);
   const handedFocusRef = useRef<KnowledgeBaseFocus | null>(null);
   const [name, setName] = useState("");
@@ -89,8 +88,6 @@ export function KnowledgeBaseDialog({
   const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
     null,
   );
-  // Measured only: while the answer is unknown this stays false and the dialog renders
-  // exactly as it always has. See api/rag-availability.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragUnavailableReason = useRagAvailabilityStore((s) =>
     s.unavailableReason(),
@@ -125,15 +122,14 @@ export function KnowledgeBaseDialog({
     }
     const wasOpen = wasOpenRef.current;
     wasOpenRef.current = true;
-    // Once per handoff, though StrictMode runs this twice for the same one.
+    // StrictMode runs this twice for the same handoff.
     if (focus !== handedFocusRef.current) {
       handedFocusRef.current = focus;
       handoffRef.current = [...handoffRef.current, ...(focus?.uploads ?? [])];
     }
     const uploads = handoffRef.current;
     let cancelled = false;
-    // A handoff into the KB already on screen keeps its view mounted: unmounting it
-    // abandons the rest of a batch still uploading there.
+    // Unmounting the KB view would abandon the rest of a batch still uploading there.
     setView((current) =>
       wasOpen &&
       focus &&
@@ -150,7 +146,6 @@ export function KnowledgeBaseDialog({
       if (cancelled || !focus) return;
       const kb = rows?.find((row) => row.id === focus.kbId);
       if (!kb) {
-        // A failed load already said so.
         if (uploads.length && rows) {
           toast.error("Knowledge base not found", {
             description: "Open or create one below and the files go there.",
@@ -194,7 +189,6 @@ export function KnowledgeBaseDialog({
     });
   }
 
-  // The view outlives a close, so the files leave it as soon as they start.
   const takeUploads = useCallback(() => {
     handoffRef.current = [];
     setView((current) =>
@@ -205,8 +199,7 @@ export function KnowledgeBaseDialog({
   }, []);
 
   async function submitForm() {
-    // The button is disabled for this, but the form is also reachable by keyboard and
-    // the verdict can land while it is open. A 503 toast is not an explanation.
+    // The form is reachable by keyboard and the verdict can land while it is open.
     if (ragUnavailable) {
       toast.error("Knowledge bases are unavailable", {
         description: ragUnavailableReason ?? undefined,
@@ -459,9 +452,7 @@ function KnowledgeBaseDocuments({
     onItems: enqueue,
   });
 
-  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
-  // first mount. Taking the files off the view, not the deps, stops a rerun.
-  // A batch already uploading here goes first: upload() tracks one run at a time.
+  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's first mount.
   useEffect(() => {
     if (!uploads?.length || uploading) return;
     const timer = window.setTimeout(() => {

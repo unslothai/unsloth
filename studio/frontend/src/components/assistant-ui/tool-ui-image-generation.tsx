@@ -53,12 +53,7 @@ interface ImageGenerationArgs {
   openai_reasoning_item?: unknown;
 }
 
-/**
- * Straight off the wire, like the args above. Only `image_b64` is type-guarded
- * before use; `size`, `quality` and `background` are copied verbatim from the
- * provider (external_provider.py:5883) and on the Gemini path so is `image_mime`
- * (:4481). Unsloth takes a user-set `base_url`, so none of them is ours.
- */
+/** Off the wire from a user-set `base_url`: only `image_b64` is type-guarded. */
 interface ImageGenerationResult {
   image_b64?: string;
   image_mime?: unknown;
@@ -503,11 +498,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 />
               </button>
               <div
-                // Out of find-in-page's reach, like the response model badge: from `sm` up these
-                // actions are transparent until the card is hovered, so "Edit" would be counted and
-                // walked to under a highlight nobody can see. The index leaves opacity alone, since
-                // every user message fades in and reading it would drop one mid-fade. Marked whole
-                // rather than per breakpoint, which costs finding a button label on a phone.
+                // Out of find-in-page's reach: these actions are invisible until hover from `sm` up.
                 {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
                 className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 bg-gradient-to-t from-black/55 via-black/20 to-transparent p-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/generated-image:opacity-100 sm:group-focus-within/generated-image:opacity-100"
               >

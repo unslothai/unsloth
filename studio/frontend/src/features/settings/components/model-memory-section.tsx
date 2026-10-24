@@ -32,7 +32,6 @@ import { MediaIdleUnloadSetting } from "./model-auto-switch-section";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-// Residency asked for, but the loaded model has no copy in system RAM to lock.
 function MlockNotApplicableNote({
   settings,
 }: { settings: ModelMemorySettings | null }) {
@@ -52,7 +51,7 @@ function MlockNotApplicableNote({
   );
 }
 
-// Forced: the response describes the running model, which may have changed since the last read.
+// Forced: the running model may have changed since the last read.
 async function refreshModelMemory(
   isCancelled: () => boolean,
   setSettings: (settings: ModelMemorySettings) => void,
@@ -83,7 +82,7 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
+  // A read resolving after a refresh or save no longer describes the panel.
   const latestRef = useRef(0);
   // Seeded from the chat store so the description does not flash before the read.
   const [mode, setMode] = useState<MultiModelMode>(() =>
@@ -187,13 +186,10 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
     }
   };
 
-  // Both on suppresses --mlock. Say so, rather than looking like a no-op. Keyed on the toggles, not
-  // mlockActive: that now also reads false when the running model simply had nothing in host RAM to
-  // lock, which is a different reason than the one this line gives.
+  // Keyed on the toggles, not mlockActive, which is also false when nothing was in host RAM.
   const mlockVetoed =
     settings?.keepResident === true && settings.noRamReserve === true;
-  // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
-  // carries on, so residency would look enabled but do nothing.
+  // A finite memlock cap makes llama.cpp log "failed to mlock" and carry on.
   const memlockCap =
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes

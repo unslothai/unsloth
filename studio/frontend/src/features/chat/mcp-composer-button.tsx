@@ -51,18 +51,16 @@ import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
-// Matches the Thinking pill chevron so the affordance reads the same.
 type McpPreset = {
   id: string;
-  displayName: string; // stored row name
+  displayName: string;
   url: string;
-  label?: string; // dropdown text, if different from displayName
-  hint?: string; // shown when the row is highlighted
-  disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
+  label?: string;
+  hint?: string;
+  disablesWebSearch?: boolean;
 };
 
-// Keyless remote MCP presets (rate-limited free tiers, no API key). Hugging Face runs
-// anonymously; add a token via "Manage MCP servers".
+// Keyless remote MCP presets (rate-limited free tiers).
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "unsloth-docs",
@@ -114,8 +112,6 @@ export function McpComposerButton({
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet, MCP can still be
-  // pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(
@@ -216,7 +212,6 @@ export function McpComposerButton({
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
   );
-  // Non-preset servers, shown below the presets so they stay toggleable.
   const customServers = servers.filter(
     (s) =>
       !s.builtin_id &&
@@ -241,12 +236,11 @@ export function McpComposerButton({
     disablesWebSearch?: boolean;
   }) {
     const norm = normalizeMcpUrl(args.url);
-    if (pendingUrlsRef.current.has(norm)) return; // guard rapid double-clicks
+    if (pendingUrlsRef.current.has(norm)) return;
     pendingUrlsRef.current.add(norm);
     setPendingUrls(new Set(pendingUrlsRef.current));
     try {
       if (args.checked) {
-        // Reuse the already-loaded row, else create one.
         if (args.existing) {
           if (!args.existing.is_enabled) {
             applyServer(
@@ -263,7 +257,6 @@ export function McpComposerButton({
           );
         }
         setMcpEnabledForChat(true);
-        // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
         applyServer(
@@ -292,7 +285,6 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      // Server configuration remains available when the loaded model lacks tools.
       disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
@@ -323,7 +315,6 @@ export function McpComposerButton({
           <TooltipTrigger asChild={true}>
             <span
               aria-hidden={true}
-              // pointer-events-none so the anchor cannot swallow row clicks.
               className="pointer-events-none absolute inset-y-0 right-0 w-0"
             />
           </TooltipTrigger>
@@ -354,7 +345,6 @@ export function McpComposerButton({
                 : "MCP servers, unavailable for the loaded model"
             }
           >
-            {/* Outside compact mode, the hover X disables MCP without opening the menu. */}
             <span
               role="button"
               aria-label="Turn off MCP"
@@ -473,7 +463,7 @@ export function McpComposerButton({
   );
 }
 
-/** Mount the dialog independently so its shortcut works while MCP is disabled. */
+/** Mounted independently so its shortcut works while MCP is disabled. */
 export function McpServersDialogMount() {
   const open = useMcpServersDialogStore((s) => s.open);
   const setOpen = useMcpServersDialogStore((s) => s.setOpen);
@@ -482,7 +472,6 @@ export function McpServersDialogMount() {
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);
-  // Also clear it when logout or expiry unmounts this subtree directly.
   useEffect(() => {
     return () => useMcpServersDialogStore.getState().setOpen(false);
   }, []);

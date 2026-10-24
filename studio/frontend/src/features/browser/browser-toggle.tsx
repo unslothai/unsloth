@@ -26,7 +26,6 @@ function openNewTab(fullView = false) {
   if (fullView) state.setFullView(true);
 }
 
-/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view. Hidden while the panel is open; its shortcuts still work. */
 export function BrowserToggleButton({ active = true }: { active?: boolean }) {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
@@ -51,7 +50,6 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
     },
     { enabled: active },
   );
-  // The open panel toggles full view itself.
   useShortcut(
     "toggleBrowserFullView",
     (event) => {

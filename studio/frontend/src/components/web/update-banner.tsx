@@ -13,8 +13,7 @@ import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-// macOS, Linux and WSL update via the POSIX installer; only native Windows (PowerShell) needs the
-// irm one-liner. Any non-windows device_type (incl. wsl) resolves to the curl command below.
+// Only native Windows needs the PowerShell one-liner; WSL uses the POSIX installer.
 const STUDIO_INSTALL_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
 const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
@@ -28,8 +27,7 @@ function installCommandForDevice(deviceType: DeviceType): string {
 
 interface WebUpdateBannerProps {
   enabled?: boolean;
-  // false: fill the parent instead of self-anchoring, so it can stack with the
-  // llama.cpp banner. true (default) keeps standalone mounts working.
+  // false: fill the parent to stack with the llama.cpp banner; true anchors standalone.
   positioned?: boolean;
 }
 
@@ -65,8 +63,7 @@ export function WebUpdateBanner({
     if (dismissTimerRef.current) {
       clearTimeout(dismissTimerRef.current);
     }
-    // Copying is not updating: snooze instead of dismissing, so the banner
-    // returns on the next launch if the install is still behind.
+    // Copying is not updating: snooze so the banner returns if the install is still behind.
     dismissTimerRef.current = setTimeout(() => snooze(), 1200);
   }
 
@@ -83,17 +80,11 @@ export function WebUpdateBanner({
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
-            // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
-                  // Only rendered notes may shrink in the capped rail. Without
-                  // them, shrink-0 keeps the compact card at its natural height.
-                  // How far it may shrink is the surface's own content floor
-                  // below, not a written-out number: a constant calibrated at
-                  // one type size stops covering the card the moment anything
-                  // inside it scales, and the buttons are what gets cut.
+                  // Only rendered notes may shrink; the floor is the surface's own content, not a constant.
                   "has-[[data-slot=update-release-notes]]:shrink",
                 ),
           )}
@@ -158,8 +149,6 @@ export function WebUpdateBanner({
               releaseNotesUrl={RELEASE_NOTES_URL}
             />
 
-            {/* one row at one type size; wraps only on narrow viewports, and
-                never compresses on a short one */}
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
@@ -186,7 +175,6 @@ export function WebUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  // -mr optically aligns the filled pill's edge with the card padding
                   className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"

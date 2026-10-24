@@ -73,9 +73,7 @@ export type LibrarySortChoice = "default" | LibrarySortKey;
 export interface LibrarySortMenuProps {
   value: LibrarySortChoice;
   onChange: (next: LibrarySortChoice) => void;
-  /** The view orders by last activity rather than modified time. */
   activity?: boolean;
-  /** False where only folders show, which have no size. */
   showSize?: boolean;
   desc?: boolean;
   onDirectionChange?: (desc: boolean) => void;
@@ -230,7 +228,6 @@ function SortMenu({
   onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
-  // Suggested orders "Modified" by last activity, as its list view header says.
   const options = SORT_OPTIONS.filter((option) => showSize || option.value !== "size").map(
     (option) =>
       activity && option.value === "modified"
@@ -346,7 +343,6 @@ export function LibraryToolbar({
   workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
-  /** Grid view only: list view sorts by column headers. */
   sort?: LibrarySortMenuProps;
   search: string;
   onSearchChange: (value: string) => void;
@@ -379,8 +375,6 @@ export function LibraryToolbar({
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
           </button>
         ))}
-        {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole.
-            Sized by the header row (cqw), not the window, so it never reaches the title. */}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}
