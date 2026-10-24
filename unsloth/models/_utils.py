@@ -407,6 +407,29 @@ def _unsloth_dataset_column_names(dataset):
     return list(row.keys()) if hasattr(row, "keys") else []
 
 
+def _unsloth_non_blocking_batches(self):
+    """Copy pinned batches with non_blocking=True; accelerate's blocking .to() syncs once per batch
+    tensor. Stream-ordered, so numerics are unchanged. UNSLOTH_NON_BLOCKING_BATCHES=0 opts out."""
+    import os
+
+    if os.environ.get("UNSLOTH_NON_BLOCKING_BATCHES", "1") == "0":
+        return False
+    args = getattr(self, "args", None)
+    accelerator = getattr(self, "accelerator", None)
+    config = getattr(accelerator, "dataloader_config", None)
+    if args is None or config is None or not hasattr(config, "non_blocking"):
+        return False
+    if not getattr(args, "dataloader_pin_memory", False) or config.non_blocking:
+        return False
+    try:
+        if accelerator.device.type != "cuda":
+            return False
+    except Exception:
+        return False
+    config.non_blocking = True
+    return True
+
+
 def _unsloth_reset_stray_compile_cache(self):
     # A manual forward/backward under torch.compile BEFORE trainer.train() caches a forward plus AOTAutograd backward graph in a one-off context, and reusing it poisons training with NaN/zero gradients, so drop the cache. Module-level, so the SFT auto-packing wrapper and the plain-Trainer loop can run it too.
     import os

@@ -73,7 +73,7 @@ export const he = {
       cursorDescription: "מציג סמן במקום שבו מודלים לוחצים, מקלידים וגוררים בדף",
       askEveryTime: "לשאול בכל פעם",
       permissionsTitle: "הרשאות הסוכן",
-      permissionsDescription: "בחירת ברירות מחדל והוספת חריגים לאתרים מסוימים. שדות סיסמה ותשלום לעולם אינם ממולאים, לא משנה מה מוגדר כאן.",
+      permissionsDescription: "הגדרת ברירות מחדל וחריגים לפי אתר. שדות סיסמה ותשלום לעולם אינם ממולאים.",
       site: "אתר או תבנית",
       sitePlaceholder: "example.com או *.example.com",
       default: "ברירת מחדל",
@@ -2871,6 +2871,11 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
+      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetailsDescription:
+        "הצגת מהירות ומספר אסימונים בזמן אמת בזמן שתשובה נוצרת, והיכן הוצבו השכבות של מודל מקומי.",
+      showGenerationDetailsKeywords:
+        "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
