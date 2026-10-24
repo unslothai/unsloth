@@ -601,6 +601,20 @@ def test_the_routed_load_epoch_survives_the_fallback(rig):
         media_load_ids._reset_for_tests()
 
 
+def test_a_refused_load_keeps_the_routed_load_epoch(rig, monkeypatch):
+    # MLX refuses a second load while one is in flight; that load's admitted epoch must still match.
+    epoch = rig.engine._load_token
+
+    def refuse(repo_id, **kwargs):
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    monkeypatch.setattr(rig.mlx, "begin_load", refuse)
+    with pytest.raises(RuntimeError):
+        rig.engine.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_0.gguf",
+                              local_files_only = True, hf_token = None, model_kind = "gguf")
+    assert rig.engine._load_token == epoch
+
+
 def test_a_scoped_unload_never_cancels_another_accounts_fallback(rig):
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 

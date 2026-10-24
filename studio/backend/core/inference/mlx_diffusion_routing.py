@@ -507,8 +507,6 @@ class RoutedMlxEngine:
             return self._diffusers_ours
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
-        with self._lock:
-            self._logical_load += 1
         # Fenced until this load's options are saved, so no request routes on the old model's options.
         ours = self._drain_fallback(replacing = True)
         try:
@@ -522,6 +520,8 @@ class RoutedMlxEngine:
                 self._last = None
             self._mlx().begin_load(repo_id, **kwargs)
             with self._lock:
+                # Only once MLX accepted it: a refused load leaves the in-flight load's epoch alone.
+                self._logical_load += 1
                 self._load_kwargs = {"repo_id": repo_id, **kwargs}
         finally:
             with self._lock:
