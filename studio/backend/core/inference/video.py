@@ -3314,9 +3314,7 @@ def _video_seed_stays_resident(
 
 
 def _carried_call(pipe: Any, kwargs: dict, has_step_callback: bool) -> Any:
-    """``pipe(**kwargs)`` with the next forward's first offload groups carried into each forward's tail. Entered on
-    the render thread (the interleave check is per thread), and only with the step callback, which stops the carry
-    before the decode."""
+    """Armed on the render thread (the interleave check is per thread); needs the step callback to stop before decode."""
     with cross_forward_render(pipe, enabled = has_step_callback):
         return pipe(**kwargs)
 
