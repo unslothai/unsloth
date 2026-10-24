@@ -218,6 +218,8 @@ def _chunked_cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
+    # All -inf chunk (masked vocab range): shift by 0 so logsumexp is -inf, not NaN.
+    c = tl.where(c == -float("inf"), 0.0, c)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if chunk_idx == 0:
