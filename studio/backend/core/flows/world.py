@@ -456,6 +456,14 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
             out["complete_quest"] = qid
             if need:
                 out["take_item"] = need
+    if "complete_quest" not in out:
+        # Small chat models often forget the effect: bringing a quest's item back to its giver completes it.
+        for q in world.get("quests") or []:
+            need = q.get("requires_item")
+            if q["giver"] == npc["id"] and q["id"] not in done and need and need in inventory:
+                out["complete_quest"] = q["id"]
+                out["take_item"] = need
+                break
     sets = {}
     declared = world.get("vars") or {}
     for s in raw.get("set") or []:
