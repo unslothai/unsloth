@@ -1551,3 +1551,56 @@ def test_training_flex_options_keep_a_callers_backend(backend):
         return
     q = torch.randn(1, 1, 16, 16)
     flex._apply_kernel_options(q, q, q, False, M._training_flex_options(options))
+
+
+@pytest.mark.skipif(
+    "isolate_recompiles" not in __import__("inspect").signature(torch.compile).parameters,
+    reason = "torch < 2.13: no isolate_recompiles",
+)
+def test_recompile_storm_stops_at_the_region_limit(monkeypatch):
+    """A block whose guards fail every call compiled up to the global recompile_limit (1024 under
+    Unsloth). Its own region now stops at _region_recompile_limit and runs eager, still correct."""
+    M = _load()
+    from torch._dynamo.testing import CompileCounter
+
+    config = torch._dynamo.config
+    monkeypatch.setattr(config, "recompile_limit", 1024)
+    monkeypatch.setattr(config, "accumulated_recompile_limit", 1024)
+    counter, seen = CompileCounter(), []
+    real_compile = torch.compile
+
+    def counting_compile(fn, **kwargs):
+        seen.append(kwargs)
+        return real_compile(
+            fn,
+            backend = counter,
+            fullgraph = False,
+            dynamic = None,
+            isolate_recompiles = kwargs["isolate_recompiles"],
+            recompile_limit = kwargs["recompile_limit"],
+        )
+
+    monkeypatch.setattr(torch, "compile", counting_compile)
+    torch._dynamo.reset()
+
+    class StormDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.tag = "a"
+
+        def forward(self, hidden_states, **kwargs):
+            # A str attribute is guarded by value: a new value every call recompiles.
+            return self.proj(hidden_states) + len(self.tag)
+
+    M._wrap(StormDecoderLayer, {}, 1)
+    layer = StormDecoderLayer().train()
+    for k in range(40):
+        layer.tag = "a" * (k + 1)
+        x = torch.randn(2, 5, 8, requires_grad = True)
+        out = layer(x)
+        torch.testing.assert_close(out, layer.proj(x) + (k + 1))
+        out.sum().backward()
+    torch._dynamo.reset()
+    assert seen[0]["isolate_recompiles"] is True
+    assert counter.frame_count == seen[0]["recompile_limit"] == M._region_recompile_limit(1) == 16
