@@ -3930,6 +3930,103 @@ def refine_plan_from_loaded_weights(
         return refined
 
 
+def _denoiser_is_dense_bf16(pipe: Any) -> bool:
+    """A plain bf16 denoiser: no torchao, packed (GGUF / int8) or fp8-stored weights."""
+    try:
+        import torch
+
+        module = next(
+            (
+                getattr(pipe, n, None)
+                for n in ("transformer", "unet")
+                if getattr(pipe, n, None) is not None
+            ),
+            None,
+        )
+        if module is None or getattr(module, "dtype", None) != torch.bfloat16:
+            return False
+        if _pipe_denoisers_hold_torchao(pipe) or _pipe_denoisers_hold_packed(pipe):
+            return False
+        return not any(
+            _holds_fp8_stored(getattr(pipe, n, None))
+            for n in ("transformer", "transformer_2", "unet")
+        )
+    except Exception:  # noqa: BLE001 - unreadable: keep the streamed plan
+        return False
+
+
+_WHOLE_MODULE_KEPT_REASON = (
+    "whole-module offload ran the {dit} MiB denoiser whole below the streamed tiers' {floor} MiB floor; it still "
+    "fits, and uploading it once per call beats streaming it every step"
+)
+
+
+def prefer_whole_module_offload(
+    pipe: Any,
+    refined: MemoryPlan,
+    *,
+    logger: Any = None,
+) -> MemoryPlan:
+    """``refined`` (what ``refine_plan_from_loaded_weights`` returned), or whole-module offload in its place.
+
+    Below the streamed tiers' floor whole-module offload is the only tier, and it holds the whole denoiser on the card
+    while it runs; a few hundred MiB more free VRAM used to switch to a group plan streaming all of it every step.
+    FLUX.2-klein-4B bf16 on B200, 4 steps at 1024^2, 12.25 GiB free: 0.34 s per image whole-module vs 0.60 s streamed
+    (0.029 vs 0.17 s per step; 0.37 vs 0.73 s with 5.5 of 7.4 GB pinned). ComfyUI likewise loads the whole denoiser
+    for sampling once it fits beside its inference reserve (model_management.load_models_gpu). Applied only to a plain
+    bf16 denoiser the streamed plan does not pin whole: on a Kaggle T4 (fp16, no bf16) stock diffusers whole-module
+    offload ran 2.5x slower than streaming at 4 steps (one run), so fp16, packed, fp8-stored and torchao denoisers keep the ladder."""
+    try:
+        if (
+            getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
+            or refined.offload_policy != OFFLOAD_GROUP
+            or not bool(getattr(refined, "stream_transformer", True))
+            or getattr(refined, "secondary_ordinal", None) is not None
+        ):
+            return refined
+        est = refined.estimates
+        model_dense, companions = est.get("model_dense_mib"), est.get("companion_dense_mib")
+        floors = [
+            int(f)
+            for f in (est.get("group_floor_mib"), est.get("group_floor_streamed_te_mib"))
+            if f is not None
+        ]
+        if model_dense is None or companions is None or not floors:
+            return refined
+        transformer = int(model_dense) - int(companions)
+        te = max(0, int(est.get("text_encoder_dense_mib") or 0))
+        others = max(0, int(companions) - te)
+        floor = min(floors)
+        if transformer <= 0 or max(transformer, te, others) >= floor:
+            return refined
+        if not _denoiser_is_dense_bf16(pipe):
+            return refined
+        # A refined plan pinning the whole denoiser runs every step resident: kept.
+        sizes = _loaded_component_mib(pipe) or {}
+        dit = sum(m for m, r in sizes.values() if r == "dit") or transformer
+        if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
+            return refined
+        reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
+        if logger is not None:
+            logger.info("diffusion.memory: %s", reason)
+        return replace(
+            refined,
+            offload_policy = OFFLOAD_MODEL,
+            stream_text_encoders = False,
+            stream_transformer = True,
+            vae_tiling = True,
+            vae_slicing = True,
+            resident_transformer_mib = None,
+            resident_text_encoder_mib = None,
+            reasons = refined.reasons + (reason,),
+            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor},
+        )
+    except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
+        if logger is not None:
+            logger.debug("diffusion.memory: whole-module comparison skipped (%s)", exc)
+        return refined
+
+
 def _refine_plan_from_loaded_weights(
     pipe: Any,
     plan: MemoryPlan,
