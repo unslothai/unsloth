@@ -5753,6 +5753,19 @@ export function AppSidebar() {
     P: RowMenuParts,
   ) {
     const isProjectPinned = pinnedProjectIdSet.has(project.id);
+    // Read in full: the sidebar holds one page per folder, and none while it is collapsed.
+    const archiveProjectChats = async () => {
+      let all: SidebarItem[];
+      try {
+        all = await readAllSidebarRows(sidebarRowQuery({ projectId: project.id }));
+      } catch (err) {
+        toast.error(translate("settings.data.failedToArchiveChats"), {
+          description: err instanceof Error ? err.message : undefined,
+        });
+        return;
+      }
+      await archiveChatItems(all);
+    };
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
@@ -5769,11 +5782,16 @@ export function AppSidebar() {
             <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
+          <P.Separator />
           {renderSectionSubmenu(P, {
             target: { projectIds: [project.id] },
             current: pinnedProjectIdSet.has(project.id) ? null : sectionByProjectId[project.id] ?? null,
             anyFiled: !pinnedProjectIdSet.has(project.id) && Boolean(sectionByProjectId[project.id]),
           })}
+          <P.Item onSelect={() => void archiveProjectChats()}>
+            <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+            <span>Archive chats</span>
+          </P.Item>
           <P.Separator />
           <P.Item
             variant="destructive"

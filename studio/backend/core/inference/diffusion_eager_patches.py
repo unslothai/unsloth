@@ -11,7 +11,7 @@ torch.compile fuses either form to the same kernel -- so they help EAGER and are
 Patched (measured B200, bf16, DiT shapes):
 * ``RMSNorm.forward`` -> fused ``F.rms_norm`` on the common path (non-NPU, no bias, weight
   None/fp16/bf16; else the exact original). The standout win (~6-12x per call, QK-norm runs every
-  attention block on Qwen-Image + Z-Image). Bit-identical in bf16.
+  attention block on Qwen-Image + Z-Image). bf16: one rounding instead of two (~1 ULP off stock, nearer fp64).
 * ``AdaLayerNormContinuous`` / ``AdaLayerNormZero`` / ``AdaLayerNormZeroSingle`` -> the
   ``norm(x)*(1+scale)+shift`` modulation fused via ``torch.addcmul`` (~1.2x, fp32 exact, bf16 1
   ULP). Covers flux.1 / flux.2-klein / qwen-image.
@@ -115,7 +115,8 @@ def _rmsnorm_forward(self, hidden_states):
     if weight is None:
         return F.rms_norm(hidden_states, self.dim, None, self.eps)
     if weight.dtype in (torch.float16, torch.bfloat16) and hidden_states.dtype == weight.dtype:
-        # Common DiT path (bf16 acts + bf16 weight): F.rms_norm matches diffusers bit-for-bit.
+        # Common DiT path (bf16 acts + bf16 weight). Not bit-identical to diffusers: F.rms_norm rounds to bf16 once
+        # (diffusers rounds twice), so it is closer to fp64 per call; ComfyUI's comfy/rmsnorm.py uses the same op.
         return F.rms_norm(hidden_states, self.dim, weight, self.eps)
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 

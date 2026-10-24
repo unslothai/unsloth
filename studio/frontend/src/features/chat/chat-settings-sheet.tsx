@@ -1352,15 +1352,8 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
                 disabled={!(settingsHydrated && presetSaveState.canSubmit)}
-                    variant={
-                      presetSaveState.isSaveReady ? "default" : "outline"
-                    }
+                variant={presetSaveState.isSaveReady ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
-                  presetSaveState.isSaveReady &&
-                    "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-                )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
               >
@@ -1370,9 +1363,9 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={!(settingsHydrated && activeCustomPreset)}
-                variant="destructive"
+                variant="ghost"
                 size="sm"
-                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="text-muted-foreground hover:text-destructive"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset

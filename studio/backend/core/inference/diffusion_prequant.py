@@ -3449,8 +3449,11 @@ def stream_prequantized_module(
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
-        use_stream = onload.type == "cuda" and _weights_pinnable(module)
-        if onload.type == "cuda" and not use_stream:
+        from .host_pinning import host_pinning_allowed
+
+        pinning = host_pinning_allowed(onload)
+        use_stream = onload.type == "cuda" and pinning and _weights_pinnable(module)
+        if onload.type == "cuda" and pinning and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
             converted = convert_legacy_int8_weights(module)

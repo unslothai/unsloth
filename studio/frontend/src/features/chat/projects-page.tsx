@@ -723,11 +723,6 @@ export function ProjectsPage() {
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-16 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-          <p className="text-sm">
-            {projects.length === 0
-              ? "No projects yet."
-              : "No projects match your search."}
-          </p>
           {projects.length === 0 ? (
             <>
               <p className="max-w-sm text-sm">
@@ -739,14 +734,17 @@ export function ProjectsPage() {
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
                 onClick={() => setCreating(true)}
               >
-                <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
                 Create your first project
               </Button>
             </>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
-              Clear search
-            </Button>
+            <>
+              <p className="text-sm">No projects match your search.</p>
+              <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
+                Clear search
+              </Button>
+            </>
           )}
         </div>
       ) : (
