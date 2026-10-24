@@ -30,9 +30,7 @@ PREFETCHER_ATTR = "_unsloth_group_prefetcher"
 _BG_PIN_ATTR = "_unsloth_background_pin"
 
 
-# Bumped whenever a denoiser's device placement or a streamed group's host copy changes (residency pinned or released,
-# prefetch installed, a background pin swapping host tensors). A CUDA graph recorded over a placement replays its
-# addresses, so diffusion_cuda_graph drops graphs recorded under an older epoch.
+# Bumped on any denoiser placement change; CUDA graphs recorded under an older epoch are dropped.
 _PLACEMENT_EPOCH = [0]
 
 
@@ -335,12 +333,10 @@ class GroupPrefetcher:
         streams = [g.stream for g in self.groups if getattr(g, "stream", None) is not None]
         self.stream = streams[0] if streams else None
         self.fence_first = False
-        # True while a CUDA-graph capture records this forward (diffusion_cuda_graph): the copy stream is joined into
-        # the capture at begin() and back at end(), so the copies become graph nodes refilling the same buffers.
+        # True while diffusion_cuda_graph records a forward; copy stream joins the capture as graph nodes.
         self.capturing = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
-        # Slot ring (``enable_slots``): group id -> slot index; a streamed group's copy lands in place in that slot,
-        # always at the same offsets, so the blocks a CUDA graph recorded read the same addresses every step.
+        # Slot ring: a group's copy lands at fixed offsets so recorded CUDA graphs read stable addresses.
         self.slot_of: dict = {}
         self.slot_buffers: dict = {}  # group id -> its views into its slot
         self.slot_raw: dict = {}  # slot index -> uint8 device buffer
@@ -409,8 +405,7 @@ class GroupPrefetcher:
             staged = sum(sum(_storage_nbytes(cpu[t])) for t, p in zip(tensors, pinned) if not p)
             self._bound_staging(staged)
         with torch.cuda.stream(stream):
-            # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
-            # to these copies (the allocator orders reuse per stream)
+            # Copies run on the copy stream; a block the compute stream still reads is never handed to them
             buffers = self._views_for(group, where) if where is not None else None
             for i, t in enumerate(tensors):
                 src = cpu[t]
@@ -418,9 +413,7 @@ class GroupPrefetcher:
                     if getattr(self, "capturing", False):
                         # a graph would replay this copy from a temporary pinned buffer reused after the call
                         raise RuntimeError("a streamed group's host copy is not pinned")
-                    src = (
-                        src.pin_memory()
-                    )  # diffusers' low_cpu_mem_usage path: the host allocator fences reuse
+                    src = src.pin_memory()
                 if buffers is not None:
                     _copy_into(buffers[i], src)
                     _point_at(t, buffers[i], is_torchao(t), swap)
@@ -489,9 +482,7 @@ class GroupPrefetcher:
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
-            self._release(
-                group, None, counted = False
-            )  # placed by someone else (a resident group demoted)
+            self._release(group, None, counted = False)
         self._fill()
 
     def _release(
@@ -504,9 +495,7 @@ class GroupPrefetcher:
 
         compute = self._compute()
         if event is not None:
-            compute.wait_event(
-                event
-            )  # copied ahead but never run: the copy must land before the block is freed
+            compute.wait_event(event)
             self.stats["dropped"] += 1
         done = torch.cuda.Event()
         done.record(compute)
@@ -568,10 +557,7 @@ class GroupPrefetcher:
         return where is not None and self.slot_owner.get(where) == id(group)
 
     def enable_slots(self, logger: Any = None) -> int:
-        """Give every streamed block group one of ``depth + 1`` byte slots, round-robin in block order (the prefetch
-        never holds more groups than that), each slot as large as the largest packed group: the ring is the prefetch
-        window. A group's copies always land at the same offsets of its slot. Returns the ring's MiB (allocated on
-        first use). The top-level group keeps fresh copies: no graph reads it."""
+        """Round-robin depth+1 slots sized to the largest group keep copy offsets fixed for graph replay; returns ring MiB; top-level group stays fresh."""
         if self.slot_of:
             return self.slot_bytes_planned >> 20
         members: list = []
@@ -727,9 +713,7 @@ class GroupPrefetcher:
         self.inflight_bytes = 0
         if getattr(self, "capturing", False):
             self.capturing = False
-            self._compute().wait_stream(
-                self.stream
-            )  # join the copy stream back before the capture ends
+            self._compute().wait_stream(self.stream)
         if self.seen:
             self.order = list(self.seen)
         if getattr(self, "_drop_slots_at_end", False):
@@ -995,11 +979,7 @@ def _pinned_done(pinner: Any, group: Any) -> bool:
 
 
 def capture_refusal(module: Any) -> Optional[str]:
-    """Why a CUDA graph cannot record ``module``'s block-streamed forward with its copies inside, else None.
-
-    A replay repeats every copy from the host address it recorded into the device buffer it recorded, so every
-    streamed group must copy from a pinned host tensor no background pin is still replacing, and every group must be
-    driven by the prefetcher, pinned resident, or the dense top-level group's pinned upload."""
+    """Replays repeat recorded host addresses: streamed copies must come from stable pinned hosts, and every group must be prefetcher-driven or pinned."""
     pf = module_prefetcher(module)
     if pf is None:
         return "block streaming without the event-fenced prefetch (its stream waits are host synchronizations)"

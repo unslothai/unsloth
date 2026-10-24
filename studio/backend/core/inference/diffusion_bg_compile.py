@@ -452,10 +452,7 @@ def select_module(
     backend: Any,
     denoiser_hooked: bool,
 ) -> Any:
-    """The one dense, resident, default-tier CUDA denoiser whose compile may move off the render, or None.
-
-    Not torchao (~30x slower eager), GGUF (compiles only its dequant), a step cache (toggles graphs per step),
-    max-autotune (an explicit request to pay the compile) or an offloaded denoiser."""
+    """Dense resident default-tier CUDA denoisers only; torchao, GGUF, step caches and offload excluded."""
     if not enabled():
         return None
     if "compiled" not in tuple(speed_optims or ()) or not default_tier:

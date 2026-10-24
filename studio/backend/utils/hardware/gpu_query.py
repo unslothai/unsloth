@@ -101,10 +101,7 @@ _fresh_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def display_reads(max_stale: float = _DISPLAY_MAX_STALE_S) -> Iterator[None]:
-    """Live reads may be seconds old. Never wrap anything that decides placement or fit.
-
-    ``max_stale`` caps the reading served while one refresh runs; a hung CLI may still get
-    the last good reading up to 60 s old."""
+    """Live reads may be seconds old, so never wrap anything that decides placement or fit."""
     token = _display_mode.set(float(max_stale))
     try:
         yield

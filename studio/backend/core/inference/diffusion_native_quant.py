@@ -218,11 +218,7 @@ def int8_rotation_group() -> int:
 
 @lru_cache(maxsize = 1)
 def _row_major_op() -> Any:
-    """``unsloth_studio::native_row_major``: a row-major copy Inductor cannot re-layout, or None.
-
-    cuBLASLt runs int8 GEMMs only with a row-major activation. Inductor lays the int8 activation out in the stride
-    order of whatever produced it (a transposed view upstream, even one passed through ``.contiguous()``, which it
-    drops), so ``torch._int_mm`` can get it column-major and fail with CUBLAS_STATUS_NOT_SUPPORTED."""
+    """Row-major copy Inductor cannot re-layout; cuBLASLt int8 GEMMs fail on a column-major activation."""
     import torch
 
     ns = getattr(torch.ops, "unsloth_studio", None)

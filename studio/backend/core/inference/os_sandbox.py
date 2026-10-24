@@ -1051,8 +1051,7 @@ ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
 _tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
-# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
-# started before the reset, or before the one already recorded for that tool, is dropped.
+# A reset raises the generation floor; answers from older checks are dropped.
 _tool_isolation_generation = 0
 _tool_isolation_floor = 0
 _tool_isolation_noted: dict[str, int] = {}
@@ -1367,8 +1366,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except (WorkdirUnsafeError, SandboxBuildError):
         raise  # can be tool-induced; says nothing about the backend itself
     except SandboxUnavailableError:
-        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
-        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        # Cached pass is stale: reset so "off" asks instead of failing until expiry.
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
         raise
