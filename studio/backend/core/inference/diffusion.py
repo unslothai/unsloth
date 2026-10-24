@@ -14722,20 +14722,46 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
     base model was loaded with an offload policy: forcing the ControlNet fully resident with
     ``.to(device)`` would defeat that low-VRAM placement and can OOM. Group offloading is applied
     to this single module, so it is isolated and reversible. Returns True on success; on any
-    failure the caller falls back to a resident placement (a calibrated tier refuses instead)."""
+    failure the caller falls back to a resident placement (a calibrated tier refuses instead).
+
+    On CUDA the groups stream the way the denoiser's do: async copies with ``record_stream`` (without it diffusers
+    synchronizes the compute stream on every group offload), the top-level group from a pinned copy, and the
+    event-fenced ``GroupPrefetcher`` driving the onloads instead of diffusers' host-synced prefetch chain."""
     try:
+        import inspect
+
         import torch
         from diffusers.hooks import apply_group_offloading
 
         onload = torch.device(device)
-        apply_group_offloading(
-            cn_model,
-            onload_device = onload,
-            offload_device = torch.device("cpu"),
-            offload_type = "block_level",
-            num_blocks_per_group = 1,
-            use_stream = onload.type == "cuda",
-        )
+        use_stream = onload.type == "cuda"
+        kwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": 1,
+            "use_stream": use_stream,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        prefetch = use_stream and "record_stream" in params and "non_blocking" in params
+        if prefetch:
+            from .diffusion_memory import (
+                _pin_top_level_group,
+                _skip_top_level_copy_back,
+                install_group_offload_buffer_restore,
+                install_group_offload_hooks_eager,
+                install_group_prefetch,
+            )
+
+            install_group_offload_buffer_restore()
+            install_group_offload_hooks_eager()
+            kwargs["non_blocking"] = True
+            kwargs["record_stream"] = True
+        apply_group_offloading(cn_model, **kwargs)
+        if prefetch:
+            if not _pin_top_level_group(cn_model, logger):
+                _skip_top_level_copy_back(cn_model, logger)
+            install_group_prefetch(cn_model, onload, logger)
         return True
     except Exception as exc:  # noqa: BLE001 - offload is best-effort; resident is the fallback
         if logger is not None:
