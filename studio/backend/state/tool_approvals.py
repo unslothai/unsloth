@@ -114,6 +114,36 @@ def begin_tool_decision(session_id, approval_id) -> dict:
     return slot
 
 
+def note_host_access(approval_id, tool_name, arguments) -> None:
+    """Flag a registered call whose approval would let it reach host paths, so ``/tool-confirm`` can
+    refuse that approval to an API key. A no-op for an id with no slot."""
+    if not approval_id:
+        return
+    from core.inference.tools import approval_grants_host_access
+
+    try:
+        grants = approval_grants_host_access(tool_name, arguments)
+    except Exception:  # noqa: BLE001 - unclassifiable counts as host access here
+        grants = True
+    with _lock:
+        slot = _pending.get(approval_id)
+        if slot is not None:
+            slot["host_access"] = bool(grants)
+
+
+def tool_decision_grants_host_access(approval_id, session_id = None) -> bool:
+    """True when allowing this pending call would let it reach host paths (``note_host_access``)."""
+    if not approval_id:
+        return False
+    with _lock:
+        slot = _pending.get(approval_id)
+        if not slot:
+            return False
+        if session_id is not None and slot["session"] != (session_id or ""):
+            return False
+        return bool(slot.get("host_access"))
+
+
 def wait_tool_decision(
     slot,
     approval_id,
