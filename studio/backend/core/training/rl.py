@@ -384,14 +384,20 @@ def render_grpo_prompts(
         prefill = (
             isinstance(prompt, list) and bool(prompt) and prompt[-1].get("role") == "assistant"
         )
+        messages = _without_padded_arguments(_without_nulls(prompt), row_tools)
+        tool_kwargs = {"tools": row_tools} if row_tools else {}
+        variants = _template_variants(tokenizer, [messages], **tool_kwargs, **kwargs)
         out = {
-            "prompt": tokenizer.apply_chat_template(
-                _without_padded_arguments(_without_nulls(prompt), row_tools),
-                tokenize = False,
-                add_generation_prompt = not prefill,
-                **({"continue_final_message": True} if prefill else {}),
-                **({"tools": row_tools} if row_tools else {}),
-                **kwargs,
+            "prompt": _first_rendering(
+                variants,
+                lambda fix: tokenizer.apply_chat_template(
+                    fix(messages),
+                    tokenize = False,
+                    add_generation_prompt = not prefill,
+                    **({"continue_final_message": True} if prefill else {}),
+                    **tool_kwargs,
+                    **kwargs,
+                ),
             )
         }
         if prefills:
@@ -516,6 +522,62 @@ def _without_nulls(value: Any) -> Any:
     return value
 
 
+def _shows_every_call(tokenizer, messages: list, **kwargs) -> bool:
+    if not isinstance(messages, list) or not any(
+        isinstance(m, dict) and len(m.get("tool_calls") or []) > 1 for m in messages
+    ):
+        return True
+    names, marked = [], []
+    for m in messages:
+        calls = m.get("tool_calls") if isinstance(m, dict) else None
+        if calls:
+            renamed = []
+            for call in calls:
+                fn = call.get("function") if isinstance(call, dict) else None
+                if isinstance(fn, dict):
+                    names.append(f"unslothcall{len(names)}end")
+                    call = {**call, "function": {**fn, "name": names[-1]}}
+                renamed.append(call)
+            m = {**m, "tool_calls": renamed}
+        marked.append(m)
+    try:
+        text = tokenizer.apply_chat_template(marked, tokenize = False, **kwargs)
+    except Exception:
+        return False
+    return all(name in text for name in names)
+
+
+def _template_variants(tokenizer, conversations: list, **kwargs) -> list[Callable]:
+    """Message fixes to try in order, as SFT renders: one call per message when the template
+    shows only the first (gpt-oss), and null content omitted first, kept for templates needing it."""
+    from utils.datasets.chat_templates import _one_call_per_message
+
+    split = not all(_shows_every_call(tokenizer, c, **kwargs) for c in conversations)
+    base = _one_call_per_message if split else (lambda m: m)
+
+    def without_null_content(m: Any) -> Any:
+        m = base(m)
+        if not isinstance(m, list):
+            return m
+        return [
+            {k: v for k, v in x.items() if k != "content" or v is not None}
+            if isinstance(x, dict)
+            else x
+            for x in m
+        ]
+
+    return [without_null_content, base]
+
+
+def _first_rendering(variants: list[Callable], render: Callable) -> Any:
+    for i, fix in enumerate(variants):
+        try:
+            return render(fix)
+        except Exception:
+            if i == len(variants) - 1:
+                raise
+
+
 def render_preference_rows(
     dataset,
     tokenizer,
@@ -562,16 +624,25 @@ def render_preference_rows(
         # refuses a tool-ended prompt and, before 0.21, takes no template kwargs.
         render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
         prefill = prompt[-1].get("role") == "assistant"
-        text = tokenizer.apply_chat_template(
-            prompt,
-            add_generation_prompt = not prefill,
-            continue_final_message = prefill,
-            **render_kwargs,
+        keys = ("chosen", "rejected")
+
+        def rendered(fix: Callable) -> tuple[str, dict]:
+            # One fix for the prompt and both branches, so the shared prefix still lines up.
+            text = tokenizer.apply_chat_template(
+                fix(prompt),
+                add_generation_prompt = not prefill,
+                continue_final_message = prefill,
+                **render_kwargs,
+            )
+            return text, {
+                key: tokenizer.apply_chat_template(fix(prompt + row[key]), **render_kwargs)
+                for key in keys
+            }
+
+        variants = _template_variants(
+            tokenizer, [prompt + row[key] for key in keys], tools = tools, **kwargs
         )
-        full = {
-            key: tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
-            for key in ("chosen", "rejected")
-        }
+        text, full = _first_rendering(variants, rendered)
         text = os.path.commonprefix([text, *full.values()])
         return {
             **row,

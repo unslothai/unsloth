@@ -1854,3 +1854,71 @@ def test_grpo_keeps_a_zero_kl_coefficient():
         **{**BASE, "objective": "grpo", "grpo_rewards": [{"name": "a"}], "rl_beta": 0}
     )
     assert request.rl_beta == 0
+
+
+class _SingleCallTemplate:
+    """gpt-oss-like: shows only a message's first call and fails on a None content."""
+
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize = False,
+        add_generation_prompt = False,
+        **kw,
+    ):
+        out = ""
+        for m in messages:
+            if "content" in m and m["content"] is None:
+                raise TypeError("can only concatenate str (not NoneType) to str")
+            calls = m.get("tool_calls") or []
+            call = f"[{calls[0]['function']['name']}]" if calls else ""
+            out += f"<{m['role']}>{m.get('content', '')}{call}"
+        return out + ("<assistant>" if add_generation_prompt else "")
+
+
+def _parallel_call_rows():
+    calls = [
+        {
+            "id": "a",
+            "type": "function",
+            "function": {"name": "weather", "arguments": {"city": "Paris"}},
+        },
+        {
+            "id": "b",
+            "type": "function",
+            "function": {"name": "time", "arguments": {"city": "Paris"}},
+        },
+    ]
+    prompt = [
+        {"role": "user", "content": "Weather and time in Paris?"},
+        {"role": "assistant", "content": None, "tool_calls": calls},
+        {"role": "tool", "tool_call_id": "a", "content": "Sunny"},
+        {"role": "tool", "tool_call_id": "b", "content": "Noon"},
+    ]
+    return prompt
+
+
+def test_preference_rendering_shows_every_parallel_call_and_omits_null_content():
+    from core.training.rl import render_preference_rows
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": _parallel_call_rows(),
+                "chosen": [{"role": "assistant", "content": "Sunny at noon."}],
+                "rejected": [{"role": "assistant", "content": "No idea."}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _SingleCallTemplate())[0]
+    assert "[weather]" in row["prompt"] and "[time]" in row["prompt"]
+    assert row["chosen"].endswith("Sunny at noon.") and row["rejected"].endswith("No idea.")
+
+
+def test_grpo_prompts_show_every_parallel_call_and_omit_null_content():
+    from core.training.rl import render_grpo_prompts
+
+    ds = Dataset.from_list([{"prompt": _parallel_call_rows()}])
+    out, rendered = render_grpo_prompts(ds, _SingleCallTemplate(), enable_thinking = None)
+    assert rendered
+    assert "[weather]" in out[0]["prompt"] and "[time]" in out[0]["prompt"]
