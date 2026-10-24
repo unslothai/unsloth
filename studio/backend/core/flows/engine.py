@@ -1202,17 +1202,15 @@ class FlowEngine:
             return
         plan = rs.plan
         running_ids = set(running.values())
-        # A pending step on "use the loaded model" runs on whatever its slot holds: never swap that slot early.
-        held = {
-            self._model_of(plan, n)[0]
-            for n in pending
-            if plan.specs[n]["lane"] == "gpu" and not self._model_of(plan, n)[1]
-        }
+        # A pending step on "use the loaded model" runs on whatever is loaded, and a load into any slot may evict
+        # it: load nothing early until it has run.
+        if any(plan.specs[n]["lane"] == "gpu" and not self._model_of(plan, n)[1] for n in pending):
+            return
         for nid in plan.order:
             if nid not in pending or plan.specs[nid]["lane"] != "gpu":
                 continue
             slot, repo = self._model_of(plan, nid)
-            if not repo or slot in held or (rs.resident.get(slot) or "").lower() == repo:
+            if not repo or (rs.resident.get(slot) or "").lower() == repo:
                 continue
             if not self._prefetchable(rs, nid) or not self._will_compute(rs, nid):
                 continue

@@ -500,3 +500,74 @@ async def test_a_failed_early_load_leaves_the_steps_own_load_in_place(studio, mo
     assert rs.status == "completed" and calls.count("m2") == 2
     # The step's own load of m2 succeeded: nothing unloads it.
     assert studio["unloads"] == [] and studio["slots"]["llm"] == ["m2"]
+
+
+@run_async
+async def test_no_early_load_into_another_slot_evicts_the_model_a_use_loaded_model_step_needs(
+    studio, monkeypatch
+):
+    seen = {}
+
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        repo = (choice or {}).get("repo")
+        if not repo:
+            return None
+        if kind == "image":
+            await asyncio.sleep(0.2)
+            # Keep multiple models loaded is off: loading the image model evicts the chat model.
+            studio["slots"]["llm"] = []
+            studio["slots"]["image"] = [repo]
+            ctx.resident["image"] = repo
+            return {"repo": repo}
+        studio["slots"]["llm"] = [repo]
+        ctx.resident["llm"] = repo
+        return {"repo": repo}
+
+    async def gen(ctx):
+        if not (ctx.params.get("model") or {}).get("repo"):
+            seen[ctx.node_id] = list(studio["slots"].get("llm") or [])
+            return {"text": "loaded"}
+        return await _gen(ctx)
+
+    async def image(ctx):
+        await ctx.ensure_model("image", ctx.params.get("model"))
+        return {"images": []}
+
+    async def template(ctx):
+        await asyncio.sleep(0.5 if ctx.node_id == "t1" else 0.9)
+        return {"text": "t"}
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    eng = _engine(
+        {
+            "input.text": _text,
+            "llm.generate": gen,
+            "text.template": template,
+            "image.generate": image,
+        }
+    )
+    d = doc(
+        [
+            node("a", "input.text", value = "cross-slot"),
+            node("g1", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m1"}),
+            node("t1", "text.template", template = "{}"),
+            node("t2", "text.template", template = "{}"),
+            node("loaded", "llm.generate", prompt = "{{prompt}}", model = {}),
+            node("img", "image.generate", model = {"repo": "img-m"}),
+        ],
+        [
+            edge("a", "text", "g1", "prompt"),
+            edge("g1", "text", "t1", "values"),
+            edge("g1", "text", "t2", "values"),
+            edge("t1", "text", "loaded", "prompt"),
+            edge("t2", "text", "img", "prompt"),
+        ],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
+    assert seen["loaded"] == ["m1"]
