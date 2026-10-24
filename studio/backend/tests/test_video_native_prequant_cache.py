@@ -10,6 +10,8 @@ with the same native W8A8 ConvRot build an offloaded load makes, and a private c
 
 from __future__ import annotations
 
+import os
+
 import sys
 import types
 from pathlib import Path
@@ -239,6 +241,25 @@ def test_corrupt_entry_is_a_miss(base_dir):
         NC.load(path, diffusers.WanTransformer3DModel, base_dir, component = "transformer", spec = spec)
         is None
     )
+
+
+def test_a_rejected_entry_is_replaced_by_the_next_build(base_dir):
+    fam = _family()
+    spec = _spec()
+    kw = dict(base_repo = base_dir, component = "transformer")
+    path = NC.save(_fresh_build(base_dir, "transformer"), fam, spec, **kw)
+    (Path(path).parent / C.VERIFIED_NAME).unlink()
+    with open(path, "r+b") as fh:
+        fh.seek(-16, 2)
+        fh.write(b"\x01" * 16)
+    load = lambda p: NC.load(
+        p, diffusers.WanTransformer3DModel, base_dir, component = "transformer", spec = spec
+    )
+    assert load(path) is None
+    # same key and size: without the rejection check this save was skipped and every later load missed
+    replaced = NC.save(_fresh_build(base_dir, "transformer"), fam, spec, **kw)
+    assert replaced is not None and load(replaced) is not None
+    assert os.path.realpath(replaced) not in C._REJECTED
 
 
 def test_video_read_is_all_or_nothing(base_dir):

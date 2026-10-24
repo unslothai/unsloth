@@ -234,11 +234,21 @@ def save(
             if not locked:
                 _cache._log(logger, "info", f"native {component}: skipped (no cross-process lock)")
                 return None
-            if _cache._entry(key) is not None:
+            existing = _cache._entry(key)
+            replacing = None
+            if existing is not None:
+                real = os.path.realpath(str(existing))
+                with _cache._lock:
+                    replacing = real if real in _cache._REJECTED else None
+                if replacing is None:
+                    _cache._log(
+                        logger, "info", f"native {component}: skipped (already cached as {key})"
+                    )
+                    return None
+                # an entry load() rejected (same size, bad bytes) would otherwise block every rebuild for good
                 _cache._log(
-                    logger, "info", f"native {component}: skipped (already cached as {key})"
+                    logger, "info", f"native {component}: replacing {key} (it failed to load)"
                 )
-                return None
             state = transformer.state_dict()
             if any(".lora_" in k or k.startswith("lora_") for k in state):
                 _cache._log(logger, "info", f"native {component}: skipped (baked LoRA adapters)")
@@ -287,6 +297,10 @@ def save(
             }
             header = {NATIVE_META_KEY: json.dumps(meta, sort_keys = True)}
             kdir = root / key
+            if replacing is not None:
+                _cache._reclaim(kdir)
+                with _cache._lock:
+                    _cache._REJECTED.discard(replacing)
             kdir.mkdir(parents = True, exist_ok = True)
             fd, tmp = tempfile.mkstemp(
                 dir = str(kdir), prefix = f".{_cache.FILE_NAME}.", suffix = _cache._TEMP_SUFFIX
