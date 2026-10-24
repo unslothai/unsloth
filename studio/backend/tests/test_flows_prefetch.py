@@ -692,3 +692,48 @@ async def test_a_controlnet_image_step_is_not_loaded_early(studio):
     assert rs.status == "completed", {k: v.error for k, v in rs.nodes.items()}
     # ControlNet reloads the model unquantized when the step starts: an early load would be thrown away.
     assert rs.prefetched == 0
+
+
+@run_async
+async def test_a_player_invoke_that_ends_early_stops_its_early_load(studio, monkeypatch):
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        if choice["repo"] == "m2":
+            await asyncio.sleep(30)  # still loading when the invoke gives up
+        return {"repo": choice["repo"]}
+
+    async def failing(ctx):
+        await asyncio.sleep(0.6)
+        raise RuntimeError("upstream step failed")
+
+    async def reply(ctx):
+        return {"reply": ctx.inputs.get("reply")}
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    eng = _engine(
+        {"input.text": _text, "llm.generate": _gen, "text.template": failing, "chat.output": reply}
+    )
+    d = doc(
+        [
+            node("a", "input.text", value = "invoke"),
+            node("t", "text.template", template = "{}"),
+            node("g2", "llm.generate", prompt = "{{prompt}}", model = {"repo": "m2"}),
+            node("out", "chat.output"),
+        ],
+        [
+            edge("a", "text", "t", "values"),
+            edge("t", "text", "g2", "prompt"),
+            edge("g2", "text", "out", "reply"),
+        ],
+    )
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    with pytest.raises(Exception):
+        await asyncio.wait_for(
+            eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "out"), timeout = 20
+        )
+    assert studio["unloads"] == ["m2"]

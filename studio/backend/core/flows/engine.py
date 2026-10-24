@@ -783,6 +783,8 @@ class FlowEngine:
             if flusher is not None:
                 flusher.cancel()
                 rs.subscribers.discard(events)
+            # Before the key goes: stopping an early load still in flight unloads through it.
+            await self._stop_prefetch(rs)
             await asyncio.to_thread(self.revoke_key, key_id)
 
     def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
