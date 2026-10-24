@@ -26,9 +26,17 @@ export function appendReplyDelta(
   return { ...live, text: live.text + delta };
 }
 
-/** The reply failed because no chat model can answer here (none loaded, not downloaded, or none picked). */
+/**
+ * The reply failed because no chat model can answer here (none loaded, not downloaded, or none picked). A load that
+ * failed for another reason (out of memory, a bad file) is a real error the player should see.
+ */
 export function isNoChatModelError(message: string): boolean {
-  return /no (chat )?model is loaded|could not load|not downloaded|needs? a chat model|no model (is )?(picked|selected)/i.test(
+  if (/could not load/i.test(message)) {
+    return /not downloaded|connect|offline|outgoing traffic|cannot find the requested files|not found|\b404\b/i.test(
+      message,
+    );
+  }
+  return /no (chat )?model is loaded|not downloaded|needs? a chat model|no model (is )?(picked|selected)/i.test(
     message,
   );
 }
