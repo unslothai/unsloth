@@ -129,11 +129,13 @@ test("Run asks the plan before starting and holds the run when models must downl
 test("a download check is remembered only when it proves nothing must download", () => {
   const missing = [{ kind: "image", repo: "b/image", loaded: false, downloaded: false }];
   const issue = [{ node_id: "n1", message: "Prompt is not connected" }];
-  assert.equal(planCheck({ models: missing, errors: [] }, "f1", "f1"), "download");
-  assert.equal(planCheck({ models: [], errors: [] }, "f1", "f1"), "clear");
+  const asked = { flowId: "f1", models: "a/chat" };
+  assert.equal(planCheck({ models: missing, errors: [] }, asked, asked), "download");
+  assert.equal(planCheck({ models: [], errors: [] }, asked, asked), "clear");
   // A graph with errors plans no models: that says nothing about downloads, so it is not remembered.
-  assert.equal(planCheck({ models: [], errors: issue }, "f1", "f1"), "unchecked");
-  // The user opened another flow while the check was out: its answer belongs to the old flow.
-  assert.equal(planCheck({ models: missing, errors: [] }, "f1", "f2"), "stale");
-  assert.equal(planCheck({ models: [], errors: [] }, "f1", null), "stale");
+  assert.equal(planCheck({ models: [], errors: issue }, asked, asked), "unchecked");
+  // The user opened another flow, or picked another model, while the check was out: its answer is out of date.
+  assert.equal(planCheck({ models: missing, errors: [] }, asked, { flowId: "f2", models: "a/chat" }), "stale");
+  assert.equal(planCheck({ models: [], errors: [] }, asked, { flowId: null, models: "a/chat" }), "stale");
+  assert.equal(planCheck({ models: missing, errors: [] }, asked, { flowId: "f1", models: "b/image" }), "stale");
 });

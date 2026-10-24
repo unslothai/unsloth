@@ -110,8 +110,13 @@ async function heldForDownloads(
     ),
   ]).catch(() => null);
   if (!plan) return false;
-  const verdict = planCheck(plan, flowId, useDocStore.getState().flowId);
-  // Another flow is open now: its editor must never show (or confirm) this flow's downloads, nor run this one.
+  const now = useDocStore.getState();
+  const verdict = planCheck(
+    plan,
+    { flowId, models: signature },
+    { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
+  );
+  // The flow or its model picks changed meanwhile: this plan no longer describes what Run would download.
   if (verdict === "stale") return true;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
