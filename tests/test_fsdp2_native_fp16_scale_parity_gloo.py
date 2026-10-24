@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 float16 skips the same steps as one GPU. The Trainer normalises each rank's loss by the
-global token count times the world size, so every rank's per-token gradient in the float16 backward is
-world_size times the one GPU one (the reduce divides it back). At one GPU's loss scale a backward that
-fits in float16 on one GPU overflows on every rank and the GradScaler skips the step (Kaggle T4x2:
-smol_llama, Qwen3-0.6B, Qwen3.5, PaliGemma skipped step 0 under FSDP2 only). The swapped scaler starts at
-the one GPU scale divided by the data parallel size. On a gloo CPU world of 2: a step one GPU takes is
-taken, and its update matches one GPU."""
+"""Native FSDP2 float16 starts the loss scale divided by the data parallel size, so it takes the steps
+one GPU takes (gloo CPU world of 2)."""
 
 import multiprocessing
 import os
@@ -15,7 +10,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import sys  # noqa: E402
 import types  # noqa: E402
@@ -27,8 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 
-SCALE = 2.0**16  # the GradScaler / accelerate default
-TOKENS = 8  # global tokens per step, split evenly over the ranks
+SCALE = 2.0**16
+TOKENS = 8
 FP16_GRAD = 40000.0  # one GPU's scaled per-token output gradient: below the float16 max (65504)
 
 
@@ -36,9 +31,9 @@ def _data(world):
     torch.manual_seed(0)
     x = (
         torch.rand(TOKENS, 8) * 1e-3
-    )  # small inputs: only the output gradient is near the float16 max
+    )
     weight = torch.randn(8, 8) * 0.1
-    coef = FP16_GRAD * TOKENS / SCALE  # d(loss)/d(out) * SCALE == FP16_GRAD on one GPU
+    coef = FP16_GRAD * TOKENS / SCALE
     return x, weight, coef
 
 
@@ -52,7 +47,7 @@ def _one_gpu(world):
     w = torch.nn.Parameter(weight.clone())
     scaler = torch.amp.GradScaler("cpu", init_scale = SCALE)
     opt = torch.optim.SGD([w], lr = 1e-3)
-    out = torch.nn.functional.linear(x.half(), w.half())  # fp32 master, float16 compute
+    out = torch.nn.functional.linear(x.half(), w.half())
     scaler.scale(_loss(out, coef, TOKENS, 1)).backward()
     scaler.step(opt)
     scaler.update()
@@ -100,7 +95,7 @@ def _worker(rank, world, port, out):
         res = {"one_gpu": _one_gpu(world)}
         try:
             res["native"] = _native(world, rank)
-        except Exception as e:  # recorded, asserted in the parent
+        except Exception as e:
             res["native"] = repr(e)
         torch.save(res, os.path.join(out, f"rank{rank}.pt"))
     finally:
@@ -115,7 +110,6 @@ def ranks(tmp_path_factory):
 
 
 def test_one_gpu_takes_the_step(ranks):
-    # The setup: one GPU's float16 backward fits, so it steps and keeps its scale.
     for res in ranks:
         scale, _ = res["one_gpu"]
         assert scale == SCALE
@@ -128,7 +122,7 @@ def test_native_fp16_takes_the_step_one_gpu_takes(ranks):
         assert found_inf == 0.0, "native FSDP2 overflowed where one GPU did not"
         assert (
             scale == SCALE / 2
-        ), scale  # one GPU scale over the data parallel size, not backed off
+        ), scale
         _, one_gpu_weight = res["one_gpu"]
         torch.testing.assert_close(weight, one_gpu_weight, rtol = 1e-3, atol = 1e-6)
 
