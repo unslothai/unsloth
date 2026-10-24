@@ -32,7 +32,6 @@ def test_plan_covers_the_frame_with_fewer_tiles_than_stock():
     rows, cols, tile_h, tile_w = _tiles(44, 80, 16, plan)
     assert rows * cols < 4 * 7  # stock 256 / 192 px tiles at 1280x704
     min_h, stride_h, min_w, stride_w = plan
-    # the last tile reaches the edge, and a split axis keeps the stock 64 px overlap
     assert (rows - 1) * stride_h + min_h >= 704 and (cols - 1) * stride_w + min_w >= 1280
     if cols > 1:
         assert min_w - stride_w == 64
@@ -56,8 +55,6 @@ def test_plan_respects_the_wan21_ratio():
 
 
 class _FakeVae(torch.nn.Module):
-    """Records the tile sizes each decode ran at; ``oom_wide`` raises an OOM at any non-stock tile size."""
-
     def __init__(self, oom_wide = False):
         super().__init__()
         self.decoder = torch.nn.Linear(2, 2).half()
@@ -88,7 +85,7 @@ def test_gate_decodes_wide_when_untiled_does_not_fit(monkeypatch, oom):
     assert U.install_untiled_decode(pipe, FIVE_B)
     z = torch.zeros(1, 48, 11, 44, 80)
     vae.decode(z)
-    assert vae.seen[0][2] is True and vae.seen[0][0] == 704  # wide tiles, tiling still on
+    assert vae.seen[0][2] is True and vae.seen[0][0] == 704
     if oom:
         assert vae.seen[-1][:2] == (256, 256)  # the retry runs at the stock size
     assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == (

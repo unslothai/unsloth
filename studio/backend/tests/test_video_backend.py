@@ -13345,7 +13345,6 @@ def _cuda_wan_load(monkeypatch, *, policy, speed_mode):
 def test_resident_wan_load_decodes_untiled_when_it_fits(
     fake_runtime, monkeypatch, policy, speed_mode, installed
 ):
-    # Tiling is forced on; resident and offloaded (not sequential) CUDA loads also get untiled-when-it-fits decode.
     from core.inference import video_vae_untiled
 
     calls = []

@@ -61,9 +61,7 @@ def untiled_decode_bytes(
     return int(coef * itemsize / 2 * batch * height * width + output)
 
 
-# Wide tiles for the causal (per latent pixel) decoders: stock Wan tiles are 256 px with a 192 px stride, 28 tiles at
-# 1280x704, decoding ~1.65x the frame area plus a per-tile cache warm-up. When the clip does not fit untiled, decode
-# the fewest tiles whose per-tile estimate fits instead, at the stock overlap (sample px), so seams blend as before.
+# When untiled does not fit, decode the fewest tiles that fit at the stock overlap (stock Wan: 28 tiles at 1280x704).
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WAN_WIDE_TILES"
 _STOCK_TILE = (256, 192)  # diffusers AutoencoderKLWan tile_sample_min / tile_sample_stride
 
@@ -80,10 +78,7 @@ def wide_tile_plan(
     itemsize: int = 2,
     max_tiles: int = 16,
 ) -> Optional[tuple[int, int, int, int]]:
-    """(min_h, stride_h, min_w, stride_w) in sample px for the fewest tiles that fit ``free``, or None (stock tiles).
-
-    Every tile keeps the stock 64 px overlap; a single tile on an axis gets stride >= the axis, so diffusers'
-    ``range(0, size, stride)`` loop yields exactly one start there and no blend on that axis."""
+    """(min_h, stride_h, min_w, stride_w) sample px, or None. A single-tile axis gets stride >= size: no blend there."""
     coef = _BYTES_PER_LATENT_PIXEL.get(family)
     if coef is None or len(latent_shape) != 5 or ratio <= 0:
         return None
@@ -92,7 +87,6 @@ def wide_tile_plan(
     overlap = max(1, (_STOCK_TILE[0] - _STOCK_TILE[1]) // ratio)
     frames = (max(1, latent_frames) - 1) * temporal + 1
     itemsize = max(2, itemsize)
-    # decoded tiles are held until the blend: every tile's frames, the overlaps counted, at the decoder dtype
     out_bytes = 2 * max(1, batch) * 3 * frames * height * spatial * width * spatial * itemsize
     best = None
     for n_h in range(1, height + 1):
@@ -201,7 +195,7 @@ def install_untiled_decode(
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
     stats = {"untiled": 0, "tiled": 0, "wide": 0, "oom_fallback": 0}
-    # Smallest estimate that ran out of memory; never retried untiled (oom_wide: never retried in wide tiles).
+    # Smallest estimates that OOMed, never retried (untiled / wide).
     oom_need: list = []
     oom_wide: list = []
 
