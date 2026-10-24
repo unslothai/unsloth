@@ -10,8 +10,10 @@ import type * as CodexDesktopApi from "../src/features/settings/api/codex-deskto
 import type { CodexDesktopStatus } from "../src/features/settings/api/codex-desktop.ts";
 import { claudeDesktopView } from "../src/features/settings/components/claude-desktop-state.ts";
 import {
-  codexPick,
+  codexPicks,
   codexTarget,
+  sameModels,
+  toggleModel,
 } from "../src/features/settings/components/codex-desktop-state.ts";
 import {
   CLAUDE_ROUTES,
@@ -37,8 +39,10 @@ const CODEX: CodexDesktopStatus = {
   held_by_pid: null,
   running: false,
   model: null,
+  models: [],
   loaded_model: "unsloth/Qwen3.6-27B-GGUF",
-  selected_model: null,
+  selected_models: [],
+  max_models: 5,
   local: true,
 };
 
@@ -137,8 +141,9 @@ test("Codex Desktop hits its own backend-owned routes", async () => {
     () => Response.json({ status: "connected", codex: CODEX }),
   );
   await c.api.connectCodexDesktop();
-  await c.api.connectCodexDesktop(true, "m");
-  await c.api.setCodexDesktopModel("", false);
+  await c.api.connectCodexDesktop(true, ["m", "n:Q4_K_M"]);
+  await c.api.setCodexDesktopModels([], false);
+  await c.api.setCodexDesktopModels(["a", "b"]);
   await c.api.disconnectCodexDesktop();
   await c.api.disconnectCodexDesktop(true);
   await c.api.fetchCodexDesktopModels();
@@ -146,17 +151,22 @@ test("Codex Desktop hits its own backend-owned routes", async () => {
     [
       "/api/settings/codex-desktop/connect",
       "POST",
-      '{"restart":null,"model":null}',
+      '{"restart":null,"models":null}',
     ],
     [
       "/api/settings/codex-desktop/connect",
       "POST",
-      '{"restart":true,"model":"m"}',
+      '{"restart":true,"models":["m","n:Q4_K_M"]}',
     ],
     [
-      "/api/settings/codex-desktop/model",
+      "/api/settings/codex-desktop/models",
       "PUT",
-      '{"model":"","restart":false}',
+      '{"models":[],"restart":false}',
+    ],
+    [
+      "/api/settings/codex-desktop/models",
+      "PUT",
+      '{"models":["a","b"],"restart":null}',
     ],
     ["/api/settings/codex-desktop/disconnect", "POST", '{"restart":null}'],
     ["/api/settings/codex-desktop/disconnect", "POST", '{"restart":true}'],
@@ -199,17 +209,79 @@ test("the Codex card shares the Claude card's states and follows the loaded mode
       pid: 7,
     },
   );
-  assert.equal(codexPick(CODEX), FOLLOW_LOADED);
+  assert.deepEqual(codexPicks(CODEX), []);
   assert.equal(codexTarget(CODEX), "unsloth/Qwen3.6-27B-GGUF");
-  const picked = { ...CODEX, selected_model: "m" };
-  assert.equal(codexPick(picked), "m");
+  const picked = { ...CODEX, selected_models: ["m", "n"] };
+  assert.deepEqual(codexPicks(picked), ["m", "n"]);
   assert.equal(codexTarget(picked), "m");
   // Connected while following: the card keeps showing "follow loaded", not the pinned id.
-  assert.equal(
-    codexPick({ ...CODEX, connected: true, model: "x" }),
-    FOLLOW_LOADED,
+  assert.deepEqual(
+    codexPicks({ ...CODEX, connected: true, model: "x", models: ["x"] }),
+    [],
   );
-  assert.equal(codexPick({ ...picked, connected: true, model: "m" }), "m");
+  // Connected: the list Codex actually has, even if the saved one moved on.
+  assert.deepEqual(
+    codexPicks({ ...picked, connected: true, model: "m", models: ["m"] }),
+    ["m"],
+  );
+});
+
+test("the Codex list adds, removes and stops at its limit, like Ollama's", () => {
+  assert.deepEqual(toggleModel([], "a", 2), ["a"]);
+  assert.deepEqual(toggleModel(["a"], "b", 2), ["a", "b"]);
+  assert.deepEqual(toggleModel(["a", "b"], "c", 2), ["a", "b"]);
+  assert.deepEqual(toggleModel(["a", "b"], "a", 2), ["b"]);
+  assert.ok(sameModels(["a", "b"], ["a", "b"]));
+  assert.ok(!sameModels(["a", "b"], ["b", "a"]));
+  const picker = read(
+    "../src/features/settings/components/desktop-app-model-list-picker.tsx",
+  );
+  assert.ok(picker.includes("aria-multiselectable={true}"));
+  assert.ok(picker.includes("settings.agents.desktopApps.codex.removeModel"));
+  const c = en.settings.agents.desktopApps.codex;
+  assert.match(c.maxReached, /\{count\}/);
+  assert.match(c.connectedMany, /\{count\}.*\{model\}/);
+  assert.match(c.removeModel, /\{model\}/);
+});
+
+test("every locale has the Codex list strings", async () => {
+  const keys = [
+    "modelLabel",
+    "modelHint",
+    "modelBody",
+    "connectedMany",
+    "addModel",
+    "removeModel",
+    "maxReached",
+  ] as const;
+  for (const locale of [
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "he",
+    "hi",
+    "it",
+    "ja",
+    "ko",
+    "pt-br",
+    "ru",
+    "sv",
+    "zh-CN",
+  ]) {
+    const mod = await import(`../src/i18n/locales/${locale}.ts`);
+    const table = Object.values(mod)[0] as typeof en;
+    const codex = table.settings.agents.desktopApps.codex;
+    for (const key of keys) {
+      assert.ok(codex[key], `${locale}: codex.${key}`);
+    }
+    assert.ok(table.settings.agents.desktopApps.models.notDownloaded, locale);
+    assert.match(codex.maxReached, /\{count\}/, locale);
+    assert.match(codex.connectedMany, /\{count\}/, locale);
+    assert.match(codex.connectedMany, /\{model\}/, locale);
+    assert.match(codex.removeModel, /\{model\}/, locale);
+  }
 });
 
 const read = (path: string) =>

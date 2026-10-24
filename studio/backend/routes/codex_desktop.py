@@ -4,10 +4,10 @@
 """Settings → Agents → Codex Desktop: switch the Codex app on this Mac to Studio and back."""
 
 import asyncio
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from auth import policy
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -40,6 +40,12 @@ router = APIRouter(
 )
 
 
+ModelList = Annotated[
+    list[Annotated[str, StringConstraints(max_length = 512)]],
+    Field(max_length = session.MAX_MODELS),
+]
+
+
 class CodexDesktopStatus(BaseModel):
     supported: bool
     installed: bool
@@ -50,23 +56,26 @@ class CodexDesktopStatus(BaseModel):
     held_by: Optional[str] = None
     held_by_pid: Optional[int] = None
     running: bool
-    # The model Codex is on while connected.
+    # Codex's default model, and every model in its catalog, while connected.
     model: Optional[str] = None
-    # What Studio has loaded now, and the card's saved pick (None follows the loaded model).
+    models: list[str] = []
+    # What Studio has loaded now, and the card's saved list (empty follows the loaded model).
     loaded_model: Optional[str] = None
-    selected_model: Optional[str] = None
+    selected_models: list[str] = []
+    max_models: int
     local: bool
 
 
 class ConnectRequest(BaseModel):
     # None: ask before restarting an open Codex. True: restart it. False: leave it open.
     restart: Optional[bool] = None
-    # A Studio catalog id, "" to follow the loaded model, or None for the saved pick.
-    model: Optional[str] = Field(default = None, max_length = 512)
+    # Studio catalog ids (the first is Codex's default), [] to follow the loaded model, or None
+    # for the saved list.
+    models: Optional[ModelList] = None
 
 
-class ModelRequest(BaseModel):
-    model: Optional[str] = Field(default = None, max_length = 512)
+class ModelsRequest(BaseModel):
+    models: ModelList = []
     restart: Optional[bool] = None
 
 
@@ -113,18 +122,18 @@ async def connect_codex_desktop(
     _require_local(request)
     try:
         result = await asyncio.to_thread(
-            session.connect, _upstream(request), current_subject, payload.restart, payload.model
+            session.connect, _upstream(request), current_subject, payload.restart, payload.models
         )
     except session.CodexDesktopError as exc:
         _raise(exc)
     return StatusResponse(status = result["status"], codex = await _status(request))
 
 
-@router.put("/model", response_model = StatusResponse)
-async def set_codex_desktop_model(payload: ModelRequest, request: Request) -> StatusResponse:
+@router.put("/models", response_model = StatusResponse)
+async def set_codex_desktop_models(payload: ModelsRequest, request: Request) -> StatusResponse:
     _require_local(request)
     try:
-        result = await asyncio.to_thread(session.set_model, payload.model, payload.restart)
+        result = await asyncio.to_thread(session.set_models, payload.models, payload.restart)
     except session.CodexDesktopError as exc:
         _raise(exc)
     return StatusResponse(status = result["status"], codex = await _status(request))

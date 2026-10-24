@@ -26,13 +26,12 @@ import {
   disconnectCodexDesktop,
   fetchCodexDesktopModels,
   fetchCodexDesktopStatus,
-  setCodexDesktopModel,
+  setCodexDesktopModels,
 } from "../api/codex-desktop";
 import { AgentIcon } from "./agent-command-block";
 import { claudeDesktopView } from "./claude-desktop-state";
-import { codexPick, codexTarget } from "./codex-desktop-state";
-import { DesktopAppModelPicker } from "./desktop-app-model-picker";
-import { FOLLOW_LOADED } from "./desktop-app-models";
+import { codexPicks, codexTarget, sameModels } from "./codex-desktop-state";
+import { DesktopAppModelListPicker } from "./desktop-app-model-list-picker";
 
 const POLL_MS = 5000;
 
@@ -41,8 +40,9 @@ type Busy = "connect" | "disconnect" | "model" | null;
 type Ask = "connect" | "disconnect" | "model" | null;
 
 /** Settings → Agents → Desktop apps → Codex Desktop: the same switch as `unsloth start codex
- *  --app`, held by the backend. One model picker: Codex talks to Studio's /v1 directly and pins the
- *  model it reads at startup, so a change while connected restarts it. */
+ *  --app`, held by the backend. A list of Studio models, like Ollama's ChatGPT settings: each one
+ *  is in Codex's own model picker (the first is the default) and Studio loads it when Codex asks.
+ *  Codex reads the list at startup, so a change while connected restarts it. */
 export function CodexDesktopCard({
   onUnavailable,
 }: {
@@ -55,7 +55,7 @@ export function CodexDesktopCard({
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [ask, setAsk] = useState<Ask>(null);
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string[] | null>(null);
   const [pendingRestart, setPendingRestart] = useState(false);
   const [models, setModels] = useState<DesktopAppModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -143,12 +143,9 @@ export function CodexDesktopCard({
       setDraft(null);
     });
 
-  const pickModel = (model: string, restart?: boolean) =>
+  const pickModels = (picks: string[], restart?: boolean) =>
     run("model", async () => {
-      const result = await setCodexDesktopModel(
-        model === FOLLOW_LOADED ? "" : model,
-        restart,
-      );
+      const result = await setCodexDesktopModels(picks, restart);
       if (!mounted.current) return;
       setStatus(result.codex);
       if (result.status === "needs_restart") {
@@ -192,9 +189,14 @@ export function CodexDesktopCard({
     case "connected":
       detail = view.pendingRestart
         ? t("settings.agents.desktopApps.codex.pendingRestart")
-        : t("settings.agents.desktopApps.codex.connected", {
-            model: view.model ?? "?",
-          });
+        : (status?.models.length ?? 0) > 1
+          ? t("settings.agents.desktopApps.codex.connectedMany", {
+              count: String(status?.models.length ?? 0),
+              model: view.model ?? "?",
+            })
+          : t("settings.agents.desktopApps.codex.connected", {
+              model: view.model ?? "?",
+            });
       break;
     case "idle":
       detail = view.model
@@ -205,17 +207,17 @@ export function CodexDesktopCard({
 
   const connected = view.kind === "connected";
   const canConnect = view.kind === "idle" && view.model !== null;
-  const current = status ? codexPick(status) : FOLLOW_LOADED;
+  const current = status ? codexPicks(status) : [];
   const value = draft ?? current;
-  const changed = connected && draft !== null && draft !== current;
+  const changed = connected && draft !== null && !sameModels(draft, current);
   const running = status?.running ?? false;
   const applyModel = () => {
     if (draft === null) {
-      void pickModel(current, true);
+      void pickModels(current, true);
     } else if (running) {
       setAsk("model");
     } else {
-      void pickModel(draft, true);
+      void pickModels(draft, true);
     }
   };
 
@@ -299,23 +301,23 @@ export function CodexDesktopCard({
             data-testid="codex-desktop-models"
             className="mt-1 flex min-w-0 flex-col gap-1 border-t border-border/60 pt-2"
           >
-            <div className="grid min-h-10 grid-cols-[5.5rem_minmax(0,1fr)_auto] items-center gap-2 max-sm:grid-cols-1">
-              <span className="text-ui-12 font-medium text-foreground">
+            <div className="grid min-h-10 grid-cols-[5.5rem_minmax(0,1fr)_auto] items-start gap-2 max-sm:grid-cols-1">
+              <span className="pt-1.5 text-ui-12 font-medium text-foreground">
                 {t("settings.agents.desktopApps.codex.modelLabel")}
               </span>
-              <div className="w-full min-w-0 max-w-sm">
-                <DesktopAppModelPicker
-                  id="codex-model"
-                  routeName={t("settings.agents.desktopApps.codex.name")}
+              <div className="w-full min-w-0 max-w-md">
+                <DesktopAppModelListPicker
+                  id="codex-models"
                   value={value}
                   models={models}
+                  max={status.max_models}
                   loadedModel={status.loaded_model}
                   loading={loadingModels}
                   disabled={busy !== null}
                   onOpen={() => void loadModels()}
-                  onChange={(model) => {
-                    if (connected) setDraft(model);
-                    else void pickModel(model);
+                  onChange={(picks) => {
+                    if (connected) setDraft(picks);
+                    else void pickModels(picks);
                   }}
                 />
               </div>
@@ -410,7 +412,7 @@ export function CodexDesktopCard({
                 const kind = ask;
                 setAsk(null);
                 if (kind === "disconnect") void disconnect(true);
-                else if (kind === "model") void pickModel(value, true);
+                else if (kind === "model") void pickModels(value, true);
                 else void connect(true);
               }}
             >

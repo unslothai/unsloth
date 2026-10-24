@@ -57,11 +57,12 @@ export function DesktopAppModelPicker({
   const label = value === FOLLOW_LOADED ? follow : value;
   const needle = query.trim().toLowerCase();
   const options = [
-    { id: FOLLOW_LOADED, name: follow, loaded: false },
+    { id: FOLLOW_LOADED, name: follow, loaded: false, missing: false },
     ...models.map((model) => ({
       id: model.id,
       name: model.id,
       loaded: model.loaded,
+      missing: false,
     })),
   ].filter((option) => option.name.toLowerCase().includes(needle));
   // A saved pick that is no longer downloaded still shows, so the user sees what a slot is on.
@@ -71,7 +72,12 @@ export function DesktopAppModelPicker({
     !models.some((model) => model.id === value) &&
     value.toLowerCase().includes(needle)
   ) {
-    options.splice(1, 0, { id: value, name: value, loaded: false });
+    options.splice(1, 0, {
+      id: value,
+      name: value,
+      loaded: false,
+      missing: true,
+    });
   }
 
   return (
@@ -164,7 +170,14 @@ export function DesktopAppModelPicker({
                     <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
                   ) : null}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{option.name}</span>
+                  {option.missing ? (
+                    <span className="mt-0.5 block truncate text-ui-10 text-muted-foreground">
+                      {t("settings.agents.desktopApps.models.notDownloaded")}
+                    </span>
+                  ) : null}
+                </span>
                 {option.loaded ? (
                   <span className="shrink-0 rounded-full bg-emerald-500/10 px-1.5 text-ui-10 text-emerald-700 dark:text-emerald-400">
                     {t("settings.agents.desktopApps.models.loadedTag")}

@@ -19,11 +19,14 @@ export type CodexDesktopStatus = {
   held_by: string | null;
   held_by_pid: number | null;
   running: boolean;
-  // The model Codex is on while connected.
+  // Codex's default model, and every model in its catalog, while connected.
   model: string | null;
-  // What Studio has loaded now, and the saved pick (null follows the loaded model).
+  models: string[];
+  // What Studio has loaded now, and the saved list (empty follows the loaded model).
   loaded_model: string | null;
-  selected_model: string | null;
+  selected_models: string[];
+  // How many models the list holds, as `ollama launch codex-app`.
+  max_models: number;
   local: boolean;
 };
 
@@ -79,28 +82,29 @@ export async function fetchCodexDesktopModels(): Promise<DesktopAppModel[]> {
 }
 
 /** restart: undefined asks first when Codex is open, true restarts it, false switches it for its
- *  next launch. model: a catalog id, "" to follow the loaded model, undefined for the saved pick. */
+ *  next launch. models: catalog ids (the first is Codex's default), [] to follow the loaded
+ *  model, undefined for the saved list. */
 export function connectCodexDesktop(
   restart?: boolean,
-  model?: string,
+  models?: string[],
 ): Promise<CodexDesktopResult> {
   return call(
     "/connect",
     "POST",
-    { restart: restart ?? null, model: model ?? null },
+    { restart: restart ?? null, models: models ?? null },
     "Failed to connect Codex Desktop",
   );
 }
 
-export function setCodexDesktopModel(
-  model: string,
+export function setCodexDesktopModels(
+  models: string[],
   restart?: boolean,
 ): Promise<CodexDesktopResult> {
   return call(
-    "/model",
+    "/models",
     "PUT",
-    { model, restart: restart ?? null },
-    "Failed to change the Codex model",
+    { models, restart: restart ?? null },
+    "Failed to change the Codex models",
   );
 }
 

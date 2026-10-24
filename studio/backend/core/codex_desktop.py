@@ -9,10 +9,12 @@ terminal: it lasts exactly as long as this process, is switched back on Disconne
 Studio quit, and a crash is switched back the next time Studio starts. The record is shared with
 the CLI, so only one of them holds Codex at a time and either one cleans up after the other.
 
-Codex talks to Studio's own /v1 directly with a per-session key (no gateway, unlike Claude
-Desktop), so it names one model. The card picks it; the pick is loaded in Studio before Codex is
-pointed at it, and changing it while connected rewrites the model line and restarts Codex, which
-reads its model list only at startup.
+The card lists any number of Studio's models (like `ollama launch codex-app`); they become
+Codex's catalog, so each one is in Codex's own model picker, and the first is the default. Codex
+talks to a loopback gateway with the per-session key: Studio's /v1 answers only for loaded models,
+so the gateway loads a listed model the first time Codex asks for it. An empty list follows
+whatever Studio has loaded. Changing the list while connected rewrites the catalog and restarts
+Codex, which reads its model list only at startup.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ logger = get_logger(__name__)
 SHUTDOWN_QUIT_TIMEOUT = 2.5
 QUIT_TIMEOUT = 30.0
 PREFS_NAME = "codex-desktop-model.json"
+# How many models the card lists, as `ollama launch codex-app` (codexDesktopMaxModels).
+MAX_MODELS = 5
 
 
 class CodexDesktopError(Exception):
@@ -43,6 +47,7 @@ class CodexDesktopError(Exception):
 
 _lock = threading.RLock()
 _live: Optional[dict] = None
+_gateway: Optional[cx.Gateway] = None
 
 
 def agents_root() -> Path:
@@ -58,20 +63,33 @@ def _prefs_path() -> Path:
     return agents_root() / "app" / PREFS_NAME
 
 
-def saved_model() -> Optional[str]:
-    """The model picked on the card, kept across sessions; None follows the loaded model."""
+def normalize_models(models) -> list:
+    """Model ids in order, stripped, without blanks or repeats, at most MAX_MODELS."""
+    out = []
+    for model in models or ():
+        if isinstance(model, str) and model.strip() and model.strip() not in out:
+            out.append(model.strip())
+    return out[:MAX_MODELS]
+
+
+def saved_models() -> list:
+    """The models listed on the card, kept across sessions; empty follows the loaded model.
+    Reads the one-model file earlier builds wrote, too."""
     try:
         data = json.loads(_prefs_path().read_text(encoding = "utf-8"))
     except (OSError, ValueError):
-        return None
-    model = data.get("model") if isinstance(data, dict) else None
-    return model.strip() if isinstance(model, str) and model.strip() else None
+        return []
+    if not isinstance(data, dict):
+        return []
+    if isinstance(data.get("models"), list):
+        return normalize_models(data["models"])
+    return normalize_models([data.get("model")])
 
 
-def save_model(model: Optional[str]) -> None:
+def save_models(models) -> None:
     path = _prefs_path()
     path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    cd.write_file(path, json.dumps({"model": model}, indent = 2) + "\n")
+    cd.write_file(path, json.dumps({"models": normalize_models(models)}, indent = 2) + "\n")
 
 
 def loaded_models() -> list:
@@ -123,6 +141,7 @@ def status(loaded: Optional[Callable] = None) -> dict:
         current = _loaded_entry(None, loaded())
     except Exception:
         current = None
+    live_models = listed_models(live) if live is not None else []
     return {
         "supported": supported,
         "installed": app is not None,
@@ -133,9 +152,17 @@ def status(loaded: Optional[Callable] = None) -> dict:
         "held_by_pid": owner.get("pid") if held_elsewhere else None,
         "running": cx.is_running(app) if supported else False,
         "model": live["model"] if live is not None else None,
+        "models": live_models,
         "loaded_model": current.get("id") if current else None,
-        "selected_model": saved_model(),
+        "selected_models": saved_models(),
+        "max_models": MAX_MODELS,
     }
+
+
+def listed_models(state: dict) -> list:
+    """The models a live switch lists in Codex's catalog, in order."""
+    models = [m for m in state.get("models") or () if isinstance(m, str) and m]
+    return models or ([state["model"]] if state.get("model") else [])
 
 
 def _switch_back(state: dict, revoke: Callable) -> list:
@@ -169,32 +196,66 @@ def recover(revoke: Optional[Callable] = None) -> list:
     return notes
 
 
-def _resolve_model(
-    upstream: str, key: str, requested: Optional[str], loaded: Callable, load: Callable
-) -> dict:
-    """The catalog entry Codex will use: the pick (loaded first if it isn't), else the loaded
-    model."""
-    entry = _loaded_entry(requested, loaded())
-    if entry is not None:
-        return entry
-    if requested is None:
-        raise CodexDesktopError(
-            409, "no_model", "Load a model in Studio, or pick one here, then connect Codex."
-        )
-    try:
-        load(upstream, key, requested)
-    except Exception as exc:
-        raise CodexDesktopError(
-            409, "load_failed", f"Studio couldn't load {requested}: {exc}"
-        ) from exc
-    return _loaded_entry(requested, loaded()) or {"id": requested}
+def _resolve_models(
+    upstream: str, key: str, requested: list, loaded: Callable, load: Callable
+) -> list:
+    """The catalog entries Codex will list: the picks in order (the first, Codex's default,
+    loaded now if it isn't, so a bad pick fails here rather than in Codex; the rest load when
+    Codex first asks for them), else the loaded model."""
+    current = loaded()
+    if not requested:
+        entry = _loaded_entry(None, current)
+        if entry is None:
+            raise CodexDesktopError(
+                409, "no_model", "Load a model in Studio, or pick one here, then connect Codex."
+            )
+        return [entry]
+    first = requested[0]
+    if _loaded_entry(first, current) is None:
+        try:
+            load(upstream, key, first)
+        except Exception as exc:
+            raise CodexDesktopError(
+                409, "load_failed", f"Studio couldn't load {first}: {exc}"
+            ) from exc
+        current = loaded()
+    return [_loaded_entry(model, current) or {"id": model} for model in requested]
+
+
+def _start_gateway(upstream: str, key: str, load: Callable, loaded: Callable) -> cx.Gateway:
+    def listed() -> list:
+        live = _live
+        # Following the loaded model never loads one back: Codex just uses what Studio has.
+        return [] if not live or live.get("follow") else list(live.get("models") or ())
+
+    return cx.Gateway(
+        upstream,
+        key,
+        listed,
+        lambda model_id: cd.loaded_matches(model_id, loaded()),
+        lambda model_id: load(upstream, key, model_id),
+    ).start()
+
+
+def _stop_gateway() -> None:
+    global _gateway
+    gateway, _gateway = _gateway, None
+    if gateway is not None:
+        gateway.stop()
+
+
+def _write_catalog(config: Path, entries: list) -> None:
+    cx.write_file(
+        config.with_name(cx.CATALOG_NAME),
+        json.dumps(cx.model_catalog(entries, "list"), indent = 2) + "\n",
+    )
 
 
 def connect(
     upstream: str,
     username: str,
     restart: Optional[bool],
-    model: Optional[str] = None,
+    models: Optional[list] = None,
     *,
     loaded: Optional[Callable] = None,
     load: Optional[Callable] = None,
@@ -202,9 +263,9 @@ def connect(
     revoke: Optional[Callable] = None,
 ) -> dict:
     """Point the Codex app at this Studio. ``restart`` answers "Codex is open — restart it?" as
-    for Claude Desktop. ``model`` is the pick (saved for next time); None uses the saved pick, or
-    whatever Studio has loaded."""
-    global _live
+    for Claude Desktop. ``models`` is the list (saved for next time); None uses the saved list,
+    and an empty list follows whatever Studio has loaded."""
+    global _live, _gateway
     loaded = loaded or loaded_models
     load = load or cd.load_model
     mint = mint or mint_key
@@ -242,18 +303,20 @@ def connect(
             raise CodexDesktopError(
                 409, "bad_config", f"Couldn't use {config}: {exc} Nothing was changed."
             ) from exc
-        if model is not None:
-            save_model(model or None)
-        requested = saved_model() if model is None else (model or None)
+        if models is not None:
+            save_models(models)
+        requested = saved_models() if models is None else normalize_models(models)
         running = cx.is_running(app)
         if running and restart is None:
             return {"status": "needs_restart"}
 
         state = None
+        gateway = None
         key_id = key = None
         try:
             key, key_id = mint(username)
-            entry = _resolve_model(upstream, key, requested, loaded, load)
+            entries = _resolve_models(upstream, key, requested, loaded, load)
+            gateway = _start_gateway(upstream, key, load, loaded)
             if running and restart:
                 if not _quit(QUIT_TIMEOUT):
                     raise CodexDesktopError(
@@ -263,7 +326,7 @@ def connect(
                     )
                 # Codex may write its config while it shuts down, so read it again.
                 text = cx.read_file(config)
-            new_text, previous = cx.build(text, upstream, key, entry["id"], None)
+            new_text, previous = cx.build(text, gateway.base_url, key, entries[0]["id"], None)
             cx.load_toml(new_text)
             backup = None
             if text is not None:
@@ -271,8 +334,10 @@ def connect(
                 cx.write_file(backup, text)
             state = {
                 "path": str(config),
-                "base": upstream,
-                "model": entry["id"],
+                "base": gateway.base_url,
+                "model": entries[0]["id"],
+                "models": [entry["id"] for entry in entries],
+                "follow": not requested,
                 "key": key,
                 "key_id": key_id,
                 "owner": cx.owner_record("studio"),
@@ -282,14 +347,17 @@ def connect(
                 "backup": str(backup) if backup else None,
             }
             cx.write_state(path, state)
-            cx.write_file(
-                config.with_name(cx.CATALOG_NAME),
-                json.dumps(cx.model_catalog(entry, "list"), indent = 2) + "\n",
-            )
+            _write_catalog(config, entries)
             cx.write_file(config, new_text)
+            _live, _gateway = state, gateway
             if not running or restart:
                 cx.open_app(app)
         except BaseException as exc:
+            _live = None
+            if _gateway is gateway:
+                _gateway = None
+            if gateway is not None:
+                gateway.stop()
             if state is not None:
                 try:
                     cx.restore_files(state)
@@ -303,37 +371,38 @@ def connect(
             if isinstance(exc, FileNotFoundError):
                 raise CodexDesktopError(500, "missing_prompt", str(exc)) from exc
             raise
-        _live = state
-        logger.info("Codex app switched to Unsloth (%s).", entry["id"])
+        logger.info("Codex app switched to Unsloth (%s).", ", ".join(state["models"]))
         return {"status": "pending_restart" if running and not restart else "connected"}
 
 
-def set_model(
-    model: Optional[str],
+def set_models(
+    models: Optional[list],
     restart: Optional[bool],
     *,
     loaded: Optional[Callable] = None,
     load: Optional[Callable] = None,
 ) -> dict:
-    """Pick the model (None: follow what Studio has loaded). Not connected: saved for Connect.
-    Connected: loaded in Studio, written into config.toml and the catalog, and an open Codex is
-    restarted (``restart`` True), left for its next launch (False) or asked about (None)."""
+    """Set the list (empty: follow what Studio has loaded). Not connected: saved for Connect.
+    Connected: the first is loaded in Studio, the catalog and the model line are rewritten, and an
+    open Codex is restarted (``restart`` True), left for its next launch (False) or asked about
+    (None), since Codex reads its model list only at startup."""
     global _live
     loaded = loaded or loaded_models
     load = load or cd.load_model
-    model = model.strip() if isinstance(model, str) and model.strip() else None
+    models = normalize_models(models)
     with _lock:
         live = _live
         if live is None:
-            save_model(model)
+            save_models(models)
             return {"status": "saved"}
         app = cx.app_path()
         running = cx.is_running(app)
         if running and restart is None:
             return {"status": "needs_restart"}
-        entry = _resolve_model(live["base"], live["key"], model, loaded, load)
-        save_model(model)
-        if entry["id"] == live["model"]:
+        entries = _resolve_models(live["base"], live["key"], models, loaded, load)
+        save_models(models)
+        ids = [entry["id"] for entry in entries]
+        if ids == listed_models(live) and bool(live.get("follow")) == (not models):
             if not running and restart and app is not None:
                 cx.open_app(app)  # "Start Codex" with nothing to change
             return {"status": "connected"}
@@ -346,19 +415,19 @@ def set_model(
             text = cx.read_file(config) or ""
         except ValueError as exc:
             raise CodexDesktopError(409, "bad_config", str(exc)) from exc
-        new_text = cx.retarget(text, live, entry["id"])
+        new_text = cx.retarget(text, live, ids[0])
         if new_text is None:
             raise CodexDesktopError(
                 409,
                 "changed",
                 f"The model in {config} was changed in Codex; disconnect and connect again.",
             )
-        state = {**live, "model": entry["id"]}
+        # Keep every id this session ever listed: Codex may still hold one in its model line.
+        owned = ids + [model for model in cx.owned_models(live) if model not in ids]
+        state = {**live, "model": ids[0], "models": ids, "follow": not models}
+        state["previous_models"] = owned[len(ids):]
         cx.write_state(_state_path(), state)
-        cx.write_file(
-            config.with_name(cx.CATALOG_NAME),
-            json.dumps(cx.model_catalog(entry, "list"), indent = 2) + "\n",
-        )
+        _write_catalog(config, entries)
         cx.write_file(config, new_text)
         _live = state
         if restart and app is not None:
@@ -402,6 +471,7 @@ def disconnect(
             notes = _switch_back(live, revoke) + notes
         finally:
             _live = None
+            _stop_gateway()
         if running and not restart:
             notes.append("Restart Codex to go back to your usual setup.")
         if quit_ok and app is not None:
@@ -428,5 +498,6 @@ def shutdown(revoke: Optional[Callable] = None) -> None:
             notes = _switch_back(live, revoke)
         finally:
             _live = None
+            _stop_gateway()
     for note in notes:
         logger.info("Codex app: %s", note)
