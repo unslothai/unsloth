@@ -163,11 +163,13 @@ export function downloadBytes(models: PlanModel[]): number | null {
 export function modelSignature(
   nodes: Record<
     string,
-    { params?: Record<string, unknown> | null } | undefined
+    { params?: Record<string, unknown> | null; disabled?: boolean } | undefined
   >,
 ): string {
   const picks: string[] = [];
   for (const node of Object.values(nodes)) {
+    // A disabled block plans nothing: enabling it must ask the plan again.
+    if (node?.disabled) continue;
     for (const value of Object.values(node?.params ?? {})) {
       if (value && typeof value === "object" && "repo" in value) {
         const v = value as { repo?: unknown; variant?: unknown };

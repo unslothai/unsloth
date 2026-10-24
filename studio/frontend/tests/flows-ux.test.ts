@@ -126,6 +126,12 @@ test("Run asks the plan before starting and holds the run when models must downl
   assert.match(readSrc("features/flows/editor/toolbar.tsx"), /<DownloadRunDialog \/>/);
 });
 
+test("enabling a disabled block changes the model signature", () => {
+  const on = modelSignature({ n1: { params: { model: { repo: "a/chat" } } } });
+  const off = modelSignature({ n1: { params: { model: { repo: "a/chat" } }, disabled: true } });
+  assert.notEqual(on, off);
+});
+
 test("a download check is remembered only when it proves nothing must download", () => {
   const missing = [{ kind: "image", repo: "b/image", loaded: false, downloaded: false }];
   const issue = [{ node_id: "n1", message: "Prompt is not connected" }];

@@ -109,15 +109,15 @@ async function heldForDownloads(
       setTimeout(() => resolve(null), PLAN_CHECK_TIMEOUT_MS),
     ),
   ]).catch(() => null);
-  if (!plan) return false;
   const now = useDocStore.getState();
   const verdict = planCheck(
-    plan,
+    plan ?? { models: [], errors: [{ message: "no plan" }] },
     { flowId, models: signature },
     { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
   );
   // The flow or its model picks changed meanwhile: this plan no longer describes what Run would download.
   if (verdict === "stale") return true;
+  if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
   useUiStore.getState().setPendingRun({ options: { ...options }, plan });
