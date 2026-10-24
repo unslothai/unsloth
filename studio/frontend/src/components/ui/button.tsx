@@ -51,8 +51,8 @@ export const buttonVariants = cva(
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
-    // A filled action button has one shape at every text size, so sm, lg and hero read as the
-    // same control as default. Ghost and link stay compact for toolbars and inline actions.
+    // A filled action button has one shape at every text size, icon or not, so sm, lg and hero
+    // read as the same control as default. Ghost and link stay compact for toolbars and inline actions.
     compoundVariants: [
       {
         variant: [
@@ -64,9 +64,9 @@ export const buttonVariants = cva(
           "muted",
           "destructive",
         ],
-        size: ["sm", "lg", "hero"],
+        size: ["default", "sm", "lg", "hero"],
         class:
-          "h-9 gap-1.5 px-3 py-0 has-data-[icon=inline-end]:pr-2.5 has-data-[icon=inline-start]:pl-2.5",
+          "h-9 gap-1.5 px-3 py-0 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3",
       },
     ],
     defaultVariants: {
