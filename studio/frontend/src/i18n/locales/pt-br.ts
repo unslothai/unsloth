@@ -72,7 +72,7 @@ export const ptBR = {
       cursorDescription: "Mostra um ponteiro onde os modelos clicam, digitam e arrastam na página",
       askEveryTime: "Perguntar toda vez",
       permissionsTitle: "Permissões do agente",
-      permissionsDescription: "Escolha os padrões e adicione exceções para sites específicos. Campos de senha e de pagamento nunca são preenchidos, seja qual for a configuração.",
+      permissionsDescription: "Defina padrões e exceções por site. Campos de senha e de pagamento nunca são preenchidos.",
       site: "Site ou padrão",
       sitePlaceholder: "example.com ou *.example.com",
       default: "Padrão",

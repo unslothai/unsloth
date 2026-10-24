@@ -72,7 +72,7 @@ export const es = {
       cursorDescription: "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
       askEveryTime: "Preguntar cada vez",
       permissionsTitle: "Permisos del agente",
-      permissionsDescription: "Elige los valores predeterminados y añade excepciones para sitios concretos. Los campos de contraseña y de pago nunca se rellenan, digan lo que digan estos ajustes.",
+      permissionsDescription: "Define valores predeterminados y excepciones por sitio. Los campos de contraseña y de pago nunca se rellenan.",
       site: "Sitio o patrón",
       sitePlaceholder: "example.com o *.example.com",
       default: "Predeterminado",

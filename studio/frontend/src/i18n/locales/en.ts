@@ -69,7 +69,7 @@ export const en = {
       cursorDescription: "Show a pointer where models click, type and drag on the page",
       askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
-      permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",
+      permissionsDescription: "Set defaults and per-site exceptions. Password and payment fields are never filled.",
       site: "Site or pattern",
       sitePlaceholder: "example.com or *.example.com",
       default: "Default",
