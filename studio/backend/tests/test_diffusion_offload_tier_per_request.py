@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whole-module vs streamed offload chosen per request: a load that priced streaming for an eligible bf16 denoiser runs
-a request whose own step count prices whole with the denoiser pinned for that call, through the same hooks."""
+"""Whole-module vs streamed offload chosen per request."""
 
 from __future__ import annotations
 
@@ -51,8 +50,7 @@ def _whole(pipe, steps, **kw):
 
 
 def test_streamed_load_records_the_probe_for_requests(monkeypatch):
-    """RTX PRO 6000 at the family default (4 steps): streamed plan, the probe kept for per-request pricing. A card that
-    priced whole keeps the #15129 whole-module plan and no per-request state."""
+    """RTX PRO 6000 at 4 steps streams and keeps the probe; a card that priced whole keeps the #15129 plan."""
     flat = _klein_above_floor(monkeypatch)
     refined, plan = _priced(monkeypatch, 12544, flat, steps = 4, card = "rtx_pro_6000")
     assert plan.offload_policy == dm.OFFLOAD_GROUP
@@ -88,8 +86,7 @@ def test_request_step_count_picks_the_tier():
 
 
 def test_request_size_moves_the_crossover():
-    """More tokens per step (a larger canvas, a batch, CFG) make each step's compute cover more of its copy, so
-    streaming wins to more steps; a smaller canvas the other way."""
+    """More tokens per step (canvas, batch, CFG) let streaming win to more steps."""
     pipe = _tier_pipe("rtx_pro_6000")
     assert _whole(pipe, 8) is True
     assert _whole(pipe, 8, batch_size = 2) is False
@@ -153,7 +150,6 @@ def _request(state, steps = 8):
     )
 
 
-# the compiled profile swapped the attention backend; the load's identity follows the speed tier, not the backend
 LIVE = ("flux.2-klein", "dense:bfloat16|attn:_native_cudnn", "default")
 LOADED = ("flux.2-klein", "dense:bfloat16|attn:native", "default")
 RECORDED = ("dense:bfloat16|attn:native", "off")  # the eager renders' key
@@ -175,8 +171,7 @@ def _learned(monkeypatch):
 
 
 def test_request_gate_prices_and_reads_the_eager_peak(_learned):
-    """A deferred compile tier records no peak (and its profile may swap the attention backend): the pre-decode peak
-    the load's own key recorded on the eager renders sizes the pinned call."""
+    """A deferred compile tier records no peak: the eager renders' pre-decode peak sizes the pinned call."""
     state = _state()
     state.pipe._unsloth_peak_identity = LOADED
     whole, streamed, activation = _request(state)
@@ -204,7 +199,6 @@ def test_request_gate_reads_the_live_key_first(_learned, monkeypatch):
         dict(offload_policy = dm.OFFLOAD_MODEL),
         dict(transformer_cache = "fbcache"),
         dict(bg_compile = _Bg(True)),
-        # a graph that could still record over the streamed placement
         dict(graphs = (_Graph(declined = False),)),
     ],
 )
@@ -230,7 +224,7 @@ def test_request_gate_without_a_learned_peak_streams(_learned, monkeypatch):
 
 
 def test_request_gate_declines_condition_images(_learned):
-    """No learned peak covers a request's own condition images: it streams as the load placed it."""
+    """Condition-image requests stream."""
     state = _state()
     state.pipe._unsloth_peak_identity = LOADED
     assert (
@@ -315,8 +309,7 @@ def _cuda_net():
 
 
 def test_pin_for_call_is_bit_identical_and_streams_again():
-    """Every group resident for the call, the same output, then exactly the pre-call placement again (host copies
-    reused: the same host tensors back under each parameter)."""
+    """Every group resident for the call, same output, then the exact pre-call placement (same host tensors)."""
     torch, net, x, ref = _cuda_net()
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
     hosts = {id(p): p.data for p in net.blocks.parameters()}
@@ -356,8 +349,7 @@ def test_pin_for_call_needs_the_room(monkeypatch):
 def test_request_gate_keeps_the_eager_key_once_the_profile_rewrites_the_load_key(
     _learned, monkeypatch
 ):
-    """On an RTX PRO 6000 the deferred profile rewrites the load's own key too (cuDNN attention, the compiled tier),
-    and nothing records after its graph capture: the key the eager renders recorded under is remembered."""
+    """The deferred profile rewrites the load's key and nothing records after capture: the eager key is remembered."""
     live = {"id": ("flux.2-klein", *RECORDED)}
     monkeypatch.setattr(dif, "_live_peak_identity", lambda state: live["id"])
     state = _state()

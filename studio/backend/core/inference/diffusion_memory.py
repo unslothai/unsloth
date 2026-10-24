@@ -4032,13 +4032,9 @@ _WHOLE_MODULE_DECLINED_REASON = (
     "and {tflops:.0f} bf16 TFLOPS price a {steps}-step {side}px render at {model:.2f} s whole vs {group:.2f} s streamed"
 )
 
-# ``auto`` (default): whole-module offload only where its estimated render cost beats streaming; ``1``: always
-# (#15129); ``0``: never (the streamed plan as refined).
+# ``auto``: whole-module offload only where priced cheaper; ``1`` always (#15129); ``0`` never.
 WHOLE_MODULE_OFFLOAD_ENV = "UNSLOTH_DIFFUSION_WHOLE_MODULE_OFFLOAD"
-# ``0``: a load that priced streaming keeps it for every request (no per-request whole denoiser).
 WHOLE_MODULE_PER_REQUEST_ENV = "UNSLOTH_DIFFUSION_WHOLE_MODULE_PER_REQUEST"
-# Set on a pipe whose load priced streaming over whole-module offload for an eligible bf16 denoiser: the probe readings
-# a request prices its own step count with.
 WHOLE_TIER_ATTR = "_unsloth_whole_tier"
 
 
@@ -4046,30 +4042,20 @@ def per_request_whole_enabled() -> bool:
     return not _env_off(WHOLE_MODULE_PER_REQUEST_ENV)
 
 
-# Whole-module offload uploads the denoiser once per call, not overlapped with compute; streaming overlaps every
-# step's copy with that step's compute. Fit on FLUX.2-klein-4B bf16 1024^2 (real weights, 2 / 4 / 8-step renders):
-# the per-call cost the whole upload adds over streaming is 1.47x (B200) and 1.27-1.58x (RTX PRO 6000, two VMs) one
-# streamed step's transfer time.
+# Un-overlapped whole upload vs one streamed step's transfer: 1.47x B200, 1.27-1.58x RTX PRO 6000 (klein-4B bf16).
 _WHOLE_UPLOAD_FACTOR = 1.5
-# A resident step's time over 2 * params * image tokens FLOPs at the bf16 GEMM probe's rate: the probe is one large
-# GEMM, a DiT step also runs attention, norms and launches. Klein 1024^2 resident steps per probe-priced step: 1.38 on
-# the B200 (0.0296 s at a 1490 TFLOPS probe), 0.97 on the RTX PRO 6000 (0.0985 s at 309). 1.0 keeps both cards' calls
-# right (B200 whole from 2 steps; RTX PRO 6000 streamed at 2 and 4, whole at 8); 1.35 had the RTX PRO 6000 stream at 8.
+# Resident step time / probe-priced FLOPs: 1.38 B200, 0.97 RTX PRO 6000; 1.0 picks right on both, 1.35 does not.
 _DIT_COMPUTE_EFFICIENCY = 1.0
-# Planned render: Studio's default canvas.
 _COST_CANVAS_PX = 1024
-# DiT families patchify 2x2 latents of an 8x VAE: one token per 16x16 pixels.
+# 2x2 patches of an 8x VAE latent
 _DIT_PIXELS_PER_TOKEN = 16
 
 _OFFLOAD_COST_PROBES: dict = {}
 
 
 def _offload_cost_measurements() -> Optional[tuple[float, float]]:
-    """(pinned host-to-device GiB/s, bf16 GEMM TFLOPS) of the current CUDA device (the load's), measured once per
-    device and process; None off CUDA.
-
-    About 0.1 s and 0.3 GiB of device memory, released before returning. Best of a few CUDA-event-timed runs, so a
-    transient stall on a shared card reads as the card, not the stall."""
+    """(pinned host-to-device GiB/s, bf16 GEMM TFLOPS) of the current CUDA device, cached per device; None off CUDA.
+    Best of a few runs, so a transient stall on a shared card is not read as the card."""
     result = None
     key = None
     try:
@@ -4127,18 +4113,11 @@ def _whole_module_offload_costs(
     side_px: int = _COST_CANVAS_PX,
     tokens: Optional[int] = None,
 ) -> tuple[float, float]:
-    """(whole-module, streamed) seconds the denoiser costs over one ``steps``-step render; the rest of the render (text
-    encoders, VAE) is common to both and left out. ``tokens``: the image tokens one step runs (batch and CFG included),
-    else a single ``side_px`` square.
+    """(whole-module, streamed) denoiser seconds for one ``steps``-step render.
 
-    streamed: ``steps * max(compute, transfer)``, one step's copies overlapping its compute. The transfer is the whole
-    denoiser's bytes even when part of it is pinned resident: on the B200 a streamed klein step stayed at 0.145-0.170 s
-    with 0, 5471 or 6751 of its 7393 MiB resident. whole: one un-overlapped upload (``_WHOLE_UPLOAD_FACTOR`` x the
-    transfer) plus ``steps`` resident steps.
-
-    Against FLUX.2-klein-4B bf16 1024^2 (measured probe, then streamed transfer / resident compute per step): B200
-    51.5 GiB/s 1490 TFLOPS, 0.142 / 0.0296 s, whole from 2 steps; RTX PRO 6000 53.0 GiB/s 309 TFLOPS, 0.1415 / 0.0985
-    s, streamed at 2 and 4, whole at 8 (measured crossover 4.2 steps); A100 0.54 / <= 0.15 s, whole at 4."""
+    streamed = ``steps * max(compute, transfer)``; transfer counts the whole denoiser even when partly resident (B200
+    klein step stayed 0.145-0.170 s at 0-6751 of 7393 MiB resident). whole = one un-overlapped upload + resident steps.
+    """
     gib = max(0, int(dit_mib)) / 1024.0
     transfer = gib / max(float(h2d_gib_s), 1e-6)
     params = max(0, int(dit_mib)) * 2**20 / 2.0  # bf16
@@ -4160,16 +4139,9 @@ def prefer_whole_module_offload(
     logger: Any = None,
     steps: Optional[int] = None,
 ) -> MemoryPlan:
-    """``refined`` (what ``refine_plan_from_loaded_weights`` returned), or whole-module offload in its place.
-
-    Below the streamed tiers' floor whole-module offload holds the whole denoiser on the card while it runs; a few
-    hundred MiB more free VRAM used to switch to streaming all of it every step. Uploading it once per call beats
-    that where streaming is slow next to the card's compute (FLUX.2-klein-4B bf16 4 steps, B200: 0.34 vs 0.60 s per
-    image; A100: 2.34 vs 3.43 s), but not on a card that streams fast at few steps (RTX PRO 6000: 0.762 vs 0.743 s at
-    4 steps, 1.022 vs 1.181 s at 8). So with ``steps`` (the load's default step count) the switch is priced from this
-    card's measured host-to-device bandwidth and bf16 throughput (:func:`_whole_module_offload_costs`) and kept only
-    when it is cheaper; unmeasurable, or without ``steps``, it is kept as before. Plain bf16 only: an fp16 T4 run
-    pointed the other way. ``UNSLOTH_DIFFUSION_WHOLE_MODULE_OFFLOAD``: ``auto`` (default), ``1`` always, ``0`` never.
+    """``refined``, or whole-module offload in its place where it beats streaming. With ``steps`` the switch is
+    priced from this card's measured bandwidth and bf16 throughput (RTX PRO 6000 streams faster at 4 steps, B200 does
+    not); unmeasurable or without ``steps`` it is kept. Plain bf16 only: an fp16 T4 run pointed the other way.
     """
     switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
     if switch in ("0", "off", "false", "no", "never"):
@@ -4238,8 +4210,6 @@ def prefer_whole_module_offload(
                     if logger is not None:
                         logger.info("diffusion.memory: %s", declined)
                     if per_request_whole_enabled():
-                        # the streamed plan is placed; a request whose own step count prices whole runs whole
-                        # (whole_tier_for_request), through the same offload hooks
                         try:
                             setattr(
                                 pipe,
@@ -4284,10 +4254,8 @@ def whole_tier_request_costs(
     cfg: Optional[bool] = None,
     condition_pixels: int = 0,
 ) -> Optional[tuple[float, float]]:
-    """(whole, streamed) seconds :func:`_whole_module_offload_costs` prices this request's denoise at, from the probe
-    its load read; None for a pipe whose load did not price streaming over an eligible whole denoiser
-    (:data:`WHOLE_TIER_ATTR`), or with the per-request choice off. The tokens are the request's own: canvas, condition
-    images, batch, and the doubled batch of a CFG call."""
+    """(whole, streamed) seconds for this request's own tokens (canvas, condition images, batch, CFG); None when the
+    load did not record :data:`WHOLE_TIER_ATTR` or the per-request choice is off."""
     tier = getattr(pipe, WHOLE_TIER_ATTR, None)
     if not isinstance(tier, dict) or steps is None or not per_request_whole_enabled():
         return None
@@ -4319,15 +4287,10 @@ def pin_denoiser_for_call(
     activation_mib: int,
     logger: Any = None,
 ) -> Optional[Callable[[], None]]:
-    """Make every streamed offload group of ``pipe.transformer`` resident for one call (the whole-module tier through
-    the streamed tier's own hooks); returns the release that streams exactly those groups again, or None (nothing
-    pinned: the call streams as placed).
+    """Pin every streamed offload group of ``pipe.transformer`` for one call; returns the release, or None.
 
-    The hooks stay and the blocks compile below them (``compile_below_offload_hooks``), so neither the compiled code
-    nor the host copies change: a pin moves each tensor from its pinned host copy, a release points it back. Pinned
-    only when the card has the room now: the groups' bytes plus ``activation_mib`` (the learned pre-decode peak of
-    this request's size) within free memory, the VAE Budget reserve kept, plus the allocator's reusable cache. All or
-    nothing: a partial pin is released again."""
+    The hooks stay and blocks compile below them, so compiled code never sees the pin. Pinned only if the groups plus
+    ``activation_mib`` fit free memory now (VAE reserve kept); all or nothing."""
     transformer = getattr(pipe, "transformer", None)
     try:
         import torch

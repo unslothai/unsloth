@@ -3090,9 +3090,7 @@ def _start_peak_probe(state: Any) -> Any:
 
 
 def _graphs_settled_eager(state: Any) -> bool:
-    """No CUDA graph can record over this load's denoiser placement any more: nothing alive on its card, and every
-    handle poisoned or declined for the load (a drop the speed check made). A whole-step or per-block recording keys on
-    the weights' addresses, so moving them would re-record."""
+    """No CUDA graph can still record over the denoiser placement (graphs key on weight addresses)."""
     pipe = getattr(state, "pipe", None)
     handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()) or tuple(
         getattr(state, "cuda_graphs", ()) or ()
@@ -3129,20 +3127,16 @@ def _whole_tier_for_request(
     workflow: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[tuple[float, float, int]]:
-    """``(whole s, streamed s, activation MiB)`` when this request runs the streamed denoiser whole for the call (its
-    own step count and size price whole-module offload cheaper, ``whole_tier_request_costs``), else None: it streams
-    as the load placed it. Only where nothing compiled or recorded depends on the placement: the blocks compile below
-    their offload hooks, so a pin is a weight move the compiled code never sees, but a background compile still
-    pending or a CUDA graph that could still record over the streamed placement keeps the load's plan. The activation
-    room is this machine's learned pre-decode peak for the request's size; unmeasured, the call streams (and
-    records it)."""
+    """``(whole s, streamed s, activation MiB)`` if this request should run the denoiser whole, else None.
+    Blocks compile below their offload hooks, so compiled code never sees the pin; a pending background compile or a
+    CUDA graph that could still record keeps the streamed plan. Without a learned pre-decode peak the call streams."""
     pipe = getattr(state, "pipe", None)
     if getattr(state, "offload_policy", None) != OFFLOAD_GROUP or getattr(
         state, "transformer_cache", None
     ):
         return None
     if int(condition_pixels or 0) > 0:
-        # no learned peak covers this request's own condition images: it streams as placed
+        # no learned peak covers condition images
         return None
     try:
         family, label, speed = _live_peak_identity(state)
@@ -3150,8 +3144,7 @@ def _whole_tier_for_request(
         return None
     tier_info = getattr(pipe, WHOLE_TIER_ATTR, None)
     if isinstance(tier_info, dict) and speed == SPEED_OFF:
-        # The eager renders' key, kept for after a deferred profile engages: it rewrites the load's key (speed tier,
-        # attention backend), and a render after a graph capture records under no key at all.
+        # remembered: a deferred profile later rewrites the load's key, and post-capture renders record under none
         tier_info.setdefault("eager_peak_label", without_cfg_off(str(label)))
     costs = whole_tier_request_costs(
         pipe,
@@ -3171,9 +3164,7 @@ def _whole_tier_for_request(
         return None
     if speed is None:
         return None
-    # A deferred compile tier records nothing: its first renders ran eager (speed ``off``) under the load's label,
-    # with the attention backend the profile may swap since. That tier's pre-decode peak, which a compiled forward of
-    # the same graph does not exceed, stands in.
+    # a deferred compile tier records nothing: its eager peak (not exceeded when compiled) stands in
     keys = [(label, speed), (label, SPEED_OFF)]
     loaded = getattr(pipe, "_unsloth_peak_identity", None)
     if isinstance(loaded, tuple) and len(loaded) == 3:
@@ -3194,7 +3185,6 @@ def _whole_tier_for_request(
             width = width,
             height = height,
             batch_size = batch_size,
-            # a non-text-to-image request reads the peak recorded under its own workflow
             quant = with_workflow(key_label, workflow),
             static_seed = False,
             phase = "pre_decode",
@@ -10559,7 +10549,6 @@ class DiffusionBackend:
                             graphs = peak_graphs,
                         )
                         try:
-                            # priced at the load's default step count: the plan is made once per load
                             plan_steps, _ = default_generation_params(
                                 *((fam.name,) if is_flux3_family(fam) else ()),
                                 gguf_filename,
@@ -14209,7 +14198,6 @@ class DiffusionBackend:
                     state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)
                 except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
                     state.pipe._unsloth_peak_cfg = None
-                # This request's own step count and size may price the streamed denoiser whole for the call
                 whole_tier = None
                 if _hires_pass is None and not aux_pass and not bg_eager:
                     try:
@@ -14242,7 +14230,7 @@ class DiffusionBackend:
                                 release_exc,
                             )
 
-                # a whole-denoiser call's peak is not the streamed placement's: it records under no key
+                # a whole-denoiser call's peak is not the streamed placement's
                 peak_probe = None if whole_tier is not None else _start_peak_probe(state)
                 decode_restores: list = []
                 try:
@@ -14316,8 +14304,7 @@ class DiffusionBackend:
                             if state.te_releaser is not None:
                                 state.te_releaser.release()
                             if whole_tier is not None and not whole_release:
-                                # uploaded once, after the encode (whole-module offload's order), streamed again
-                                # at the decode
+                                # pinned after the encode, released before the decode
                                 release = pin_denoiser_for_call(
                                     state.pipe,
                                     getattr(guard_target, "torch_device", None) or state.device,
@@ -14342,7 +14329,6 @@ class DiffusionBackend:
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
-                            # the decode runs in the streamed placement's room
                             _release_whole_denoiser()
                             # encoder residency lent to the decode streams again only if free memory is short now
                             restore = release_for_decode(

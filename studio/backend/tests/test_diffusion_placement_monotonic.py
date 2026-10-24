@@ -381,8 +381,7 @@ def test_unmeasured_denoisers_keep_the_streamed_plan(monkeypatch, family, quant)
     assert "whole_module_kept_below_floor_mib" not in plan.estimates
 
 
-# Measured per card on FLUX.2-klein-4B bf16 1024^2 (7393 MiB denoiser): streamed step transfer and resident step
-# compute, s. Injected as the (host-to-device GiB/s, bf16 TFLOPS) probe that reproduces them.
+# (GiB/s, TFLOPS) probes reproducing measured klein-4B bf16 1024^2 per-step transfer / compute.
 KLEIN_DIT_MIB = 7393
 CARDS = {
     "b200": (0.142, 0.0296),
@@ -467,7 +466,6 @@ def test_whole_module_offload_is_kept_only_where_it_is_cheaper(monkeypatch, card
         assert plan.offload_policy == dm.OFFLOAD_MODEL
         assert plan.estimates["whole_module_kept_below_floor_mib"] == 10400
     else:
-        # the refined streamed plan, plus only the priced reason and estimates
         assert plan.offload_policy == dm.OFFLOAD_GROUP
         assert "whole_module_kept_below_floor_mib" not in plan.estimates
         assert replace_fields(plan) == replace_fields(refined)
@@ -549,8 +547,7 @@ def test_plans_outside_the_window_are_unchanged_by_pricing(monkeypatch, card, st
 @pytest.mark.parametrize(
     "probe, decisions",
     [
-        # Real probe readings (GiB/s, TFLOPS): exclusive B200, and a Colab RTX PRO 6000 (G4) where the measured
-        # renders were 2 steps 0.333 streamed vs 0.430 whole, 4 steps 0.616 vs 0.623, 8 steps 1.182 vs 1.024.
+        # real probe readings: B200, and RTX PRO 6000 (measured streamed at 2 and 4 steps, whole at 8)
         ((51.5, 1490.0), {2: True, 4: True, 8: True}),
         ((52.97, 309.0), {2: False, 4: False, 8: True}),
     ],
