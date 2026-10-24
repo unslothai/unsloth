@@ -780,7 +780,8 @@ class FastDecisionModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
+        random_state = None,
         max_seq_length = None,
         use_rslora = False,
         use_dora = False,
