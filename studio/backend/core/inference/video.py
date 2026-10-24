@@ -4275,6 +4275,27 @@ def _return_direct_loaded_modules(
             )
 
 
+def _h3_pre_move_copy_if_uncached(
+    repo_id: str,
+    filename: str,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    verify: bool = True,
+) -> Optional[Path]:
+    """``video_minimax_h3.h3_pre_move_copy_if_uncached``, failing closed (fetch as usual) on any error except a
+    cancellation, which surfaces as the load's own cancel. Planners pass ``verify=False``: they decide from the pinned
+    size (or an already known sha256) and never hash a copied 27 GB file inside a size request; the load verifies."""
+    from .video_minimax_h3 import H3HashCancelled, h3_pre_move_copy_if_uncached
+    try:
+        return h3_pre_move_copy_if_uncached(
+            repo_id, filename, cancel_event = cancel_event, verify = verify
+        )
+    except H3HashCancelled:
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -5506,7 +5527,9 @@ class VideoBackend:
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-        requests = self._h3_native_requests(repo_id, filename, qwen_filename)
+        requests = self._h3_native_requests(
+            repo_id, filename, qwen_filename, cancel_event = cancel_event
+        )
         total = 0
         try:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is the size of a download
@@ -5541,7 +5564,19 @@ class VideoBackend:
                 local = root
             elif root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
-                local = resolve_local_gguf_child(root, wanted)
+                from .video_minimax_h3 import h3_pre_move_bundle_file
+                try:
+                    local = resolve_local_gguf_child(root, wanted)
+                except FileNotFoundError:
+                    # The request builder routed here on a pre-move name of the right size; the bytes must match too.
+                    local = h3_pre_move_bundle_file(root, wanted, cancel_event = cancel_event)
+                    if local is None:
+                        raise
+            elif (
+                pre_move := _h3_pre_move_copy_if_uncached(repo, wanted, cancel_event)
+            ) is not None:
+                # Pre-move install: same bytes under the old name (hash-checked), already counted present by the plan.
+                local = pre_move
             else:
                 try:
                     local = Path(
@@ -5556,7 +5591,10 @@ class VideoBackend:
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
-                    raise h3_download_error(repo, wanted, exc) from exc
+                    from .video_minimax_h3 import h3_cache_miss, h3_offline_miss_error
+                    if not h3_cache_miss(exc):
+                        raise h3_download_error(repo, wanted, exc) from exc
+                    raise h3_offline_miss_error(repo, wanted) from exc
             resolved.append(local)
 
         engine = SdCppEngine(binary)
@@ -6555,16 +6593,23 @@ class VideoBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         repo = h3_te_quant_source(scheme)
+        if _h3_pre_move_copy_if_uncached(repo, filename, cancel) is not None:
+            # Staged before the official-provenance move: the same bytes are already on disk under the old name.
+            return ("text_encoder",)
         try:
-            hf_hub_download_with_xet_fallback(
-                repo,
-                filename,
-                hf_token,
-                cancel_event = cancel,
-                cache_dir = hub_cache_dir(),
-                reuse_other_cache_root = True,
-                local_files_only = local_files_only,
-            )
+            try:
+                hf_hub_download_with_xet_fallback(
+                    repo,
+                    filename,
+                    hf_token,
+                    cancel_event = cancel,
+                    cache_dir = hub_cache_dir(),
+                    reuse_other_cache_root = True,
+                    local_files_only = local_files_only,
+                )
+            except Exception as miss:  # noqa: BLE001 -- a cache-only miss may have a pre-move copy
+                from .video_minimax_h3_te import h3_te_quant_pre_move_copy
+                h3_te_quant_pre_move_copy(filename, miss)
         except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
             if cancel.is_set():
                 raise
@@ -7400,7 +7445,13 @@ class VideoBackend:
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
                 self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
             )
-            if h3_te_repo:
+            if h3_te_repo and any(
+                _h3_pre_move_copy_if_uncached(h3_te_repo, name, verify = False) is not None
+                for name, _ in h3_te_files
+            ):
+                # Nothing to stage, but still in required_bytes (the picker derives the companion size from it).
+                total += sum(int(size) for _name, size in h3_te_files)
+            elif h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
                 listing = _video_listing_repo(base)
@@ -7504,7 +7555,12 @@ class VideoBackend:
         }
 
     @staticmethod
-    def _h3_bundled_repo(repo_id: str, filename: str, hub_repo: str) -> str:
+    def _h3_bundled_repo(
+        repo_id: str,
+        filename: str,
+        hub_repo: str,
+        cancel_event: Any = None,
+    ) -> str:
         """``repo_id`` when it is a LOCAL directory that already holds ``filename``, else
         ``hub_repo``.
 
@@ -7518,7 +7574,12 @@ class VideoBackend:
             try:
                 resolve_local_gguf_child(root, filename)
             except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
-                return hub_repo
+                from .video_minimax_h3 import h3_pre_move_bundle_file
+
+                # Hash-checked here, not only at load: a same-size impostor must keep the Hub copy, not route the load
+                # to a bundle it then refuses. Memoized, so plan and load hash once.
+                if h3_pre_move_bundle_file(root, filename, cancel_event = cancel_event) is None:
+                    return hub_repo
             return repo_id
         return hub_repo
 
@@ -7530,7 +7591,11 @@ class VideoBackend:
 
     @staticmethod
     def _h3_native_requests(
-        repo_id: str, filename: str, qwen_filename: str
+        repo_id: str,
+        filename: str,
+        qwen_filename: str,
+        *,
+        cancel_event: Any = None,
     ) -> tuple[tuple[str, str], ...]:
         """``(repo, filename)`` for the four native H3 components, in download order.
 
@@ -7547,13 +7612,13 @@ class VideoBackend:
             (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (
                 VideoBackend._h3_bundled_repo(
-                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE)
+                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE), cancel_event
                 ),
                 H3_VIDEO_VAE,
             ),
             (
                 VideoBackend._h3_bundled_repo(
-                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE)
+                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE), cancel_event
                 ),
                 H3_AUDIO_VAE,
             ),
@@ -7618,9 +7683,14 @@ class VideoBackend:
                     # about which snapshot the repack's cache holds, and a foreign sha would only ever be a pinned miss.
                     revision = getattr(info, "sha", None) if meta_repo == repo else None
                     if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
-                        missing_files.setdefault(repo, set()).add(filename)
-                        entry["bytes"] += size
-                        total += size
+                        if _h3_pre_move_copy_if_uncached(repo, filename, verify = False) is not None:
+                            # Read in place; staging the official name would make snapshot_download refetch it
+                            # while the plan advertises zero bytes.
+                            entry["files"].remove(filename)
+                        else:
+                            missing_files.setdefault(repo, set()).add(filename)
+                            entry["bytes"] += size
+                            total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback

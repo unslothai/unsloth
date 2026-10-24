@@ -1271,6 +1271,254 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return repo_id
 
 
+# Official-provenance files are byte-identical to their pre-move names (unsloth paths, then the Comfy-Org repack), so a
+# cache-only load of a pre-move install reads those, ONLY on a miss and only with the pinned sha256; fetches stay unsloth.
+# filename -> (sha256, size in bytes, unsloth repo, ((repo, pre-move filename), ...) in preference order).
+H3_PRE_MOVE_COPIES: dict[str, tuple[str, int, str, tuple[tuple[str, str], ...]]] = {
+    H3_VIDEO_VAE: (
+        "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+        5207808496,
+        H3_COMPONENT_REPO,
+        (
+            (H3_COMPONENT_REPO, "vae/minimax_h3_video_vae_fp16.safetensors"),
+            ("Comfy-Org/MiniMax-H3", "vae/minimax_h3_video_vae_fp16.safetensors"),
+        ),
+    ),
+    H3_AUDIO_VAE: (
+        "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+        605254808,
+        H3_COMPONENT_REPO,
+        (
+            (H3_COMPONENT_REPO, "vae/minimax_h3_audio_vae_fp32.safetensors"),
+            ("Comfy-Org/MiniMax-H3", "vae/minimax_h3_audio_vae_fp32.safetensors"),
+        ),
+    ),
+    "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors": (
+        "bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923",
+        27141342152,
+        "unsloth/MiniMax-H3-FP8",
+        (
+            (
+                "unsloth/MiniMax-H3-FP8",
+                "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+            ),
+            (
+                "Comfy-Org/MiniMax-H3",
+                "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+            ),
+        ),
+    ),
+}
+
+_SHA256_MEMO: dict[tuple[str, int, int], str] = {}
+
+
+class H3HashCancelled(RuntimeError):
+    """The load that asked for a pre-move copy was cancelled while its bytes were being hashed."""
+
+
+def _file_sha256(
+    path: Path,
+    cancel_event: Any = None,
+    *,
+    compute: bool = True,
+) -> Optional[str]:
+    """sha256 of ``path``: the ``blobs/<sha256>`` link name when present, else hashed once per process (cancellable).
+    Without ``compute`` only those cheap answers (blob name, memo), else None: a planner never reads the bytes."""
+    import hashlib
+    import re
+
+    try:
+        real = Path(os.path.realpath(path))
+        if real.parent.name == "blobs" and re.fullmatch(r"[0-9a-f]{64}", real.name):
+            return real.name
+        stat = real.stat()
+        key = (str(real), stat.st_size, stat.st_mtime_ns)
+        if key not in _SHA256_MEMO:
+            if not compute:
+                return None
+            digest = hashlib.sha256()
+            with open(real, "rb") as handle:
+                for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise H3HashCancelled("Cancelled while hashing a pre-move MiniMax-H3 copy.")
+                    digest.update(chunk)
+            _SHA256_MEMO[key] = digest.hexdigest()
+        return _SHA256_MEMO[key]
+    except OSError:
+        return None
+
+
+def _matches_pinned(
+    path: Optional[Path],
+    filename: str,
+    cancel_event: Any = None,
+    *,
+    verify: bool = True,
+) -> bool:
+    """Whether ``path`` holds the pinned bytes of ``filename``. Without ``verify`` (planners) the pinned size decides
+    unless a cheap sha256 is known; the load always verifies, so a same-size file with other bytes is refused there."""
+    pinned = H3_PRE_MOVE_COPIES.get(filename)
+    if pinned is None or path is None:
+        return False
+    try:
+        if not path.is_file() or path.stat().st_size != pinned[1]:
+            return False
+    except OSError:
+        return False
+    if not verify:
+        known = _file_sha256(path, compute = False)
+        return known is None or known == pinned[0]
+    return _file_sha256(path, cancel_event) == pinned[0]
+
+
+def h3_pre_move_bundle_file(
+    root: Path,
+    filename: str,
+    *,
+    verify: bool = True,
+    cancel_event: Any = None,
+) -> Optional[Path]:
+    """``filename`` under a local bundle ``root`` by its pre-move name. Without ``verify`` only name and size."""
+    pinned = H3_PRE_MOVE_COPIES.get(filename)
+    if pinned is None:
+        return None
+    from .diffusion_families import resolve_local_gguf_child
+
+    for _repo, old_name in pinned[3]:
+        try:
+            child = resolve_local_gguf_child(Path(root), old_name)
+        except Exception:  # noqa: BLE001 -- not in this bundle
+            continue
+        if verify and _matches_pinned(child, filename, cancel_event):
+            return child
+        if not verify:
+            try:
+                if child.stat().st_size == pinned[1]:
+                    return child
+            except OSError:
+                pass
+    return None
+
+
+def _h3_cache_roots() -> tuple[Optional[str], ...]:
+    """Every HF cache root a native H3 fetch can resolve from (``reuse_other_cache_root``), live root first."""
+    roots: list[Optional[str]] = []
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots.append(str(active_hf_hub_cache()))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+        roots += [str(legacy_hf_cache_dir()), str(hf_default_cache_dir())]
+    except Exception:  # noqa: BLE001
+        pass
+    roots.append(None)
+    return tuple(dict.fromkeys(roots))
+
+
+def h3_pre_move_copy_if_uncached(
+    repo_id: str,
+    filename: str,
+    cache_dirs: Optional[tuple[Optional[str], ...]] = None,
+    *,
+    cancel_event: Any = None,
+    verify: bool = True,
+) -> Optional[Path]:
+    """The hash-identical pre-move copy to read INSTEAD of fetching ``repo_id``/``filename``, else None (a cached
+    official copy wins). Planners and loaders share this one question so plan and load never disagree. No network."""
+    if filename not in H3_PRE_MOVE_COPIES or Path(repo_id).expanduser().exists():
+        return None
+    from huggingface_hub import try_to_load_from_cache
+
+    roots = _h3_cache_roots() if cache_dirs is None else cache_dirs
+    # Only roots the fetch resolves (live + huggingface_hub's import-time None) count; a legacy-root hit must not win.
+    reachable = (roots[0], None) if cache_dirs is None and roots else roots
+    for cache_dir in dict.fromkeys(reachable):
+        try:
+            hit = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(hit, str):
+            return None
+    return h3_pre_move_cached_copy(filename, roots, cancel_event = cancel_event, verify = verify)
+
+
+def h3_pre_move_cached_copy(
+    filename: str,
+    cache_dirs: Optional[tuple[Optional[str], ...]] = None,
+    *,
+    cancel_event: Any = None,
+    verify: bool = True,
+) -> Optional[Path]:
+    """A hash-identical copy of ``filename`` already in an HF cache under its pre-move name, else None. No network."""
+    pinned = H3_PRE_MOVE_COPIES.get(filename)
+    if pinned is None:
+        return None
+    from huggingface_hub import try_to_load_from_cache
+
+    if cache_dirs is None:
+        cache_dirs = _h3_cache_roots()
+    for repo, old_name in pinned[3]:
+        for cache_dir in cache_dirs:
+            try:
+                hit = try_to_load_from_cache(repo, old_name, cache_dir = cache_dir)
+            except Exception:  # noqa: BLE001 -- an unreadable root just falls through
+                continue
+            if isinstance(hit, str) and _matches_pinned(
+                Path(hit), filename, cancel_event, verify = verify
+            ):
+                return Path(hit)
+            # Staging another file of the repo moves refs/main to a snapshot without the pre-move name; the bytes
+            # stay in the older snapshot, so look there too (newest first).
+            for older in _older_snapshot_copies(repo, old_name, cache_dir, hit):
+                if _matches_pinned(older, filename, cancel_event, verify = verify):
+                    return older
+    return None
+
+
+def _older_snapshot_copies(
+    repo_id: str, filename: str, cache_dir: Optional[str], seen: Any
+) -> list[Path]:
+    try:
+        from huggingface_hub import constants
+        from huggingface_hub.file_download import repo_folder_name
+
+        root = Path(cache_dir or constants.HF_HUB_CACHE)
+        snapshots = root / repo_folder_name(repo_id = repo_id, repo_type = "model") / "snapshots"
+        hits = [p for p in snapshots.glob(f"*/{filename}") if p.is_file() and str(p) != seen]
+    except Exception:  # noqa: BLE001 -- an unreadable root just falls through
+        return []
+    return sorted(hits, key = lambda p: p.parent.stat().st_mtime, reverse = True)
+
+
+def h3_offline_miss_error(repo_id: str, filename: str) -> RuntimeError:
+    """The error for a native H3 file a cache-only load cannot find, naming what to fetch and how."""
+    role = {
+        H3_VIDEO_VAE: "video VAE",
+        H3_AUDIO_VAE: "audio VAE",
+        H3_QWEN_Q2: "text encoder",
+        H3_QWEN_Q4: "text encoder",
+    }.get(filename, "denoiser")
+    pinned = H3_PRE_MOVE_COPIES.get(filename)
+    size = f" ({pinned[1] / 1024**3:.1f} GiB)" if pinned else ""
+    return RuntimeError(
+        f"MiniMax-H3 needs its {role} {filename}{size} from {repo_id}, and it is not in the local Hugging Face "
+        "cache. This load could not download it (offline, or a load that may only use cached files). Connect to "
+        "the internet and load MiniMax-H3 once to fetch it; after that it loads offline."
+    )
+
+
+def h3_cache_miss(exc: BaseException) -> bool:
+    """Whether a fetch failed only because the file is not cached and the Hub could not be asked."""
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(exc, LocalEntryNotFoundError)
+
+
 # Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
 # the estimate still adds that buffer on top of every file, plus a margin.
 H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"

@@ -9,6 +9,7 @@ import json
 import dataclasses
 import functools
 import inspect
+import os
 import sys
 import threading
 import time
@@ -13536,3 +13537,619 @@ def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
     _load_gguf(backend, tmp_path)
     assert speed_offload and set(speed_offload) == {not split_expected}
     assert (seen == [backend._state.pipe]) if moved else (seen == [])
+
+
+_PRE_MOVE_BYTES = b"pre-move sentinel"
+
+
+def _pin_pre_move_copies(monkeypatch):
+    """Shrink the pinned table to sentinel bytes so the hash check runs for real on a tiny file."""
+    import hashlib
+
+    from core.inference import video_minimax_h3 as h3
+
+    sha = hashlib.sha256(_PRE_MOVE_BYTES).hexdigest()
+    table = {
+        name: (sha, len(_PRE_MOVE_BYTES), repo, copies)
+        for name, (_sha, _size, repo, copies) in h3.H3_PRE_MOVE_COPIES.items()
+    }
+    monkeypatch.setattr(h3, "H3_PRE_MOVE_COPIES", table)
+    monkeypatch.setattr(h3, "_SHA256_MEMO", {})
+    return sha
+
+
+def _seed_hub_cache(
+    cache,
+    repo,
+    filename,
+    sha,
+    payload,
+    *,
+    symlink = True,
+):
+    """One cached file in huggingface_hub's on-disk layout (blobs/<sha256> + snapshot entry + refs/main)."""
+    root = cache / ("models--" + repo.replace("/", "--"))
+    commit = "c" * 40
+    (root / "refs").mkdir(parents = True, exist_ok = True)
+    (root / "refs" / "main").write_text(commit)
+    entry = root / "snapshots" / commit / filename
+    entry.parent.mkdir(parents = True, exist_ok = True)
+    if symlink:
+        blob = root / "blobs" / sha
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(payload)
+        entry.symlink_to(os.path.relpath(blob, entry.parent))
+    else:
+        entry.write_bytes(payload)
+    return entry
+
+
+def _offline_h3_native_load(
+    monkeypatch,
+    tmp_path,
+    cache,
+    *,
+    online = False,
+):
+    """The native load with only the denoiser and encoder cached at their current names; the VAEs miss the cache the
+    way an offline lookup of the post-move paths does."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    _force_device_target(monkeypatch, video_mod, "cuda")
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    _shared_setup_11(monkeypatch, sd_cpp_backend)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(cache))
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: cache)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: cache)
+
+    downloads = []
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        downloads.append(wanted)
+        if wanted.startswith("vae/") and not online:
+            raise LocalEntryNotFoundError(
+                "Cannot find the requested files in the disk cache and outgoing traffic has been disabled."
+            )
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    seen = {}
+    from core.inference import sd_cpp_args
+
+    real_files = sd_cpp_args.SdCppModelFiles
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return real_files(**kwargs)
+
+    monkeypatch.setattr(sd_cpp_args, "SdCppModelFiles", _capture)
+    _shared_setup_8(_download, gpu_arbiter, monkeypatch)
+    seen["__downloads"] = downloads
+    return seen
+
+
+@pytest.mark.parametrize("repo", ["unsloth/MiniMax-H3-GGUF", "Comfy-Org/MiniMax-H3"])
+def test_h3_native_offline_reuses_a_hash_identical_pre_move_vae(monkeypatch, tmp_path, repo):
+    """#14003 moved the native VAEs to vae/official/. An install staged before the move holds the same bytes under
+    vae/ (the unsloth repo, or the Comfy-Org repack before that), so an offline load used to work and then failed with
+    huggingface_hub's bare cache miss. The cached copy is reused when its sha256 is the unsloth file's."""
+    from core.inference.video_minimax_h3 import H3_PRE_MOVE_COPIES
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    for _name, (_sha, _size, _repo, copies) in H3_PRE_MOVE_COPIES.items():
+        for copy_repo, old_name in copies:
+            if copy_repo == repo and old_name.startswith("vae/"):
+                _seed_hub_cache(cache, repo, old_name, sha, _PRE_MOVE_BYTES)
+    seen = _offline_h3_native_load(monkeypatch, tmp_path, cache)
+    assert Path(os.path.realpath(seen["vae"])).name == sha
+    assert "/models--" + repo.replace("/", "--") + "/" in seen["vae"]
+    assert Path(os.path.realpath(seen["audio_vae"])).name == sha
+
+
+def test_h3_native_offline_hashes_a_copied_cache_entry(monkeypatch, tmp_path):
+    """A cache without symlinks (Windows) holds plain files: the bytes are hashed instead of trusting a name."""
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ):
+        _seed_hub_cache(cache, "unsloth/MiniMax-H3-GGUF", old, sha, _PRE_MOVE_BYTES, symlink = False)
+    seen = _offline_h3_native_load(monkeypatch, tmp_path, cache)
+    assert seen["vae"].endswith("minimax_h3_video_vae_fp16.safetensors")
+
+
+def test_h3_native_offline_miss_is_actionable_and_refuses_different_bytes(monkeypatch, tmp_path):
+    """A cached file under the old name with DIFFERENT bytes is never used, and the miss says what to fetch, from
+    where, and how, instead of huggingface_hub's 'set local_files_only to False'."""
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ):
+        _seed_hub_cache(cache, "Comfy-Org/MiniMax-H3", old, "e" * 64, b"different bytes!!")
+    del sha
+    with pytest.raises(RuntimeError) as err:
+        _offline_h3_native_load(monkeypatch, tmp_path, cache)
+    message = str(err.value)
+    assert "vae/official/minimax_h3_video_vae_fp16.safetensors" in message
+    assert "unsloth/MiniMax-H3-GGUF" in message
+    assert "Connect to the internet" in message
+    assert "local_files_only" not in message
+
+
+def test_h3_native_accepts_a_pre_move_local_bundle(tmp_path, monkeypatch):
+    """A local clone of the GGUF bundle made before the move has the VAEs under vae/, not vae/official/."""
+    from core.inference.video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE, h3_pre_move_bundle_file
+
+    _pin_pre_move_copies(monkeypatch)
+    bundle = tmp_path / "MiniMax-H3-GGUF"
+    (bundle / "vae").mkdir(parents = True)
+    for name in ("minimax_h3_video_vae_fp16.safetensors", "minimax_h3_audio_vae_fp32.safetensors"):
+        (bundle / "vae" / name).write_bytes(_PRE_MOVE_BYTES)
+    (bundle / "minimax_h3_fl2va-Q4_K_M.gguf").write_bytes(b"x")
+    (bundle / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf").write_bytes(b"x")
+    requests = VideoBackend._h3_native_requests(
+        str(bundle), "minimax_h3_fl2va-Q4_K_M.gguf", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    )
+    assert [repo for repo, _ in requests] == [str(bundle)] * 4
+    assert (
+        h3_pre_move_bundle_file(bundle, H3_VIDEO_VAE)
+        == (bundle / "vae" / "minimax_h3_video_vae_fp16.safetensors").resolve()
+    )
+    # Same name, other bytes: not the file, so the Hub copy is fetched instead.
+    (bundle / "vae" / "minimax_h3_audio_vae_fp32.safetensors").write_bytes(b"other bytes here!")
+    assert h3_pre_move_bundle_file(bundle, H3_AUDIO_VAE) is None
+
+
+def test_h3_te_quant_offline_reuses_the_pre_move_conditioner(monkeypatch, tmp_path):
+    """The hosted int8 conditioner moved to text_encoders/official/ too; a cache-only miss reuses the identical
+    pre-move copy and anything that is not a cache miss still propagates."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, h3_te_quant_pre_move_copy
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        sha,
+        _PRE_MOVE_BYTES,
+    )
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(cache))
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: cache)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: cache)
+    hit = h3_te_quant_pre_move_copy(H3_TE_QUANT_FILES["int8"], LocalEntryNotFoundError("miss"))
+    assert Path(os.path.realpath(hit)).name == sha
+    with pytest.raises(OSError):
+        h3_te_quant_pre_move_copy(H3_TE_QUANT_FILES["int8"], OSError("disk full"))
+
+
+def test_h3_pre_move_table_pins_the_files_this_build_reads():
+    """Every pinned entry is a path this build fetches, and its pre-move copies keep the same basename."""
+    from core.inference.video_minimax_h3 import H3_AUDIO_VAE, H3_PRE_MOVE_COPIES, H3_VIDEO_VAE
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES
+
+    assert set(H3_PRE_MOVE_COPIES) == {H3_VIDEO_VAE, H3_AUDIO_VAE, *H3_TE_QUANT_FILES.values()}
+    for name, (sha, size, repo, copies) in H3_PRE_MOVE_COPIES.items():
+        assert len(sha) == 64 and size > 0 and repo.startswith("unsloth/")
+        assert copies[0][0] == repo
+        assert all(Path(old).name == Path(name).name for _repo, old in copies)
+
+
+def test_h3_native_offline_load_with_only_the_released_vae_names_cached(monkeypatch, tmp_path):
+    """The upgrade case end to end, with nothing new imported: a cache holding the released unsloth VAEs (their real
+    sha256 blob names and sizes, sparse) under vae/ must still satisfy an offline native load after the move."""
+    cache = tmp_path / "hub"
+    released = {
+        "vae/minimax_h3_video_vae_fp16.safetensors": (
+            "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+            5207808496,
+        ),
+        "vae/minimax_h3_audio_vae_fp32.safetensors": (
+            "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+            605254808,
+        ),
+    }
+    for name, (sha, size) in released.items():
+        entry = _seed_hub_cache(cache, "unsloth/MiniMax-H3-GGUF", name, sha, b"")
+        with open(os.path.realpath(entry), "r+b") as handle:
+            handle.truncate(size)
+    seen = _offline_h3_native_load(monkeypatch, tmp_path, cache)
+    assert (
+        Path(os.path.realpath(seen["vae"])).name
+        == released["vae/minimax_h3_video_vae_fp16.safetensors"][0]
+    )
+    assert (
+        Path(os.path.realpath(seen["audio_vae"])).name
+        == released["vae/minimax_h3_audio_vae_fp32.safetensors"][0]
+    )
+
+
+def _pre_move_cache_roots(monkeypatch, cache):
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(cache))
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: cache)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: cache)
+
+
+def _seed_pre_move_vaes(cache, repo, sha):
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ):
+        _seed_hub_cache(cache, repo, old, sha, _PRE_MOVE_BYTES)
+
+
+@pytest.mark.parametrize("repo", ["unsloth/MiniMax-H3-GGUF", "Comfy-Org/MiniMax-H3"])
+def test_h3_native_plan_counts_a_pre_move_copy_as_present(monkeypatch, tmp_path, repo):
+    """The download plan asks the same question the load does: a hash-identical pre-move VAE is on disk, so the panel
+    must not stage 5.8 GB for it, and media auto-switch must not read the pick as incomplete."""
+    from core.inference.diffusion import DiffusionBackend
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_pre_move_vaes(cache, repo, sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    size = len(_PRE_MOVE_BYTES)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", size),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", size),
+            ],
+        },
+    )
+    # The denoiser and encoder are cached at their current names; the VAEs only under the pre-move ones.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, name, *_a, **_k: not name.startswith("vae/")),
+    )
+    plan = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert plan["entries"] == []
+    assert plan["total_bytes"] == 0
+
+
+@pytest.mark.parametrize("repo", ["unsloth/MiniMax-H3-GGUF", "Comfy-Org/MiniMax-H3"])
+def test_h3_native_plan_does_not_stage_pre_move_vaes_beside_a_missing_denoiser(
+    monkeypatch, tmp_path, repo
+):
+    """With the VAEs cached only as pre-move copies and a new denoiser quant missing, the staged entry must name only
+    the denoiser: snapshot_download reuses nothing outside the target repo's cache, so listing the official VAE names
+    would fetch 5.8 GB the native load never reads while the plan advertised only the checkpoint's size."""
+    from core.inference.diffusion import DiffusionBackend
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_pre_move_vaes(cache, repo, sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    size = len(_PRE_MOVE_BYTES)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", size),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", size),
+            ],
+        },
+    )
+    # Only the encoder is cached at its current name; the denoiser is missing and the VAEs exist only pre-move.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, name, *_a, **_k: name.startswith("qwen3vl_")),
+    )
+    plan = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert len(plan["entries"]) == 1
+    entry = plan["entries"][0]
+    assert entry["repo_id"] == "unsloth/MiniMax-H3-GGUF"
+    assert not [name for name in entry["files"] if name.startswith("vae/")]
+    assert "minimax_h3_fl2va-Q4_K_M.gguf" in entry["files"]
+    assert entry["checkpoint"] is True
+    assert entry["bytes"] == 19
+    assert plan["total_bytes"] == 19
+
+
+def test_h3_pre_move_copy_is_found_after_staging_moves_refs_main(monkeypatch, tmp_path):
+    """Staging a new quant moves refs/main to a snapshot without the pre-move names; the hash-identical bytes left in
+    the older snapshot must still be found, or the next cache-only load misses the VAEs it was told were present."""
+    from core.inference import video_minimax_h3 as h3
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    repo = "unsloth/MiniMax-H3-GGUF"
+    _seed_pre_move_vaes(cache, repo, sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    official = "vae/official/minimax_h3_video_vae_fp16.safetensors"
+    assert h3.h3_pre_move_cached_copy(official) is not None
+    root = cache / ("models--" + repo.replace("/", "--"))
+    newer = "d" * 40
+    (root / "snapshots" / newer).mkdir(parents = True)
+    (root / "snapshots" / newer / "minimax_h3_fl2va-Q8_0.gguf").write_bytes(b"q8")
+    (root / "refs" / "main").write_text(newer)
+    hit = h3.h3_pre_move_cached_copy(official)
+    assert hit is not None and hit.parent.parent.name == "c" * 40
+
+
+def test_h3_native_online_load_reads_the_pre_move_copy_instead_of_fetching(monkeypatch, tmp_path):
+    """Online too: the plan counted the pre-move copy as present, so the load reads it rather than fetching the
+    official-path file the plan never staged."""
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_pre_move_vaes(cache, "unsloth/MiniMax-H3-GGUF", sha)
+    seen = _offline_h3_native_load(monkeypatch, tmp_path, cache, online = True)
+    assert not [name for name in seen["__downloads"] if name.startswith("vae/")]
+    assert Path(os.path.realpath(seen["vae"])).name == sha
+
+
+def test_h3_native_official_cache_wins_over_a_pre_move_copy(monkeypatch, tmp_path):
+    """With the official-path file cached, nothing changes: the pre-move copy is never consulted."""
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE, h3_pre_move_copy_if_uncached
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_pre_move_vaes(cache, "unsloth/MiniMax-H3-GGUF", sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is not None
+    _seed_hub_cache(cache, "unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, sha, _PRE_MOVE_BYTES)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is None
+
+
+def test_h3_bundle_with_other_bytes_keeps_the_hub_source(monkeypatch, tmp_path):
+    """A pre-move bundle file of the pinned size but other bytes must not route the load to the bundle (which then
+    refuses it, offline and online alike): the request builder hash-checks it and keeps the Hub repo."""
+    _pin_pre_move_copies(monkeypatch)
+    bundle = tmp_path / "MiniMax-H3-GGUF"
+    (bundle / "vae").mkdir(parents = True)
+    (bundle / "vae" / "minimax_h3_video_vae_fp16.safetensors").write_bytes(_PRE_MOVE_BYTES)
+    other = b"x" * len(_PRE_MOVE_BYTES)
+    assert other != _PRE_MOVE_BYTES
+    (bundle / "vae" / "minimax_h3_audio_vae_fp32.safetensors").write_bytes(other)
+    (bundle / "minimax_h3_fl2va-Q4_K_M.gguf").write_bytes(b"x")
+    (bundle / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf").write_bytes(b"x")
+    requests = VideoBackend._h3_native_requests(
+        str(bundle), "minimax_h3_fl2va-Q4_K_M.gguf", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    )
+    assert [repo for repo, _ in requests] == [str(bundle)] * 3 + ["unsloth/MiniMax-H3-GGUF"]
+
+
+def test_h3_te_quant_fetch_reads_the_pre_move_conditioner_without_a_download(monkeypatch, tmp_path):
+    """The conditioner stager clears the load on the pre-move copy instead of pulling 27 GB, as its planner now
+    counts it present."""
+    import utils.hf_xet_fallback as xet
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        sha,
+        _PRE_MOVE_BYTES,
+    )
+    _pre_move_cache_roots(monkeypatch, cache)
+    calls = []
+    monkeypatch.setattr(
+        xet, "hf_hub_download_with_xet_fallback", lambda *a, **k: calls.append(a) or "x"
+    )
+    assert VideoBackend()._fetch_h3_te_quant("int8", None) == ("text_encoder",)
+    assert calls == []
+
+
+def test_h3_plan_keeps_a_pre_move_conditioner_in_the_required_footprint(monkeypatch, tmp_path):
+    """A conditioner cached only under its pre-move name stages nothing, but its 27 GB still belongs in required_bytes:
+    the picker derives the companion footprint from required_bytes - checkpoint_bytes."""
+    import core.inference.video as video_mod
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES
+
+    _cuda_bf16_target(monkeypatch)
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        sha,
+        _PRE_MOVE_BYTES,
+    )
+    _pre_move_cache_roots(monkeypatch, cache)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+    conditioner = H3_TE_QUANT_FILES["int8"]
+    monkeypatch.setattr(VideoBackend, "_h3_te_quant_scheme_verified", lambda self, *a, **k: "int8")
+    monkeypatch.setattr(
+        VideoBackend,
+        "_h3_te_quant_hub_files",
+        staticmethod(lambda scheme, api: ("unsloth/MiniMax-H3-FP8", [(conditioner, 27)])),
+    )
+
+    def _plan():
+        return VideoBackend().download_plan(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            text_encoder_quant = "int8",
+        )
+
+    cached = _plan()
+    assert conditioner not in {f for e in cached["entries"] for f in e["files"]}
+    monkeypatch.setattr(video_mod, "_h3_pre_move_copy_if_uncached", lambda *a, **k: None)
+    fresh = _plan()
+    assert conditioner in {f for e in fresh["entries"] for f in e["files"]}
+    assert cached["required_bytes"] == fresh["required_bytes"]
+
+
+def test_h3_an_official_copy_the_fetch_cannot_reach_does_not_hide_the_pre_move_copy(
+    monkeypatch, tmp_path
+):
+    """The fetch resolves only the live root and huggingface_hub's import-time root. An official-path hit in Studio's
+    legacy root is unreachable to it, so it must not suppress a pre-move copy the load can read."""
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE, h3_pre_move_copy_if_uncached
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    live, legacy, default = tmp_path / "live", tmp_path / "legacy", tmp_path / "default"
+    for root in (live, legacy, default):
+        root.mkdir()
+    _seed_hub_cache(legacy, "unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, sha, _PRE_MOVE_BYTES)
+    _seed_pre_move_vaes(default, "unsloth/MiniMax-H3-GGUF", sha)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr("hub.utils.paths.legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr("hub.utils.paths.hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "import_root"))
+    hit = h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE)
+    assert hit is not None and str(default) in str(hit)
+    # An official copy in the live root is reachable, so it still wins.
+    _seed_hub_cache(live, "unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, sha, _PRE_MOVE_BYTES)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is None
+
+
+def test_h3_hashing_a_copied_pre_move_entry_honours_the_load_cancel(monkeypatch, tmp_path):
+    """A cache without symlinks is hashed in full (27 GB for the conditioner): a cancelled load stops the scan, and the
+    conditioner stager never reports success after the cancel."""
+    import threading
+
+    from core.inference.video_minimax_h3 import (
+        H3_VIDEO_VAE,
+        H3HashCancelled,
+        h3_pre_move_copy_if_uncached,
+    )
+
+    _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    ):
+        repo = "unsloth/MiniMax-H3-FP8" if old.startswith("text_") else "unsloth/MiniMax-H3-GGUF"
+        _seed_hub_cache(cache, repo, old, "0" * 64, _PRE_MOVE_BYTES, symlink = False)
+    _pre_move_cache_roots(monkeypatch, cache)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(H3HashCancelled):
+        h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, cancel_event = cancel)
+    with pytest.raises(RuntimeError):
+        VideoBackend()._fetch_h3_te_quant("int8", None, cancel_event = cancel)
+
+
+def test_h3_planners_never_hash_a_copied_pre_move_entry(monkeypatch, tmp_path):
+    """A copied (no symlinks, e.g. Windows) cache has no blob name to read the sha256 from. The size planners decide
+    from the pinned size (or an already known sha256) and leave the full read to the load, which honours cancel and
+    still refuses a same-size file with other bytes."""
+    import hashlib
+
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video_minimax_h3 import H3_VIDEO_VAE, h3_pre_move_copy_if_uncached
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES
+
+    _cuda_bf16_target(monkeypatch)
+    _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    size = len(_PRE_MOVE_BYTES)
+    for old in (
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ):
+        _seed_hub_cache(
+            cache, "unsloth/MiniMax-H3-GGUF", old, "0" * 64, _PRE_MOVE_BYTES, symlink = False
+        )
+    _seed_hub_cache(
+        cache,
+        "unsloth/MiniMax-H3-FP8",
+        "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "0" * 64,
+        _PRE_MOVE_BYTES,
+        symlink = False,
+    )
+    _pre_move_cache_roots(monkeypatch, cache)
+    hashes = []
+    real_sha256 = hashlib.sha256
+    monkeypatch.setattr(hashlib, "sha256", lambda *a, **k: hashes.append(1) or real_sha256(*a, **k))
+
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", size),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", size),
+            ],
+            "MiniMaxAI/MiniMax-H3": _H3_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, name, *_a, **_k: not name.startswith("vae/")),
+    )
+    native = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert native["entries"] == [] and native["total_bytes"] == 0
+
+    conditioner = H3_TE_QUANT_FILES["int8"]
+    monkeypatch.setattr(VideoBackend, "_h3_te_quant_scheme_verified", lambda self, *a, **k: "int8")
+    monkeypatch.setattr(
+        VideoBackend,
+        "_h3_te_quant_hub_files",
+        staticmethod(lambda scheme, api: ("unsloth/MiniMax-H3-FP8", [(conditioner, 27)])),
+    )
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        text_encoder_quant = "int8",
+    )
+    assert conditioner not in {f for e in plan["entries"] for f in e["files"]}
+    assert hashes == []
+
+    # The load still reads every byte, and a same-size entry with other bytes is refused there.
+    video = cache / "models--unsloth--MiniMax-H3-GGUF" / "snapshots" / ("c" * 40)
+    (video / "vae/minimax_h3_video_vae_fp16.safetensors").write_bytes(b"x" * size)
+    assert h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE) is None
+    assert hashes
+    # Once a hash is known, the planner uses it: the mismatch is now staged rather than counted present.
+    assert (
+        h3_pre_move_copy_if_uncached("unsloth/MiniMax-H3-GGUF", H3_VIDEO_VAE, verify = False) is None
+    )

@@ -122,6 +122,19 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
     return H3_TE_QUANT_FILES.get(scheme or "")
 
 
+def h3_te_quant_pre_move_copy(filename: str, exc: BaseException) -> str:
+    """The hash-identical pre-move copy of the hosted conditioner when ``exc`` is a cache-only miss, else re-raises
+    ``exc``. An install staged before the official-provenance move holds the same bytes under the old name (see
+    ``video_minimax_h3.H3_PRE_MOVE_COPIES``); reading it is a cache read, never a download."""
+    from .video_minimax_h3 import h3_cache_miss, h3_pre_move_cached_copy
+
+    if h3_cache_miss(exc):
+        hit = h3_pre_move_cached_copy(filename)
+        if hit is not None:
+            return str(hit)
+    raise exc
+
+
 def h3_te_quant_source(scheme: Optional[str]) -> str:
     """The repo to fetch the hosted quantized conditioner for ``scheme`` from: always ``H3_TE_QUANT_REPO``. A video
     load never reads from the Comfy-Org repack, not even bytes an older install cached under it."""
@@ -317,17 +330,27 @@ def load_h3_quantized_text_encoder(
         # same way, so a load that was cleared on a cached copy reads it from the id it is actually cached under rather
         # than 401ing or re-pulling 27 GB.
         source_repo = h3_te_quant_source(scheme)
-        path = hf_hub_download_with_xet_fallback(
-            source_repo,
-            filename,
-            hf_token,
-            cache_dir = cache_dir,
-            # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load did;
-            # pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
-            reuse_other_cache_root = True,
-            local_files_only = local_files_only,
-            gguf_header_delta = True,
-        )
+        from .video_minimax_h3 import h3_pre_move_copy_if_uncached
+
+        pre_move = h3_pre_move_copy_if_uncached(source_repo, filename)
+        try:
+            if pre_move is not None:
+                # The stager cleared this load on the same hash-identical pre-move copy: read it, never fetch.
+                path = str(pre_move)
+            else:
+                path = hf_hub_download_with_xet_fallback(
+                    source_repo,
+                    filename,
+                    hf_token,
+                    cache_dir = cache_dir,
+                    # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load
+                    # did; pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
+                    reuse_other_cache_root = True,
+                    local_files_only = local_files_only,
+                    gguf_header_delta = True,
+                )
+        except Exception as exc:  # noqa: BLE001 -- only a cache miss has a pre-move copy to fall back to
+            path = h3_te_quant_pre_move_copy(filename, exc)
 
         from .diffusion_families import pinned_revision_kwargs
 
