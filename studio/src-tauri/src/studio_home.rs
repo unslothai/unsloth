@@ -4,9 +4,12 @@
 //! Where the desktop keeps its Studio install: `~/.unsloth/studio`, or the folder picked on the
 //! Windows first-run screen, recorded in `~/.unsloth/desktop_studio_home` and passed to managed
 //! children as UNSLOTH_STUDIO_HOME. No pointer file means the default root.
+//! On Linux a distro package can provide the runtime instead (`system_runtime`).
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const POINTER_FILE: &str = "desktop_studio_home";
 
@@ -14,6 +17,86 @@ pub(crate) const STUDIO_HOME_ENV: &str = "UNSLOTH_STUDIO_HOME";
 
 /// Marks UNSLOTH_STUDIO_HOME as the desktop's choice; install.ps1 --tauri refuses any other.
 pub(crate) const DESKTOP_CHOSEN_HOME_ENV: &str = "UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME";
+
+/// A package-managed install root (`UNSLOTH_STUDIO_HOME=/opt/unsloth-studio ./install.sh`).
+pub(crate) const SYSTEM_RUNTIME_ENV: &str = "UNSLOTH_DESKTOP_STUDIO_RUNTIME";
+const SYSTEM_RUNTIME_FILE: &str = "/etc/unsloth/desktop-studio-runtime";
+
+const SYSTEM_RUNTIME_TOOLS: [(&str, &str); 3] = [
+    ("UNSLOTH_LLAMA_CPP_PATH", "llama.cpp"),
+    ("UNSLOTH_WHISPER_CPP_PATH", "whisper.cpp"),
+    ("UNSLOTH_AUDIO_CPP_PATH", "audio.cpp"),
+];
+
+fn system_runtime_from(env_value: Option<OsString>, file_text: Option<&str>) -> Option<PathBuf> {
+    let root = match env_value.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => PathBuf::from(
+            file_text?
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with('#'))?,
+        ),
+    };
+    root.is_absolute().then_some(root)
+}
+
+/// Linux only. A runtime that is not installed is ignored: the per-user install flow is kept.
+pub(crate) fn system_runtime() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    static RUNTIME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let file_text = fs::read_to_string(SYSTEM_RUNTIME_FILE).ok();
+            let root =
+                system_runtime_from(std::env::var_os(SYSTEM_RUNTIME_ENV), file_text.as_deref())?;
+            crate::process::find_unsloth_binary_in_studio_dir(&root).map(|_| root)
+        })
+        .clone()
+}
+
+pub(crate) fn ensure_desktop_managed() -> Result<(), String> {
+    match system_runtime() {
+        Some(root) => Err(format!(
+            "Unsloth in {} is managed by your system package manager. Update or repair it there.",
+            root.display()
+        )),
+        None => Ok(()),
+    }
+}
+
+fn managed_child_env_for(
+    runtime: Option<&Path>,
+    chosen: Option<PathBuf>,
+    root: Option<PathBuf>,
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, PathBuf)> {
+    let Some(runtime) = runtime else {
+        return chosen.map(|root| vec![(STUDIO_HOME_ENV, root)]).unwrap_or_default();
+    };
+    // Without the home the CLI would write into the read-only runtime; without the runtime it
+    // would re-exec into a stale per-user venv.
+    let mut env: Vec<_> = root.map(|root| (STUDIO_HOME_ENV, root)).into_iter().collect();
+    env.push((SYSTEM_RUNTIME_ENV, runtime.to_path_buf()));
+    for (name, dir) in SYSTEM_RUNTIME_TOOLS {
+        let path = runtime.join(dir);
+        if !is_set(name) && path.is_dir() {
+            env.push((name, path));
+        }
+    }
+    env
+}
+
+pub(crate) fn managed_child_env() -> Vec<(&'static str, PathBuf)> {
+    managed_child_env_for(
+        system_runtime().as_deref(),
+        chosen_root(),
+        studio_root(),
+        |name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()),
+    )
+}
 
 pub(crate) fn default_root_for_home(home: &Path) -> PathBuf {
     home.join(".unsloth").join("studio")
@@ -257,6 +340,68 @@ mod tests {
         ));
         fs::create_dir_all(&home).unwrap();
         home
+    }
+
+    // Linux paths: "/opt/..." is not absolute on Windows, where the setting is never read.
+    #[cfg(unix)]
+    #[test]
+    fn system_runtime_setting_prefers_the_variable_and_needs_an_absolute_path() {
+        let file = "# packaged by the distro\n\n  /opt/unsloth-studio  \n/other\n";
+        assert_eq!(
+            system_runtime_from(None, Some(file)),
+            Some(PathBuf::from("/opt/unsloth-studio"))
+        );
+        assert_eq!(
+            system_runtime_from(Some("/srv/studio".into()), Some(file)),
+            Some(PathBuf::from("/srv/studio"))
+        );
+        assert_eq!(
+            system_runtime_from(Some("".into()), Some(file)),
+            Some(PathBuf::from("/opt/unsloth-studio"))
+        );
+        assert_eq!(system_runtime_from(Some("relative".into()), None), None);
+        assert_eq!(system_runtime_from(None, Some("# only a comment\n")), None);
+        assert_eq!(system_runtime_from(None, None), None);
+    }
+
+    #[test]
+    fn without_a_system_runtime_children_get_only_a_chosen_root() {
+        let never = |_: &str| false;
+        let chosen = PathBuf::from("/data/Unsloth/studio");
+        assert_eq!(managed_child_env_for(None, None, None, never), vec![]);
+        assert_eq!(
+            managed_child_env_for(None, Some(chosen.clone()), Some(chosen.clone()), never),
+            vec![(STUDIO_HOME_ENV, chosen)]
+        );
+    }
+
+    #[test]
+    fn a_system_runtime_child_keeps_user_data_in_the_root_and_uses_the_runtime_tools() {
+        let runtime = temp_home("runtime");
+        fs::create_dir_all(runtime.join("llama.cpp")).unwrap();
+        fs::create_dir_all(runtime.join("audio.cpp")).unwrap();
+        let root = PathBuf::from("/home/me/.unsloth/studio");
+        let env = managed_child_env_for(Some(&runtime), None, Some(root.clone()), |_| false);
+        assert_eq!(
+            env,
+            vec![
+                (STUDIO_HOME_ENV, root.clone()),
+                (SYSTEM_RUNTIME_ENV, runtime.clone()),
+                ("UNSLOTH_LLAMA_CPP_PATH", runtime.join("llama.cpp")),
+                ("UNSLOTH_AUDIO_CPP_PATH", runtime.join("audio.cpp")),
+            ]
+        );
+        let user_set = |name: &str| name == "UNSLOTH_LLAMA_CPP_PATH";
+        let env = managed_child_env_for(Some(&runtime), None, Some(root.clone()), user_set);
+        assert_eq!(
+            env,
+            vec![
+                (STUDIO_HOME_ENV, root),
+                (SYSTEM_RUNTIME_ENV, runtime.clone()),
+                ("UNSLOTH_AUDIO_CPP_PATH", runtime.join("audio.cpp")),
+            ]
+        );
+        fs::remove_dir_all(&runtime).unwrap();
     }
 
     #[test]
