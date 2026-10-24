@@ -2464,7 +2464,9 @@ def _resolve_model(
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
             carried = _resident_runtime_payload(status_snapshot, payload)
             if attach_public_id is None:
-                # Omitted extras are inherited server-side with flags shadowing these overrides stripped; a copy would let its --ctx-size beat --context-length.
+                # Omitted extras are inherited server-side, stripped only of flags shadowing fields the request sets: a copy would let its --ctx-size beat --context-length, and a carried field would strip the extra it was losing to. So a resident with extras gets no carry at all.
+                if status_snapshot.get("requested_llama_extra_args"):
+                    carried = {}
                 carried.pop("llama_extra_args", None)
                 # Slots Auto cut to keep a drafter must stay defaulted: an explicit count makes the same command reload (_runtime_matches_intent).
                 slots, effective = (

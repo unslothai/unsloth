@@ -120,18 +120,26 @@ def _named_reload_payload(monkeypatch, status, options):
     return payloads[0]
 
 
-def test_named_resident_extras_left_to_server_inheritance(monkeypatch):
+@pytest.mark.parametrize(
+    "options, sent",
+    [
+        (start.LoadOptions(max_seq_length = 32768), {"max_seq_length": 32768}),
+        (
+            start.LoadOptions(gpu_memory_mode = "manual"),
+            {"gpu_memory_mode": "manual", "gpu_layers": -1},
+        ),
+    ],
+)
+def test_named_resident_with_extras_left_to_server_inheritance(monkeypatch, options, sent):
     status = {
         "is_gguf": True,
         "gguf_variant": "Q8_0",
-        "requested_context_length": 4096,
+        "requested_context_length": 0,
         "requested_llama_extra_args": ["--ctx-size", "8192", "--top-k", "20"],
         "requested_n_batch": 128,
     }
-    payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(max_seq_length = 32768))
-    assert "llama_extra_args" not in payload
-    assert payload["max_seq_length"] == 32768
-    assert payload["n_batch"] == 128
+    payload = _named_reload_payload(monkeypatch, status, options)
+    assert payload == {"model_path": MODEL, "gguf_variant": "Q8_0", **sent}
 
 
 @pytest.mark.parametrize("effective, carried", [(2, False), (4, True)])
