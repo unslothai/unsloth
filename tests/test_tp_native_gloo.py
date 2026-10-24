@@ -221,12 +221,16 @@ def _case_guards(rank, world, tmp):
         step = ids[:, -1:]
         for name, level in levels.items():
             res[f"is_tp:{name}"] = tp_native.is_tensor_parallel(level)
-            res[f"fsdp2:{name}"] = _raised(lambda: fsdp2_native._refuse_tensor_parallel_model(level))
+            res[f"fsdp2:{name}"] = _raised(
+                lambda: fsdp2_native._refuse_tensor_parallel_model(level)
+            )
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
             if name != "decoder":
                 res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
-                res[f"trainer:{name}"] = _raised(lambda: transformers.Trainer(model = level, args = args))
+                res[f"trainer:{name}"] = _raised(
+                    lambda: transformers.Trainer(model = level, args = args)
+                )
                 res[f"model_init:{name}"] = _raised(
                     lambda: transformers.Trainer(model_init = lambda: level, args = args)
                 )
@@ -591,7 +595,9 @@ def test_tp2_adapter_save_matches_peft_selection(lora_kwargs, save_kwargs):
     )
     _check_parity(results, 2)
     saved = results[0]["saved_tp"]
-    if lora_kwargs.get("bias") == "all":  # "lora_only" saves no base_layer bias on PEFT 0.18 (1 process too)
+    if (
+        lora_kwargs.get("bias") == "all"
+    ):  # "lora_only" saves no base_layer bias on PEFT 0.18 (1 process too)
         assert any("o_proj" in k and k.endswith("bias") for k in saved), sorted(saved)[:8]
     if "modules_to_save" in lora_kwargs:
         assert any("modules_to_save" in k or "lm_head" in k for k in saved), sorted(saved)[:8]
@@ -612,13 +618,25 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                 if key.startswith("is_tp:"):
                     assert value is True, (applied, key)
                 elif key.startswith("fsdp2:"):
-                    assert value and "does not compose with Unsloth tensor parallelism" in value, (applied, key, value)
+                    assert value and "does not compose with Unsloth tensor parallelism" in value, (
+                        applied,
+                        key,
+                        value,
+                    )
                 elif "for_inference" in key:
-                    assert value and "for_inference is not supported" in value, (applied, key, value)
+                    assert value and "for_inference is not supported" in value, (
+                        applied,
+                        key,
+                        value,
+                    )
                 elif key.startswith("generate:"):
                     assert value and "generation is not supported" in value, (applied, key, value)
                 elif key.startswith(("trainer:", "model_init:")):
-                    assert value and "cannot be trained by the Trainer" in value, (applied, key, value)
+                    assert value and "cannot be trained by the Trainer" in value, (
+                        applied,
+                        key,
+                        value,
+                    )
                 elif key.startswith("cached:"):
                     assert value and "cached decoding" in value, (applied, key, value)
 

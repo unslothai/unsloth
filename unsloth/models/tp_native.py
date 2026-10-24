@@ -1143,7 +1143,9 @@ def apply_tensor_parallel(
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
         _sync_trainable(model, group, dist.get_global_rank(group, 0))
-    hooked_norms = set()  # a norm weight shared by several regions gets one tp sum, not one per region
+    hooked_norms = (
+        set()
+    )  # a norm weight shared by several regions gets one tp sum, not one per region
     for region in tp_plan.regions:
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)

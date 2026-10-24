@@ -189,7 +189,11 @@ def _shard_copy(region, rank, tp):
     return module
 
 
-def simulate(model, tp, user_plan = None):
+def simulate(
+    model,
+    tp,
+    user_plan = None,
+):
     """A copy of `model` whose regions run as tp summed shard copies, and the plan used."""
     sim = copy.deepcopy(model)
     plan = tpn.derive_tp_plan(sim, tp, user_plan)
@@ -568,12 +572,15 @@ def test_refuses_forward_qat_and_activation_fake_quantizers():
     proj = region.projs[0].module
     weight, base = tpn._weight(proj)
     # torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no weight_fake_quantizer.
-    forward_qat = type("NVFP4FakeQuantizedLinear", (torch.nn.Linear,), {})(4, 4).requires_grad_(False)
+    forward_qat = type("NVFP4FakeQuantizedLinear", (torch.nn.Linear,), {})(4, 4).requires_grad_(
+        False
+    )
     with pytest.raises(ValueError, match = "QAT fake quantization"):
-        tpn._refuse_base("p", torch.nn.ModuleDict({"base_layer": forward_qat}), forward_qat.weight, forward_qat)
+        tpn._refuse_base(
+            "p", torch.nn.ModuleDict({"base_layer": forward_qat}), forward_qat.weight, forward_qat
+        )
     try:
         from torchao.prototype import qat
-
         real_classes = [
             (qat.MXFakeQuantizedLinear, qat.MXFakeQuantizeConfig),
             (qat.NVFP4FakeQuantizedLinear, qat.NVFP4FakeQuantizeConfig),
@@ -607,7 +614,9 @@ def test_refuses_modules_to_save_inside_a_region():
 def test_region_hook_takes_the_forward_input_by_name():
     model = build(LLAMA, lora = False)
     mlp = model.model.layers[0].mlp
-    mlp._unsloth_tp_group = None  # copy_to_tp's forward is the identity; the group is read in backward
+    mlp._unsloth_tp_group = (
+        None  # copy_to_tp's forward is the identity; the group is read in backward
+    )
     mlp._unsloth_tp_input = "x"  # what apply_tensor_parallel records for LlamaMLP.forward(self, x)
     h = torch.randn(1, 2, 16)
     args, kwargs = tpn._region_pre_hook(mlp, (), {"x": h})  # mlp(x = h)
@@ -650,7 +659,12 @@ def test_gemma2_softcapping_helpers_use_local_heads():
     flex = _load_flex()
     import types as _types
 
-    def attn(heads, kv, tp_heads = None, tp_kv = None):
+    def attn(
+        heads,
+        kv,
+        tp_heads = None,
+        tp_kv = None,
+    ):
         config = _types.SimpleNamespace(
             num_attention_heads = heads,
             num_key_value_heads = kv,

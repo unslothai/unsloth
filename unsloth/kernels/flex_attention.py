@@ -91,7 +91,15 @@ if not HAS_FLEX_ATTENTION:
 
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         # Inductor indexes the scores in int32; past 2**31 elements the last rows come back NaN.
-        rows = max(1, (2**31 - 1) // (self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads) * q_len * q_len))
+        rows = max(
+            1,
+            (2**31 - 1)
+            // (
+                self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
+                * q_len
+                * q_len
+            ),
+        )
         if bsz <= rows:
             return _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len)
         per_row_mask = causal_mask.dim() == 4 and causal_mask.shape[0] == bsz

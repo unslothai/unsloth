@@ -3461,7 +3461,10 @@ def _refuse_tensor_parallel_model(model):
         pass
     dtensor = DTensor is not None and any(isinstance(p, DTensor) for p in model.parameters())
     # Any level or module (the marker sits on every wrapper level apply_tensor_parallel was given or below).
-    if any(m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style") for m in model.modules()):
+    if any(
+        m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style")
+        for m in model.modules()
+    ):
         raise RuntimeError(
             "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
             "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
