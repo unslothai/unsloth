@@ -351,14 +351,23 @@ def test_fp8_block_linear_forward_backward_unchanged(pre_sm89):
     assert torch.equal(X.grad, Xr.grad)
 
 
+def _compile_dtype():
+    # Inductor skips (SkipFrame) a graph with a bf16 output on a card without native bf16 (T4), and Dynamo then
+    # traces the op body as its own frame, so fullgraph fails there. fp16 is what Unsloth runs on such cards.
+    try:
+        native = torch.cuda.is_bf16_supported(including_emulation = False)
+    except TypeError:  # torch without the argument
+        native = torch.cuda.get_device_capability()[0] >= 8
+    return torch.bfloat16 if native else torch.float16
+
+
 @needs_cuda
 def test_under_torch_compile(pre_sm89):
+    dtype = _compile_dtype()
     w = _weight(256, 384, "cuda")
     s = _scale(256, 384, [128, 128], torch.float32, "cuda")
-    f = torch.compile(
-        lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, torch.bfloat16), fullgraph = True
-    )
-    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], torch.bfloat16))
+    f = torch.compile(lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, dtype), fullgraph = True)
+    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], dtype))
 
 
 def test_cpu_keeps_torch_path(monkeypatch):
