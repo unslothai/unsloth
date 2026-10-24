@@ -231,3 +231,20 @@ def test_a_backtracking_extract_regex_gives_up_too(monkeypatch):
     assert rewards.score_rule(rule, "a" * 40 + "!", "aaa") == rule["missing"]
     assert time.monotonic() - started < 5
     assert rewards.score_rule(rule, "aaa", "aaa") == 1
+
+
+def test_json_schema_types_are_checked_or_refused():
+    def rule(kind):
+        return rewards.validate_rule(
+            {"type": "json_schema", "schema": {"type": kind}, "score": {"match": 1, "miss": 0}}
+        )
+
+    assert rewards.score_rule(rule("integer"), "3") == 1
+    assert rewards.score_rule(rule("integer"), '"three"') == 0
+    assert rewards.score_rule(rule("integer"), "3.5") == 0
+    assert rewards.score_rule(rule("boolean"), "true") == 1
+    assert rewards.score_rule(rule("boolean"), "1") == 0
+    assert rewards.score_rule(rule("number"), "true") == 0
+    assert rewards.score_rule(rule("null"), "null") == 1
+    with pytest.raises(rewards.RewardError, match = "schema.type"):
+        rule("objcet")

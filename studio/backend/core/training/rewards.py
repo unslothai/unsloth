@@ -34,6 +34,7 @@ MAX_PATTERN_CHARS = 2_000
 # A pattern's length doesn't bound its matching time: (a+)+$ on a long near-match backtracks for minutes.
 REGEX_TIMEOUT_SECONDS = 1.0
 RULE_TYPES = ("regex", "exact_match", "numeric", "json_schema", "length")
+JSON_TYPES = ("object", "array", "string", "number", "integer", "boolean", "null")
 NORMALIZERS = ("strip", "lower", "remove_commas", "collapse_spaces")
 
 _BUNDLED_ROOT = Path(__file__).with_name("bundled_rewards")
@@ -183,8 +184,11 @@ def validate_rule(rule: dict) -> dict:
         schema = rule.get("schema", {})
         if not isinstance(schema, dict):
             raise RewardError("schema must be a mapping.")
+        json_type = schema.get("type", "object")
+        if json_type not in JSON_TYPES:
+            raise RewardError(f"schema.type takes one of {', '.join(JSON_TYPES)}.")
         out["schema"] = {
-            "type": schema.get("type", "object"),
+            "type": json_type,
             "required": [str(k) for k in schema.get("required", []) or []],
         }
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
@@ -403,10 +407,18 @@ def _json_matches(text: str, schema: dict) -> bool:
         value = json.loads(fenced.group(1) if fenced else text)
     except (ValueError, TypeError):
         return False
-    expected = {"object": dict, "array": list, "string": str, "number": (int, float)}.get(
-        schema["type"]
-    )
-    if expected is not None and not isinstance(value, expected):
+    kind = schema["type"]
+    # bool is an int subclass, so it is excluded from number and integer by hand.
+    if kind == "null":
+        ok = value is None
+    elif kind in ("number", "integer"):
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        ok = ok and (kind == "number" or float(value).is_integer())
+    else:
+        ok = isinstance(
+            value, {"object": dict, "array": list, "string": str, "boolean": bool}[kind]
+        )
+    if not ok:
         return False
     return (
         all(key in value for key in schema["required"])
