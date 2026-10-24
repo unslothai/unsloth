@@ -3533,7 +3533,9 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|NVFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
