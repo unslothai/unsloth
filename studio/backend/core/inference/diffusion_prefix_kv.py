@@ -6,6 +6,7 @@ it for the render; a hook copies the cached tensors out after the prefill forwar
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from typing import Any
 
@@ -51,6 +52,73 @@ def _returned_cache(output: Any) -> Any:
     if cache is None and isinstance(output, tuple):
         cache = next((o for o in output[1:] if o is not None and not hasattr(o, "shape")), None)
     return cache
+
+
+_SEEN_ATTR = "_unsloth_prefix_kv_seen"
+_TRACK_HOOK_ATTR = "_unsloth_prefix_kv_track"
+
+
+def track_prefix_kv(transformer: Any) -> bool:
+    """Remember (weakly) the prefix KV caches a pipeline hands the denoiser, so the render can drop them once the
+    last denoise step is done. Qwen-Image-2.1's pipeline keeps its caches as ``__call__`` locals through VAE decode,
+    ~2 GiB per guidance branch with a 1 MP condition image."""
+    if transformer is None or getattr(transformer, _TRACK_HOOK_ATTR, None) is not None:
+        return False
+    if not _takes_prefix_kv(transformer):
+        return False
+    import weakref
+
+    seen: list = []
+
+    def _record(_module, _args, kwargs):
+        if kwargs.get("kv_cache_mode") != "extract":
+            return None
+        cache = kwargs.get("kv_cache")
+        if cache is None:
+            return None
+        with contextlib.suppress(TypeError):
+            if not any(ref() is cache for ref in seen):
+                seen[:] = [ref for ref in seen if ref() is not None]
+                seen.append(weakref.ref(cache))
+        return None
+
+    try:
+        handle = transformer.register_forward_pre_hook(_record, with_kwargs = True)
+    except Exception:  # noqa: BLE001 - a memory saving only
+        return False
+    setattr(transformer, _SEEN_ATTR, seen)
+    setattr(transformer, _TRACK_HOOK_ATTR, handle)
+    return True
+
+
+def release_prefix_kv(transformer: Any) -> int:
+    """Empty every prefix KV cache recorded by :func:`track_prefix_kv` (its per-layer tensors set to None); returns
+    the bytes dropped. Only safe once the render's last denoiser call has been issued."""
+    import torch
+
+    seen = getattr(transformer, _SEEN_ATTR, None) if transformer is not None else None
+    if not seen:
+        return 0
+    released = 0
+    caches = [ref() for ref in seen]
+    seen.clear()
+    for cache in caches:
+        if cache is None:
+            continue
+        try:
+            groups = [v for v in vars(cache).values() if isinstance(v, (list, tuple))]
+        except TypeError:
+            continue
+        for group in groups:
+            for layer in group:
+                slots = getattr(layer, "__dict__", None)
+                if not slots:
+                    continue
+                for name, tensor in list(slots.items()):
+                    if isinstance(tensor, torch.Tensor):
+                        released += tensor.untyped_storage().nbytes()
+                        setattr(layer, name, None)
+    return released
 
 
 def install_prefix_kv_compaction(transformer: Any, logger: Any = None) -> bool:
