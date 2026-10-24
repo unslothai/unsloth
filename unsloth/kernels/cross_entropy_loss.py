@@ -254,8 +254,12 @@ def _chunked_cross_entropy_forward(
     c = tl.max(logits, 0)
     exp_logits = tl.exp(logits - c)
     logsumexp = c + tl.log(tl.sum(exp_logits, 0))
-    sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, exp_logits), 0)
-    tl.store(logsumexp_others_ptr, c + tl.log(sum_others))
+    # Only the chunk holding the label differs from its plain logsumexp.
+    logsumexp_others = logsumexp
+    if (label_idx >= chunk_idx * BLOCK_SIZE) & (label_idx < (chunk_idx + 1) * BLOCK_SIZE):
+        sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, exp_logits), 0)
+        logsumexp_others = c + tl.log(sum_others)
+    tl.store(logsumexp_others_ptr, logsumexp_others)
 
     if chunk_idx == 0:
         # logsumexp(chunked_logsumexp) - x, with the -x done separately.
