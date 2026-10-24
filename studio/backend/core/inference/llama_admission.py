@@ -533,6 +533,9 @@ class LlamaAdmissionLease:
             slot, self._slot = self._slot, None
             tokens, self._tokens = self._tokens, 0
             self._preempted = True
+            # Before the slot goes back: it is coming back to this queue, so the queue must not
+            # read as idle and be evicted in between.
+            queue.retain_preempted()
         queue.release(slot, tokens)
         return True
 
@@ -629,6 +632,8 @@ class LlamaAdmissionLease:
                     self._slot = slot
                 self._tokens = want
                 self._charge_seq += 1
+                if self._preempted:
+                    queue.drop_preempted()
                 self._preempted = False
         if stranded:
             queue.release(slot, want)
@@ -810,8 +815,11 @@ class LlamaAdmissionLease:
             queue = self._queue
             parked, self._parked = self._parked, False
             park_id = self._park_id
+            preempted = self._preempted
         self._drop_budget()
         if queue is not None:
+            if preempted:
+                queue.drop_preempted()
             if parked:
                 queue.unpark(park_id)
             queue.release(self._slot, self._tokens)
@@ -922,6 +930,7 @@ class LlamaAdmissionQueue:
         "_held",
         "_waiters",
         "_parked",
+        "_preempted",
         "_unpark_tickets",
         "_unpark_tokens",
         "_unpark_lapsed",
@@ -946,6 +955,8 @@ class LlamaAdmissionQueue:
         # Holders parked on a tool approval prompt. They hold no slot, so this only keeps the queue off the
         # idle-eviction list while they are away.
         self._parked = 0
+        # Holders preempted and not yet resumed or released: the same, for a paused generation.
+        self._preempted = 0
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
@@ -1403,7 +1414,21 @@ class LlamaAdmissionQueue:
             self._prune_waiters_locked()
             # A parked holder owns no slot but is coming back to this queue, so evicting it here would resume it against
             # a fresh 1-slot pool.
-            return self._in_use == 0 and not self._waiters and not self._parked
+            return (
+                self._in_use == 0
+                and not self._waiters
+                and not self._parked
+                and not self._preempted
+            )
+
+    def retain_preempted(self) -> None:
+        with self._lock:
+            self._preempted += 1
+
+    def drop_preempted(self) -> None:
+        with self._lock:
+            if self._preempted > 0:
+                self._preempted -= 1
 
     def _grant_waiters_locked(self) -> None:
         # A reparker gave its commitment back mid-conversation, so it takes the room ahead of anything not yet started.
