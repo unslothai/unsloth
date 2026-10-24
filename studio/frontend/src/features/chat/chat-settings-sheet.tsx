@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -126,6 +127,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  DEFAULT_INFERENCE_PARAMS,
   MAX_SAMPLING_SEED,
   modelReadsSamplingSeed,
   type InferenceParams,
@@ -1711,7 +1713,12 @@ export function ChatSettingsPanel({
             {/* Remembers only these sampling values, so it sits under them. */}
             {!isExternalModel && currentCheckpoint ? (
               <Suspense fallback={null}>
-                <SamplingFooter store={useChatRuntimeStore} notify={toast} />
+                <SamplingFooter
+                  store={useChatRuntimeStore}
+                  notify={toast}
+                  Checkbox={Checkbox}
+                  defaults={DEFAULT_INFERENCE_PARAMS}
+                />
               </Suspense>
             ) : null}
           </div>

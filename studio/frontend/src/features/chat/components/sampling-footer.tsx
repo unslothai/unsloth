@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import type { Checkbox } from "@/components/ui/checkbox";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { toast } from "@/lib/toast";
@@ -17,10 +17,16 @@ import {
   toApiSampling,
 } from "../lib/sampling-memory";
 import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { InferenceParams } from "../types/runtime";
 import type { InferenceStatusResponse } from "../types/api";
 
 // Passed in, not imported: importing them here splits them out of the startup bundle into extra chunks.
-type Deps = { store: typeof useChatRuntimeStore; notify: typeof toast };
+type Deps = {
+  store: typeof useChatRuntimeStore;
+  notify: typeof toast;
+  Checkbox: typeof Checkbox;
+  defaults: InferenceParams;
+};
 
 const DEFAULTS_URL = "/api/settings/model-sampling-defaults";
 
@@ -66,7 +72,12 @@ async function writeSavedSampling(
 
 /** Remember / Save / Forget / Reset for the loaded model's sampling, laid out like Run settings' footer.
  *  Saved sampling seeds new chats with the model and fills what an API request leaves out. */
-export default function SamplingFooter({ store, notify }: Deps) {
+export default function SamplingFooter({
+  store,
+  notify,
+  Checkbox,
+  defaults,
+}: Deps) {
   const params = store((state) => state.params);
   const modelId = params.checkpoint;
   const current = samplingPayload(params);
@@ -154,6 +165,7 @@ export default function SamplingFooter({ store, notify }: Deps) {
         ...state.params,
         ...recommendedSampling(
           status.inference as Record<string, unknown> | undefined,
+          defaults,
         ),
       });
     });

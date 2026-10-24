@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  DEFAULT_INFERENCE_PARAMS,
-  type InferenceParams,
-} from "../types/runtime";
+import type { InferenceParams } from "../types/runtime";
 
 /** The sampling fields a model can have saved, and their names in `/api/settings/model-sampling-defaults`. */
 const API_FIELDS = {
@@ -87,9 +84,9 @@ export function samplingSaveStatus(
 /** The model's recommended sampling from an inference status, the app defaults for what it leaves out. */
 export function recommendedSampling(
   inference: Record<string, unknown> | null | undefined,
+  d: Pick<InferenceParams, SamplingField>,
 ): Pick<InferenceParams, SamplingField> {
   const recommended = fromApiSampling(inference) ?? {};
-  const d = DEFAULT_INFERENCE_PARAMS;
   return {
     temperature: recommended.temperature ?? d.temperature,
     topP: recommended.topP ?? d.topP,

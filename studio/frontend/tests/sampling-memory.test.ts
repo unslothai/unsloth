@@ -69,14 +69,20 @@ test("the status line follows Remember and whether the values are saved", () => 
 });
 
 test("Reset takes the model's recommendation, app defaults for the rest", () => {
-  assert.deepEqual(recommendedSampling({ temperature: 1, top_p: 0.95 }), {
-    temperature: 1,
-    topP: 0.95,
-    topK: DEFAULT_INFERENCE_PARAMS.topK,
-    minP: DEFAULT_INFERENCE_PARAMS.minP,
-    repetitionPenalty: DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
-    presencePenalty: DEFAULT_INFERENCE_PARAMS.presencePenalty,
-  });
+  assert.deepEqual(
+    recommendedSampling(
+      { temperature: 1, top_p: 0.95 },
+      DEFAULT_INFERENCE_PARAMS,
+    ),
+    {
+      temperature: 1,
+      topP: 0.95,
+      topK: DEFAULT_INFERENCE_PARAMS.topK,
+      minP: DEFAULT_INFERENCE_PARAMS.minP,
+      repetitionPenalty: DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
+      presencePenalty: DEFAULT_INFERENCE_PARAMS.presencePenalty,
+    },
+  );
 });
 
 test("the Sampling section ends with the footer, not a lone Save button", () => {
@@ -90,7 +96,7 @@ test("the Sampling section ends with the footer, not a lone Save button", () => 
   );
   assert.match(
     sampling,
-    /<SamplingFooter store=\{useChatRuntimeStore\} notify=\{toast\} \/>/,
+    /<SamplingFooter\s+store=\{useChatRuntimeStore\}\s+notify=\{toast\}\s+Checkbox=\{Checkbox\}\s+defaults=\{DEFAULT_INFERENCE_PARAMS\}\s+\/>/,
   );
   assert.doesNotMatch(sheet, /SaveForModelButton|Save for this model/);
 });
