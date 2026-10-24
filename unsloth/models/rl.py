@@ -2210,7 +2210,12 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
-    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = device)
+    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8)
+    # torch.tensor(..., device = cuda) is a pageable, stream-draining copy; pinned + non_blocking is not.
+    if device.type == "cuda":
+        present = present.pin_memory().to(device, non_blocking = True)
+    else:
+        present = present.to(device)
     dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
     buckets = {}
     for p, has_grad in zip(params, present.tolist()):
