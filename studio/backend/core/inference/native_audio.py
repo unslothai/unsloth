@@ -1115,8 +1115,7 @@ class NativeAudioBackend:
     def _load_moss_nano(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
-        # Check the installed guard, not the platform: an explicit startup opt-in can
-        # allow SentencePiece on Windows, and an explicit disable can block it elsewhere.
+        # Read the guard's sentinel, not sys.platform: the env var overrides the platform default.
         if "sentencepiece" in sys.modules and sys.modules["sentencepiece"] is None:
             raise RuntimeError(
                 "MOSS-TTS-Nano requires SentencePiece, which is disabled in this Unsloth "
