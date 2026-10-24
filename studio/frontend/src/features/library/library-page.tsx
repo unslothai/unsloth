@@ -1104,7 +1104,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
               onClick={bulkChat}
-              className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+              className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               {t("library.selection.startChat")}
@@ -1127,7 +1127,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={() => requestDelete(deletableSelection())}
               className={cn(
                 BAR_PILL,
-                "bg-red-500/10 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

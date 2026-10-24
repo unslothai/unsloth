@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +21,6 @@ import {
 import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { Link } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { ggufVariantDisplayLabel } from "@/features/hub";
 import {
   type ComponentPropsWithoutRef,
@@ -310,7 +311,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
             {ggufVariant}
           </Badge>
         ) : null}
-        <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+        <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
       </button>
     );
   },
@@ -349,9 +350,9 @@ function LocalModelRow({
       >
         {expandable ? (
           expanded ? (
-            <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 text-muted-foreground" />
           ) : (
-            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5 shrink-0 text-muted-foreground" />
           )
         ) : (
           <span className="size-3.5 shrink-0" />

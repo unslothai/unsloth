@@ -268,10 +268,25 @@ def test_rocm_kill_switch_restores_old_routes(monkeypatch, arch, triton_version,
 
 
 def test_kill_switch_env_is_read_at_import():
-    code = "from unsloth.kernels import fp8; print(fp8._HIP_FP8_BYTES_DEQUANT)"
-    env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = "0")
-    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True)
-    assert out.stdout.strip().splitlines()[-1] == "False", out.stderr[-2000:]
+    # A fresh interpreter has no conftest spoof, so on a CPU-only box `import unsloth` raises
+    # "cannot find any torch accelerator" before the switch is ever read; install the CI spoof.
+    tests_dir = os.path.dirname(os.path.abspath(__file__))
+    code = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {tests_dir!r})\n"
+        "if not torch.cuda.is_available():\n"
+        "    import _zoo_aggressive_cuda_spoof\n"
+        "    _zoo_aggressive_cuda_spoof.apply()\n"
+        "from unsloth.kernels import fp8\n"
+        "print(fp8._HIP_FP8_BYTES_DEQUANT)\n"
+    )
+    for value, expected in (("0", "False"), ("1", "True")):
+        env = dict(os.environ, UNSLOTH_FP8_HIP_BYTES_DEQUANT = value)
+        out = subprocess.run(
+            [sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600
+        )
+        lines = out.stdout.strip().splitlines()
+        assert lines and lines[-1] == expected, (value, out.stderr[-2000:])
 
 
 @needs_cuda
@@ -336,14 +351,23 @@ def test_fp8_block_linear_forward_backward_unchanged(pre_sm89):
     assert torch.equal(X.grad, Xr.grad)
 
 
+def _compile_dtype():
+    # Inductor skips (SkipFrame) a graph with a bf16 output on a card without native bf16 (T4), and Dynamo then
+    # traces the op body as its own frame, so fullgraph fails there. fp16 is what Unsloth runs on such cards.
+    try:
+        native = torch.cuda.is_bf16_supported(including_emulation = False)
+    except TypeError:  # torch without the argument
+        native = torch.cuda.get_device_capability()[0] >= 8
+    return torch.bfloat16 if native else torch.float16
+
+
 @needs_cuda
 def test_under_torch_compile(pre_sm89):
+    dtype = _compile_dtype()
     w = _weight(256, 384, "cuda")
     s = _scale(256, 384, [128, 128], torch.float32, "cuda")
-    f = torch.compile(
-        lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, torch.bfloat16), fullgraph = True
-    )
-    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], torch.bfloat16))
+    f = torch.compile(lambda w, s: fp8._e4m3fn_bytes_dequant(w, s, 128, 128, dtype), fullgraph = True)
+    _same_bits(f(w, s), fp8._torch_blockwise_dequant(w, s, [128, 128], dtype))
 
 
 def test_cpu_keeps_torch_path(monkeypatch):

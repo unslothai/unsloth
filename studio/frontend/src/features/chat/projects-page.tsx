@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,17 +69,17 @@ import {
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
-  FolderAddIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
   Search01Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -690,7 +691,8 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             New project
           </Button>
         </div>
@@ -721,11 +723,6 @@ export function ProjectsPage() {
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-16 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-          <p className="text-sm">
-            {projects.length === 0
-              ? "No projects yet."
-              : "No projects match your search."}
-          </p>
           {projects.length === 0 ? (
             <>
               <p className="max-w-sm text-sm">
@@ -737,14 +734,17 @@ export function ProjectsPage() {
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
                 onClick={() => setCreating(true)}
               >
-                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
                 Create your first project
               </Button>
             </>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
-              Clear search
-            </Button>
+            <>
+              <p className="text-sm">No projects match your search.</p>
+              <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
+                Clear search
+              </Button>
+            </>
           )}
         </div>
       ) : (
@@ -824,7 +824,7 @@ export function ProjectsPage() {
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
-                  <ChevronDownIcon
+                  <HugeiconsIcon icon={ChevronDownStandardIcon}
                     strokeWidth={1.75}
                     className={cn(
                       "size-4 transition-transform",

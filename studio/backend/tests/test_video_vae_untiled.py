@@ -182,3 +182,16 @@ def test_wrapper_survives_a_compile_fallback_replacing_the_slot(monkeypatch):
     assert wrapper(Z) == ("untiled",)
     assert vae.decode is wrapper
     assert vae.decode(Z) == ("untiled",)
+
+
+def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    assert U._free_bytes(torch.device("cuda", 0)) == 1100 * 2**20
