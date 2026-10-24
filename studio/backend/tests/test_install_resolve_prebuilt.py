@@ -4083,7 +4083,8 @@ def _linux_amd(*targets, **overrides):
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx1010", "gfx803")]
+    "targets",
+    [("gfx1010",), ("gfx1011",), ("gfx1012",), ("gfx803",), ("gfx90c",), ("gfx1010", "gfx803")],
 )
 def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no_rocm_env):
     host = _linux_amd(*targets)
@@ -4096,7 +4097,15 @@ def test_linux_amd_without_rocm_kernels_takes_the_vulkan_route(targets, linux_no
 
 
 @pytest.mark.parametrize(
-    "targets", [("gfx1010", "gfx1100"), ("gfx1100",), ("gfx1030",), ("gfx906",), ("gfx1151",)]
+    "targets",
+    [
+        ("gfx1010", "gfx1100"),
+        ("gfx90c", "gfx1100"),
+        ("gfx1100",),
+        ("gfx1030",),
+        ("gfx906",),
+        ("gfx1151",),
+    ],
 )
 def test_linux_any_rocm_capable_card_keeps_todays_path(targets, linux_no_rocm_env):
     # Vulkan honours no HIP mask, so one ROCm-capable card keeps the whole host on ROCm.

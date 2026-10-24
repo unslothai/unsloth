@@ -6036,8 +6036,8 @@ get_torch_index_url() {
         fi
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
-        # RDNA 1 / Polaris / gfx1153 read fine and still have no wheels: no pytorch.org tag and no
-        # AMD per-arch index carries their kernels (only the opt-in multi-arch index does), so the generic tag below installed a multi-GB
+        # RDNA 1 / Polaris / gfx1153 / gfx90c (Renoir-Barcelo iGPU) read fine and still have no wheels: no pytorch.org tag and no
+        # AMD per-arch index carries their kernels (at most the opt-in multi-arch index does), so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
         # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
         # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
@@ -6045,8 +6045,18 @@ get_torch_index_url() {
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
+        # gfx90c runs the generic wheel's gfx900 kernels under HSA_OVERRIDE_GFX_VERSION=9.0.0, so a
+        # ROCm build already in the environment being replaced is one its owner runs that way:
+        # re-running the installer (the update path) keeps ROCm instead of demoting it to CPU.
+        if [ "$_amd_unsup_all" = gfx90c ]; then
+            case "${_PREV_TORCH_VER:-}" in
+                *+rocm*)
+                    echo "[INFO] Keeping ROCm PyTorch on gfx90c: this environment already runs ${_PREV_TORCH_VER}. Start Unsloth Studio with HSA_OVERRIDE_GFX_VERSION=9.0.0 to use the GPU." >&2
+                    _amd_unsup_all="" ;;
+            esac
+        fi
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
@@ -6056,6 +6066,9 @@ get_torch_index_url() {
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
             fi
             echo "[INFO] If you run this GPU with HSA_OVERRIDE_GFX_VERSION, export it and re-run this installer to keep ROCm PyTorch." >&2
+            if [ "$_amd_unsup_all" = gfx90c ]; then
+                echo "[INFO] gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this." >&2
+            fi
             if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
                 echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
                 echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
@@ -6393,7 +6406,8 @@ THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-mul
 
 # The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
 # Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
-# absent because TheRock has no Polaris target.
+# absent because TheRock has no Polaris target, gfx90c because current torch there declares no
+# device-gfx90c extra (and TheRock rates gfx90c build-passing only).
 _therock_device_extra_for_gfx() {
     case "$1" in
         gfx1010|gfx1011|gfx1012|gfx1153) echo "device-$1" ;;
@@ -7691,7 +7705,7 @@ elif _has_amd_rocm_gpu; then
         _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
         [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
         _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""
     fi
     if [ "$_torch_index_pinned" = true ]; then
@@ -7754,6 +7768,9 @@ case "$TORCH_INDEX_URL" in
                     else
                         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
                         substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
+                    fi
+                    if [ "$_unsup_disp_gfx" = gfx90c ]; then
+                        substep "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
                     fi
                 else
                     substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"

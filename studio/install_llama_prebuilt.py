@@ -132,7 +132,7 @@ VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # No ROCm torch wheel and no linux-rocm bundle covers these, so a HIP source build has no
 # rocBLAS kernels for them. Mirrors install_python_stack._LINUX_UNCOVERED_AMD_GFX.
-LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803", "gfx90c"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
@@ -11068,8 +11068,8 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
 
 def _should_auto_vulkan_for_amd_linux(host: HostInfo) -> bool:
     """Linux counterpart of _should_auto_vulkan_for_amd_windows: ROCm userspace is installed
-    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris), so HIP would source-build into a
-    binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
+    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris, gfx90c), so HIP would source-build
+    into a binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
     HSA_OVERRIDE_GFX_VERSION, which means the user runs this card on ROCm on purpose."""
     active = _active_rocm_gfx_target(host)
     if not active:

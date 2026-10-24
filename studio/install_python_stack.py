@@ -3353,12 +3353,15 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# RDNA 1, Polaris and gfx1153 (Krackan Point 2): no Linux index this installer picks carries
-# their kernels (#8529, #11815); the generic wheel loads and faults on first use. gfx1153 is
-# torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP route.
-# install.sh's get_torch_index_url holds the same list.
+# RDNA 1, Polaris, gfx1153 (Krackan Point 2) and gfx90c (Renoir-Barcelo iGPU): no Linux index
+# this installer picks carries their kernels (#8529, #11815); the generic wheel loads and faults
+# on first use. gfx1153 is torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP
+# route. install.sh's get_torch_index_url holds the same list.
+# gfx90c is gfx9 Vega: the generic wheel's gfx900 kernels run it under this override (opt-in,
+# untested by Unsloth). install.sh and studio/setup.sh print the same line.
+_GFX90C_OVERRIDE_HINT = "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
 _LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
-    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803"}
+    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803", "gfx90c"}
 )
 
 
@@ -6771,6 +6774,8 @@ def _ensure_rocm_torch() -> "bool | None":
                 f"   AMD {_uncovered}: no ROCm PyTorch wheel Unsloth installs carries kernels for "
                 f"this GPU -- not installing ROCm torch for it.\n"
             )
+            if _uncovered == "gfx90c":
+                _safe_print(f"   {_GFX90C_OVERRIDE_HINT}\n")
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
         _detected_strix = (
