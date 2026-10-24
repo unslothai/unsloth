@@ -1436,9 +1436,10 @@ def round_call_key(name: Any, arguments: Any) -> tuple:
 
 
 # Tools that can change the session workdir: python and terminal write anywhere in it, the editor
-# replaces whole files, and the media tools render into it.
+# replaces whole files, and the media tools render into it. create_skill writes a manifest a sibling
+# read_skill would otherwise find missing.
 _WORKDIR_WRITING_TOOLS = frozenset(
-    {"python", "terminal", "edit_file", "generate_image", "generate_video"}
+    {"python", "terminal", "edit_file", "create_skill", "generate_image", "generate_video"}
 )
 
 
