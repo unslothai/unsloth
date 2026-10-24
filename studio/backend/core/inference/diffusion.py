@@ -279,6 +279,7 @@ from .diffusion_speed import (
     settle_compile_fallback,
     snapshot_backend_flags,
 )
+from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
@@ -13860,6 +13861,7 @@ class DiffusionBackend:
                             _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
+                    cross_forward_step(pipe, step_index)
                     return callback_kwargs
 
                 if "callback_on_step_end" in call_params:
@@ -13892,6 +13894,8 @@ class DiffusionBackend:
                             sd_controls.variation_strength if sd_controls is not None else None,
                         ),
                         pipeline_upcasts_keep_storage(pipe),
+                        # Only with the step callback: it stops the carry before the last step's decode.
+                        cross_forward_render(pipe, enabled = "callback_on_step_end" in chunk_kwargs),
                     ):
                         return pipe(**chunk_kwargs).images
 
