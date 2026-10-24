@@ -2188,10 +2188,9 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
     [
         # Companions alone exceed the card: the DiT and the encoder both stream; the worker never holds Gemma 4.
         (24, "group", True, True, False),
-        # The DiT streams, the companions (Gemma 4 included) stay: the worker keeps it on the card. Whole-module
-        # offload does not fit here once the worker's context is counted beside the whole DiT (47152 of 46504 MiB).
+        # The DiT streams, the companions (Gemma 4 included) stay: the worker keeps it on the card.
+        # Whole-module misses: worker context beside the whole DiT is 47152 of 46504 MiB.
         (48, "group", False, True, True),
-        # Every component fits whole with the worker context beside it: whole-module offload, Gemma 4 off the card.
         (50, "model", False, True, False),
         # The DiT fits once the encoder is not resident: the worker onloads only for an encode, when there is room.
         (80, "group", True, False, False),
@@ -2227,7 +2226,6 @@ def test_plan_counts_the_encoder_worker_per_card(
         )
         assert floor <= budget and inputs["text_encoder_dense_mib"] <= floor
     if policy == "model":
-        # The largest whole-module phase (the DiT) carries the worker context and still fits the budget.
         worker_mib = int(LTX25_WORKER_RESIDENT_GB * mib)
         assert plan.estimates["whole_module_fits_mib"] >= int(42.0 * mib) + worker_mib
         assert plan.estimates["whole_module_fits_mib"] <= plan.estimates["safe_device_budget_mib"]
@@ -2261,7 +2259,6 @@ def test_whole_module_phases_count_the_always_resident_share():
     kw = dict(denoiser_mib = 40054, text_encoder_mib = 22792, vae_mib = 8773, runtime_mib = 7839)
     dit_phase = 40054 + 4096 + DEFAULT_BASE_OVERHEAD_MIB
     assert dit_phase <= 46504 < dit_phase + 954
-    # Without the share the DiT fits whole; a second process's context on the card tips it over.
     assert vid._video_prefer_whole_module(plan, **kw).offload_policy == OFFLOAD_MODEL
     assert vid._video_prefer_whole_module(plan, **kw, resident_mib = 954) is plan
 

@@ -3452,9 +3452,8 @@ def _video_prefer_whole_module(
     """Swap a streamed-DiT plan for whole-module offload when every component fits whole, one at a time.
 
     Wan2.2-5B at 16 GiB: 0.14-0.28 s per forward whole-module vs 0.28-0.33 s int8 streamed, so streaming only wins
-    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. ``resident_mib`` is what stays on the card
-    through every phase outside the pipe (LTX-2.5's encoder worker context), not already in ``vae_mib``. An explicit
-    memory mode is left as asked."""
+    very short calls. ``denoiser_mib`` is one expert of a dual-DiT family. ``resident_mib`` stays on the card in every
+    phase (LTX-2.5's encoder worker context), excluded from ``vae_mib``. An explicit memory mode is left as asked."""
     if (
         getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
         or not bool(getattr(plan, "stream_transformer", True))
@@ -8550,7 +8549,6 @@ class VideoBackend:
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
-            # Whole-module phases are one component at a time, but the worker context is on the card in each of them.
             worker_mib = int(worker_gb * vae_scale * mib_per_gb)
             scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
