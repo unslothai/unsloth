@@ -258,7 +258,8 @@ _SCALE_DEQUANT_MIN_NUMEL = 1 << 22
 def _scale_dequant_one_pass_ok(x, s, dtype):
     # NVIDIA e4m3fn only; under compile only below sm89, where Inductor cannot emit fp8e4nv.
     if torch.compiler.is_compiling():
-        if not _fp8_e4m3fn_unsupported_in_trace(x):
+        # bf16 below sm80: Inductor never compiles the graph, so the torch expression runs eagerly as before.
+        if not _fp8_e4m3fn_unsupported_in_trace(x) or _bf16_skipped_by_inductor(x, dtype):
             return False
     elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
         return False
@@ -860,6 +861,26 @@ def _fp8_e4m3fn_unsupported_in_trace(tensor):
         return False
     index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
     return index < len(_FP8_DEVICE_LACKS_KERNEL) and _FP8_DEVICE_LACKS_KERNEL[index]
+
+
+def _native_bf16_per_device():
+    try:
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        return tuple(torch.cuda.get_device_capability(i)[0] >= 8 for i in range(count))
+    except Exception:
+        return ()
+
+
+# Inductor skips (SkipFrame) any graph with a bf16 input or output on a card without native bf16 (sm_75):
+# Dynamo then traces each nested frame alone, and an opaque op's body breaks fullgraph there.
+_CUDA_NATIVE_BF16 = _native_bf16_per_device()
+
+
+def _bf16_skipped_by_inductor(tensor, dtype):
+    if dtype != torch.bfloat16 or not tensor.is_cuda or torch.version.hip is not None:
+        return False
+    index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return index < len(_CUDA_NATIVE_BF16) and not _CUDA_NATIVE_BF16[index]
 
 
 @triton.jit

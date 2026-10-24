@@ -140,7 +140,8 @@ def test_fused_adamw_steps_through_the_native_fp16_scaler(ranks, both):
             assert not isinstance(out, str), f"fused={fused}: {out}"
             steps, scale, params = out
             assert steps == 2.0, (fused, steps)  # 3 steps, the overflow one skipped on every rank
-            assert scale == 2.0**7, (fused, scale)  # backed off once
+            # user init_scale is kept, not divided by the ranks
+            assert scale == 2.0**7, (fused, scale)
             assert all(torch.isfinite(p).all() for p in params), fused
         for a, b in zip(res[False, both][2], res[True, both][2]):
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)

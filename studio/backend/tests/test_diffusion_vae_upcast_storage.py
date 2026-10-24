@@ -255,3 +255,108 @@ def test_sequential_offload_replacement_parameters_return_to_the_load_dtype(rout
             vae.to(dtype = torch.float16)
     assert {p.dtype for p in vae.parameters()} == {torch.float16}
     assert torch.equal(got, ref.encode(x.float()).latent_dist.mean)
+
+
+def _fail_fp32_cast_after(monkeypatch, n):
+    stock = torch.Tensor.to
+    seen = {"n": 0}
+
+    def to(self, *args, **kwargs):
+        wants = kwargs.get("dtype", next((a for a in args if isinstance(a, torch.dtype)), None))
+        if wants == torch.float32 and self.dtype != torch.float32:
+            seen["n"] += 1
+            if seen["n"] > n:
+                raise torch.OutOfMemoryError("CUDA out of memory (injected)")
+        return stock(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", to)
+
+
+@pytest.mark.parametrize("route", ["helper", "pipeline"])
+def test_a_failed_upcast_leaves_every_tensor_in_the_load_dtype(monkeypatch, route):
+    vu = _vu()
+    vae = _tiny_vae()
+    before = _storage(vae)
+    _fail_fp32_cast_after(monkeypatch, 5)
+    with pytest.raises(torch.OutOfMemoryError):
+        if route == "helper":
+            with vu.fp32_keeping_storage(vae):
+                pass
+        else:
+            with vu.pipeline_upcasts_keep_storage(types.SimpleNamespace(vae = vae)):
+                vae.to(dtype = torch.float32)
+    monkeypatch.undo()
+    assert {p.dtype for p in vae.parameters()} == {torch.float16}
+    assert {b.dtype for b in vae.buffers() if b.is_floating_point()} <= {torch.float16}
+    assert _storage(vae) == before
+    with vu.fp32_keeping_storage(vae):
+        assert {p.dtype for p in vae.parameters()} == {torch.float32}
+    assert _storage(vae) == before
+
+
+def _slack(module):
+    return 512 * (len(list(module.parameters())) + len(list(module.buffers()))) + (64 << 10)
+
+
+def _peak_upcast_bytes(fn):
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    out = fn()
+    torch.cuda.synchronize()
+    return torch.cuda.max_memory_allocated() - base, out
+
+
+def test_device_upcast_frees_each_16bit_tensor_as_it_goes_cuda():
+    """Stock ``vae.to(float32)`` never holds the whole 16-bit and fp32 copies at once; neither may the upcast."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA only")
+    vu = _vu()
+    vae = _tiny_vae().to("cuda")
+    ref = _stock_fp32(vae)
+    half = sum(p.nbytes for p in vae.parameters())
+    largest = max(p.nbytes for p in vae.parameters())
+    z = torch.randn(1, 4, 8, 8, device = "cuda")
+    peak, token = _peak_upcast_bytes(lambda: vu.upcast_keeping_storage(vae))
+    try:
+        assert {p.dtype for p in vae.parameters()} == {torch.float32}
+        # Above the existing 16-bit weights: the extra fp32 half plus one tensor in flight, not 2x.
+        assert peak <= half + largest + _slack(vae), (peak, half)
+        out = vae.decode(z).sample
+    finally:
+        vu.restore_storage(token)
+    assert {p.dtype for p in vae.parameters()} == {torch.float16}
+    assert torch.equal(out, ref.decode(z).sample)
+
+
+def test_offloaded_upcast_frees_the_pinned_onload_and_stays_pinned_cuda(monkeypatch):
+    """The kept hook's onload chunk is freed before the fp32 copies land; offload still re-points to pinned fp16."""
+    from core.inference import diffusion_memory as dm
+
+    _cuda_or_skip()
+    from accelerate import cpu_offload_with_hook
+
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    vu = _vu()
+    vae = _tiny_vae()
+    ref = _stock_fp32(vae).to("cuda")
+    half = sum(p.nbytes for p in vae.parameters())
+    largest = max(p.nbytes for p in vae.parameters())
+    _, hook = cpu_offload_with_hook(vae, execution_device = torch.device("cuda:0"))
+    dm._wrap_cpu_offload_hook(vae._hf_hook, vae)
+    z = torch.randn(1, 4, 8, 8, device = "cuda")
+    for _ in range(2):
+        peak, token = _peak_upcast_bytes(lambda: vu.upcast_keeping_storage(vae))
+        try:
+            assert {(p.device.type, p.dtype) for p in vae.parameters()} == {("cuda", torch.float32)}
+            # The fp32 copies (2x the 16-bit bytes) plus one tensor in flight, not the 16-bit onload chunk on top.
+            assert peak <= 2 * half + largest + _slack(vae), (peak, half)
+            out = vae.decode(z).sample
+        finally:
+            vu.restore_storage(token)
+        hook.offload()
+        params = list(vae.parameters())
+        assert all(
+            p.device.type == "cpu" and p.dtype == torch.float16 and p.is_pinned() for p in params
+        )
+        assert torch.equal(out, ref.decode(z).sample)

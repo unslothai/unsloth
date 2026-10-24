@@ -573,7 +573,8 @@ def _training_flex_options(options):
     (GQA, head_dim 256), demoting every block. A caller's explicit choice is kept."""
     if options is None:
         return {"FORCE_USE_FLEX_ATTENTION": True}
-    if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
+    # torch 2.10+ rejects BACKEND together with the legacy FORCE_USE_FLEX_ATTENTION.
+    if isinstance(options, dict) and not ({"FORCE_USE_FLEX_ATTENTION", "BACKEND"} & options.keys()):
         return {**options, "FORCE_USE_FLEX_ATTENTION": True}
     return options
 
