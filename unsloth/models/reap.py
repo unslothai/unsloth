@@ -636,6 +636,16 @@ def _model_parallel_layout(model):
     return None
 
 
+def _has_unmerged_adapters(model):
+    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for modules whose
+    # class (or a base, as for custom LoRA layers) comes from PEFT: PeftModel, tuners, adapter wrappers.
+    return any(
+        (cls.__module__ or "").split(".", 1)[0] == "peft"
+        for module in model.modules()
+        for cls in type(module).__mro__
+    )
+
+
 @torch.no_grad()
 def reap_prune(
     model,
@@ -680,7 +690,7 @@ def reap_prune(
     """
     if not 0.0 < float(sparsity) < 1.0:
         raise ValueError(f"Unsloth: REAP sparsity must be in (0, 1), got {sparsity}.")
-    if hasattr(model, "peft_config"):
+    if _has_unmerged_adapters(model):
         raise RuntimeError(
             "Unsloth: run REAP on the base model before `get_peft_model`, or merge the LoRA "
             "adapters first (`model = model.merge_and_unload()`)."
