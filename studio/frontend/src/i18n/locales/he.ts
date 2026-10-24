@@ -4309,6 +4309,7 @@ export const he = {
     disable: "השבת את {name}",
     updateError: "עדכון המיומנות נכשל",
     newSkill: "מיומנות חדשה",
+    import: "ייבוא",
     delete: "מחק את {name}",
     createDescription:
       "נשמרת כ-SKILL.md בתיקייה חדשה תחת ~/.agents/skills, ומופעלת מיד עם יצירתה.",
@@ -4331,9 +4332,14 @@ export const he = {
     created: "{name} נוצרה",
     saved: "{name} נשמרה",
     deleted: "{name} נמחקה",
+    importedOne: "נוספה {count} מיומנות",
+    importedMany: "נוספו {count} מיומנויות",
+    importPartial: "נוספו {added} מתוך {total} מיומנויות",
     saveError: "שמירת המיומנות נכשלה",
     openError: "פתיחת המיומנות נכשלה",
     deleteError: "מחיקת המיומנות נכשלה",
+    importError: "ייבוא המיומנות נכשל",
+    exportError: "ייצוא המיומנות נכשל",
     deleteTitle: "מחיקת מיומנות",
     deleteDescription:
       'למחוק את "{name}" ואת כל מה שבתיקייה שלה תחת ~/.agents/skills? פעולה זו אינה ניתנת לביטול.',

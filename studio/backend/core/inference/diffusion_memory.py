@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
+import math
 import os
 import sys
 import threading
@@ -122,6 +123,8 @@ def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
 
 OFFLOAD_KEEP_CPU_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_KEEP_CPU"
 _KEEP_ATTR = "_unsloth_offload_keep_cpu"
+# diffusion_vae_upcast.DTYPE_ONLY_TO_ATTR
+_DTYPE_ONLY_TO_ATTR = "_unsloth_dtype_only_to"
 
 
 def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
@@ -757,8 +760,10 @@ def _wrap_cpu_offload_hook(
                     type(mod).__name__,
                 )
         layout = state.get("pin_layout") if onload and _fast_upload_enabled() else None
-        if layout and "to" in mod.__dict__:
-            # An instance-level mover is already installed (stable arena, pinned swap): defer to it.
+        prior_to = mod.__dict__.get("to")
+        if layout and prior_to is not None and not getattr(prior_to, _DTYPE_ONLY_TO_ATTR, False):
+            # An instance-level mover is already installed (stable arena, pinned swap): defer to it. A dtype-only
+            # one (diffusion_vae_upcast) passes device moves through, so the pinned chunks still go up first.
             layout = None
         if not layout:
             out = pre_forward(mod, *args, **kwargs)
@@ -778,8 +783,14 @@ def _wrap_cpu_offload_hook(
             # The stock pre_forward offloads the previous component, then calls module.to(device) only if the module
             # is not there yet. Shadow that one call so the pinned chunks go up first; module.to then moves whatever
             # the chunks did not cover (unpinned or replaced weights) exactly as before.
+            def _put_back_to() -> None:
+                if prior_to is None:
+                    mod.__dict__.pop("to", None)
+                else:
+                    mod.__dict__["to"] = prior_to
+
             def _to(*to_args: Any, **to_kwargs: Any) -> Any:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
                 import torch
 
                 target = to_args[0] if to_args else to_kwargs.get("device")
@@ -799,7 +810,7 @@ def _wrap_cpu_offload_hook(
             try:
                 out = pre_forward(mod, *args, **kwargs)
             finally:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
         if onload:
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
@@ -1016,6 +1027,60 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
     return (working_set, in_use) if working_set > 0 else (None, 0)
 
 
+def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
+    """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
+    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
+    block pool and reads the whole-step pool on the current card."""
+    held = 0
+    try:
+        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
+        held += int(_block_graph_pool_bytes(device))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The whole-step pool reading is per current card, so a named card other than it is made current for the read.
+        from .diffusion_cuda_graph import live_pool_free_bytes
+
+        scope = contextlib.nullcontext()
+        if device is not None:
+            import torch
+            try:
+                current = int(torch.cuda.current_device())
+            except Exception:  # noqa: BLE001 - no current card to compare: switch to the named one
+                current = None
+            if current != int(device):
+                scope = torch.cuda.device(int(device))
+        with scope:
+            held += int(live_pool_free_bytes())
+    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
+        pass
+    return held
+
+
+def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
+    """Bytes this process's caching allocator holds reserved-but-unallocated on CUDA ``device`` (the current card
+    when None) that an ordinary allocation can take back, minus the CUDA graph pools that only their graphs may reuse
+    (``_graph_held_cache_bytes``). None when the allocator cannot be read. May be negative; callers credit only a
+    positive figure."""
+    try:
+        import torch
+        if device is None:
+            reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+        else:
+            reclaimable = int(torch.cuda.memory_reserved(device)) - int(
+                torch.cuda.memory_allocated(device)
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    pool_device = device
+    if pool_device is None:
+        try:
+            pool_device = torch.cuda.current_device()
+        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+            pool_device = None
+    return reclaimable - _graph_held_cache_bytes(pool_device)
+
+
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back as free,
     without flushing it.
@@ -1046,27 +1111,9 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     snapshot = snapshot_device_memory(target)
     if snapshot.free_mib is None:
         return snapshot
-    try:
-        import torch
-        reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
-    except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
+    reclaimable = cuda_reclaimable_bytes()
+    if reclaimable is None:  # no allocator reading: the plain snapshot still stands
         return snapshot
-    try:
-        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
-        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
-        try:
-            device = torch.cuda.current_device()
-        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
-            device = None
-        reclaimable -= _block_graph_pool_bytes(device)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
-        from .diffusion_cuda_graph import live_pool_free_bytes
-        reclaimable -= live_pool_free_bytes()
-    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
-        pass
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
@@ -1133,7 +1180,9 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     try:
         import torch
-        torch.cuda.synchronize()
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture()
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
         pass
@@ -1284,6 +1333,45 @@ def _host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: system total capped by any cgroup limit."""
     from utils import host_memory
     return host_memory.usable_mib(_system_memory_mib()[0], _cgroup_memory_limit_mib())
+
+
+def _windows_commit_headroom_mib() -> Optional[int]:
+    """(CommitLimit - CommitTotal) in MiB on Windows via ``K32GetPerformanceInfo``; 0 when exhausted, None when
+    unreadable or not Windows. The diffusion guards' failure mode is commit exhaustion (#13432), which a
+    physical `available` reading does not see."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _PERFORMANCE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("CommitTotal", ctypes.c_size_t),
+                ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t),
+                ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t),
+                ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t),
+                ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t),
+                ("PageSize", ctypes.c_size_t),
+                ("HandleCount", ctypes.c_ulong),
+                ("ProcessCount", ctypes.c_ulong),
+                ("ThreadCount", ctypes.c_ulong),
+            ]
+
+        info = _PERFORMANCE_INFORMATION()
+        info.cb = ctypes.sizeof(_PERFORMANCE_INFORMATION)
+        # kernel32 exports the K32-prefixed name only; the unprefixed one lives in psapi
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        if not kernel32.K32GetPerformanceInfo(ctypes.byref(info), info.cb):
+            return None
+        headroom = (int(info.CommitLimit) - int(info.CommitTotal)) * int(info.PageSize)
+        return max(0, headroom // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
@@ -1449,6 +1537,10 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
     # unmeasured and keeps the flat estimate.
     "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
+    # FLUX.3 Klein base, B200 bf16: per column the larger of Klein and base (same DiT / VAE, one Flux2 formula in ComfyUI).
+    "flux.3-klein-base": ((301, 901, 2_512, 2_512, 3_359), (301, 901, 2_512, 2_512, 3_359)),
+    # MOSS-Image SFT, B200 bf16 measurements; both tiers take the eager worst.
+    "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
@@ -1464,7 +1556,30 @@ def calibrated_image_activation(
     )
 
 
-DISCRETE_RESERVE_CAP_MIB = 4096
+# ComfyUI's minimum_inference_memory() (comfy/model_management.py); activations are priced separately here.
+COMFY_MIN_INFERENCE_MIB = 800
+COMFY_EXTRA_RESERVED_MIB = 400
+COMFY_EXTRA_RESERVED_WINDOWS_MIB = 600
+COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB = 100
+# Placements measured on T4 / 8-16 GB cards are tuned against 2 GiB; ComfyUI's 1.2 GiB alone flips them.
+DISCRETE_RESERVE_FLOOR_MIB = 2048
+
+
+def comfy_min_inference_mib(total_mib: Optional[int] = None) -> int:
+    """ComfyUI's ``minimum_inference_memory()`` in MiB: 1200 on Linux, 1400 / 1500 (card above 15 GiB) on Windows."""
+    if sys.platform != "win32":
+        return COMFY_MIN_INFERENCE_MIB + COMFY_EXTRA_RESERVED_MIB
+    extra = COMFY_EXTRA_RESERVED_WINDOWS_MIB
+    if int(total_mib or 0) > 15 * 1024:
+        extra += COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB
+    return COMFY_MIN_INFERENCE_MIB + extra
+
+
+def discrete_reserve_mib(total_mib: Optional[int] = None) -> int:
+    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB."""
+    return max(DISCRETE_RESERVE_FLOOR_MIB, comfy_min_inference_mib(total_mib))
+
+
 _ROCM_APU_POOL = "rocm_apu_pool"
 
 
@@ -1481,11 +1596,8 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
-    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
-    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
-    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
-    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
+    # Fixed, not a share: a capped 10% kept 2.4-4 GiB idle on 24-40 GiB cards.
+    return discrete_reserve_mib(base)
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
@@ -2479,6 +2591,11 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+    if calibrated_activation is not None and "calibrated_headroom_mib" not in estimates:
+        from .diffusion_multigpu import current_selection
+        if current_selection() is not None:
+            # Untiled: a layer split keeps the VAE resident on the primary.
+            estimates["calibrated_split_headroom_mib"] = calibrated_activation.headroom(False)
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,
@@ -2605,7 +2722,9 @@ def _calibrated_faster_tier(
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
-    Every check grows with the budget, so more VRAM never picks a slower tier."""
+    A flat resident-transformer pick whose measured 2048 denoise does not fit beside the weights (the flat runtime
+    headroom undercounts it) is demoted to the fastest tier that does fit, as ComfyUI offloads weights against its
+    activation estimate. Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -2684,6 +2803,24 @@ def _calibrated_faster_tier(
             ),
         ),
     )
+    # Only the 2048 denoise is checked here: it cannot tile, while an oversized decode is tiled by the generation guard.
+    denoise_fits = (
+        transformer + te + others <= room
+        if flat_rank == 0
+        else te > 0 and transformer + others <= room
+    )
+    if flat_rank <= 1 and not denoise_fits:
+        for fits, (tier_policy, stream_te, stream_tr, tile, reason) in candidates[flat_rank + 1 :]:
+            if fits:
+                return (
+                    tier_policy,
+                    stream_te,
+                    stream_tr,
+                    tile,
+                    "the measured 2048 denoise does not fit beside the flat resident pick; "
+                    + reason,
+                )
+        return None
     for rank, (fits, tier) in enumerate(candidates):
         if rank >= flat_rank:
             return None
@@ -2967,8 +3104,10 @@ def measured_image_runtime_mib(
     phase_seeds: bool = False,
     static_seed: bool = True,
     dense_tier_seeds: bool = False,
+    phase: Optional[str] = None,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
     Seeds: the peak tables above, then the per-phase calibration (``_MEASURED_IMAGE_ACTIVATION_MIB``, the same
@@ -3006,7 +3145,13 @@ def measured_image_runtime_mib(
     if quant is not None:
         from .diffusion_measured_peaks import lookup as learned_peak
         learned = learned_peak(
-            family = family, quant = quant, speed_mode = speed_mode, width = w, height = h, batch_size = batch
+            family = family,
+            quant = quant,
+            speed_mode = speed_mode,
+            width = w,
+            height = h,
+            batch_size = batch,
+            phase = phase,
         )
     if seed is None and learned is None:
         return None
@@ -3079,6 +3224,43 @@ def with_label_part(label: str, name: str, value: str) -> str:
     return "|".join(
         f"{name}:{value}" if part.startswith(f"{name}:") else part for part in str(label).split("|")
     )
+
+
+# Non-txt2img workflows record under ``wf:<workflow>`` so an edit's larger peak never inflates the next txt2img load.
+WORKFLOW_PART = "wf"
+TXT2IMG_WORKFLOW = "txt2img"
+
+
+def with_workflow(label: str, workflow: Optional[str]) -> str:
+    """``label`` keyed for ``workflow``: unchanged for text-to-image (and an unknown workflow), else ``|wf:<name>``."""
+    name = str(workflow or "").strip().lower()
+    if not name or name == TXT2IMG_WORKFLOW:
+        return str(label)
+    return f"{label}|{WORKFLOW_PART}:{name}"
+
+
+def learned_phase_split(
+    family: Optional[str], quant: Optional[str], speed_mode: Optional[str]
+) -> Optional[dict]:
+    """Learned phases (+ ``pixels`` / ``quadratic``) at the default bucket, or None unless every phase shares the
+    whole-render bucket and the larger padded phase reaches the whole-render peak."""
+    from .diffusion_measured_peaks import PHASE_DECODE, PHASE_PRE_DECODE, PHASES, lookup_bucket
+
+    if quant is None:
+        return None
+    total = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode)
+    if total is None:
+        return None
+    found = {}
+    for phase in PHASES:
+        value = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode, phase = phase)
+        if value is None or value[1] != total[1]:
+            return None
+        found[phase] = int(value[0])
+    if max(found[PHASE_PRE_DECODE], found[PHASE_DECODE]) < int(total[0]):
+        return None
+    found.update(pixels = int(total[1]), quadratic = bool(total[2]))
+    return found
 
 
 _VAE_SAVERS = (
@@ -3544,6 +3726,33 @@ def refine_plan_from_loaded_weights(
         # The flat plan's hooks stay installed and whole groups are kept resident within the room, so an oversized
         # request can stream them again (release_resident_groups) and run exactly as the flat plan would.
         stream_te = bool(getattr(plan, "stream_text_encoders", False))
+        # The whole-render peak includes the stream prefetch window, which an all-resident placement never allocates:
+        # all-resident is checked against the unpadded peak, else encoders against the padded pre-decode phase. Extra
+        # residency is lent to the decode; release_for_decode re-streams it only if free memory is short then.
+        pre_headroom = resident_headroom = None
+        split = None
+        if stream_te and policy == OFFLOAD_GROUP:
+            split = learned_phase_split(family, read_quant, speed_mode)
+        if split is not None:
+            from .diffusion_measured_peaks import PHASE_PRE_DECODE, PHASE_UNPADDED
+
+            def _phase_headroom(phase: str) -> Optional[int]:
+                value = measured_image_runtime_mib(
+                    family,
+                    speed_mode,
+                    dense_transformer_mib = dense_mib,
+                    compute_bytes = compute_bytes or 2,
+                    quant = read_quant,
+                    phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+                    dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
+                    static_seed = static_seed,
+                    phase = phase,
+                )
+                return value if value is not None and value < headroom else None
+
+            pre_headroom = _phase_headroom(PHASE_PRE_DECODE)
+            if not bool(getattr(plan, "stream_transformer", True)):
+                resident_headroom = _phase_headroom(PHASE_UNPADDED)
         room = budget - floor
         if policy == OFFLOAD_GROUP and not stream_te:
             room -= encoders  # resident companions
@@ -3576,6 +3785,30 @@ def refine_plan_from_loaded_weights(
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         )
+        lend = 0
+        phase_headroom = None
+        if split is not None and not whole_dit and not wide_dit:
+            phase_te_room = te_room
+            if (
+                resident_headroom is not None
+                and room + (headroom - resident_headroom) - dit_room >= encoders
+            ):
+                phase_headroom, phase_te_room = resident_headroom, encoders
+            elif pre_headroom is not None:
+                phase_headroom = pre_headroom
+                phase_te_room = min(max(0, room + (headroom - pre_headroom) - dit_room), encoders)
+            lend = max(0, phase_te_room - te_room)
+            if lend > 0:
+                from .diffusion_measured_peaks import PHASE_DECODE_UNPADDED
+                te_room = phase_te_room
+                estimates.update(
+                    measured_phase_headroom_mib = phase_headroom,
+                    measured_phase_all_resident = phase_headroom == resident_headroom,
+                    measured_decode_peak_mib = split[PHASE_DECODE_UNPADDED],
+                    measured_decode_peak_pixels = split["pixels"],
+                    measured_decode_peak_quadratic = split["quadratic"],
+                    decode_lend_text_encoder_mib = lend,
+                )
         if dit_room <= 0 and te_room <= 0:
             return plan
         if whole_dit or wide_dit:
@@ -3598,7 +3831,18 @@ def refine_plan_from_loaded_weights(
                     else f"{int(dit_room)} MiB of the {dit} MiB transformer"
                 )
                 + f" and {int(te_room)} MiB of the {encoders} MiB "
-                f"encoders stay resident (measured peak {headroom} MiB); the rest streams"
+                f"encoders stay resident (measured peak {headroom} MiB"
+                + (
+                    (
+                        f"; {phase_headroom} MiB without the streaming window, every weight resident"
+                        if phase_headroom == resident_headroom
+                        else f"; {phase_headroom} MiB before the VAE decode"
+                    )
+                    + f", the decode may stream {lend} MiB of them again"
+                    if lend > 0
+                    else ""
+                )
+                + "); the rest streams"
                 + (
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
@@ -3662,21 +3906,12 @@ def _keep_groups_resident(
         onload = torch.device(device)
         left = int(room_mib) * 1024 * 1024
         kept = 0
-
-        def _tensors(group: Any) -> list:
-            out: list = []
-            seen: set[int] = set()
-            for t in (
-                [p for m in group.modules for p in m.parameters()]
-                + [b for m in group.modules for b in m.buffers()]
-                + list(group.parameters or [])
-                + list(group.buffers or [])
-            ):
-                if id(t) not in seen:
-                    seen.add(id(t))
-                    out.append(t)
-            return out
-
+        try:
+            from .diffusion_stable_arena import pin_group_in_range, stable_repin_wanted
+            stable = stable_repin_wanted(module)
+        except Exception:  # noqa: BLE001 - re-pins move the stock way
+            stable = False
+        _tensors = _resident_tensors
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
 
         def _noop(*args: Any, **kwargs: Any) -> None:
@@ -3740,8 +3975,35 @@ def _keep_groups_resident(
                 continue
             for member in closure:
                 cpu = getattr(member, "cpu_param_dict", None) or {}
-                for t in _tensors(member):
-                    if _placed_on(t, onload.type, is_torchao):
+                members_tensors = _tensors(member)
+                placed: set = set()
+                if stable and onload.type == "cuda":
+                    # The step graph recorded the resident groups' addresses: a re-pin lands where the last one did.
+                    try:
+                        placed = pin_group_in_range(
+                            module,
+                            member,
+                            members_tensors,
+                            lambda t: not _placed_on(t, onload.type, is_torchao),
+                            lambda t, cpu = cpu: cpu.get(t, t),
+                            onload,
+                            go._swap_torchao_tensor,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the stock move still places the group
+                        placed = set()
+                        # Unmap an empty range so the stock move below does not pay for a second copy.
+                        try:
+                            from .diffusion_stable_arena import release_group_range
+                            release_group_range(module, member, members_tensors)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if logger is not None:
+                            logger.warning(
+                                "diffusion.memory: stable re-pin range unavailable (%s); the group moves the stock way",
+                                exc,
+                            )
+                for t in members_tensors:
+                    if id(t) in placed or _placed_on(t, onload.type, is_torchao):
                         continue
                     moved = cpu.get(t, t).to(onload)
                     if is_torchao(t):
@@ -3767,7 +4029,8 @@ def _keep_groups_resident(
         if kept:
             _bump_placement_epoch()
         if kept and onload.type == "cuda":
-            torch.cuda.synchronize(onload)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(onload)
         if logger is not None and kept:
             logger.info(
                 "diffusion.memory: %s keeps %d MiB resident (%d of %d offload groups); the rest streams",
@@ -3824,6 +4087,22 @@ def _streamed_group_count(groups: list) -> int:
     )
 
 
+def _resident_tensors(group: Any) -> list:
+    """Every tensor of an offload group, each once (its modules' parameters, their buffers, then the group's own)."""
+    out: list = []
+    seen: set[int] = set()
+    for t in (
+        [p for m in group.modules for p in m.parameters()]
+        + [b for m in group.modules for b in m.buffers()]
+        + list(group.parameters or [])
+        + list(group.buffers or [])
+    ):
+        if id(t) not in seen:
+            seen.add(id(t))
+            out.append(t)
+    return out
+
+
 def _release_group(group: Any) -> None:
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
@@ -3834,6 +4113,14 @@ def _release_group(group: Any) -> None:
     group._unsloth_resident = False
     group.offload_()
     _bump_placement_epoch()
+
+
+def _release_group_range(owner: Any, group: Any) -> None:
+    """A released group's weights are on their host copies again: its stable re-pin range gives the physical memory
+    back (the addresses stay reserved)."""
+    if "_unsloth_repin_range" in getattr(group, "__dict__", {}):
+        from .diffusion_stable_arena import release_group_range
+        release_group_range(owner, group, _resident_tensors(group))
 
 
 def release_resident_groups(
@@ -3913,6 +4200,7 @@ def release_resident_groups(
                     # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                     streamed.add(id(member))
                     _release_group(member)
+                    _release_group_range(module, member)
                     left -= int(getattr(member, "_unsloth_resident_bytes", 0))
         if not released:
             return None
@@ -3922,7 +4210,8 @@ def release_resident_groups(
                 state["streamed"] = _streamed_group_count(_offload_groups(module))
         device = getattr(released[0], "_unsloth_resident_device", None)
         if device is not None and torch.device(device).type == "cuda":
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(device)
         if logger is not None:
             logger.info(
                 "diffusion.memory: streaming %d MiB of resident groups for %s",
@@ -3936,6 +4225,96 @@ def release_resident_groups(
             logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
         # groups released before the failure stay streamed until the caller re-pins them: hand back their restore
         return restore if released else None
+
+
+DECODE_LEND_ATTR = "_unsloth_decode_lend"
+# Kept free beside the decode's learned peak x margin when deciding whether lent encoder groups must stream again.
+_DECODE_SLACK_MIB = 256
+
+
+def decode_lend_from_plan(plan: Any) -> Optional[tuple[int, int, int, bool]]:
+    """``(lent MiB, decode peak MiB, bucket pixels, quadratic)`` when ``plan`` lent encoder residency to the decode."""
+    estimates = getattr(plan, "estimates", None) or {}
+    lend = estimates.get("decode_lend_text_encoder_mib")
+    if not lend or not getattr(plan, "resident_text_encoder_mib", None):
+        return None
+    return (
+        int(lend),
+        int(estimates.get("measured_decode_peak_mib") or 0),
+        int(
+            estimates.get("measured_decode_peak_pixels")
+            or DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        ),
+        bool(estimates.get("measured_decode_peak_quadratic")),
+    )
+
+
+def decode_need_mib(
+    lend: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+) -> int:
+    """MiB the decode of a ``width x height x batch`` request needs above the allocation at its start (margin
+    included), scaled from the learned decode peak the way the store scales (``diffusion_measured_peaks``)."""
+    from .diffusion_measured_peaks import resolution_bucket
+
+    _, decode_mib, covered, quadratic = lend
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    covered = max(1, int(covered))
+    scale = 1.0
+    if quadratic:
+        if w * h > covered:
+            scale = (resolution_bucket(w, h, 1) / float(covered)) ** 2
+        scale *= batch
+    elif w * h * batch > covered:
+        scale = resolution_bucket(w, h, batch) / float(covered)
+    return int(math.ceil(float(decode_mib) * scale * _MEASURED_PEAK_MARGIN))
+
+
+def release_for_decode(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    device: Any = None,
+    logger: Any = None,
+) -> Optional[Callable[[], None]]:
+    """If free memory (driver + the allocator cache outside CUDA graph pools) is short of the learned decode peak x margin, stream the shortfall of
+    lent groups again (text encoders first) and return the restore; else None. Mirrors ComfyUI's
+    ``load_models_gpu(memory_required=...)``. The decode is untouched, so output is bit-identical."""
+    lend = getattr(pipe, DECODE_LEND_ATTR, None)
+    if not lend:
+        return None
+    try:
+        import torch
+
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
+        free = int(torch.cuda.mem_get_info(dev)[0])
+        # only the cache an ordinary decode allocation can reuse: a CUDA graph pool's free blocks are not
+        cached = max(
+            0,
+            int(torch.cuda.memory_reserved(dev))
+            - int(torch.cuda.memory_allocated(dev))
+            - _graph_held_cache_bytes(dev.index),
+        )
+        short = need + _DECODE_SLACK_MIB - ((free + cached) >> 20)
+    except Exception as exc:  # noqa: BLE001 - unreadable: the decode's OOM retry still frees the card
+        if logger is not None:
+            logger.debug("diffusion.memory: decode residency check skipped (%s)", exc)
+        return None
+    if short <= 0:
+        return None
+    return release_resident_groups(pipe, short, logger, reason = "the VAE decode", device = dev)
 
 
 def resident_group_mib(pipe: Any) -> int:
@@ -4121,7 +4500,8 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
         else:
             t.data = t.data.to(onload)
     if onload.type == "cuda":
-        torch.cuda.synchronize(onload)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+        synchronize_outside_capture(onload)
 
 
 def _unwind_group_offload(
@@ -4241,8 +4621,10 @@ def measured_request_extra_mib(
     condition_pixels: int = 0,
     cfg: Optional[bool] = None,
     unpriced_references: bool = False,
+    workflow: Optional[str] = None,
 ) -> int:
-    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``cfg``:
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``workflow``:
+    a workflow other than text-to-image also reads the peak recorded under its own key (``with_workflow``). ``cfg``:
     whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
     the request carries reference images whose latents join the denoiser's sequence but are not in
     ``condition_pixels`` (FLUX.2 Klein's primary reference): a placement made from a dense default / max tier seed,
@@ -4326,12 +4708,32 @@ def measured_request_extra_mib(
                 need = max(need, stored)
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
-    if need is None:
-        return 0
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
-    need += int(
+    allowance = int(
         8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
     )
+    if need is not None:
+        need += allowance
+    if isinstance(identity, tuple) and len(identity) == 3:
+        keyed = with_workflow(identity[1], workflow)
+        if keyed != identity[1]:
+            own = None
+            if (
+                cfg is False
+                and getattr(pipe, "_unsloth_peak_expects_cfg", False)
+                and cfg_off_peaks_enabled()
+            ):
+                # a guidance-off render on a CFG-capable family records ``|cfg:off`` before the workflow part
+                off = with_workflow(f"{without_cfg_off(identity[1])}|{CFG_OFF_PART}", workflow)
+                own = measured_image_runtime_mib(family, speed_mode, quant = off, **sized)
+            if own is None:
+                own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
+            if own is not None:
+                # the learned workflow peak is the other complete estimate: it was measured with the condition images
+                # resident, so the allowance is not charged on top of it
+                need = own if need is None else max(need, own)
+    if need is None:
+        return 0
     return max(0, int(need) - int(headroom))
 
 

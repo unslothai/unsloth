@@ -633,7 +633,9 @@ class CfgBatchRouter:
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
             return False
-        _torch().cuda.synchronize(latent.device)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(latent.device)
         return True
 
     def _measured_plain(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:

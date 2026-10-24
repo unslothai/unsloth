@@ -268,6 +268,21 @@ import { LocalizedEditCanvas } from "./localized-edit-canvas";
 import type { AppliedMask } from "./lib/mask-from-text";
 import { applyMaskToLayer } from "./mask-apply";
 import { MaskFromTextPanel } from "./mask-from-text-panel";
+import { DetailerField, useDetailerSegmenter } from "./detailer-field";
+import {
+  detailerAvailable,
+  detailerNotApplied,
+  detailerEngagesNegative,
+  detailerErrors,
+  detailerModelCapable,
+  detailerRecordOf,
+  detailerRequestField,
+  detailerSummary,
+  readDetailerOptions,
+  restoredDetailer,
+  saveDetailerOptions,
+  type DetailerOptions,
+} from "./lib/detailer";
 
 import {
   type ControlNetSpecInput,
@@ -1415,6 +1430,9 @@ function RecipePopover({
             <RecipeRow key={label} label={label} value={value} />
           ))}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
+          {detailerSummary(detailerRecordOf(image.detailer)) ? (
+            <RecipeRow label="Detailer" value={detailerSummary(detailerRecordOf(image.detailer)) ?? ""} />
+          ) : null}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -2153,12 +2171,6 @@ export function ImagesPage({
   // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
   const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
   const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
-  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
-  const negativeEngaged =
-    negativeCapable &&
-    (negativeMinGuidance === null ||
-      effectiveGuidance > negativeMinGuidance ||
-      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
@@ -2193,6 +2205,23 @@ export function ImagesPage({
     [samplerModelKey],
   );
   const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  // Detailer (face fix): off by default; its options persist, the switch does not.
+  const [detailerOn, setDetailerOn] = useState(false);
+  const [detailerOptions, setDetailerOptionsState] = useState<DetailerOptions>(readDetailerOptions);
+  const setDetailerOptions = useCallback((next: DetailerOptions) => {
+    setDetailerOptionsState(next);
+    saveDetailerOptions(next);
+  }, []);
+  const detailerCapable = detailerModelCapable(status, Boolean(external));
+  const detailerSegmenter = useDetailerSegmenter(detailerCapable, loadedModelKey(status) ?? "");
+  const detailerReady = detailerAvailable(status, Boolean(external), detailerSegmenter);
+  // Hires CFG or the Detailer's CFG can turn CFG on for that pass alone; it then reads the negative prompt.
+  const negativeEngaged =
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance) ||
+      detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance));
   const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
     if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
     else setPrompt((p) => withEmbeddingTrigger(p, trigger));
@@ -2729,6 +2758,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    const detail = restoredDetailer(image);
+    setDetailerOn(detail.enabled);
+    if (detail.enabled) setDetailerOptions({ ...readDetailerOptions(), ...detail.options });
     const maskOptions = restoredInpaintMaskOptions(image);
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
@@ -2779,13 +2811,15 @@ export function ImagesPage({
     const notApplied = [
       ...(literal ? [literal] : []),
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+      // Restored into the hidden control, which Generate omits: say so, as an import does.
+      ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2912,6 +2946,8 @@ export function ImagesPage({
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
+      // Restored into the hidden control when this model cannot inpaint or SAM 3 is missing: say so.
+      notApplied.unshift(...detailerNotApplied(Boolean(settings.detailer), detailerReady));
       if (tiMatch) {
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([
@@ -2973,7 +3009,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -5081,7 +5117,9 @@ export function ImagesPage({
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
-            // Gated on loraCapable, since a restore can leave adapters in state.
+            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
+            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
+            // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
               if (!loraCapable) return undefined;
               const active = loras
@@ -5131,6 +5169,13 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        const detailFailed = detailerErrors(res.images);
+        if (detailFailed.length > 0) {
+          toast.warning("The Detailer did not run on this image", {
+            id: "images-detailer-error",
+            description: detailFailed.join("; "),
+          });
+        }
         compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
@@ -5177,7 +5222,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -6662,6 +6707,13 @@ export function ImagesPage({
               family={status?.family}
               enabled={embeddingsEnabled}
               onInsert={insertEmbedding}
+            />
+            <DetailerField
+              available={detailerReady}
+              enabled={detailerOn}
+              onEnabledChange={setDetailerOn}
+              options={detailerOptions}
+              onOptionsChange={setDetailerOptions}
             />
             {!external && (
               <>

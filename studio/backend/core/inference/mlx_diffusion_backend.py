@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
+"""MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
 Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -55,6 +56,8 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
@@ -549,6 +552,7 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
+    gguf_path: Optional[str] = None
 
 
 @dataclass
@@ -880,6 +884,7 @@ class MlxDiffusionBackend:
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -1118,6 +1123,7 @@ class MlxDiffusionBackend:
                 dense_bits = bits,
                 convert_dir = str(out_dir),
                 timings = timings,
+                gguf_path = str(gguf_path),
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1235,6 +1241,7 @@ class MlxDiffusionBackend:
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -1275,8 +1282,8 @@ class MlxDiffusionBackend:
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
-                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX for "
-                "img2img / inpaint / edit / reference / upscale."
+                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX (or set it to "
+                "auto) for img2img / inpaint / edit / reference / upscale."
             )
         if prompts is not None or seeds is not None:
             raise ValueError(
