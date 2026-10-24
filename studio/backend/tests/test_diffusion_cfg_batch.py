@@ -988,23 +988,3 @@ def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
         )
     )
     assert cb.stored_verdict("k") == entry["k"]
-
-
-def test_a_single_slow_plain_pair_is_not_stored_for_other_processes(monkeypatch, tmp_path):
-    # one plain pair over the compute-bound gate (a contended card, say) keeps this load plain, but the next load
-    # times the shape again instead of reading "plain" from the store
-    cost = {"pair": 0.3}
-    model = _timed(monkeypatch, lambda b: cost["pair"] / 2 if b == 1 else cost["pair"] * 0.5)
-    monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 0.25)
-    monkeypatch.setenv(cb.CFG_BATCH_ENV, "auto")
-    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE", str(tmp_path / "verdicts.json"))
-    monkeypatch.setattr(cb, "_card_name", lambda latent: "FakeGPU", raising = False)
-    pipe = _Pipe(model)
-    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
-    assert _render(pipe, model) == [1] * 12
-    assert "compute-bound" in cb.router_for(pipe).last_shape.off
-    assert _render(pipe, model) == [1] * 12  # latched for this load
-    cost["pair"] = 0.1  # the card is free again
-    pipe2, model2 = _fresh_load(type(model))
-    later = _render(pipe2, model2)
-    assert later[4:10] == _TRIAL and cb.router_for(pipe2).last_shape.verdict == "batch"

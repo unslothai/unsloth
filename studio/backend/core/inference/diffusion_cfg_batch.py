@@ -631,7 +631,6 @@ class CfgBatchRouter:
                             _PLAIN,
                             f"compute-bound: a plain pair takes {live:.3f}s, where one doubled call cannot win "
                             f"{round((1 - _MEASURED_FRACTION) * 100)}%",
-                            persist = False,
                         )
                         return out
                 self._trial((args, kwargs), latent, shape)
@@ -785,19 +784,10 @@ class CfgBatchRouter:
             reason = str(entry.get("reason") or "measured no gain")
             self._shape_off(shape, f"stored verdict: {reason}" if stored else reason)
 
-    def _decide(
-        self,
-        shape: _Shape,
-        latent: Any,
-        verdict: str,
-        reason: str,
-        persist: bool = True,
-    ) -> None:
-        """Latch a measured verdict; the first one stored for this model, shape and card wins across processes.
-        ``persist=False`` (one plain pair, no doubled call timed: a contended card could cause it) latches it for this
-        load only; the caller already read the store for this key."""
+    def _decide(self, shape: _Shape, latent: Any, verdict: str, reason: str) -> None:
+        """Latch a measured verdict; the first one stored for this model, shape and card wins across processes."""
         entry = {"verdict": verdict, "reason": reason}
-        key = self._verdict_key(shape, latent) if persist else None
+        key = self._verdict_key(shape, latent)
         settled = entry if key is None else _settle_verdict(key, entry)
         self._apply_verdict(shape, settled, stored = settled is not entry)
         if shape.verdict == _BATCH:
