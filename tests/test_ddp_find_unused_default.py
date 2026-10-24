@@ -325,6 +325,25 @@ def test_vlm_tower_rule_needs_non_reentrant_checkpointing(ddp_env, case):
     assert _helper()(_args(**kwargs), model) is None
 
 
+def test_unsloth_config_reentrant_pin_is_overridden_by_the_ddp_wrapper(ddp_env, monkeypatch):
+    # Unsloth's generated configs pin use_reentrant = True; under DDP vision.py swaps in a checkpoint
+    # wrapper (marked _unsloth_original) that forces use_reentrant = False, so the pin is not what runs.
+    import torch.utils.checkpoint as torch_checkpoint
+
+    original = torch_checkpoint.checkpoint
+    args = _args(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    assert _helper()(args, _llava()) is None
+
+    def forced(function, *a, **k):
+        k["use_reentrant"] = False
+        return original(function, *a, **k)
+
+    forced._unsloth_original = original
+    monkeypatch.setattr(torch_checkpoint, "checkpoint", forced)
+    args = _args(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    assert _helper()(args, _llava()) is True
+
+
 def test_lora_vlm_tower_is_true_like_transformers(ddp_env):
     # transformers already picks True for a PeftModel; the helper agrees.
     model = _lora(_llava(), target_modules = ["q_proj", "v_proj"])

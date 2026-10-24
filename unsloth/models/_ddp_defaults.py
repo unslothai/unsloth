@@ -182,13 +182,27 @@ def _unwrapped_models(model):
     return out
 
 
+def _checkpoint_forced_non_reentrant():
+    # vision.py's DDP wrapper (marked _unsloth_original) forces every checkpoint call non-reentrant.
+    try:
+        import torch.utils.checkpoint as torch_checkpoint
+    except Exception:
+        return False
+    return getattr(torch_checkpoint.checkpoint, "_unsloth_original", None) is not None
+
+
 def _vlm_tower_needs_unused_search(args, model):
     """Trainable tower a text-only batch skips, under ``_unsloth_vlm_gc_non_reentrant``."""
     models = _unwrapped_models(model)
     if not any(getattr(m, "_unsloth_vlm_gc_non_reentrant", False) is True for m in models):
         return False
     kwargs = getattr(args, "gradient_checkpointing_kwargs", None) or {}
-    if isinstance(kwargs, dict) and kwargs.get("use_reentrant") is True:
+    # Unsloth's generated configs pin use_reentrant = True; under the DDP wrapper that pin is not what runs.
+    if (
+        isinstance(kwargs, dict)
+        and kwargs.get("use_reentrant") is True
+        and not _checkpoint_forced_non_reentrant()
+    ):
         return False
     config = getattr(models[-1], "config", None)
     model_type = str(getattr(config, "model_type", "") or "").lower()
