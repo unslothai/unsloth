@@ -5008,10 +5008,14 @@ html[data-chat-font] .aui-root {
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
-	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+}
+/* Centred only while loading: the finished toast reuses this toast's id and so its class, and a
+   two-line "loaded" title then needs the base rule's icon on the first line. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {
+	align-items: center !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
