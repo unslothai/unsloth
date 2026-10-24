@@ -4147,13 +4147,14 @@ export function ModelConfigPage({
         className={cn(
           "mt-5",
           // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
-          // Sticky offsets start inside the scroller's 28px bottom padding: -bottom-7 puts the footer on
+          // Sticky offsets start inside the scroller's 24px bottom padding: -bottom-6 puts the footer on
           // the panel's edge, and the negative margins cover that padding with the panel's own fill.
           variant === "page" &&
-            "sticky -bottom-7 z-10 -mb-7 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-7 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
+            "sticky -bottom-6 z-10 -mb-6 -ml-7 -mr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] bg-popover pb-6 pl-7 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] dark:bg-sidebar",
         )}
       >
-      <div className="flex flex-col gap-3.5 border-t border-border pt-6.5">
+      {/* pt-4.75 puts the Remember text's cap top 24px under the rule, the same as the space under the buttons. */}
+      <div className="flex flex-col gap-3.5 border-t border-border pt-4.75">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
