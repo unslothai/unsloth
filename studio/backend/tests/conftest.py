@@ -226,6 +226,12 @@ def _reset_gpu_query_cache():
         if amd is not None and hasattr(amd, "_hip_id_map_lock"):
             with amd._hip_id_map_lock:
                 amd._hip_id_map_cache = None
+        # The last NVML inventory is class state the launch pins the child from: a MIG
+        # probe test leaving its slices there pinned later launches to MIG-dddd4444-0.
+        llama = sys.modules.get("core.inference.llama_cpp")
+        backend = getattr(llama, "LlamaCppBackend", None)
+        if backend is not None and "_NVML_ROWS" in vars(backend):
+            backend._NVML_ROWS = []
 
     _reset()
     yield

@@ -962,6 +962,74 @@ def test_a_unified_memory_refusal_of_the_fallback_keeps_its_error_code(rig):
     assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
 
 
+def _refuse_for_unified_memory(rig, *messages):
+    from core.inference.diffusion_memory import UNIFIED_OVERSIZE_REFUSAL_CODE
+
+    real_load, real_progress = rig.diffusers.begin_load, rig.diffusers.load_progress
+    pending = list(messages)
+
+    def _load(repo_id, **kwargs):
+        if pending:
+            rig.diffusers.fail_next_load = pending.pop(0)
+        return real_load(repo_id, **kwargs)
+
+    def _progress():
+        out = real_progress()
+        if out.get("phase") == "error":
+            out["error_code"] = UNIFIED_OVERSIZE_REFUSAL_CODE
+        return out
+
+    rig.diffusers.begin_load = _load
+    rig.diffusers.load_progress = _progress
+
+
+def test_a_coexist_fallback_refused_for_memory_retries_once_with_mlx_unloaded(rig):
+    # Estimate says both fit; the loader's real free-memory reading says no.
+    rig.fit["coexist"] = True
+    _refuse_for_unified_memory(rig, "needs about 12 GB of unified memory")
+    assert _img2img(rig.engine)["engine"] == "diffusers"
+    assert rig.log == [
+        ("diffusers", "load"),
+        ("mlx", "unload"),
+        ("diffusers", "load"),
+        ("diffusers", "generate"),
+    ]
+    assert rig.engine.status()["engine_routing"]["resident"] == ["diffusers"]
+    rig.log.clear()
+    assert _img2img(rig.engine)["engine"] == "diffusers"
+    assert rig.log == [("diffusers", "generate")]
+
+
+def test_a_coexist_fallback_refused_twice_restores_mlx_and_keeps_the_error_code(rig):
+    from core.inference.diffusion_memory import (
+        UNIFIED_OVERSIZE_REFUSAL_CODE,
+        unified_memory_refusal_code,
+    )
+
+    rig.fit["coexist"] = True
+    _refuse_for_unified_memory(rig, "needs about 30 GB of unified memory", "still 30 GB")
+    with pytest.raises(RuntimeError, match = "still 30 GB") as excinfo:
+        _img2img(rig.engine)
+    assert unified_memory_refusal_code(excinfo.value) == UNIFIED_OVERSIZE_REFUSAL_CODE
+    assert rig.log == [
+        ("diffusers", "load"),
+        ("mlx", "unload"),
+        ("diffusers", "load"),
+        ("mlx", "load"),
+    ]
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+    assert _txt2img(rig.engine)["engine"] == "mlx"
+
+
+def test_a_coexist_fallback_failing_for_another_reason_keeps_mlx_and_does_not_retry(rig):
+    rig.fit["coexist"] = True
+    rig.diffusers.fail_next_load = "missing file"
+    with pytest.raises(RuntimeError, match = "missing file"):
+        _img2img(rig.engine)
+    assert rig.log == [("diffusers", "load")]
+    assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+
+
 _Z_TURBO_SCHEDULER = {
     "_class_name": "FlowMatchEulerDiscreteScheduler",
     "_diffusers_version": "0.36.0.dev0",

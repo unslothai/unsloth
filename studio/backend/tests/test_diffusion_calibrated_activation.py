@@ -249,7 +249,43 @@ def test_16gb_qwen_image_21_at_the_max_speed_tier_keeps_streaming_the_transforme
     act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
     assert _plan(16, QWEN21_GGUF, act) == _plan(16, QWEN21_GGUF, None)
     plan = _plan(22, QWEN21_GGUF, act)
-    assert plan.offload_policy == OFFLOAD_MODEL and plan.vae_tiling is False
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+
+
+# Real max-tier load of qwen-image-2.1-Q8_0.gguf, transformer_quant=none (plain GGUF, no offload groups).
+QWEN21_Q8_GGUF = dict(
+    model_dense_mib = 17_210, companion_dense_mib = 9_560, text_encoder_dense_mib = 8_916
+)
+# Real max-tier load of unsloth/Qwen-Image-2.1-GGUF (auto: INT8 DiT + INT8 TE).
+QWEN21_AUTO_INT8 = dict(
+    model_dense_mib = 18_128, companion_dense_mib = 10_680, text_encoder_dense_mib = 9_345
+)
+
+
+@pytest.mark.parametrize(
+    "total_gib, used_mib, sizes",
+    [
+        (22, 1_229, QWEN21_GGUF),
+        (24, 2_400, QWEN21_GGUF),
+        (24, 2_700, QWEN21_GGUF),
+        (24, 1_229, QWEN21_AUTO_INT8),
+        (24, 3_000, QWEN21_AUTO_INT8),
+        # tightest cells: a capped B200 rendered 2048x2048 here without OOM
+        (22, 1_850, QWEN21_Q8_GGUF),
+        (24, 3_850, QWEN21_Q8_GGUF),
+    ],
+)
+def test_a_resident_transformer_is_not_demoted_for_the_2048_worst_case(total_gib, used_mib, sizes):
+    # Demoting would upload the whole transformer per 1024 render (~1.7x slower on a capped B200).
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = True)
+    total = int(total_gib * GIB)
+    card = DeviceMemory("cuda", "cuda", "discrete_vram", total - used_mib, total)
+    kwargs = dict(target = _target(), device_memory = card, runtime_headroom_mib = 8192, **sizes)
+    flat = plan_diffusion_memory(**kwargs)
+    assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_transformer is False
+    plan = plan_diffusion_memory(calibrated_activation = act, **kwargs)
+    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_transformer is False
+    assert not any("2048 denoise" in reason for reason in plan.reasons)
 
 
 def test_the_shipped_qwen_image_21_figures_never_stream_the_transformer_on_16gb():
@@ -401,7 +437,8 @@ def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted
     for step in range(10 * 4, 48 * 4 + 1):
         gib = step / 4
         plan = _plan(gib, sizes, act)
-        if "calibrated_headroom_mib" not in plan.estimates:
+        resident = plan.offload_policy == OFFLOAD_GROUP and not plan.stream_transformer
+        if "calibrated_headroom_mib" not in plan.estimates and not resident:
             continue
         promoted += 1
         total = int(gib * GIB)

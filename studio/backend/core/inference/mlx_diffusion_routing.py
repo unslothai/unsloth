@@ -640,6 +640,8 @@ class RoutedMlxEngine:
             DIFFUSION_NOT_LOADED_MSG,
             DiffusionModelReplacedError,
         )
+        from core.inference.diffusion_memory import UnifiedMemoryShortfallError
+
         expected = kwargs.pop("expected_load", None)
         with self._route_lock:
             with self._lock:
@@ -689,7 +691,17 @@ class RoutedMlxEngine:
             own = snapshot.get(route.engine, expected) if expected is not None else None
             if route.load_diffusers:
                 logger.info("mlx_routing.fallback: %s", route.reason)
-                fallback_identity = self._load_fallback(unload_mlx = route.unload_mlx, epoch = epoch)
+                try:
+                    fallback_identity = self._load_fallback(
+                        unload_mlx = route.unload_mlx, epoch = epoch
+                    )
+                except UnifiedMemoryShortfallError:
+                    if route.unload_mlx:
+                        raise
+                    # Coexist estimate ignores other residents; the loader measured real free memory.
+                    logger.info("mlx_routing.coexist_refused: retrying with MLX unloaded")
+                    self._coexist = False
+                    fallback_identity = self._load_fallback(unload_mlx = True, epoch = epoch)
                 if expected is not None:
                     own = fallback_identity or expected
             engine = diffusers if route.engine == ENGINE_DIFFUSERS else mlx
