@@ -425,7 +425,7 @@ def set_models(
         # Keep every id this session ever listed: Codex may still hold one in its model line.
         owned = ids + [model for model in cx.owned_models(live) if model not in ids]
         state = {**live, "model": ids[0], "models": ids, "follow": not models}
-        state["previous_models"] = owned[len(ids):]
+        state["previous_models"] = owned[len(ids) :]
         cx.write_state(_state_path(), state)
         _write_catalog(config, entries)
         cx.write_file(config, new_text)

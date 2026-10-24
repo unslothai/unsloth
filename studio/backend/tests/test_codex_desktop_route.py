@@ -768,13 +768,18 @@ def test_gateway_is_quiet_when_codex_hangs_up_during_a_load(gateway, capfd):
     assert "Traceback" not in capfd.readouterr().err
 
 
-CODEX_OVERFLOW = "Message too long: 25988 tokens exceeds the 8192-token context window. Try increasing"
+CODEX_OVERFLOW = (
+    "Message too long: 25988 tokens exceeds the 8192-token context window. Try increasing"
+)
 
 
 def _failed_event(message: str) -> bytes:
     failed = {
         "type": "response.failed",
-        "response": {"status": "failed", "error": {"code": "context_length_exceeded", "message": message}},
+        "response": {
+            "status": "failed",
+            "error": {"code": "context_length_exceeded", "message": message},
+        },
     }
     return b"event: response.failed\ndata: " + json.dumps(failed).encode() + b"\n\n"
 
@@ -804,9 +809,17 @@ def test_gateway_leaves_a_long_codex_session_overflow_alone(gateway):
 
 
 def test_gateway_rewords_a_plain_400_overflow_for_codex(gateway):
-    error = {"error": {"message": CODEX_OVERFLOW, "type": "invalid_request_error", "code": "context_length_exceeded"}}
+    error = {
+        "error": {
+            "message": CODEX_OVERFLOW,
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+        }
+    }
     gateway["upstream"].replies.append((400, "application/json", json.dumps(error).encode()))
-    status, data = _call(gateway["gw"], "POST", "/v1/responses", {"model": "unsloth/a", "input": "hi"})
+    status, data = _call(
+        gateway["gw"], "POST", "/v1/responses", {"model": "unsloth/a", "input": "hi"}
+    )
     reply = json.loads(data)
     assert status == 400 and reply["error"]["code"] == "context_length_exceeded"
     assert "at least 32,768" in reply["error"]["message"]

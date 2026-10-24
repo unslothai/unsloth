@@ -76,11 +76,7 @@ class DesktopAppModelSettings(BaseModel):
 
 
 def guard_fitted_context(
-    trained: int,
-    low_ctx: int,
-    low_bytes: int,
-    full_bytes: int,
-    budget_bytes: int,
+    trained: int, low_ctx: int, low_bytes: int, full_bytes: int, budget_bytes: int
 ) -> Optional[int]:
     """About how much context fits ``budget_bytes``, from two priced points of the same load.
 
@@ -98,10 +94,16 @@ def guard_fitted_context(
     return max(AGENT_CONTEXT_MIN, min(trained, fitted))
 
 
-def _gguf_header_facts(model_path: str, variant: Optional[str]) -> tuple[Optional[int], Optional[bool]]:
+def _gguf_header_facts(
+    model_path: str, variant: Optional[str]
+) -> tuple[Optional[int], Optional[bool]]:
     """(trained context, MTP heads present) from the main GGUF on disk; Nones when unreadable."""
     try:
-        from routes.inference import _cached_estimate_config, _ESTIMATE_NOT_ON_DISK, _local_gguf_main_path
+        from routes.inference import (
+            _cached_estimate_config,
+            _ESTIMATE_NOT_ON_DISK,
+            _local_gguf_main_path,
+        )
         from utils.models.gguf_metadata import (
             read_gguf_context_length,
             read_gguf_nextn_predict_layers,
@@ -123,7 +125,9 @@ def _gguf_header_facts(model_path: str, variant: Optional[str]) -> tuple[Optiona
         return None, None
 
 
-async def _guard_context(load_request, trained: int, fastapi_request, current_subject) -> tuple[Optional[int], Optional[int]]:
+async def _guard_context(
+    load_request, trained: int, fastapi_request, current_subject
+) -> tuple[Optional[int], Optional[int]]:
     """(budget, fitted context) of the Metal memory guard for this load, priced by the same
     /api/inference/estimate-memory arithmetic the Run settings memory bar uses."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -175,7 +179,9 @@ async def _guard_context(load_request, trained: int, fastapi_request, current_su
     return int(budget), guard_fitted_context(trained, low_ctx, low, full, int(budget))
 
 
-async def model_settings(model_id: str, fastapi_request, current_subject: str) -> DesktopAppModelSettings:
+async def model_settings(
+    model_id: str, fastapi_request, current_subject: str
+) -> DesktopAppModelSettings:
     """Where one catalog model's shared run settings live, and what bounds them."""
     from routes.llama_compat import _catalog_row, _resolve_load_target
     from utils.openai_auto_switch_settings import resolve_override_for_load
@@ -189,11 +195,15 @@ async def model_settings(model_id: str, fastapi_request, current_subject: str) -
     settings = DesktopAppModelSettings(
         model = public_id,
         loaded = loaded,
-        loaded_context = loaded_context if isinstance(loaded_context, int) and loaded_context > 0 else None,
+        loaded_context = loaded_context
+        if isinstance(loaded_context, int) and loaded_context > 0
+        else None,
     )
     if alias is None:
         return settings
-    _, override = await asyncio.to_thread(resolve_override_for_load, load_request.model_path, alias, variant)
+    _, override = await asyncio.to_thread(
+        resolve_override_for_load, load_request.model_path, alias, variant
+    )
     trained, mtp = await asyncio.to_thread(_gguf_header_facts, load_request.model_path, variant)
     settings.config_id = load_request.model_path
     settings.alias_id = alias

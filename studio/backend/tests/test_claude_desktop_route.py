@@ -496,7 +496,12 @@ def test_guard_fit_is_linear_between_two_priced_points():
     assert guard_fitted_context(262_144, 8_192, 10 * gib, 30 * gib, 0) is None
 
 
-def _model_settings_stubs(monkeypatch, *, override, loaded = False):
+def _model_settings_stubs(
+    monkeypatch,
+    *,
+    override,
+    loaded = False,
+):
     import routes.desktop_app_models as dam
     import routes.llama_compat as llama_compat
     import utils.openai_auto_switch_settings as overrides
@@ -505,7 +510,11 @@ def _model_settings_stubs(monkeypatch, *, override, loaded = False):
     path = "/hub/models--unsloth--Qwen3.8-GGUF/snapshots/abc"
 
     async def catalog_row(model_id):
-        return model_id, {"id": model_id, "loaded": loaded, "context_length": 131_072 if loaded else None}, True
+        return (
+            model_id,
+            {"id": model_id, "loaded": loaded, "context_length": 131_072 if loaded else None},
+            True,
+        )
 
     async def load_target(model_id):
         request = LoadRequest(model_path = path, gguf_variant = "UD-Q4_K_XL")
@@ -525,9 +534,15 @@ def _model_settings_stubs(monkeypatch, *, override, loaded = False):
 
 def test_model_settings_names_run_settings_key_bounds_and_guard(mac, monkeypatch):
     path = _model_settings_stubs(
-        monkeypatch, override = {"custom_context_length": 65_536, "speculative_type": "mtp"}, loaded = True
+        monkeypatch,
+        override = {"custom_context_length": 65_536, "speculative_type": "mtp"},
+        loaded = True,
     )
-    body = _client(monkeypatch).get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF:UD-Q4_K_XL"}).json()
+    body = (
+        _client(monkeypatch)
+        .get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF:UD-Q4_K_XL"})
+        .json()
+    )
     # The key Run settings saves a loaded model under, and the one a load reads first.
     assert body["config_id"] == path
     assert body["alias_id"] == "unsloth/Qwen3.8-GGUF"
@@ -544,7 +559,11 @@ def test_model_settings_names_run_settings_key_bounds_and_guard(mac, monkeypatch
 
 def test_model_settings_without_an_override_is_auto(mac, monkeypatch):
     _model_settings_stubs(monkeypatch, override = {})
-    body = _client(monkeypatch).get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF"}).json()
+    body = (
+        _client(monkeypatch)
+        .get(f"{URL}/model-settings", params = {"model": "unsloth/Qwen3.8-GGUF"})
+        .json()
+    )
     assert body["custom_context_length"] is None
     assert body["speculative_type"] is None
 
@@ -572,14 +591,20 @@ def test_guard_prices_the_load_with_its_saved_settings(monkeypatch):
         return _types.SimpleNamespace(available = True, gpu_bytes = gpu, total_bytes = gpu)
 
     monkeypatch.setattr(inference, "estimate_memory", estimate)
-    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 20 * gib))
-    load = LoadRequest(model_path = "/m", gguf_variant = "Q4", cache_type_kv = "q8_0", speculative_type = "mtp")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 20 * gib)
+    )
+    load = LoadRequest(
+        model_path = "/m", gguf_variant = "Q4", cache_type_kv = "q8_0", speculative_type = "mtp"
+    )
     budget, fitted = asyncio.run(dam._guard_context(load, 262_144, None, "owner"))
     assert budget == 20 * gib
     assert 130_000 < fitted < 140_000
     assert asked == [(262_144, "q8_0", "mtp"), (8_192, "q8_0", "mtp")]
     # Off Apple Silicon there is no guard budget, and nothing is priced.
     asked.clear()
-    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
     assert asyncio.run(dam._guard_context(load, 262_144, None, "owner")) == (None, None)
     assert asked == []

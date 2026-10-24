@@ -541,7 +541,11 @@ class _GatewayHandler(_cd._GatewayHandler):
             detail = response.read(_cd.MAX_ERROR_BODY_BYTES)
             message = _cd.upstream_error_message(response.status, detail)
             small = self._small_context_text(message)
-            fail(small if small != message else f"Unsloth Studio couldn't answer with {model_id}: {message}")
+            fail(
+                small
+                if small != message
+                else f"Unsloth Studio couldn't answer with {model_id}: {message}"
+            )
         finally:
             conn.close()
 

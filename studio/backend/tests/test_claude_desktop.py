@@ -1111,7 +1111,10 @@ LLAMA_OVERFLOW = {
     [
         (STUDIO_OVERFLOW, (61493, 8192)),
         (LLAMA_OVERFLOW["error"]["message"], (55317, 8192)),
-        ("Message too long: 25988 tokens exceeds the 8192-token context window. Try", (25988, 8192)),
+        (
+            "Message too long: 25988 tokens exceeds the 8192-token context window. Try",
+            (25988, 8192),
+        ),
         ("CUDA out of memory", None),
     ],
 )
@@ -1127,7 +1130,10 @@ def test_the_suggested_context_fits_the_prompt_with_room_to_spare():
 
 def test_a_window_too_small_for_claude_is_a_400_that_says_how_to_fix_it(gateway):
     gw, upstream = gateway
-    error = {"type": "error", "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW}}
+    error = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW},
+    }
     upstream.replies.append((400, error))
     status, _, body = _call(gw, "POST", "/v1/messages", {"model": "claude-fable-5", "messages": []})
     reply = json.loads(body)
@@ -1142,7 +1148,9 @@ def test_a_window_too_small_for_claude_is_a_400_that_says_how_to_fix_it(gateway)
 
 def test_a_long_chat_overflowing_a_big_window_passes_through_untouched(gateway):
     gw, upstream = gateway
-    long_chat = "Prompt is too long: 270000 tokens > 262144 maximum. Try increasing the Context Length"
+    long_chat = (
+        "Prompt is too long: 270000 tokens > 262144 maximum. Try increasing the Context Length"
+    )
     error = {"type": "error", "error": {"type": "invalid_request_error", "message": long_chat}}
     upstream.replies.append((400, error))
     status, _, body = _call(gw, "POST", "/v1/messages", {"model": "claude-fable-5", "messages": []})
@@ -1151,7 +1159,10 @@ def test_a_long_chat_overflowing_a_big_window_passes_through_untouched(gateway):
 
 def test_an_in_band_overflow_in_a_studio_stream_is_reworded(gateway):
     gw, upstream = gateway
-    error = {"type": "error", "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW}}
+    error = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": STUDIO_OVERFLOW},
+    }
     upstream.replies.append(
         (
             "raw-sse",
