@@ -6249,8 +6249,7 @@ def _load_app_config(
         import json5
 
         # Raw text: the JSONC stripper below misreads // inside single-quoted JSON5 strings.
-        # json5 leaves an escaped surrogate pair as two code units, which UTF-8 can't write;
-        # the json round trip joins them.
+        # The json round trip joins surrogate pairs json5 leaves split (UTF-8 can't write them).
         data = json.loads(json.dumps(json5.loads(text)))
     elif path.suffix == ".toml":
         try:
