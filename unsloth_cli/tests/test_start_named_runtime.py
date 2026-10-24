@@ -167,3 +167,28 @@ def test_named_resident_auto_tensor_split_not_pinned(monkeypatch, mode, carried)
         monkeypatch, status, start.LoadOptions(gguf_variant = "Q8_0", tensor_parallel = True)
     )
     assert ("tensor_split" in payload) is carried
+
+
+@pytest.mark.parametrize("resident, inherits", [("/old/foo", False), (None, True)])
+def test_named_local_checkpoint_inherits_only_from_itself(
+    monkeypatch, tmp_path, resident, inherits
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "foo").mkdir()
+    status = {
+        "model_identifier": resident or str(tmp_path / "foo"),
+        "load_in_4bit": False,
+        "requested_gpu_ids": [1],
+    }
+    monkeypatch.setattr(start, "_loaded_models", lambda *a: [{"id": "foo", "loaded": True}])
+    monkeypatch.setattr(start, "_model_status", lambda *a: status)
+    payloads = []
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: payloads.append(payload)
+        or {"status": "loaded", "model": model},
+    )
+    start._resolve_model(BASE, "key", "foo", start.LoadOptions(max_seq_length = 8192))
+    carried = {"load_in_4bit": False, "gpu_ids": [1]} if inherits else {}
+    assert payloads == [{"model_path": "foo", "max_seq_length": 8192, **carried}]

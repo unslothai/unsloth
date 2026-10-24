@@ -2265,6 +2265,8 @@ def _resolve_model(
     status_snapshot = None
     # Whether the inferred settings can restart the resident. Computed once: the preload gate, the warning, the consent refusal and force_reload must all agree, and asking twice against a snapshot taken at different times is how they drift apart.
     inferred_differs = False
+    # Whether a named resident is the very checkpoint this load resolves to.
+    same_checkpoint = True
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
@@ -2285,6 +2287,13 @@ def _resolve_model(
         if attach_public_id is None and loaded_match is not None:
             # A full load resets omitted settings, so read the named resident's own slot to carry them.
             status_snapshot = _inference_status(base, key, loaded_match["id"])
+            # The listing shows a local checkpoint by basename, so ./foo matches a resident old/foo: inherit only from the checkpoint this load resolves to.
+            wanted_path = os.path.abspath(os.path.expanduser(requested))
+            same_checkpoint = _is_hub_model_id(requested) or any(
+                os.path.abspath(os.path.expanduser(str(status_snapshot.get(field)))) == wanted_path
+                for field in ("model_identifier", "gguf_path", "model_path")
+                if status_snapshot.get(field)
+            )
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2446,7 +2455,9 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             # -1 means "pick the layers", which is right when the user is switching INTO manual, but on an inferred attach to a resident already in manual it would throw away the layer count it was pinned to. Leave it for the round-trip.
             already_manual = (
-                bool(status_snapshot) and status_snapshot.get("gpu_memory_mode") == "manual"
+                same_checkpoint
+                and bool(status_snapshot)
+                and status_snapshot.get("gpu_memory_mode") == "manual"
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
@@ -2465,7 +2476,7 @@ def _resolve_model(
             carried = _resident_runtime_payload(status_snapshot, payload)
             if attach_public_id is None:
                 # Omitted extras are inherited server-side, stripped only of flags shadowing fields the request sets: a copy would let its --ctx-size beat --context-length, and a carried field would strip the extra it was losing to. So a resident with extras gets no carry at all.
-                if status_snapshot.get("requested_llama_extra_args"):
+                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
                     carried = {}
                 carried.pop("llama_extra_args", None)
                 # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
