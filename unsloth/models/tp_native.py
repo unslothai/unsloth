@@ -344,6 +344,9 @@ def derive_tp_plan(
     user = bool(plan)
     plan = dict(plan) if plan else _hf_plan(model)
     compiled = [(k, _pattern(k), v) for k, v in plan.items()]
+    layers_path, layers = _decoder_layers(model)
+    # Config / module MoE and MLA first: older transformers plans name expert styles v1 does not know.
+    _refuse_moe_mla(model, layers)
     for key, _, style in compiled:
         if style in _MOE_STYLES:
             raise ValueError(
@@ -355,8 +358,6 @@ def derive_tp_plan(
             )
         if style not in _STYLES and style not in _REPLICATED_STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
-    layers_path, layers = _decoder_layers(model)
-    _refuse_moe_mla(model, layers)
     text = _text_config(model)
     regions, replicated = [], 0
     for index, layer in enumerate(layers):
@@ -724,15 +725,11 @@ def _set_dtensor(
     return param
 
 
-def _shard_params4bit(path, base, weight, style, parts, rank, tp):
-    """This rank's shard of a bitsandbytes 4-bit weight as a local Params4bit with its own QuantState: the
-    packed codes and the (dequantized) absmax of the shard's blocks, so it dequantizes bitwise to the
-    1-GPU weight's slice. Double-quantized absmax is kept as float32 (no second quantization)."""
-    import bitsandbytes as bnb
-
+def _check_params4bit(path, weight, style, tp):
+    """The 4-bit blocksize refusals, run before anything is sharded."""
     state = weight.quant_state
     blocksize = state.blocksize
-    out_features, in_features = state.shape
+    in_features = state.shape[1]
     if in_features % blocksize or blocksize % 2:
         raise ValueError(
             f"Unsloth: 4-bit '{path}': in_features = {in_features} is not a multiple of the quantization "
@@ -743,6 +740,18 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
             f"Unsloth: 4-bit '{path}': in_features / tp = {in_features // tp} is not a multiple of the "
             f"quantization blocksize {blocksize}; row sharding would split blocks."
         )
+
+
+def _shard_params4bit(path, base, weight, style, parts, rank, tp):
+    """This rank's shard of a bitsandbytes 4-bit weight as a local Params4bit with its own QuantState: the
+    packed codes and the (dequantized) absmax of the shard's blocks, so it dequantizes bitwise to the
+    1-GPU weight's slice. Double-quantized absmax is kept as float32 (no second quantization)."""
+    import bitsandbytes as bnb
+
+    _check_params4bit(path, weight, style, tp)
+    state = weight.quant_state
+    blocksize = state.blocksize
+    out_features, in_features = state.shape
     codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
     absmax = state.absmax
     if state.nested:
@@ -1001,6 +1010,8 @@ def apply_tensor_parallel(
             weight, base = _weight(proj.module)
             _refuse_base(path, proj.module, weight, base)
             _refuse_adapter(path, proj.module)
+            if _is_params4bit(weight):
+                _check_params4bit(path, weight, proj.style, tp)
         for name, norm in region.norms:
             for p in norm.parameters():
                 if type(p) not in (nn.Parameter, torch.Tensor):

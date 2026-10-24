@@ -27,7 +27,7 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_tp_native_oracle import ARCHS, QWEN3, LLAMA, _batch, build, tpn  # noqa: E402
+from test_tp_native_oracle import ARCHS, QWEN3, LLAMA, _batch, build, skip_unsupported, tpn  # noqa: E402
 
 
 def _free_port():
@@ -175,7 +175,7 @@ def _case_fused(rank, world, tmp):
     return out
 
 
-def _quantize_layers(model, nested):
+def _quantize_layers(model, nested, blocksize = 64):
     """Every Linear in the decoder layers -> a bitsandbytes NF4 Linear4bit (the same bytes in every process)."""
     import bitsandbytes as bnb
 
@@ -192,13 +192,13 @@ def _quantize_layers(model, nested):
                 compress_statistics = nested,
             )
             packed, state = bnb.functional.quantize_4bit(
-                child.weight.data, blocksize = 64, quant_type = "nf4", compress_statistics = nested
+                child.weight.data, blocksize = blocksize, quant_type = "nf4", compress_statistics = nested
             )
             q.weight = bnb.nn.Params4bit(
                 packed,
                 requires_grad = False,
                 quant_state = state,
-                blocksize = 64,
+                blocksize = blocksize,
                 compress_statistics = nested,
                 quant_type = "nf4",
                 module = q,
@@ -219,10 +219,10 @@ QLORA_SIZES = {
 }
 
 
-def _qlora_model(nested, seed = 0):
+def _qlora_model(nested, seed = 0, blocksize = 64):
     from peft import LoraConfig, get_peft_model
 
-    model = _quantize_layers(build(LLAMA, QLORA_SIZES, lora = False, seed = seed), nested)
+    model = _quantize_layers(build(LLAMA, QLORA_SIZES, lora = False, seed = seed), nested, blocksize)
     torch.manual_seed(seed + 1)
     config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
     # train(): bitsandbytes repacks eval-mode CPU Linear4bit weights for its CPU gemm, which rounds
@@ -267,7 +267,25 @@ def _case_qlora(rank, world, tmp, nested):
     }
 
 
-CASES = {"parity": _case_parity, "fused": _case_fused, "qlora": _case_qlora}
+def _case_qlora_misaligned(rank, world, tmp):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    # blocksize 128: o_proj / down_proj row shards (in_features / 2 = 64) would split blocks.
+    model = _qlora_model(False, blocksize = 128)
+    before = {n: (type(p), p.data_ptr()) for n, p in model.named_parameters()}
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    with pytest.raises(ValueError, match = "row sharding would split blocks"):
+        tpn.apply_tensor_parallel(model, mesh["tp"])
+    after = {n: (type(p), p.data_ptr()) for n, p in model.named_parameters()}
+    return {"unchanged": before == after, "flag": tpn.is_tensor_parallel(model)}
+
+
+CASES = {
+    "parity": _case_parity,
+    "fused": _case_fused,
+    "qlora": _case_qlora,
+    "qlora_misaligned": _case_qlora_misaligned,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -340,7 +358,13 @@ def _check_parity(results, world):
 
 @pytest.mark.parametrize("arch", ["llama", "llama_bias", "qwen3", "phi3", "stablelm", "gemma2"])
 def test_tp2_matches_one_process(arch):
+    skip_unsupported(arch)
     _check_parity(_spawn("parity", 2, arch = arch), 2)
+
+
+def test_tp2_refused_4bit_model_is_left_untouched():
+    for res in _spawn("qlora_misaligned", 2):
+        assert res["unchanged"] and not res["flag"]
 
 
 def test_tp2_trainable_biases_match_one_process():

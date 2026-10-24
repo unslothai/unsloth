@@ -43,6 +43,14 @@ def _load_tp():
 
 tpn = _load_tp()
 
+
+def skip_unsupported(arch):
+    """transformers 4.x StableLmAttention reshapes with hidden_size (the global width): apply refuses it."""
+    import transformers
+
+    if arch == "stablelm" and int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip("transformers 4.x StableLM attention is refused (test_stablelm_4x_is_refused)")
+
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 GEMMA2 = "trl-internal-testing/tiny-Gemma2ForCausalLM"
@@ -233,6 +241,7 @@ def _loss(model, ids):
 
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_simulated_tp_matches_unsharded(arch):
+    skip_unsupported(arch)
     repo, overrides = ARCHS[arch]
     model = build(repo, overrides, train_norms = arch == "qwen3")
     ids = _batch(model)
@@ -300,6 +309,7 @@ def _styles(plan):
 
 @pytest.mark.parametrize("arch", sorted(ARCHS))
 def test_plan_covers_every_layer(arch):
+    skip_unsupported(arch)
     repo, overrides = ARCHS[arch]
     model = build(repo, overrides)
     plan = tpn.derive_tp_plan(model, 2)
@@ -471,3 +481,13 @@ def test_refuses_global_width_attention():
     attn.forward = types.MethodType(forward, attn)
     with pytest.raises(ValueError, match = "hidden_size"):
         tpn.derive_tp_plan(model, 2)
+
+
+def test_stablelm_4x_is_refused():
+    import transformers
+
+    if int(transformers.__version__.split(".")[0]) >= 5:
+        pytest.skip("transformers 5 StableLM attention follows the local heads")
+    repo, overrides = ARCHS["stablelm"]
+    with pytest.raises(ValueError, match = "reshapes with hidden_size"):
+        tpn.derive_tp_plan(build(repo, overrides), 2)
