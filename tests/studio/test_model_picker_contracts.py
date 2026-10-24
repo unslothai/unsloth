@@ -2818,14 +2818,10 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # The known-quant pattern itself, not tokens from it: #13899 widened MXFP to (?:MX|NV)FP in all
-    # three places, which a literal "MXFP" check read as a drift. What has to hold is that the
-    # frontend, the hub scanner and the llama.cpp backend spell one pattern, and that it still
-    # recognises each quant family.
+    # three places, which a literal "MXFP" check read as a drift. The frontend must spell the
+    # backend's pattern (utils/gguf_names.py) and still recognise each quant family.
     patterns = {
-        "llama_cpp.py": _python_regex_source(
-            _read_backend("core/inference/llama_cpp.py"), "_GGUF_KNOWN_QUANT_RE"
-        ),
-        "gguf.py": _python_regex_source(_read_backend("hub/utils/gguf.py"), "_GGUF_QUANT_RE"),
+        "gguf.py": _python_regex_source(_read_backend("utils/gguf_names.py"), "GGUF_QUANT_RE"),
         "model-identity.ts": re.search(r'const QUANT_TOKEN_SOURCE =\s*"([^"]+)";', identity).group(
             1
         ),

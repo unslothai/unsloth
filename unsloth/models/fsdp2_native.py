@@ -745,6 +745,53 @@ def _ensure_process_group(
     return dist
 
 
+_NCCL2_WARNED = False
+# GPUs at or below this size are where nccl2's extra per-rank memory is worth a warning.
+_NCCL2_WARN_MAX_BYTES = 24 * 2**30
+
+
+def _uses_nccl2(dist, device):
+    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
+    try:
+        group = dist.distributed_c10d._get_default_group()
+        impl = type(group._get_backend(device)).__name__
+        return impl == "ProcessGroupNCCL2"
+    except Exception:
+        pass
+    try:
+        name = str(dist.get_backend()).lower()
+    except Exception:
+        return False
+    return name == "nccl2" or (
+        name == "nccl" and os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
+    )
+
+
+def _warn_nccl2_memory(dist, device):
+    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
+    per rank, plain nccl none), so small GPU 0 runs out first."""
+    global _NCCL2_WARNED
+    if _NCCL2_WARNED or device.type != "cuda":
+        return
+    try:
+        if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:
+            return
+        if torch.cuda.get_device_properties(device).total_memory > _NCCL2_WARN_MAX_BYTES:
+            return
+    except Exception:
+        return
+    if not _uses_nccl2(dist, device):
+        return
+    _NCCL2_WARNED = True
+    _print_rank0(
+        "Unsloth: the process group uses the nccl2 backend (backend = 'nccl2' or "
+        "TORCH_DIST_USE_NCCL2=1). Under nccl2 every other rank also builds a CUDA context on GPU 0 "
+        "(about 0.1 GiB each on 2 x T4, more on larger GPUs and grows with the number of ranks), so "
+        "GPU 0 has less memory than the others. On GPUs of 24 GB or less prefer the default 'nccl' "
+        "backend (unset TORCH_DIST_USE_NCCL2), or launch each rank with only its own GPU visible."
+    )
+
+
 def _default_mesh(device, dist):
     from torch.distributed.device_mesh import init_device_mesh
     return init_device_mesh(device.type, (dist.get_world_size(),))
@@ -1382,6 +1429,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
         torch.cuda.set_device(device)
+    _warn_nccl2_memory(dist, device)
     mesh = config.mesh if config.mesh is not None else _default_mesh(device, dist)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
@@ -1645,11 +1693,12 @@ def native_clip_grad_norm_(
             else:
                 # complex grads give real norms; every rank must gather the same dtype.
                 norm_dtype = dtype.to_real() if dtype.is_complex else dtype
-                values = torch.full(
-                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype
-                )
-                if live:
-                    values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
+                # Host-side interleave: torch.tensor(live, device = cuda) was a blocking H2D copy per step.
+                fill = torch.full((), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype)
+                slots = [fill] * len(idx)
+                for k, n in zip(live, norms):
+                    slots[k] = n.to(device = device, dtype = norm_dtype)
+                values = torch.stack(slots)
             chunks.append(values)
         return chunks
 
@@ -3443,10 +3492,26 @@ def _refuse_parallelism_config(training_args):
         )
 
 
+def _expert_parallel_requested(model):
+    """from_pretrained(distributed_config = DistributedConfig(enable_expert_parallel = True))."""
+    for m in (model, getattr(model, "get_base_model", lambda: None)()):
+        dc = getattr(getattr(m, "config", None), "distributed_config", None)
+        if dc is None:
+            continue
+        ep = (
+            dc.get("enable_expert_parallel")
+            if isinstance(dc, dict)
+            else getattr(dc, "enable_expert_parallel", False)
+        )
+        if ep is True:
+            return True
+    return False
+
+
 def _refuse_tensor_parallel_model(model):
-    """A model loaded with a tensor-parallel plan (from_pretrained(tp_plan = ...)) already holds
-    DTensor parameters on its own mesh; the Trainer would also build a ParallelismConfig from its
-    tp_size. Native FSDP2 cannot shard it again."""
+    """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
+    parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
+    Native FSDP2 cannot shard it again."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return
     tp_size = getattr(model, "tp_size", None)
@@ -3454,12 +3519,30 @@ def _refuse_tensor_parallel_model(model):
         tp_size = int(tp_size) if tp_size is not None else None
     except (TypeError, ValueError):
         tp_size = None
+    # tp_size > 1 too: a stale distributed_config on a model loaded without one is not expert parallel.
+    if (tp_size or 1) > 1 and _expert_parallel_requested(model):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 got a model loaded with transformers expert parallelism "
+            f"(DistributedConfig(enable_expert_parallel = True), tp_size = {tp_size}): its experts are "
+            "already split over the ranks, and FSDP2 would shard them again. Load it without "
+            "distributed_config for native FSDP2, which shards every expert over all ranks itself."
+        )
     DTensor = None
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         pass
     dtensor = DTensor is not None and any(isinstance(p, DTensor) for p in model.parameters())
+    # Any level or module (the marker sits on every wrapper level apply_tensor_parallel was given or below).
+    if any(
+        m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style")
+        for m in model.modules()
+    ):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
+            "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
+            "ranks only (data parallel size 1)."
+        )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
             "Unsloth: native FSDP2 got a model that is already distributed (tensor-parallel tp_plan, "

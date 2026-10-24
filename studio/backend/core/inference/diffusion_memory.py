@@ -1559,6 +1559,7 @@ class CalibratedImageActivation:
     decode_mib: int
     tiled_decode_mib: int
     max_canvas_mib: int
+    resident_only: bool = False
 
     def headroom(self, tiled: bool) -> int:
         return max(
@@ -1591,7 +1592,11 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # MOSS-Image SFT, B200 bf16 measurements; both tiers take the eager worst.
     "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
+    # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
+    "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
 }
+# U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
+_RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
 
 
 def calibrated_image_activation(
@@ -1601,7 +1606,8 @@ def calibrated_image_activation(
     if measured is None:
         return None
     return CalibratedImageActivation(
-        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0])
+        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0]),
+        resident_only = str(family or "") in _RESIDENT_ONLY_CALIBRATED,
     )
 
 
@@ -2739,10 +2745,17 @@ def plan_diffusion_memory(
         policy = OFFLOAD_NONE
         fast_budget = _fast_device_budget_mib(device_memory)
         estimates["resident_budget_mib"] = fast_budget
-        if fast_budget is not None and required is not None and required > fast_budget:
+        fast_required = required
+        if calibrated_activation is not None and calibrated_activation.resident_only:
+            # the flat 8 GiB guess demoted an explicit fast SDXL on 15-16 GB cards, where it fits with room to spare
+            fast_required = _sum_required(
+                model_dense_mib, calibrated_activation.headroom(False), base_overhead_mib
+            )
+            estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(False)
+        if fast_budget is not None and fast_required is not None and fast_required > fast_budget:
             policy, stream_text_encoders, stream_transformer = _offload_tier()
             reasons.append(
-                f"fast requested but weights do not fit resident ({required} MiB needed, "
+                f"fast requested but weights do not fit resident ({fast_required} MiB needed, "
                 f"{fast_budget} MiB free after the reserve); offloading"
             )
             if not stream_transformer:
@@ -2979,6 +2992,22 @@ def _calibrated_faster_tier(
     budget = int(budget)
     free = int(free_mib) - overhead
     room = free - act.max_canvas_mib
+    if act.resident_only:
+        # Larger requests are still checked by the generation guard; an oversized decode is tiled by its OOM retry.
+        weights = transformer + te + others
+        if (
+            policy != OFFLOAD_NONE
+            and weights + act.headroom(False) + overhead <= budget
+            and weights <= room
+        ):
+            return (
+                OFFLOAD_NONE,
+                False,
+                True,
+                False,
+                "measured activations fit resident; the U-Net's only other tier uploads every component per call",
+            )
+        return None
     if policy == OFFLOAD_NONE:
         flat_rank = 0
     elif policy == OFFLOAD_GROUP and not stream_transformer:
@@ -3301,19 +3330,52 @@ _MEASURED_DENSE_SPEED_MODES = ("off",)
 MEASURED_ACTIVATION_DENSE_TIERS_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS"
 
 
+# Dense bf16, eager tier: worst recorded whole-render peak at 1024x1024, all groups streamed (what a learned peak holds).
+# family -> (peak MiB, largest loaded DiT MiB it covers). "0" = learned peak alone.
+MEASURED_ACTIVATION_BF16_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_BF16"
+_MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
+    # FLUX.1-schnell, Colab L4, 4 steps: 3417 (4 loads), 3581 (1 load).
+    "flux.1": (3581, 23800),
+    # Not seeded: FLUX.2-klein-4B's 2446 used a tiled decode; Qwen-Image-2.1's 5486 was recorded resident, unstreamed.
+}
+
+
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
 
 
+def dense_bf16_seeded(family: Optional[str]) -> bool:
+    return not _env_off(MEASURED_ACTIVATION_BF16_ENV) and (
+        str(family or "").lower() in _MEASURED_DENSE_BF16_EAGER_PEAK_MIB
+    )
+
+
 def _dense_seed_mib(
-    family: str, speed_mode: str, dense_mib: int, widen: int, tier_seeds: bool
+    family: str,
+    speed_mode: str,
+    dense_mib: int,
+    widen: int,
+    tier_seeds: bool,
+    bf16: bool = False,
 ) -> Optional[int]:
     """Seed MiB for a dense fp16 / fp32 denoiser (``widen`` = its element size), or None. Eager: the dense table. Default
     / max: the larger of the dense table and the tier's worst phase (encoder, denoise, untiled decode), only for a
     family the dense table measured at this DiT size. Families it lacks keep the flat estimate: on a T4, Z-Image's 11.5
     GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
     s/step). ``tier_seeds``: the target is where the phase table was measured (NVIDIA with a sub-quadratic attention
-    kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate."""
+    kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate.
+    ``bf16``: the bf16 table, eager tier and ``tier_seeds`` targets only (all it was measured on)."""
+    if bf16:
+        entry = _MEASURED_DENSE_BF16_EAGER_PEAK_MIB.get(family)
+        if (
+            entry is None
+            or not tier_seeds
+            or _env_off(MEASURED_ACTIVATION_BF16_ENV)
+            or speed_mode not in _MEASURED_DENSE_SPEED_MODES
+            or not 0 < dense_mib <= entry[1]
+        ):
+            return None
+        return entry[0]
     entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(family)
     if entry is None or not 0 < dense_mib <= entry[1] * widen // 2:
         return None
@@ -3345,6 +3407,7 @@ def measured_image_runtime_mib(
     static_seed: bool = True,
     dense_tier_seeds: bool = False,
     phase: Optional[str] = None,
+    dense_bf16: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
@@ -3370,6 +3433,7 @@ def measured_image_runtime_mib(
             int(dense_transformer_mib),
             max(2, int(compute_bytes or 2)),
             dense_tier_seeds,
+            bf16 = dense_bf16,
         )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
@@ -3930,6 +3994,99 @@ def refine_plan_from_loaded_weights(
         return refined
 
 
+def _denoiser_is_dense_bf16(pipe: Any) -> bool:
+    """A plain bf16 denoiser: no torchao, packed (GGUF / int8) or fp8-stored weights."""
+    try:
+        import torch
+
+        module = next(
+            (
+                getattr(pipe, n, None)
+                for n in ("transformer", "unet")
+                if getattr(pipe, n, None) is not None
+            ),
+            None,
+        )
+        if module is None or getattr(module, "dtype", None) != torch.bfloat16:
+            return False
+        if _pipe_denoisers_hold_torchao(pipe) or _pipe_denoisers_hold_packed(pipe):
+            return False
+        return not any(
+            _holds_fp8_stored(getattr(pipe, n, None))
+            for n in ("transformer", "transformer_2", "unet")
+        )
+    except Exception:  # noqa: BLE001 - unreadable: keep the streamed plan
+        return False
+
+
+_WHOLE_MODULE_KEPT_REASON = (
+    "whole-module offload ran the {dit} MiB denoiser whole below the streamed tiers' {floor} MiB floor; it still "
+    "fits, and uploading it once per call beats streaming it every step"
+)
+
+
+def prefer_whole_module_offload(
+    pipe: Any,
+    refined: MemoryPlan,
+    *,
+    logger: Any = None,
+) -> MemoryPlan:
+    """``refined`` (what ``refine_plan_from_loaded_weights`` returned), or whole-module offload in its place.
+
+    Below the streamed tiers' floor whole-module offload holds the whole denoiser on the card while it runs; a few
+    hundred MiB more free VRAM used to switch to streaming all of it every step, but uploading it once per call beats
+    that (FLUX.2-klein-4B bf16, B200: 0.34 vs 0.60 s per image). Plain bf16 only: an fp16 T4 run pointed the other way."""
+    try:
+        if (
+            getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
+            or refined.offload_policy != OFFLOAD_GROUP
+            or not bool(getattr(refined, "stream_transformer", True))
+            or getattr(refined, "secondary_ordinal", None) is not None
+        ):
+            return refined
+        est = refined.estimates
+        model_dense, companions = est.get("model_dense_mib"), est.get("companion_dense_mib")
+        floors = [
+            int(f)
+            for f in (est.get("group_floor_mib"), est.get("group_floor_streamed_te_mib"))
+            if f is not None
+        ]
+        if model_dense is None or companions is None or not floors:
+            return refined
+        transformer = int(model_dense) - int(companions)
+        te = max(0, int(est.get("text_encoder_dense_mib") or 0))
+        others = max(0, int(companions) - te)
+        floor = min(floors)
+        if transformer <= 0 or max(transformer, te, others) >= floor:
+            return refined
+        if not _denoiser_is_dense_bf16(pipe):
+            return refined
+        # A refined plan pinning the whole denoiser runs every step resident: kept.
+        sizes = _loaded_component_mib(pipe) or {}
+        dit = sum(m for m, r in sizes.values() if r == "dit") or transformer
+        if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
+            return refined
+        reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
+        if logger is not None:
+            logger.info("diffusion.memory: %s", reason)
+        return replace(
+            refined,
+            offload_policy = OFFLOAD_MODEL,
+            stream_text_encoders = False,
+            stream_transformer = True,
+            vae_tiling = True,
+            vae_slicing = True,
+            resident_transformer_mib = None,
+            resident_text_encoder_mib = None,
+            reasons = refined.reasons + (reason,),
+            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor},
+        )
+    except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
+        if logger is not None:
+            logger.debug("diffusion.memory: whole-module comparison skipped (%s)", exc)
+        return refined
+
+
 def _refine_plan_from_loaded_weights(
     pipe: Any,
     plan: MemoryPlan,
@@ -3973,17 +4130,24 @@ def _refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        # The dense table covers fp16 / fp32 unpacked weights only; everything else uses a learned peak alone.
-        # Stored fp8 layers widen per forward, which no static table priced, even beside torchao layers.
+        # Dense tables cover unpacked fp16 / fp32 / seeded bf16 only; stored fp8 widens per forward, never priced.
+        packed = dense_mib is not None and _pipe_denoisers_hold_packed(pipe)
+        fp8_stored = any(
+            _holds_fp8_stored(getattr(pipe, name, None))
+            for name in ("transformer", "transformer_2", "unconditional_transformer", "unet")
+        )
+        dense_bf16 = bool(
+            dense_mib is not None
+            and compute_bytes is None
+            and not packed
+            and not fp8_stored
+            and dense_bf16_seeded(family)
+            and _denoiser_is_dense_bf16(pipe)
+            and bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
+        )
         static_seed = not (
-            any(
-                _holds_fp8_stored(getattr(pipe, name, None))
-                for name in ("transformer", "transformer_2", "unconditional_transformer", "unet")
-            )
-            or (
-                dense_mib is not None
-                and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
-            )
+            fp8_stored
+            or (dense_mib is not None and ((compute_bytes is None and not dense_bf16) or packed))
         )
         quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
@@ -4000,6 +4164,7 @@ def _refine_plan_from_loaded_weights(
             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
             dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
             static_seed = static_seed,
+            dense_bf16 = dense_bf16,
         )
         if headroom is None:
             return plan
@@ -4019,6 +4184,7 @@ def _refine_plan_from_loaded_weights(
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
             measured_static_seed = static_seed,
+            measured_dense_bf16 = dense_bf16,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
@@ -4050,6 +4216,7 @@ def _refine_plan_from_loaded_weights(
                     dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
                     static_seed = static_seed,
                     phase = phase,
+                    dense_bf16 = dense_bf16,
                 )
                 return value if value is not None and value < headroom else None
 
@@ -4957,6 +5124,7 @@ def measured_request_extra_mib(
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
     sized["dense_tier_seeds"] = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
+    sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
@@ -4967,7 +5135,8 @@ def measured_request_extra_mib(
         or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
-        (learned or need is None)
+        # the bf16 seed is eager-only like a learned peak: same invalidation
+        (learned or need is None or sized["dense_bf16"])
         and (
             getattr(pipe, "_unsloth_peak_static", False)
             or getattr(pipe, "_unsloth_loras", None)

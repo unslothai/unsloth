@@ -220,6 +220,7 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    prefer_whole_module_offload,
     learned_peak_label,
     CFG_OFF_PART,
     cfg_off_peaks_enabled,
@@ -425,6 +426,8 @@ from .diffusion_comfy_quant import (
 )
 from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import (
+    PrequantIntoError,
+    PrequantSource,
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     local_prequant_path_ready,
@@ -9834,7 +9837,26 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                for attr, _module in denoisers:
+                                cached_scheme = (
+                                    self._pipeline_quant_from_cache(
+                                        pipe,
+                                        fam,
+                                        denoisers,
+                                        target = target,
+                                        transformer_quant = transformer_quant,
+                                        fast_accum = transformer_quant_fast_accum,
+                                        loras = loras,
+                                        base = base,
+                                        fetch_base = fetch_base,
+                                        source_base = _base_local_dir or fetch_base,
+                                        hf_token = hf_token,
+                                    )
+                                    if native_scheme is None
+                                    else None
+                                )
+                                if cached_scheme is not None:
+                                    engaged.append(cached_scheme)
+                                for attr, _module in denoisers if cached_scheme is None else ():
                                     scheme = quantize_transformer(
                                         pipe
                                         if attr == "transformer"
@@ -9850,7 +9872,13 @@ class DiffusionBackend:
                                     if scheme is None:
                                         break
                                     engaged.append(scheme)
-                                if engaged and len(engaged) == len(denoisers):
+                                if (
+                                    engaged
+                                    and len(engaged) == len(denoisers)
+                                    and cached_scheme is not None
+                                ):
+                                    transformer_quant_engaged = cached_scheme
+                                elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
                                     self._save_pipeline_quant_to_cache(
                                         pipe,
@@ -10400,6 +10428,7 @@ class DiffusionBackend:
                             cache = peak_cache,
                             graphs = peak_graphs,
                         )
+                        plan = prefer_whole_module_offload(pipe, plan, logger = logger)
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
@@ -10415,6 +10444,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_peak_quadratic"),
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
+                                plan.estimates.get("measured_dense_bf16", False),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -11209,6 +11239,85 @@ class DiffusionBackend:
             )
             check_cancelled()
         return pipe, scheme
+
+    @staticmethod
+    def _pipeline_quant_from_cache(
+        pipe: Any,
+        fam: Any,
+        denoisers: Any,
+        *,
+        target: Any,
+        transformer_quant: Optional[str],
+        fast_accum: Optional[bool],
+        loras: Any,
+        base: Optional[str],
+        fetch_base: Optional[str],
+        source_base: Optional[str],
+        hf_token: Optional[str],
+    ) -> Optional[str]:
+        """Hosted checkpoints are not read: the published FLUX.2-klein-4B INT8 renders different pixels."""
+        try:
+            names = [attr for attr, _module in (denoisers or ())]
+            transformer = getattr(pipe, "transformer", None)
+            if (
+                fam is None
+                or transformer is None
+                or names != ["transformer"]
+                or _has_active_lora(loras)
+            ):
+                return None
+            family = getattr(fam, "name", None)
+            if native_quant_scheme(target, transformer_quant, family = family) is not None:
+                return None
+            scheme = select_transformer_quant_scheme(
+                target, transformer_quant, family = family, base_repo = base
+            )
+            from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup, note_hit
+
+            if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
+                return None
+            cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
+            if not cached:
+                return None
+            first = next(iter(transformer.parameters()), None)
+            here = str(first.device) if first is not None else "cpu"
+            t0 = time.perf_counter()
+            loaded = load_prequantized_transformer(
+                type(transformer),
+                fetch_base or base,
+                PrequantSource(kind = "path", location = cached, filename = None),
+                device = str(getattr(target, "device", None) or here),
+                dtype = getattr(first, "dtype", None),
+                hf_token = hf_token,
+                scheme = scheme,
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                fast_accum = fast_accum,
+                cache_dir = hub_cache_dir(),
+                local_files_only = True,
+                logger = logger,
+                placement_device = here,
+                family = family,
+                into = transformer,
+            )
+            if loaded is None:
+                if transformer_is_quantised(transformer):
+                    raise PrequantIntoError("the cached build was partly applied and then failed")
+                return None
+            note_hit(cached, logger)
+            logger.info(
+                "diffusion.transformer_quant: %s read from the local prequant cache in %.1f s (no re-quantize)",
+                scheme,
+                time.perf_counter() - t0,
+            )
+            return scheme
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, PrequantIntoError):
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' could not finish loading its cached build ({exc}); "
+                    "reload to quantize it fresh"
+                ) from exc
+            logger.warning("diffusion.prequant_cache: read skipped (%s)", exc)
+            return None
 
     @staticmethod
     def _save_pipeline_quant_to_cache(
@@ -13131,6 +13240,8 @@ class DiffusionBackend:
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
+            # Kicked from the finally below: an offloaded denoiser's placement (restore_resident) must be back first.
+            kick_bg = False
             bg_eager = False
             bg_token = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
@@ -14185,7 +14296,7 @@ class DiffusionBackend:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
                     if _hires_pass is None or not _hires_pass.defer_bg_kick:
-                        bg.kick()
+                        kick_bg = True
                 else:
                     try:
                         # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
@@ -14321,6 +14432,11 @@ class DiffusionBackend:
                         restore_resident()
                     except Exception as exc:  # noqa: BLE001 - the groups keep streaming
                         logger.warning("diffusion.memory: re-residency failed: %s", exc)
+                if kick_bg and bg is not None:
+                    try:
+                        bg.kick()
+                    except Exception as exc:  # noqa: BLE001 - the next render compiles inline
+                        logger.warning("diffusion.bg_compile: kick failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None

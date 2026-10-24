@@ -3142,6 +3142,7 @@ export function HubModelPicker({
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
+  onDeviceInventoryChange,
   onEject,
   onEjectAll,
   task,
@@ -3179,6 +3180,7 @@ export function HubModelPicker({
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "connected";
   sectionToggle?: ReactNode;
+  onDeviceInventoryChange?: (hasModels: boolean) => void;
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
@@ -6269,6 +6271,28 @@ export function HubModelPicker({
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
     unpinnedFineTunedRows.length === 0;
+
+  // Resolve against this picker's task/workflow after inventory arrives, never against a
+  // search miss or a format filter. Custom folders and fine-tuned models count too.
+  const deviceInventoryEmpty =
+    downloadedEmpty && sortedCustomFolderModels.length === 0;
+  useEffect(() => {
+    if (
+      cachedReady &&
+      !query.trim() &&
+      !debouncedQuery.trim() &&
+      formatFilter === "all"
+    ) {
+      onDeviceInventoryChange?.(!deviceInventoryEmpty);
+    }
+  }, [
+    cachedReady,
+    deviceInventoryEmpty,
+    query,
+    debouncedQuery,
+    formatFilter,
+    onDeviceInventoryChange,
+  ]);
 
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.

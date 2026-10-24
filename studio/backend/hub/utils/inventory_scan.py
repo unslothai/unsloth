@@ -1706,6 +1706,20 @@ def is_variant_partial(
     )
 
 
+def _sibling_snapshot_has_complete_gguf(snapshot_dir: Optional[Path]) -> bool:
+    if snapshot_dir is None or snapshot_dir.parent.name != "snapshots":
+        return False
+    try:
+        siblings = [
+            entry
+            for entry in snapshot_dir.parent.iterdir()
+            if entry.name != snapshot_dir.name and entry.is_dir()
+        ]
+    except OSError:
+        return False
+    return any(snapshot_has_complete_variants(str(entry)) for entry in siblings)
+
+
 def is_gguf_repo_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
@@ -1775,9 +1789,11 @@ def is_gguf_repo_partial(
             ):
                 variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves only torn shards.
-        return has_legacy_partial or _recovered_snapshot_cannot_serve(
-            repo_cache_dir, snapshot_dir, quants = True
+        # No marker names a quant (an `hf download` stopped between shards), so the files decide;
+        # a sibling revision with a whole quant still serves the row, as the loader picks it.
+        return has_legacy_partial or (
+            _snapshot_cannot_serve_its_payload(snapshot_dir, quants = True)
+            and not _sibling_snapshot_has_complete_gguf(snapshot_dir)
         )
     has_clean = False
     has_broken = has_legacy_partial

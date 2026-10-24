@@ -2755,6 +2755,11 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
+      showGenerationDetails: "تفاصيل التوليد",
+      showGenerationDetailsDescription:
+        "عرض السرعة وعدد الرموز مباشرةً أثناء بث الرد، ومكان وضع طبقات النموذج المحلي.",
+      showGenerationDetailsKeywords:
+        "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",

@@ -2699,6 +2699,11 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
+      showGenerationDetails: "Dettagli generazione",
+      showGenerationDetailsDescription:
+        "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
+      showGenerationDetailsKeywords:
+        "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
