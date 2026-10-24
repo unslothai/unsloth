@@ -65,7 +65,12 @@ class _Engine:
             return {"phase": "downloading"}
         return {"phase": "ready" if self._state is not None else None}
 
-    def unload(self, *, expected_account: Optional[str] = None, only_if = None) -> Optional[dict]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if = None,
+    ) -> Optional[dict]:
         # As the real engines: a conditional unload rechecks under the engine's lock first.
         if only_if is not None and not only_if():
             return None
