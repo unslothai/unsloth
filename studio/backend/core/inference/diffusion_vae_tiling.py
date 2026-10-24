@@ -286,7 +286,6 @@ def _free_mib(
         return None
     free, total = torch.cuda.mem_get_info(z.device)
     if cached:
-        # only the cache an ordinary allocation can reuse: a CUDA graph pool's free blocks are not
         free += cuda_reusable_cache_bytes(z.device)
     free -= user_budget_reserve_bytes(z.device, total)
     ratio = _geometry(vae)[0]

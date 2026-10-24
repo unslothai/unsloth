@@ -520,7 +520,6 @@ def graph_held_card(monkeypatch):
 
 
 def test_the_untiled_decode_check_does_not_count_graph_held_cache(monkeypatch, graph_held_card):
-    # A CUDA graph pool's free blocks cannot serve the decode: only the other 100 MiB of cache counts.
     import core.inference.diffusion_vae_tiling as tiling
 
     monkeypatch.setattr(tiling, "_geometry", lambda vae: (8, 32, 4))

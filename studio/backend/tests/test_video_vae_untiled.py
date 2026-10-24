@@ -185,7 +185,6 @@ def test_wrapper_survives_a_compile_fallback_replacing_the_slot(monkeypatch):
 
 
 def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
-    # A CUDA graph pool's free blocks cannot serve the untiled decode: only the other 100 MiB of cache counts.
     torch = pytest.importorskip("torch")
     import core.inference.diffusion_memory as dm
 

@@ -2609,7 +2609,6 @@ def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
         if per_latent is None or ratio <= 0:
             return None
         free, total = torch.cuda.mem_get_info(x.device)
-        # only the cache an ordinary allocation can reuse: a CUDA graph pool's free blocks are not
         free += cuda_reusable_cache_bytes(x.device)
         free -= user_budget_reserve_bytes(x.device, total)
         elem = next(vae.encoder.parameters()).element_size()
