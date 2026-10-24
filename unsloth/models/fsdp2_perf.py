@@ -23,10 +23,14 @@ shard, and gradients plus optimizer state are sharded.
 
 Env overrides (read only when native FSDP2 is used): ``UNSLOTH_FSDP2_REPLICATE_FROZEN`` = auto | 1 | 0,
 ``UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD`` = auto | 1 | 0, ``UNSLOTH_FSDP2_PREFETCH`` = 1 | 0,
-``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory).
+``UNSLOTH_FSDP2_FIT_FRACTION`` (default 0.4 of one device's memory), ``UNSLOTH_FSDP2_FREE_FIT_FRACTION``
+(default 0.5 of what this rank can still use: free device memory plus its own cached and resident model
+memory, read after the process group exists, so the CUDA context, the NCCL communicator and other
+processes on the GPU are already taken out; on an otherwise idle GPU the total-memory rule decides).
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 import os
 
 import torch
@@ -79,6 +83,35 @@ def _device_bytes(device = None):
         return 0
 
 
+def _device_free_bytes(device = None):
+    """Memory this rank can still use on its GPU: driver-free memory (``mem_get_info``, which already
+    excludes the CUDA context, NCCL buffers and other processes) plus what torch holds cached but
+    unallocated. None for a CPU / non-CUDA mesh or when it cannot be read (the check is then skipped)."""
+    if device is not None and torch.device(device).type != "cuda":
+        return None
+    try:
+        if device is None:
+            device = torch.cuda.current_device()
+        free, _ = torch.cuda.mem_get_info(device)
+        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        return int(free) + max(int(cached), 0)
+    except Exception:
+        return None
+
+
+def _resident_bytes(params, device):
+    """Bytes of `params` already stored on `device` (the model DDP-style replication keeps there)."""
+    if device is None:
+        return 0
+    target = torch.device(device)
+    if target.type == "cuda" and target.index is None:
+        try:
+            target = torch.device("cuda", torch.cuda.current_device())
+        except Exception:
+            return 0
+    return _param_bytes(p for p in params if p.device == target)
+
+
 @dataclass
 class FSDP2Layout:
     replicate_frozen: bool = False
@@ -89,6 +122,8 @@ class FSDP2Layout:
     frozen_bytes: int = 0
     trainable_bytes: int = 0
     device_bytes: int = 0
+    # Free + cached + resident model bytes after process group init (None: not a CUDA device / unknown).
+    available_bytes: Optional[int] = None
     reasons: list = field(default_factory = list)
 
     def as_dict(self):
@@ -101,6 +136,9 @@ class FSDP2Layout:
             "frozen_gib": round(self.frozen_bytes / 2**30, 3),
             "trainable_gib": round(self.trainable_bytes / 2**30, 3),
             "device_gib": round(self.device_bytes / 2**30, 1),
+            "available_gib": None
+            if self.available_bytes is None
+            else round(self.available_bytes / 2**30, 2),
             "reasons": list(self.reasons),
         }
 
@@ -131,6 +169,11 @@ def plan_fsdp2_layout(
         fraction = float(os.environ.get("UNSLOTH_FSDP2_FIT_FRACTION", "0.4"))
     except ValueError:
         fraction = 0.4
+    try:
+        free_fraction = float(os.environ.get("UNSLOTH_FSDP2_FREE_FIT_FRACTION", "0.5"))
+    except ValueError:
+        free_fraction = 0.5
+    model_bytes = layout.frozen_bytes + layout.trainable_bytes
     # "Fits" = the whole model (what DDP keeps on every GPU) uses at most `fraction` of one device,
     # leaving the rest for activations, gradients and optimizer state.
     # CPU offload asks for memory, not speed: keep the plain sharded layout.
@@ -143,10 +186,23 @@ def plan_fsdp2_layout(
         layout.fits = (
             not cpu_offload
             and layout.device_bytes > 0
-            and (layout.frozen_bytes + layout.trainable_bytes) <= fraction * layout.device_bytes
+            and model_bytes <= fraction * layout.device_bytes
         )
+        if layout.fits:
+            # The total says nothing about what is left: the CUDA context, the NCCL communicator and
+            # other processes on the GPU. Shared or crowded GPUs fall back to the sharded layout. The
+            # ranks then agree (AND over ranks), so one crowded rank shards everyone.
+            free = _device_free_bytes(device)
+            if free is not None:
+                layout.available_bytes = free + _resident_bytes(params, device)
+                if model_bytes > free_fraction * layout.available_bytes:
+                    layout.fits = False
+                    layout.reasons.append(
+                        f"fits=False: only {layout.available_bytes / 2**30:.2f} GiB usable on this GPU "
+                        f"(free + cached + resident model), model needs <= {free_fraction} of it"
+                    )
     layout.reasons.append(
-        f"fits={layout.fits} (model {(layout.frozen_bytes + layout.trainable_bytes) / 2**30:.2f} GiB vs {fraction} x {layout.device_bytes / 2**30:.1f} GiB)"
+        f"fits={layout.fits} (model {model_bytes / 2**30:.2f} GiB vs {fraction} x {layout.device_bytes / 2**30:.1f} GiB)"
     )
 
     replicate = replicate_frozen
