@@ -8,12 +8,12 @@
 #   UNSLOTH_CP_ATTN_CHUNK query chunk of the DeepSeek-V4 / V3.2 CP attention (default 1024;
 #                         a value >= seq reproduces the old dense [S, S] behaviour)
 #   PYTHON / TORCHRUN     interpreter and launcher (default: python / torchrun on PATH)
-#   OUT_DIR               default /root/autodl-tmp/bench_out/full  (<OUT_DIR>/<name>.jsonl + logs)
+#   OUT_DIR (required)    results: <OUT_DIR>/<name>.jsonl + per-run logs
 #   MASTER_PORT           default 29555
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 PYTHON=${PYTHON:-python}
 TORCHRUN=${TORCHRUN:-torchrun}
-OUT_DIR=${OUT_DIR:-/root/autodl-tmp/bench_out/full}
+: "${OUT_DIR:?set OUT_DIR}"
 MASTER_PORT=${MASTER_PORT:-29555}
 MODES=${MODES:-vanilla fsdp cp fsdp_cp}
 SEQS=${SEQS:-16384 32768}

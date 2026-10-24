@@ -1,13 +1,15 @@
 """Download the CP validation checkpoints from ModelScope (32 parallel HTTP range requests per file).
 
-usage: MODELS_DIR=/root/autodl-tmp/models python download_models.py [repo-name-fragment ...]
+usage: MODELS_DIR=<dir> python download_models.py [repo-name-fragment ...]
 With no arguments every repo in REPOS is fetched. Files already present with the right size are skipped,
 so an interrupted run can be restarted.
 """
 import json, os, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-MODELS_DIR = os.environ.get('MODELS_DIR', '/root/autodl-tmp/models')
+MODELS_DIR = os.environ.get('MODELS_DIR')
+if not MODELS_DIR:
+    sys.exit('set MODELS_DIR to the directory the checkpoints should be downloaded into')
 # (ModelScope repo id, local directory name). These are the checkpoints the CP results were measured on.
 REPOS = [
     (repo, os.path.join(MODELS_DIR, name))

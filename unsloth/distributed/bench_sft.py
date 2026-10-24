@@ -19,12 +19,12 @@ import torch
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["vanilla", "fsdp", "cp", "fsdp_cp"], required=True)
-    parser.add_argument("--model", default="/root/autodl-tmp/BIV/merge/output/cache/Qwen--Qwen3.5-35B-A3B")
+    parser.add_argument("--model", required=True)
     parser.add_argument("--seq-len", type=int, default=65536)
     parser.add_argument("--samples", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lora-r", type=int, default=16)
-    parser.add_argument("--out", default="/root/autodl-tmp/unsloth-bench/results.jsonl")
+    parser.add_argument("--out", required=True, help="jsonl file the result row is appended to")
     return parser.parse_args()
 
 

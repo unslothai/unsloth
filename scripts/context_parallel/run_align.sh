@@ -6,12 +6,12 @@
 #   ALIGN_EXTRA="--dtype fp32"   extra align_sft args (fp32 separates CP bugs from bf16 rounding;
 #                                fsdp modes need bf16 because apply_fsdp uses a bf16 MixedPrecisionPolicy)
 #   PYTHON / TORCHRUN            interpreter and launcher (default: python / torchrun on PATH)
-#   OUT_DIR                      results, default /root/autodl-tmp/align_out  (<OUT_DIR>/<name>/<mode>.{pt,log})
+#   OUT_DIR (required)           results: <OUT_DIR>/<name>/<mode>.{pt,log}
 #   MASTER_PORT                  default 29555
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 PYTHON=${PYTHON:-python}
 TORCHRUN=${TORCHRUN:-torchrun}
-OUT_DIR=${OUT_DIR:-/root/autodl-tmp/align_out}
+: "${OUT_DIR:?set OUT_DIR}"
 MASTER_PORT=${MASTER_PORT:-29555}
 export PYTHONPATH=$REPO
 cd "$REPO"

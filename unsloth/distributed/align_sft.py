@@ -140,17 +140,19 @@ def compare_dir(out_dir: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["vanilla", "fsdp", "cp", "fsdp_cp", "compare"], required=True)
-    parser.add_argument("--model", default="/root/autodl-tmp/BIV/merge/output/cache/Qwen--Qwen3.5-35B-A3B")
+    parser.add_argument("--model", help="model directory (required except for --mode compare)")
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--lora-r", type=int, default=16)
     # fp32 separates CP bugs from bf16 rounding that deep models amplify differently per kernel.
     parser.add_argument("--dtype", choices=["bf16", "fp32"], default="bf16")
-    parser.add_argument("--out-dir", default="/root/autodl-tmp/unsloth-bench/align")
+    parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
     if args.mode == "compare":
         compare_dir(args.out_dir)
         return
+    if args.model is None:
+        parser.error("--model is required for this mode")
 
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")

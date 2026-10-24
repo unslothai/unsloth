@@ -1,10 +1,11 @@
 #!/bin/bash
 # Reproduce the context-parallel validation end to end on a 2-GPU box.
 #
-#   MODELS_DIR=/root/autodl-tmp/models \
-#   PYTHON=/root/autodl-tmp/BIV/train/.venv/bin/python \
-#   TORCHRUN=/root/autodl-tmp/BIV/train/.venv/bin/torchrun \
+#   MODELS_DIR=<checkpoints> WORK_DIR=<outputs> [PYTHON=<python>] [TORCHRUN=<torchrun>] \
 #   bash scripts/context_parallel/reproduce_all.sh [download] [cpu] [align] [bench]
+#
+# MODELS_DIR and WORK_DIR are required. WORK_DIR receives overlays/ (DeepSeek-V2-Lite pad-token
+# copy), align/ and bench/.
 #
 # Steps (default: cpu align bench; "download" is opt-in, ~290 GB):
 #   download  ModelScope checkpoints into $MODELS_DIR (download_models.py)
@@ -14,10 +15,11 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 export PYTHON=${PYTHON:-python}
 export TORCHRUN=${TORCHRUN:-torchrun}
-export MODELS_DIR=${MODELS_DIR:-/root/autodl-tmp/models}
+export MODELS_DIR=${MODELS_DIR:?set MODELS_DIR}
+WORK_DIR=${WORK_DIR:?set WORK_DIR}
 M=$MODELS_DIR
 STEPS=${*:-cpu align bench}
-V2_OVERLAY=${V2_OVERLAY:-$(dirname "$M")/align_models/DeepSeek-V2-Lite}
+V2_OVERLAY=$WORK_DIR/overlays/DeepSeek-V2-Lite
 
 MODELS=(
   k3-0.40B=$M/Kimi-K3-0.40B
@@ -40,12 +42,12 @@ for step in $STEPS; do
       ;;
     align)
       $PYTHON "$HERE/make_pad_overlay.py" "$M/DeepSeek-V2-Lite" "$V2_OVERLAY"
-      bash "$HERE/run_align.sh" 256 "${MODELS[@]}"
-      ALIGN_EXTRA="--dtype fp32" bash "$HERE/run_align.sh" 256 gemma4-E4B-fp32=$M/gemma-4-E4B-it
+      OUT_DIR=$WORK_DIR/align bash "$HERE/run_align.sh" 256 "${MODELS[@]}"
+      OUT_DIR=$WORK_DIR/align ALIGN_EXTRA="--dtype fp32" bash "$HERE/run_align.sh" 256 gemma4-E4B-fp32=$M/gemma-4-E4B-it
       ;;
     bench)
       $PYTHON "$HERE/make_pad_overlay.py" "$M/DeepSeek-V2-Lite" "$V2_OVERLAY"
-      bash "$HERE/run_bench.sh" "${MODELS[@]}"
+      OUT_DIR=$WORK_DIR/bench bash "$HERE/run_bench.sh" "${MODELS[@]}"
       ;;
     *)
       echo "unknown step: $step"; exit 1
