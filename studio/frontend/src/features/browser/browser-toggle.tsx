@@ -26,8 +26,16 @@ function openNewTab(fullView = false) {
   if (fullView) state.setFullView(true);
 }
 
-/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view. Hidden while the panel is open; its shortcuts still work. */
-export function BrowserToggleButton({ active = true }: { active?: boolean }) {
+/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view.
+ *  Hidden while that chat's panel is on screen (`hideWhenOpen`); a project overlay is separate, so
+ *  leave the button up until the overlay actually shows. */
+export function BrowserToggleButton({
+  active = true,
+  hideWhenOpen = true,
+}: {
+  active?: boolean;
+  hideWhenOpen?: boolean;
+}) {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
   const newTabShortcut = useShortcutLabel("newBrowserTab");
@@ -85,7 +93,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
     timer.current = null;
     setMenuOpen(false);
   }, [open]);
-  if (open) return null;
+  if (hideWhenOpen && open) return null;
   const label = t("browser.newTab");
   const onMouse = (handler: () => void) => (event: { pointerType: string }) => {
     if (event.pointerType === "mouse") handler();
