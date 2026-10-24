@@ -475,9 +475,7 @@ def test_refreshed_generation_can_be_edited_when_tab_created_at_differs(chat_hom
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
-    assert runs_db.finish_run(
-        "run-1", worker_token = token, status = "completed", finish_reason = "stop"
-    )
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
     stored = studio_db.get_chat_message("thread-1", "assistant-1")
     assert stored["createdAt"] != 1
     edited = {key: value for key, value in stored.items() if key != "metadata"}
