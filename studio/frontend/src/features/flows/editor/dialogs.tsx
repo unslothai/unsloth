@@ -20,7 +20,9 @@ import {
   planFlow,
 } from "../api";
 import { documentFromState, useDocStore } from "../stores/doc-store";
+import { useUiStore } from "../stores/ui-store";
 import type { FlowParam } from "../types";
+import { downloadBytes, modelSignature, modelsToDownload } from "../ux-rules";
 import { downloadBlob } from "./node-actions";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
@@ -211,7 +213,7 @@ export function PlanDialog({
   }, [open, flowId]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>What this flow needs</DialogTitle>
           <DialogDescription>
@@ -240,6 +242,50 @@ export function PlanDialog({
             ))}
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Shown instead of starting a run that would first download models: what, how big, one button to go ahead. */
+export function DownloadRunDialog() {
+  const pending = useUiStore((s) => s.pendingRun);
+  const close = () => useUiStore.getState().setPendingRun(null);
+  const missing = modelsToDownload(pending?.plan.models);
+  const total = downloadBytes(missing);
+  return (
+    <Dialog open={pending !== null} onOpenChange={(open) => !open && close()}>
+      <DialogContent className="sm:max-w-xl" data-testid="flows-download-run">
+        <DialogHeader>
+          <DialogTitle>Download models to run this flow?</DialogTitle>
+          <DialogDescription>
+            {missing.length === 1
+              ? "One model this flow uses is not on this computer yet."
+              : `${missing.length} models this flow uses are not on this computer yet.`}{" "}
+            {total ? `About ${formatBytes(total)} to download. ` : ""}
+            They download once, then the run starts.
+          </DialogDescription>
+        </DialogHeader>
+        {pending && <ModelRequirementList models={pending.plan.models} />}
+        <DialogFooter>
+          <Button variant="outline" onClick={close}>
+            Not now
+          </Button>
+          <Button
+            onClick={() => {
+              const options = pending?.options ?? {};
+              // A pick changed while the dialog was open (undo): plan again rather than confirm unseen models.
+              const same =
+                pending?.models ===
+                modelSignature(useDocStore.getState().graph.nodes);
+              close();
+              void runFlow({ ...options, downloadsConfirmed: same });
+            }}
+            data-testid="flows-download-and-run"
+          >
+            Download and run
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

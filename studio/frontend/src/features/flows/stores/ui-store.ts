@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import type { FlowPlan } from "../api";
 import type { EdgeKind, PortSpec } from "../types";
 
 export interface QuickAddState {
@@ -21,6 +22,14 @@ export interface QuickAddState {
 
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 
+/** A run held back until the user agrees to download the models it needs. */
+export interface PendingRun {
+  options: Record<string, unknown>;
+  plan: FlowPlan;
+  /** The model picks the plan was made for: a confirmation only covers these. */
+  models?: string;
+}
+
 export interface UiState {
   selectedNodes: string[];
   selectedEdges: string[];
@@ -31,6 +40,7 @@ export interface UiState {
   paletteOpen: boolean;
   snapToGrid: boolean;
   saveState: SaveState;
+  pendingRun: PendingRun | null;
   setSelection: (nodes: string[], edges: string[]) => void;
   openInspector: (nodeId: string | null) => void;
   setQuickAdd: (quickAdd: QuickAddState | null) => void;
@@ -38,6 +48,7 @@ export interface UiState {
   togglePalette: () => void;
   toggleSnap: () => void;
   setSaveState: (state: SaveState) => void;
+  setPendingRun: (pending: PendingRun | null) => void;
   reset: () => void;
 }
 
@@ -54,6 +65,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   paletteOpen: true,
   snapToGrid: false,
   saveState: "saved",
+  pendingRun: null,
   setSelection: (nodes, edges) => {
     const s = get();
     if (sameList(s.selectedNodes, nodes) && sameList(s.selectedEdges, edges))
@@ -75,6 +87,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab })),
   togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
   toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+  setPendingRun: (pendingRun) => set({ pendingRun }),
   setSaveState: (saveState) => {
     if (get().saveState !== saveState) set({ saveState });
   },
@@ -85,5 +98,6 @@ export const useUiStore = create<UiState>((set, get) => ({
       inspectorNodeId: null,
       quickAdd: null,
       saveState: "saved",
+      pendingRun: null,
     }),
 }));

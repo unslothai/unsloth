@@ -262,6 +262,12 @@ def test_bundled_examples_are_listed_and_copy(client):
     assert len(listed) == 53 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
+    # Each card says what it needs: the gallery shows "No models needed" or the model kinds.
+    needs = {e["id"]: e["needs"] for e in listed}
+    assert needs["lantern-picnic"] == []
+    assert needs["comic-strip"] == ["chat", "image"]
+    assert needs["notebook-text-sft"] == ["training"]
+    assert needs["dataset-forge"] == ["chat", "training"]
 
 
 def test_invoke_entrypoint_errors(client):
