@@ -78,6 +78,7 @@ import {
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   type ReactNode,
   type Ref,
@@ -3660,18 +3661,17 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  // Never mounted on demand: the click that saves would move Load.
+  // Never mounted on demand: the click that saves would move Load. Empty where the checkbox already
+  // says it all (nothing saved, ticked or not).
   const saveStatus = savedRemember
     ? remember
       ? matchesStored
         ? "Saved for this model"
         : "Unsaved changes"
       : "Saved settings will be forgotten"
-    : remember
-      ? "Not saved yet"
-      : atDefault
-        ? "Using default settings"
-        : "Not remembered for this model";
+    : !remember && atDefault
+      ? "Using default settings"
+      : "";
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
     ? remember
@@ -4147,8 +4147,16 @@ export function ModelConfigPage({
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
-      <div className="mt-5 flex flex-col gap-3.5 border-t border-border pt-5">
-        <div className="flex min-w-0 flex-col gap-1">
+      <div
+        className={cn(
+          "mt-5",
+          // Pinned to the popover's scroller, so Load stays in reach however long the settings run.
+          // The negative margins cover the scroller's padding with the panel's own fill.
+          variant === "page" &&
+            "sticky bottom-0 z-10 -mx-4 -mb-4 bg-popover px-4 pb-4 dark:bg-sidebar",
+        )}
+      >
+      <div className="flex flex-col gap-3.5 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -4167,15 +4175,15 @@ export function ModelConfigPage({
           >
             Remember for this model
           </label>
-        </div>
-        <p
-          id={saveStatusId}
-          aria-live="polite"
-          data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-          className="truncate pl-6 text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
-        >
-          {saveStatus}
-        </p>
+          {/* On the checkbox's row, so a status appearing or clearing never moves the buttons. */}
+          <p
+            id={saveStatusId}
+            aria-live="polite"
+            data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
+            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+          >
+            {saveStatus}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
@@ -4264,6 +4272,7 @@ export function ModelConfigPage({
             />
           )}
         </div>
+      </div>
       </div>
 
       <ChatTemplateEditorDialog
