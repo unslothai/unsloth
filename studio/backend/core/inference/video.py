@@ -7408,12 +7408,16 @@ class VideoBackend:
                     # Only when the metadata came from the repo the bytes come from: the mirror's head says nothing
                     # about which snapshot the repack's cache holds, and a foreign sha would only ever be a pinned miss.
                     revision = getattr(info, "sha", None) if meta_repo == repo else None
-                    if not DiffusionBackend._hub_file_is_loadable(
-                        repo, filename, revision, size
-                    ) and (_h3_pre_move_copy_if_uncached(repo, filename, verify = False) is None):
-                        missing_files.setdefault(repo, set()).add(filename)
-                        entry["bytes"] += size
-                        total += size
+                    if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
+                        if _h3_pre_move_copy_if_uncached(repo, filename, verify = False) is not None:
+                            # Satisfied by a pre-move copy the load reads in place. Staging the official name would
+                            # make snapshot_download (which only reuses the target repo's cache) fetch it again while
+                            # the plan advertises zero bytes for it, so it leaves the file list too.
+                            entry["files"].remove(filename)
+                        else:
+                            missing_files.setdefault(repo, set()).add(filename)
+                            entry["bytes"] += size
+                            total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback

@@ -13772,6 +13772,50 @@ def test_h3_native_plan_counts_a_pre_move_copy_as_present(monkeypatch, tmp_path,
     assert plan["total_bytes"] == 0
 
 
+@pytest.mark.parametrize("repo", ["unsloth/MiniMax-H3-GGUF", "Comfy-Org/MiniMax-H3"])
+def test_h3_native_plan_does_not_stage_pre_move_vaes_beside_a_missing_denoiser(
+    monkeypatch, tmp_path, repo
+):
+    """With the VAEs cached only as pre-move copies and a new denoiser quant missing, the staged entry must name only
+    the denoiser: snapshot_download reuses nothing outside the target repo's cache, so listing the official VAE names
+    would fetch 5.8 GB the native load never reads while the plan advertised only the checkpoint's size."""
+    from core.inference.diffusion import DiffusionBackend
+
+    sha = _pin_pre_move_copies(monkeypatch)
+    cache = tmp_path / "hub"
+    _seed_pre_move_vaes(cache, repo, sha)
+    _pre_move_cache_roots(monkeypatch, cache)
+    size = len(_PRE_MOVE_BYTES)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling("vae/official/minimax_h3_video_vae_fp16.safetensors", size),
+                _PlanSibling("vae/official/minimax_h3_audio_vae_fp32.safetensors", size),
+            ],
+        },
+    )
+    # Only the encoder is cached at its current name; the denoiser is missing and the VAEs exist only pre-move.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, name, *_a, **_k: name.startswith("qwen3vl_")),
+    )
+    plan = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert len(plan["entries"]) == 1
+    entry = plan["entries"][0]
+    assert entry["repo_id"] == "unsloth/MiniMax-H3-GGUF"
+    assert not [name for name in entry["files"] if name.startswith("vae/")]
+    assert "minimax_h3_fl2va-Q4_K_M.gguf" in entry["files"]
+    assert entry["checkpoint"] is True
+    assert entry["bytes"] == 19
+    assert plan["total_bytes"] == 19
+
+
 def test_h3_native_online_load_reads_the_pre_move_copy_instead_of_fetching(monkeypatch, tmp_path):
     """Online too: the plan counted the pre-move copy as present, so the load reads it rather than fetching the
     official-path file the plan never staged."""
