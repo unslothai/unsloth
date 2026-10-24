@@ -3679,7 +3679,7 @@ class SdCppDiffusionBackend:
 
             @functools.lru_cache(maxsize = 1)
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
-                return sd_cpp_args_mod.gguf_quantized_weight_types(paths.get("diffusion_model"))
+                return sd_cpp_args_mod.model_files_quantized_weight_types(files)
 
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
