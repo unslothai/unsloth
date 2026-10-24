@@ -823,6 +823,28 @@ def test_generate_passes_only_keywords_the_pipeline_takes(cosmos3_runtime, repo,
     assert result["fps"] == 16 and cosmos3_runtime[-1]["fps"] == 16
 
 
+@pytest.mark.parametrize("first_frame, recorded", [(None, True), ((1920, 1080), False)])
+def test_a_pending_background_compile_records_only_text_to_video(
+    cosmos3_runtime, monkeypatch, first_frame, recorded
+):
+    from core.inference import diffusion_bg_compile as bg_compile
+
+    skipped = []
+
+    @contextlib.contextmanager
+    def no_record():
+        skipped.append(True)
+        yield
+
+    monkeypatch.setattr(bg_compile, "no_record", no_record)
+    backend, _status = _loaded(EDGE)
+    bg = bg_compile.BackgroundCompile(object())
+    assert bg.pending()
+    backend._state = dataclasses.replace(backend._state, bg_compile = bg)
+    backend.generate(prompt = "a robot arm", steps = 1, **_first_frame(first_frame))
+    assert (not skipped) is recorded
+
+
 @pytest.mark.parametrize("first_frame", [None, (1920, 1080)])
 def test_generate_returns_the_offloaded_vae_after_the_conditioning_encode(
     cosmos3_runtime, monkeypatch, first_frame

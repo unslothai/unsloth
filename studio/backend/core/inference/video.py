@@ -12347,15 +12347,15 @@ class VideoBackend:
                     )
                     i2v_extra = _i2v_state_call_kwargs(fam, state)
                     request_shape["pipeline"] = type(pipe).__name__
+                    if bg_eager:
+                        # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
+                        i2v_swap.enter_context(bg_compile.no_record())
                 if fam.name in COSMOS3_FAMILIES:
                     from .video_i2v import offload_vae_after_encode
 
                     # Every Cosmos3 call encodes a clip (t2v: zeros) before denoising, and its first_frame_pipeline is
                     # the loaded class, so nothing else returns the offloaded VAE after that encode.
                     i2v_swap.enter_context(offload_vae_after_encode(pipe))
-                    if bg_eager:
-                        # LTX-2 i2v passes a per-token timestep (t2v: per sample), so it must not seed the compile.
-                        i2v_swap.enter_context(bg_compile.no_record())
                 call_params = inspect.signature(pipe.__call__).parameters
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
