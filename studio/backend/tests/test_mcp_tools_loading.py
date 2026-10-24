@@ -1496,7 +1496,9 @@ def _status_studio(status, answers = None):
 def test_an_unload_sends_no_unconditional_unload_when_studio_cannot_name_the_load(monkeypatch):
     # Studio reports load ids, but this read could not name the state: an unconditional unload
     # could end a load admitted meanwhile, so none goes out.
-    studio = _status_studio({"loaded": True, "repo_id": LTX, "load_id": None, "resident_load_id": None})
+    studio = _status_studio(
+        {"loaded": True, "repo_id": LTX, "load_id": None, "resident_load_id": None}
+    )
     caller = make_caller(studio_app = studio)
     with pytest.raises(ToolError, match = "could not identify"):
         asyncio.run(loading.unload_media(caller, "video"))
@@ -1518,8 +1520,12 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
     # while B is loading, B fails and its own unload answers superseded, so A is named again after.
     studio = _status_studio(
         {"loaded": True, "repo_id": LTX, "load_id": "B", "resident_load_id": "A"},
-        {"A": [{"unloaded": False, "outcome": "superseded"},
-               {"loaded": False, "unloaded": True, "outcome": "unloaded"}]},
+        {
+            "A": [
+                {"unloaded": False, "outcome": "superseded"},
+                {"loaded": False, "unloaded": True, "outcome": "unloaded"},
+            ]
+        },
     )
     caller = make_caller(studio_app = studio)
     loading._remember_media_token(caller, "video", "A")
