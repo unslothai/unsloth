@@ -581,7 +581,6 @@ test("a config that never read the stored value is not sent as a clear", () => {
 });
 
 test("the load sends the flags only once they are known", () => {
-  // The send rule itself is llamaServerLoadFields', tested in chat-load-request-one-builder.test.ts.
   const composer = readSrc("features/chat/shared-composer.tsx").replace(/\s+/g, " ");
   assert.match(composer, /\.\.\.llamaServerLoadFields\(ownConfig, \{/);
 });

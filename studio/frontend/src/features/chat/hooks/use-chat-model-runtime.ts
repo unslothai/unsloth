@@ -2392,16 +2392,13 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
-            // A cross-model switch re-baselines the per-model knobs, treating a same-repo quant switch as a
-            // different model.
             const switchingModelOrVariant =
               currentCheckpoint !== modelId ||
               (loadActiveGgufVariant ?? null) !== (ggufVariant ?? null);
             const resetsPerModelSettings = Boolean(
               currentCheckpoint && switchingModelOrVariant && !keepSpeculative,
             );
-            // Re-baselined to the staged config here, before /validate, so the preflight and /load read the
-            // same values; the store is reset in lock-step below, once the old model is unloaded.
+            // Size staged settings before validation; reset the store only after unloading.
             const persistedSpeculativeType = resetsPerModelSettings
               ? readPersistedSpeculativeType()
               : null;
@@ -2508,8 +2505,7 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // One request for /validate and /load, so the preflight judges the command the load runs. A
-            // function: the validation, the engine offer and the approvals below change what it reads.
+            // Build lazily: validation, the engine offer and consent update these values.
             const loadRequest = (): LoadModelRequest => ({
               model_path: loadPath,
               ...loadEngineFields,

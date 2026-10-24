@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The shape of a chat model load request. Every load path builds one LoadModelRequest and sends it
- *  to both /validate and /load, so the preflight judges the command the load runs. */
-
 import type { LoadModelRequest } from "../types/api";
 import {
   type ServerTuningValues,
   serverTuningLoadPayload,
 } from "./server-tuning-fields";
 
-/** The subset of a config these read; satisfied by PerModelConfig. */
 export interface LlamaServerLoadSettings extends ServerTuningValues {
   reasoningBudget?: number | null;
   reasoningBudgetMessage?: string | null;
@@ -20,10 +16,7 @@ export interface LlamaServerLoadSettings extends ServerTuningValues {
   llamaExtraArgs?: string[] | null;
 }
 
-/** The llama-server knobs of a chat load, under the one rule every load path uses. GGUF only, and the
- *  reasoning budget, server tuning and pass-through args never reach the diffusion runner, which takes
- *  none of llama-server's flags. Blank knobs are omitted rather than nulled: the route reads
- *  `model_fields_set`, and a null counts as set and strips the flag from inherited extra args. */
+// Omit blank knobs: a sent null strips inherited flags via model_fields_set.
 export function llamaServerLoadFields(
   settings: LlamaServerLoadSettings,
   target: { isGguf: boolean; isDiffusion: boolean },
@@ -48,7 +41,6 @@ export function llamaServerLoadFields(
   };
 }
 
-/** A load request as the backend reads it: the prepared token, and the Desktop lease in its wire name. */
 export function wireLoadRequest(
   payload: LoadModelRequest,
   hfToken: string | null,
@@ -61,9 +53,7 @@ export function wireLoadRequest(
   };
 }
 
-/** /validate's body is the /load request itself. The route ignores the load-only fields; a hand-kept
- *  list of the rest dropped ctx_checkpoints, spec_draft_cache_type and tensor_split. Only its
- *  non-nullable fields need their defaults. */
+// Forward every load field; an allow-list previously dropped settings that affect validation.
 export function validateRequestBody(
   payload: LoadModelRequest,
   hfToken: string | null,

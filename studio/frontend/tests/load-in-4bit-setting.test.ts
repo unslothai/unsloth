@@ -95,7 +95,6 @@ test("every default-engine load path sends the choice, vLLM and SGLang never 4-b
     runtime,
     /load_in_4bit:\s*loadEngineFields\.engine === "auto" && loadIn4bitChoice,/,
   );
-  // /validate sends the same request, so it asks for the same precision.
   assert.match(runtime, /await validateModel\(\{\s*\.\.\.loadRequest\(\),/);
   const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(

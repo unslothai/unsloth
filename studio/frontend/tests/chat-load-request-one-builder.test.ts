@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every chat load path builds one request and sends it to /validate and /load. A hand-kept copy for
-// /validate kept missing fields the load sent: ctx_checkpoints, spec_draft_cache_type and
-// tensor_split in validateModel, the speculative mode in two preflights, the staged context pin and
-// layer count on a model switch. The preflight then approved one command and /load ran another.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
@@ -16,7 +11,6 @@ const { llamaServerLoadFields, validateRequestBody } = await import(
   "../src/features/chat/lib/load-request.ts"
 );
 
-/** The fields /validate reads, from the backend model itself. */
 function validateModelRequestFields(): string[] {
   const source = readText("../../backend/models/inference.py");
   const start = source.indexOf("class ValidateModelRequest(BaseModel):");
@@ -25,7 +19,6 @@ function validateModelRequestFields(): string[] {
   return [...body.matchAll(/^ {4}(\w+):/gm)].map((match) => match[1]);
 }
 
-/** The fields the load request type can carry. */
 function loadModelRequestFields(): Set<string> {
   const source = readSrc("features/chat/types/api.ts");
   const start = source.indexOf("export interface LoadModelRequest {");
@@ -35,12 +28,10 @@ function loadModelRequestFields(): Set<string> {
   );
 }
 
-// Answer-shaping flags of /validate itself, not settings of the load being judged.
 const VALIDATE_ONLY = new Set([
   "include_context_length",
   "include_chat_template",
 ]);
-// Spelled differently on the client; the wire name is set by validateRequestBody.
 const RENAMED = new Map([["native_path_lease", "nativePathLease"]]);
 
 test("every field /validate prices can ride the load request", () => {
@@ -65,7 +56,6 @@ test("/validate receives every load setting it prices, not a hand-kept subset", 
     "token",
   ) as Record<string, unknown>;
   for (const field of fields) assert.equal(body[field], `set:${field}`, field);
-  // The three a hand-kept list dropped.
   for (const field of [
     "ctx_checkpoints",
     "spec_draft_cache_type",
@@ -142,7 +132,6 @@ test("llama-server's knobs reach a GGUF llama-server and nothing else", () => {
       llama_extra_args: ["--ctx-size", "8192"],
     },
   );
-  // The diffusion runner takes none of llama-server's flags; the batch sizes still size it.
   assert.deepEqual(
     llamaServerLoadFields(TUNED, { isGguf: true, isDiffusion: true }),
     {
@@ -163,7 +152,6 @@ test("llama-server's knobs reach a GGUF llama-server and nothing else", () => {
 
 test("blank knobs are omitted, and pass-through args only once the config has read them", () => {
   const llama = { isGguf: true, isDiffusion: false };
-  // A sent null counts as set and strips the flag from inherited extra args.
   assert.deepEqual(
     llamaServerLoadFields({ nBatch: null, ctxCheckpoints: null }, llama),
     {
@@ -171,7 +159,6 @@ test("blank knobs are omitted, and pass-through args only once the config has re
       reasoning_budget_message: "",
     },
   );
-  // undefined: never read, so the route keeps the stored list. null: an explicit "launch with none".
   assert.equal("llama_extra_args" in llamaServerLoadFields({}, llama), false);
   assert.deepEqual(
     llamaServerLoadFields({ llamaExtraArgs: null }, llama).llama_extra_args,

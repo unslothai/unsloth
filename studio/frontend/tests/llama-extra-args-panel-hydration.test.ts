@@ -69,7 +69,6 @@ test("a background auto-load hydrates a server-only override", () => {
   assert.match(ADAPTER, /const cleaned = clean\(resolvedExtraArgs\);/);
   // Cached inventory can return a different loadId than the one the row was written under.
   assert.match(ADAPTER, /candidate\.id,\n\s*candidate\.ggufVariant \?\? null,/);
-  // The hydrated list rides the one request both /validate and /load send.
   assert.match(
     ADAPTER,
     /llamaServerLoadFields\(\s*\{ \.\.\.config, llamaExtraArgs: resolvedExtraArgs \}/,

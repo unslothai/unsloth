@@ -65,7 +65,6 @@ test("a compare pane loads its remembered vLLM or SGLang settings", () => {
   assert.equal(tuned.engine_kv_cache_dtype, "fp8");
   assert.equal(tuned.engine_seed, 0);
   assert.equal(tuned.engine_gpu_memory_utilization, 0.5);
-  // One payload carries them to /validate and /load alike.
   assert.equal(composer.match(/\.\.\.paneEngineFields,/g)?.length, 1);
   assert.match(composer, /loadModel\(\{\s*\.\.\.panePayload\(\),/);
 });

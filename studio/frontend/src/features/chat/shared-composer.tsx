@@ -1861,8 +1861,7 @@ export function SharedComposer({
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
-        // One request for /validate and /load, so the preflight judges the command the load runs. A
-        // function: the engine offer below swaps paneEngineFields and validates again.
+        // Build lazily: the engine offer can replace paneEngineFields before revalidation.
         const panePayload = (): LoadModelRequest => ({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,

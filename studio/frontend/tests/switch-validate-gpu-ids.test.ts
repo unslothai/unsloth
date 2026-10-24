@@ -8,8 +8,6 @@ import { readSrc } from "./helpers/kit.ts";
 const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 
 test("a switch validates the GPUs the load will use", () => {
-  // No second copy of the reset to keep in step: the switch re-baselines the GPU pick once, before
-  // /validate, and both requests read it from the same builder.
   assert.doesNotMatch(runtime, /validateGpuIds/);
   const reset = runtime.indexOf("loadSelectedGpuIds = stagedGpuIds;");
   const request = runtime.indexOf(

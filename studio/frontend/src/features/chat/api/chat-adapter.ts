@@ -3549,7 +3549,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     };
   }
 
-  /** Preflight the exact request the load will send, so the guard sizes what actually launches. */
   async function canAutoLoad(request: LoadModelRequest): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
@@ -3771,7 +3770,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
-    // One request for the preflight and the load, so the guard sizes what actually launches.
     const request: LoadModelRequest = {
       model_path: modelPath,
       hf_token: hfToken,

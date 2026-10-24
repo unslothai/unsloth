@@ -552,7 +552,6 @@ def test_diffusion_load_paths_disable_tensor_parallel():
     compare = _read("features/chat/shared-composer.tsx")
     compact_compare = " ".join(compare.split())
     assert "const effectiveTensorParallel = resolvedIsDiffusion ? false :" in compact_compare
-    # One pane request goes to both /validate and /load.
     assert compare.count("tensor_parallel: effectiveTensorParallel") == 1
 
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
@@ -567,7 +566,6 @@ def test_diffusion_load_paths_disable_tensor_parallel():
     compact_autoload = " ".join(autoload.split())
     assert "config.selectedGpuIds != null || config.tensorParallel === true" in compact_autoload
     assert "const effectiveTensorParallel = isDiffusion ? false :" in compact_autoload
-    # One request goes to both /validate and /load.
     assert autoload.count("tensor_parallel: effectiveTensorParallel") == 1
 
 
@@ -2369,7 +2367,6 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "{ n_batch: rollbackState.loadedNBatch }" in runtime
     assert "{ n_ubatch: rollbackState.loadedNUbatch }" in runtime
     assert "n_batch: rollbackState.loadedNBatch," not in runtime
-    # /validate forwards the load request whole, batch sizes included.
     chat_api = " ".join(_read("features/chat/api/chat-api.ts").split())
     assert "validateRequestBody(payload, preparedToken.token)" in chat_api
     composer = " ".join(_read("features/chat/shared-composer.tsx").split())
@@ -3531,7 +3528,6 @@ def test_the_default_is_preflighted_before_the_managed_download():
     assert fallback.index("const rt = useChatRuntimeStore.getState();") < fallback.index(
         "canAutoLoad(request)"
     )
-    # The load after the download sends the request the preflight approved.
     assert "await loadModel({ ...request, alongside: true })" in fallback
 
 
