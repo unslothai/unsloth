@@ -408,7 +408,6 @@ class RoutedMlxEngine:
         self._route_lock = threading.Lock()
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
-        # The route's pre-load gates for this load, run around the fallback's diffusers load.
         self._fallback_gate: Optional[Callable[[Callable[[], Any]], Any]] = None
         self._epoch = 0
         # Replacement loads between their first epoch bump and registering their options: no fallback registers.
@@ -586,7 +585,6 @@ class RoutedMlxEngine:
                 with self._lock:
                     self._diffusers_ours = True
 
-            # The training guard and fit check a normal load passes; a refusal leaves MLX loaded.
             if gate is None:
                 _start()
             else:

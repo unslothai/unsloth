@@ -725,10 +725,9 @@ def refuse_unless_fits(
     gpu_ids: Optional[Iterable[int]] = None,
     need_mib: Optional[dict] = None,
 ) -> None:
-    """acquire_for's residency check for an ``owner`` already holding its claim, refusing where it would evict.
+    """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
 
-    For a load that runs inside a generation (the MLX router's diffusers fallback), which must not unload
-    another model. Raises what acquire_for raises with ``allow_evict=False``; mutates nothing."""
+    For loads inside a generation (MLX diffusers fallback), which must not unload another model."""
     from utils.account_context import current_account_id
     with arb._lock:
         arb._sync_from_view()

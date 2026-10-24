@@ -1158,9 +1158,6 @@ def test_no_fallback_no_shift_control(rig, monkeypatch, tmp_path):
     assert rig.engine.status().get("shift_control") is None
 
 
-# The route's load gates around the fallback's diffusers load.
-
-
 def _gated_rig(rig, gate):
     rig.engine.begin_load(
         "unsloth/Z-Image-Turbo-GGUF",
@@ -1216,7 +1213,6 @@ def test_a_new_load_and_unload_drop_the_old_fallback_gate(rig):
 
 @pytest.fixture
 def route_gate(monkeypatch):
-    """The real route gate, with training idle, no other residents and the hub cache empty."""
     import routes.inference as inference
     from core.inference import gpu_arbiter as arb
     from core.inference import gpu_residency
@@ -1300,7 +1296,6 @@ def test_the_fallback_is_refused_while_training_runs(rig, route_gate):
 def test_the_fallback_is_refused_when_the_trainer_wins_the_admission(rig, route_gate, monkeypatch):
     import routes.inference as inference
 
-    # The guard reads idle, then a diffusion training start reserves before the admission.
     monkeypatch.setattr(inference, "_guard_diffusion_load_against_training", lambda: None)
     route_gate.trainer.active = True
     _gated_rig(rig, route_gate.gate)
