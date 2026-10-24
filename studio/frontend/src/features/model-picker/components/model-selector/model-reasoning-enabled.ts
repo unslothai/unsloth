@@ -3,8 +3,14 @@
 
 import { create } from "zustand";
 
-const KEY = "unsloth_model_reasoning_enabled";
-const MODEL_KEY_PREFIX = `${KEY}::`;
+import {
+  pinnedReasoningEnabled,
+  REASONING_ENABLED_KEY as KEY,
+  REASONING_ENABLED_PREFIX as MODEL_KEY_PREFIX,
+  resolveReasoningEnabledOnLoad,
+} from "./reasoning-enabled-pin";
+
+export { pinnedReasoningEnabled, resolveReasoningEnabledOnLoad };
 type EnabledStorage = Pick<Storage, "getItem" | "setItem" | "key" | "length">;
 
 function browserStorage(): EnabledStorage | null {
@@ -86,38 +92,6 @@ export function createModelReasoningEnabledStore(
 const storage = browserStorage();
 export const useModelReasoningEnabledStore =
   createModelReasoningEnabledStore(storage);
-
-/** Last thinking on/off the user chose for this checkpoint, or null if they never chose. */
-export function pinnedReasoningEnabled(
-  modelId: string | null | undefined,
-): boolean | null {
-  if (!modelId) return null;
-  const value =
-    useModelReasoningEnabledStore.getState().enabledByModel[modelId];
-  return value === undefined ? null : value;
-}
-
-/**
- * Thinking on/off after a load. A per-model pin outranks the family default so ejecting
- * and reloading the same checkpoint keeps Off. Always-on / effort-only models cannot
- * honor Off. persist:false toggles never write a pin.
- */
-export function resolveReasoningEnabledOnLoad(options: {
-  reasoningAlwaysOn: boolean;
-  supportsReasoning: boolean;
-  supportsReasoningOff: boolean;
-  pinned: boolean | null;
-  reloadingSameModel: boolean;
-  previousEnabled: boolean;
-  reasoningDefault: boolean;
-}): boolean {
-  if (options.reasoningAlwaysOn) return true;
-  if (!options.supportsReasoning) return options.reasoningDefault;
-  if (!options.supportsReasoningOff) return true;
-  if (options.pinned !== null) return options.pinned;
-  if (options.reloadingSameModel) return options.previousEnabled;
-  return options.reasoningDefault;
-}
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {

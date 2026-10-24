@@ -78,7 +78,7 @@ import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-stat
 import {
   pinnedReasoningEnabled,
   resolveReasoningEnabledOnLoad,
-} from "@/features/model-picker/components/model-selector/model-reasoning-enabled";
+} from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   beginServerModelWait,
   serverModelWaitOutstanding,

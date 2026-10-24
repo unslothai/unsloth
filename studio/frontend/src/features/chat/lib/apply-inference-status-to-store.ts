@@ -12,7 +12,7 @@ import {
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
-import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/model-reasoning-enabled";
+import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
