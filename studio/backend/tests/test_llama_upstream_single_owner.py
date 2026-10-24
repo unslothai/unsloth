@@ -20,17 +20,17 @@ sys.path.insert(0, _backend)
 pytest.importorskip("fastapi", reason = "inference stack not installed")
 
 import routes.inference as inf_mod  # noqa: E402
-from models.inference import ChatMessage, ResponsesRequest  # noqa: E402
+from models.inference import ChatCompletionRequest, ChatMessage, ResponsesRequest  # noqa: E402
 from state import active_generations  # noqa: E402
 
 _DEAD = "http://127.0.0.1:57953"
 _FRESH = "http://127.0.0.1:62933"
 
-# A killed server refuses the connection; one that dies mid-prefill drops it before the
+# A killed server refuses the connection; a crash before headers drops it before the
 # status line. Both are lost connections, and every route must treat them alike.
 _CRASHES = [
     pytest.param(httpx.ConnectError, id = "refused"),
-    pytest.param(httpx.RemoteProtocolError, id = "dropped-mid-prefill"),
+    pytest.param(httpx.RemoteProtocolError, id = "dropped-before-headers"),
 ]
 
 
@@ -192,6 +192,28 @@ async def _messages():
     return response.body.decode()
 
 
+async def _chat_stream():
+    cancel = threading.Event()
+    tracker = inf_mod._TrackedCancel(cancel, model = "org/M-GGUF", kind = "chat")
+    tracker.__enter__()
+    lease = SimpleNamespace(released = False)
+    lease.release = lambda: setattr(lease, "released", True)
+    try:
+        response = await inf_mod._openai_passthrough_stream_admitted(
+            _Request("/v1/chat/completions"),
+            cancel,
+            inf_mod.get_llama_cpp_backend(),
+            ChatCompletionRequest(messages = [ChatMessage(role = "user", content = "hi")], stream = True),
+            "org/M-GGUF",
+            "chatcmpl-1",
+            admission_lease = lease,
+            tracker = tracker,
+        )
+        return await _drain(response)
+    finally:
+        assert lease.released
+
+
 _ROUTES = [
     pytest.param(lambda: _completions(stream = True), "/v1/completions", id = "completions-stream"),
     pytest.param(lambda: _completions(stream = False), "/v1/completions", id = "completions"),
@@ -199,6 +221,7 @@ _ROUTES = [
     pytest.param(_responses_stream, "/v1/chat/completions", id = "responses-stream"),
     pytest.param(_messages_stream, "/v1/chat/completions", id = "messages-stream"),
     pytest.param(_messages, "/v1/chat/completions", id = "messages"),
+    pytest.param(_chat_stream, "/v1/chat/completions", id = "chat-stream"),
 ]
 
 
@@ -273,3 +296,152 @@ def test_a_post_on_a_client_the_cancel_closed_reports_the_cancel(monkeypatch):
 
     with pytest.raises(inf_mod._NonStreamingRequestCancelled):
         asyncio.run(run())
+
+
+class _BlockedRespawnBackend(_Backend):
+    def __init__(self):
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def _respawn_if_dead(self):
+        self.started.set()
+        try:
+            if not self.release.wait(timeout = 5):
+                raise RuntimeError("test did not release the reload")
+            return super()._respawn_if_dead()
+        finally:
+            self.finished.set()
+
+
+async def _until(predicate):
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(poll(), timeout = 1)
+
+
+_STREAM_ROUTES = [_ROUTES[i] for i in (0, 3, 4, 6)]
+
+
+@pytest.mark.parametrize("call,path", _STREAM_ROUTES)
+def test_streams_emit_keepalives_before_a_slow_reload_finishes(llama, monkeypatch, call, path):
+    backend = llama.backend = _BlockedRespawnBackend()
+    monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.02)
+    saw_keepalive = threading.Event()
+
+    async def drain(response):
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunk = chunk.decode() if isinstance(chunk, bytes) else chunk
+            chunks.append(chunk)
+            if backend.started.is_set() and chunk == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE:
+                assert not backend.finished.is_set()
+                saw_keepalive.set()
+        return "".join(chunks)
+
+    monkeypatch.setattr(sys.modules[__name__], "_drain", drain)
+
+    async def run():
+        task = asyncio.create_task(call())
+        try:
+            await _until(saw_keepalive.is_set)
+        finally:
+            backend.release.set()
+            body = await task
+        assert "33" in body
+
+    asyncio.run(run())
+    assert llama.calls == [
+        (f"{_DEAD}{path}", "Bearer before-crash"),
+        (f"{_FRESH}{path}", "Bearer after-crash"),
+    ]
+    assert active_generations.count() == 0
+
+
+@pytest.mark.parametrize("call,path", _ROUTES[:5] + [_ROUTES[6]])
+@pytest.mark.parametrize("cancel_kind", ["stop", "disconnect", "task"])
+def test_cancellation_releases_request_before_reload_finishes(
+    llama, monkeypatch, call, path, cancel_kind
+):
+    backend = llama.backend = _BlockedRespawnBackend()
+    disconnected = False
+    finishes = []
+    failures = []
+
+    async def is_disconnected(_request):
+        return disconnected
+
+    monkeypatch.setattr(_Request, "is_disconnected", is_disconnected)
+    monkeypatch.setattr(
+        inf_mod.api_monitor, "finish", lambda *args, **kwargs: finishes.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        inf_mod.api_monitor, "fail", lambda *args, **kwargs: failures.append((args, kwargs))
+    )
+
+    async def run():
+        nonlocal disconnected
+        task = asyncio.create_task(call())
+        try:
+            await _until(backend.started.is_set)
+            assert active_generations.count() > 0
+            if cancel_kind == "stop":
+                active_generations.cancel_all()
+            elif cancel_kind == "disconnect":
+                disconnected = True
+            else:
+                task.cancel()
+            await _until(task.done)
+            assert not backend.finished.is_set()
+            assert active_generations.count() == 0
+            assert inf_mod._direct_llama_inflight == 0
+            assert not failures
+            # Messages' bare stream helper leaves monitor completion to its caller.
+            if call is not _messages_stream:
+                assert any(args[1:] == ("cancelled",) for args, _kwargs in finishes)
+            try:
+                task.result()
+            except inf_mod.HTTPException as exc:
+                assert exc.status_code == 499
+            except asyncio.CancelledError:
+                assert cancel_kind == "task"
+        finally:
+            backend.release.set()
+            await asyncio.gather(task, return_exceptions = True)
+            await _until(backend.finished.is_set)
+            await _until(lambda: not inf_mod._LLAMA_RESPAWN_TASKS)
+
+    asyncio.run(run())
+    assert llama.calls == [(f"{_DEAD}{path}", "Bearer before-crash")]
+    assert backend.respawn_calls == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_cancel_at_reload_completion_does_not_send_a_retry(llama, monkeypatch, stream):
+    cancel = threading.Event()
+    respawn = llama.backend._respawn_if_dead
+
+    def finish_and_cancel():
+        recovered = respawn()
+        cancel.set()
+        return recovered
+
+    monkeypatch.setattr(llama.backend, "_respawn_if_dead", finish_and_cancel)
+
+    async def run():
+        upstream = inf_mod._LlamaUpstream(
+            llama.backend, "/v1/chat/completions", cancel_event = cancel
+        )
+        async with upstream:
+            if stream:
+                assert await upstream.send_stream(upstream.client, {}, cancel, None) is None
+            else:
+                with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+                    await upstream.post({}, timeout = 5)
+
+    asyncio.run(run())
+    assert len(llama.calls) == 1
+    assert llama.backend.respawn_calls == 1

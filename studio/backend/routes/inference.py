@@ -70,7 +70,14 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import (
+    AsyncExitStack,
+    ExitStack,
+    aclosing,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
@@ -3493,6 +3500,25 @@ def _discard_task_outcome(task: asyncio.Task) -> None:
         closing.add_done_callback(_LATE_CLOSE_TASKS.discard)
 
 
+async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    # Bounded: Request.is_disconnected() can swallow cancel(). The caller closes
+    # its client next; the callback closes any response produced after that. #7617
+    done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+    if not done:
+        task.add_done_callback(_discard_task_outcome)
+        return
+    try:
+        task_resp = task.result()
+        if task_resp is not None:
+            await task_resp.aclose()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 def _release_admission(admission_lease = None, tracker = None) -> None:
     """Give back the process-wide llama-server slot and the cancel-registry entry.
 
@@ -6116,6 +6142,11 @@ async def _passthrough_retry_url(
     return f"{llama_backend.base_url}{path}"
 
 
+# A request can leave during a reload. Retain its independent recovery task until
+# the backend's serialized worker finishes, and always retrieve its outcome.
+_LLAMA_RESPAWN_TASKS: set = set()
+
+
 class _LlamaUpstream:
     """One request's calls to the loaded llama-server, shared by every route that proxies to it.
 
@@ -6125,9 +6156,9 @@ class _LlamaUpstream:
     ``url`` and ``headers`` move together, at most once per request: a second lost connection
     after a successful relaunch is a real failure, not a stale port.
 
-    Streaming routes own their client and call ``send_stream``. Non-streaming routes use
-    ``async with``, which gives the request a client that a cancel or a client disconnect
-    closes, so a blocked POST ends at once instead of generating for nobody.
+    Streaming routes own their client and pump ``stream_response`` or ``dispatch_stream``.
+    Non-streaming routes use ``async with``, which gives the request a client that a Stop
+    or a disconnect closes, so a blocked POST ends at once instead of generating for nobody.
     """
 
     def __init__(
@@ -6156,12 +6187,35 @@ class _LlamaUpstream:
     def may_respawn(self, exc) -> bool:
         return not self._respawn_spent and _is_lost_upstream_connection(exc)
 
-    async def retarget_after_respawn(self, exc) -> bool:
-        """Relaunch a dead server and aim this request at it; False when ``exc`` stands."""
+    async def retarget_after_respawn(
+        self,
+        exc,
+        cancel_event = None,
+        request = None,
+    ) -> Optional[bool]:
+        """Relaunch and retarget; False when ``exc`` stands, None when the caller cancels."""
         if not self.may_respawn(exc):
             return False
+        if cancel_event is None:
+            cancel_event = self.cancel_event
+        if request is None:
+            request = self._request
+        if await _preheader_cancelled(cancel_event, request):
+            return None
         self._respawn_spent = True
-        url = await _passthrough_retry_url(self._backend, exc, self._path)
+        recovery = asyncio.create_task(_passthrough_retry_url(self._backend, exc, self._path))
+        _LLAMA_RESPAWN_TASKS.add(recovery)
+        recovery.add_done_callback(_LLAMA_RESPAWN_TASKS.discard)
+        recovery.add_done_callback(_discard_task_outcome)
+        # Do not await the worker directly: cancelling this request must not cancel
+        # the independent backend reload or hold the request's registrations until it ends.
+        while True:
+            if await _preheader_cancelled(cancel_event, request):
+                return None
+            if recovery.done():
+                break
+            await asyncio.wait({recovery}, timeout = _STREAM_DISCONNECT_POLL_TIMEOUT_S)
+        url = recovery.result()
         if url is None:
             return False
         self.url = url
@@ -6172,14 +6226,28 @@ class _LlamaUpstream:
         return client.build_request("POST", self.url, json = body, headers = self.headers)
 
     def dispatch_stream(self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs):
-        """``send_stream`` without the retry, as a task, for a caller that pumps keepalives
-        while it waits and calls ``retarget_after_respawn`` itself."""
-        self.first_token_deadline = start_first_token_wait(_first_token_timeout_s())
-        return asyncio.create_task(
-            _send_stream_with_preheader_cancel(
-                client, self.build_request(client, body), cancel_event, request = request, **kwargs
-            )
-        )
+        """Open and recover as one task, so callers can pump keepalives throughout."""
+        return asyncio.create_task(self.send_stream(client, body, cancel_event, request, **kwargs))
+
+    async def stream_response(self, client: httpx.AsyncClient, body, cancel_event, request):
+        """Yield heartbeat sentinels during recovery, then the response (None on cancel).
+
+        The route serializes the heartbeat for its protocol and owns the response.
+        Close this iterator before the client when the route exits early.
+        """
+        send_task = self.dispatch_stream(client, body, cancel_event, request)
+        try:
+            while not send_task.done():
+                done, _ = await asyncio.wait(
+                    {send_task}, timeout = _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
+                )
+                if not done and self._respawn_spent:
+                    yield _LLAMA_STREAM_KEEPALIVE
+            resp = send_task.result()
+            send_task = None  # The route now owns the response and closes it.
+            yield resp
+        finally:
+            await _aclose_send_task(send_task)
 
     async def send_stream(
         self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs
@@ -6197,7 +6265,12 @@ class _LlamaUpstream:
                     **kwargs,
                 )
             except httpx.RequestError as exc:
-                if not await self.retarget_after_respawn(exc):
+                recovered = await self.retarget_after_respawn(exc, cancel_event, request)
+                if recovered is None:
+                    from core.inference.llama_keepwarm import mark_response_failed
+                    mark_response_failed(getattr(request, "scope", None))
+                    return None
+                if not recovered:
                     raise
 
     async def __aenter__(self):
@@ -6237,14 +6310,19 @@ class _LlamaUpstream:
         """POST inside ``async with``. A cancel raises ``_NonStreamingRequestCancelled``, not
         the transport error the closed client caused. ``path`` reaches a sibling endpoint."""
         while True:
+            _raise_if_nonstreaming_request_cancelled(self.cancel_event)
             url = self.url if path is None else f"{self._backend.base_url}{path}"
             try:
                 resp = await self.client.post(url, json = body, headers = self.headers, timeout = timeout)
             # RuntimeError: a POST sent after the watcher already closed the client.
             except (httpx.RequestError, RuntimeError) as exc:
                 _raise_if_nonstreaming_request_cancelled(self.cancel_event)
-                if isinstance(exc, httpx.RequestError) and await self.retarget_after_respawn(exc):
-                    continue
+                if isinstance(exc, httpx.RequestError):
+                    recovered = await self.retarget_after_respawn(exc)
+                    if recovered is None:
+                        raise _NonStreamingRequestCancelled("Request cancelled.") from exc
+                    if recovered:
+                        continue
                 raise
             _raise_if_nonstreaming_request_cancelled(self.cancel_event)
             return resp
@@ -40649,7 +40727,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
                 upstream = _LlamaUpstream(llama_backend, "/v1/completions")
-                resp = await upstream.send_stream(client, upstream_body, disconnect_event, request)
+                async with aclosing(
+                    upstream.stream_response(client, upstream_body, disconnect_event, request)
+                ) as opening:
+                    async for opened in opening:
+                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                        else:
+                            resp = opened
                 first_token_deadline = upstream.first_token_deadline
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
@@ -43759,7 +43844,14 @@ async def _responses_stream(
                 try:
                     # Same event the loop below polls: prefill can run for the whole first-token window,
                     # and only the send watcher can end it early.
-                    resp = await llama_upstream.send_stream(client, body, disconnect_event, request)
+                    async with aclosing(
+                        llama_upstream.stream_response(client, body, disconnect_event, request)
+                    ) as opening:
+                        async for opened in opening:
+                            if opened is _LLAMA_STREAM_KEEPALIVE:
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            else:
+                                resp = opened
                     first_token_deadline = llama_upstream.first_token_deadline
                     if resp is None:
                         api_monitor.finish(monitor_id, "cancelled")
@@ -48891,7 +48983,14 @@ async def _anthropic_passthrough_stream(
         disconnect_watcher = None
         try:
             upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
-            resp = await upstream.send_stream(client, body, cancel_event, request)
+            async with aclosing(
+                upstream.stream_response(client, body, cancel_event, request)
+            ) as opening:
+                async for opened in opening:
+                    if opened is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    else:
+                        resp = opened
             first_token_deadline = upstream.first_token_deadline
             if resp is None:
                 return
@@ -50074,28 +50173,6 @@ async def _openai_passthrough_stream_admitted(
     resp = None
     send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
 
-    async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
-        # Bounded: the send polls Request.is_disconnected() before dispatch, which can
-        # swallow cancel(). Abandoning it is safe because the caller closes the per-request
-        # client right after, tearing down whatever response it later produces. #7617
-        done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
-        if not done:
-            task.add_done_callback(_discard_task_outcome)
-            return
-        try:
-            task_resp = task.result()
-            if task_resp is not None:
-                try:
-                    await task_resp.aclose()
-                except Exception:
-                    pass
-        except (asyncio.CancelledError, Exception):
-            pass
-
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         body = await _build_openai_passthrough_body_async(
@@ -50168,19 +50245,6 @@ async def _openai_passthrough_stream_admitted(
                 resp = await send_task
                 send_task = None
             except httpx.RequestError as e:
-                # llama-server subprocess crashed / starting / unreachable. Nothing has
-                # streamed yet, so a respawned server can be retried without duplicating output.
-                if await upstream.retarget_after_respawn(e):
-                    closed = False
-                    try:
-                        await _aclose_send_task(send_task)
-                        closed = True
-                    finally:
-                        # Only a retry that is actually going upstream keeps the slot.
-                        if not closed:
-                            _release_admission(admission_lease, _tracker)
-                    send_task = None
-                    continue
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Nested so a cancel inside _aclose_send_task's wait cannot skip the closes.
@@ -50446,56 +50510,6 @@ async def _openai_passthrough_stream_admitted(
                             try:
                                 resp = send_task.result()
                             except httpx.RequestError as e:
-                                # A crash while the request sat queued or prefilling lands
-                                # here, not in the pre-header handler: the 100 ms status
-                                # window closed long ago. Only SSE comments have been
-                                # emitted, so the same one-shot, connection-failure-only
-                                # recovery applies without duplicating model output.
-                                if upstream.may_respawn(e):
-                                    # The respawn replays a full load_model, which for a large
-                                    # GGUF outlasts by minutes the five second silence this
-                                    # very loop already treats as too long for a committed SSE
-                                    # response. Awaiting it inline would stop both keepalives
-                                    # and disconnect polling for the whole reload, so the
-                                    # client or proxy can drop the stream before the recovered
-                                    # request is ever submitted. Pump the same loop instead.
-                                    retry_task = asyncio.create_task(
-                                        upstream.retarget_after_respawn(e)
-                                    )
-                                    respawn_cancelled = False
-                                    last_keepalive_at = time.monotonic()
-                                    while not retry_task.done():
-                                        done, _ = await asyncio.wait(
-                                            {retry_task},
-                                            timeout = min(
-                                                _STREAM_DISCONNECT_POLL_TIMEOUT_S,
-                                                _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
-                                            ),
-                                            return_when = asyncio.FIRST_COMPLETED,
-                                        )
-                                        if retry_task in done:
-                                            break
-                                        if await _preheader_cancelled(cancel_event, request):
-                                            respawn_cancelled = True
-                                            break
-                                        now = time.monotonic()
-                                        if (
-                                            now - last_keepalive_at
-                                            >= _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
-                                        ):
-                                            last_keepalive_at = now
-                                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                    if respawn_cancelled:
-                                        # The reload runs in a worker thread that cancel()
-                                        # cannot interrupt, and it is serialised and
-                                        # idempotent, so let it finish and drop its URL
-                                        # rather than leave the outcome unretrieved.
-                                        retry_task.add_done_callback(_discard_task_outcome)
-                                        api_monitor.finish(monitor_id, "cancelled")
-                                        return
-                                    if retry_task.result():
-                                        send_task = _dispatch()
-                                        continue
                                 logger.error(
                                     "openai passthrough stream: upstream unreachable: %s", e
                                 )
