@@ -59,11 +59,20 @@ _HEADS = dict(num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16)
 CONFIGS = {
     "llama": ("llama", {**_SMALL, **_HEADS}),
     # GPT-J: parallel attention + MLP, fc_in / fc_out, partial rotary
-    "gptj": ("gptj", dict(vocab_size = 512, n_embd = 64, n_layer = 4, n_head = 4, rotary_dim = 8, n_inner = 128)),
+    "gptj": (
+        "gptj",
+        dict(vocab_size = 512, n_embd = 64, n_layer = 4, n_head = 4, rotary_dim = 8, n_inner = 128),
+    ),
     # per-head query_layernorm / key_layernorm
     "hunyuan_v1_dense": (
         "hunyuan_v1_dense",
-        {**_SMALL, **_HEADS, "use_qk_norm": True, "attention_dropout": 0.0, "tie_word_embeddings": False},
+        {
+            **_SMALL,
+            **_HEADS,
+            "use_qk_norm": True,
+            "attention_dropout": 0.0,
+            "tie_word_embeddings": False,
+        },
     ),
     # short-conv layers (replicated) between attention layers with q_layernorm / k_layernorm
     "lfm2": (
@@ -92,13 +101,25 @@ CONFIGS = {
         },
     ),
     # attention output reshaped with self.embed_dim / the input width
-    "xglm": ("xglm", dict(vocab_size = 512, d_model = 64, ffn_dim = 128, num_layers = 4, attention_heads = 4)),
+    "xglm": (
+        "xglm",
+        dict(vocab_size = 512, d_model = 64, ffn_dim = 128, num_layers = 4, attention_heads = 4),
+    ),
     "trocr": (
         "trocr",
-        dict(vocab_size = 512, d_model = 64, decoder_layers = 4, decoder_attention_heads = 4, decoder_ffn_dim = 128),
+        dict(
+            vocab_size = 512,
+            d_model = 64,
+            decoder_layers = 4,
+            decoder_attention_heads = 4,
+            decoder_ffn_dim = 128,
+        ),
     ),
     # fused qkv_proj in mp_num groups, not [q, k, v] blocks
-    "codegen": ("codegen", dict(vocab_size = 512, n_embd = 64, n_layer = 4, n_head = 4, rotary_dim = 8, n_inner = 128)),
+    "codegen": (
+        "codegen",
+        dict(vocab_size = 512, n_embd = 64, n_layer = 4, n_head = 4, rotary_dim = 8, n_inner = 128),
+    ),
     # learned position tables before the layers
     "gpt2": ("gpt2", dict(vocab_size = 512, n_embd = 64, n_layer = 4, n_head = 4, n_inner = 128)),
     "opt": (
@@ -136,7 +157,12 @@ def _zero_dropout(config):
             setattr(config, key, 0.0)
 
 
-def build(arch, lora = True, seed = 0, share = None):
+def build(
+    arch,
+    lora = True,
+    seed = 0,
+    share = None,
+):
     from transformers import AutoModelForCausalLM
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
@@ -157,7 +183,9 @@ def build(arch, lora = True, seed = 0, share = None):
                 p.normal_(0, 0.1)
             elif "norm" in name and p.ndim == 1:
                 p.add_(torch.randn_like(p) * 0.1)
-    if share is not None:  # layers[j] is layers[i]: a block reused by several layers (Zamba2 / ALBERT style)
+    if (
+        share is not None
+    ):  # layers[j] is layers[i]: a block reused by several layers (Zamba2 / ALBERT style)
         i, j = share
         layers = tpn._decoder_layers(model)[1]
         layers[j] = layers[i]
@@ -166,11 +194,17 @@ def build(arch, lora = True, seed = 0, share = None):
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(seed + 1)
-    kw = dict(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0)
+    kw = dict(
+        r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
+    )
     return get_peft_model(model, LoraConfig(**kw)).train()
 
 
-def batch(model, bsz = 4, seq = 8):
+def batch(
+    model,
+    bsz = 4,
+    seq = 8,
+):
     g = torch.Generator().manual_seed(1)
     ids = torch.randint(0, 500, (bsz, seq), generator = g)
     labels = ids.clone()
@@ -188,7 +222,12 @@ def _clip_fp64(params, max_norm):
     return float(total)
 
 
-def _reference(model, ids, labels, steps = 2):
+def _reference(
+    model,
+    ids,
+    labels,
+    steps = 2,
+):
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr = 1e-2, foreach = False)
     losses, norms, grads = [], [], None
@@ -196,7 +235,11 @@ def _reference(model, ids, labels, steps = 2):
         out = model(input_ids = ids, labels = labels, use_cache = False)
         out.loss.backward()
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
         norms.append(_clip_fp64(params, 1.0))
         opt.step()
         opt.zero_grad(set_to_none = True)
@@ -207,7 +250,10 @@ def _reference(model, ids, labels, steps = 2):
 def _fingerprint(model):
     """Everything a refusal must leave as it was."""
     return {
-        "params": {n: (type(p).__name__, p.detach().clone(), p.requires_grad) for n, p in model.named_parameters()},
+        "params": {
+            n: (type(p).__name__, p.detach().clone(), p.requires_grad)
+            for n, p in model.named_parameters()
+        },
         "modules": [(n, type(m).__name__) for n, m in model.named_modules()],
         "marks": sorted(
             (n, k)
@@ -238,13 +284,22 @@ def _refusal(apply, model):
     except ValueError as e:
         return {"error": str(e), "unchanged": _unchanged(before, _fingerprint(model))}
     except Exception as e:
-        return {"error": f"crash {type(e).__name__}: {e}", "unchanged": _unchanged(before, _fingerprint(model))}
+        return {
+            "error": f"crash {type(e).__name__}: {e}",
+            "unchanged": _unchanged(before, _fingerprint(model)),
+        }
     return {"error": None, "unchanged": None}
 
 
 # ---------------------------------------------------------------------------------------------- cases
 
-TP_PASS = {"gptj": None, "hunyuan_v1_dense": None, "lfm2": None, "apertus": None, "llama_shared": (0, 1)}
+TP_PASS = {
+    "gptj": None,
+    "hunyuan_v1_dense": None,
+    "lfm2": None,
+    "apertus": None,
+    "llama_shared": (0, 1),
+}
 TP_REFUSE = {
     "gemma3n_text": "reduces over its features",
     "xglm": "the global width",
@@ -261,7 +316,9 @@ def _case_tp(rank, world, tmp):
     for name, share in TP_PASS.items():
         try:
             out[name] = _tp_parity(mesh, name.replace("_shared", ""), share)
-        except Exception as e:  # recorded per architecture: one failing case must not hide the others
+        except (
+            Exception
+        ) as e:  # recorded per architecture: one failing case must not hide the others
             out[name] = {"crash": f"{type(e).__name__}: {e}"}
     for arch in TP_REFUSE:
         out[arch] = _refusal(lambda m: tpn.apply_tensor_parallel(m, mesh), build(arch))
@@ -315,7 +372,9 @@ def _case_pp(rank, world, tmp):
             out[arch] = {"crash": f"{type(e).__name__}: {e}"}
     for name, (arch, share, _) in PP_REFUSE.items():
         model = build(arch, share = share)
-        out[name] = _refusal(lambda m: ppn.apply_pipeline_parallel(m, mesh, n_microbatches = 2), model)
+        out[name] = _refusal(
+            lambda m: ppn.apply_pipeline_parallel(m, mesh, n_microbatches = 2), model
+        )
     return out
 
 
@@ -330,7 +389,11 @@ def _pp_parity(mesh, arch):
     for step in range(2):
         loss = pp.step(ids, labels)
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
         norms.append(float(pp.clip_grad_norm_(1.0)))
         opt.step()
         opt.zero_grad(set_to_none = True)
@@ -348,7 +411,9 @@ def _import_checkout_unsloth():
         del sys.modules[name]
     sys.path.insert(0, REPO)
     try:
-        spec = importlib.util.spec_from_file_location("_pg_conftest", os.path.join(REPO, "tests", "conftest.py"))
+        spec = importlib.util.spec_from_file_location(
+            "_pg_conftest", os.path.join(REPO, "tests", "conftest.py")
+        )
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
         import unsloth  # noqa: F401
     except Exception as e:  # a CPU host that refuses `import unsloth`
@@ -390,33 +455,50 @@ def _case_clip(rank, world, tmp):
     out = {}
     for name, clip in (
         ("tp_clip_grad_norm_", lambda: tpn.tp_clip_grad_norm_(params, 1e-3)),
-        ("_clip_over_world", lambda: tpn._clip_over_world([p for p in params if p.grad is not None], 1e-3, 1e-6)),
+        (
+            "_clip_over_world",
+            lambda: tpn._clip_over_world([p for p in params if p.grad is not None], 1e-3, 1e-6),
+        ),
         ("no_clip", lambda: tpn.tp_clip_grad_norm_(params, 1e9)),
     ):
         model.zero_grad(set_to_none = True)
         model(input_ids = ids, labels = labels, use_cache = False).loss.backward()
-        before = {n: tpn._full(p.grad, p).clone() for n, p in model.named_parameters() if p.grad is not None}
+        before = {
+            n: tpn._full(p.grad, p).clone()
+            for n, p in model.named_parameters()
+            if p.grad is not None
+        }
         try:
             with _no_host_sync():
                 norm = clip()
             error = None
         except AssertionError as e:
             norm, error = None, str(e)
-        after = {n: tpn._full(p.grad, p).clone() for n, p in model.named_parameters() if p.grad is not None}
+        after = {
+            n: tpn._full(p.grad, p).clone()
+            for n, p in model.named_parameters()
+            if p.grad is not None
+        }
         total = float(torch.stack([g.double().square().sum() for g in after.values()]).sum().sqrt())
         out[name] = {
             "error": error,
             "is_tensor": isinstance(norm, torch.Tensor),
             "norm": None if norm is None else float(norm),
-            "before": float(torch.stack([g.double().square().sum() for g in before.values()]).sum().sqrt()),
+            "before": float(
+                torch.stack([g.double().square().sum() for g in before.values()]).sum().sqrt()
+            ),
             "after": total,
             "unchanged": all(torch.equal(before[k], after[k]) for k in before),
         }
     return out
 
 
-EXPORTS = ("unsloth_save_model", "unsloth_save_model:lora", "unsloth_generic_save_pretrained_merged",
-           "unsloth_save_pretrained_merged")
+EXPORTS = (
+    "unsloth_save_model",
+    "unsloth_save_model:lora",
+    "unsloth_generic_save_pretrained_merged",
+    "unsloth_save_pretrained_merged",
+)
 
 
 def _case_export(rank, world, tmp):
@@ -437,12 +519,19 @@ def _case_export(rank, world, tmp):
     pp_model = build("llama")
     pp_native.apply_pipeline_parallel(pp_model, mesh, n_microbatches = 2)
     calls = {
-        "unsloth_save_model": lambda m, d: save.unsloth_save_model(m, None, d, save_method = "merged_16bit"),
-        "unsloth_save_model:lora": lambda m, d: save.unsloth_save_model(m, None, d, save_method = "lora"),
-        "unsloth_generic_save_pretrained_merged": lambda m, d: save.unsloth_generic_save_pretrained_merged(
+        "unsloth_save_model": lambda m, d: save.unsloth_save_model(
+            m, None, d, save_method = "merged_16bit"
+        ),
+        "unsloth_save_model:lora": lambda m, d: save.unsloth_save_model(
+            m, None, d, save_method = "lora"
+        ),
+        "unsloth_generic_save_pretrained_merged": lambda m,
+        d: save.unsloth_generic_save_pretrained_merged(
             m, d, tokenizer = None, save_method = "merged_16bit"
         ),
-        "unsloth_save_pretrained_merged": lambda m, d: save.unsloth_save_pretrained_merged(m, d, tokenizer = None),
+        "unsloth_save_pretrained_merged": lambda m, d: save.unsloth_save_pretrained_merged(
+            m, d, tokenizer = None
+        ),
     }
     out = {}
     for kind, model in (("tp", tp_model), ("pp", pp_model)):
@@ -475,7 +564,9 @@ def _worker(rank, world, port, case, tmp):
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
+    )
     try:
         torch.save(CASES[case](rank, world, tmp), os.path.join(tmp, f"result_{rank}.pt"))
     finally:
@@ -492,14 +583,19 @@ def _spawn(case, world = 2):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        procs = [ctx.Process(target = _worker, args = (r, world, port, case, tmp)) for r in range(world)]
+        procs = [
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp)) for r in range(world)
+        ]
         for p in procs:
             p.start()
         for p in procs:
             p.join(600)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        return [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
 
 
 _SPAWNED = {}
@@ -515,17 +611,27 @@ def _close(a, b, rtol):
     return abs(a - b) <= 1e-6 + rtol * abs(b)
 
 
-def _check_run(run, ref, name, union = None):
+def _check_run(
+    run,
+    ref,
+    name,
+    union = None,
+):
     # step 0 at 1e-4; step 1 norms at 1e-3 (after an AdamW step, near-zero grads flip update signs)
     for i, (a, b) in enumerate(zip(run["losses"], ref["losses"])):
         assert _close(a, b, 1e-4), (name, "loss", i, a, b)
     for i, (a, b) in enumerate(zip(run["norms"], ref["norms"])):
         assert _close(a, b, 1e-4 if i == 0 else 1e-3), (name, "grad norm", i, a, b)
     if union is None:
-        assert set(run["grads"]) == set(ref["grads"]), (name, sorted(set(run["grads"]) ^ set(ref["grads"]))[:4])
+        assert set(run["grads"]) == set(ref["grads"]), (
+            name,
+            sorted(set(run["grads"]) ^ set(ref["grads"]))[:4],
+        )
     for key, g in run["grads"].items():
         r = ref["grads"][key]
-        atol = max(1e-7, 1e-4 * float(r.abs().max()))  # fp32 reduction order: ~1e-6..1e-5 of the max
+        atol = max(
+            1e-7, 1e-4 * float(r.abs().max())
+        )  # fp32 reduction order: ~1e-6..1e-5 of the max
         torch.testing.assert_close(g, r, rtol = 1e-4, atol = atol, msg = f"{name}: {key}")
 
 
@@ -590,7 +696,9 @@ def test_tp_clip_has_no_host_sync(name):
         assert r["error"] is None and r["is_tensor"], r
         assert r["norm"] == pytest.approx(r["before"], rel = 1e-5), r
         if name == "no_clip":
-            assert r["unchanged"], r  # a coefficient clamped at 1 leaves the grads bitwise unchanged
+            assert r[
+                "unchanged"
+            ], r  # a coefficient clamped at 1 leaves the grads bitwise unchanged
         else:
             assert r["after"] == pytest.approx(1e-3, rel = 1e-4), r
 
@@ -618,7 +726,11 @@ def test_every_whole_model_export_is_guarded():
     for node in ast.walk(functions["patch_saving_functions"]):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_bind_saving_method":
             bound.add(node.args[0].id)
-    adapter_or_tokenizer = {"unsloth_model_save_pretrained", "unsloth_push_to_hub", "unsloth_tokenizer_save_pretrained"}
+    adapter_or_tokenizer = {
+        "unsloth_model_save_pretrained",
+        "unsloth_push_to_hub",
+        "unsloth_tokenizer_save_pretrained",
+    }
     writers = {
         "unsloth_save_model",
         "unsloth_generic_save",
@@ -635,8 +747,13 @@ def test_every_whole_model_export_is_guarded():
     assert len(targets) >= 18, sorted(targets)
     unguarded = []
     for name in sorted(targets):
-        decorators = functions[name].decorator_list  # bound inside patch_saving_functions: defined at module level
+        decorators = functions[
+            name
+        ].decorator_list  # bound inside patch_saving_functions: defined at module level
         first = decorators[0] if decorators else None
-        if not (isinstance(first, ast.Call) and getattr(first.func, "id", None) == "_model_parallel_refuses_save"):
+        if not (
+            isinstance(first, ast.Call)
+            and getattr(first.func, "id", None) == "_model_parallel_refuses_save"
+        ):
             unguarded.append(name)
     assert not unguarded, unguarded
