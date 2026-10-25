@@ -2035,6 +2035,18 @@ def tp_trainer_setup(
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
     for name in ("evaluate", "predict"):
         trainer.__dict__[name] = _refuse_tp_trainer_call(name)
+    create_optimizer = trainer.create_optimizer
+
+    def create_optimizer_tp(*args, **kwargs):
+        # A trainable outside the tp regions (modules_to_save) is a plain tensor next to the LoRA DTensors:
+        # foreach / fused kernels take one kind per group. Split before create_scheduler records the groups.
+        optimizer = create_optimizer(*args, **kwargs)
+        from .fsdp2_native import _inner_optimizer, _split_mixed_param_groups
+
+        _split_mixed_param_groups(_inner_optimizer(optimizer))
+        return optimizer
+
+    trainer.__dict__["create_optimizer"] = create_optimizer_tp
     train = trainer.train
 
     def train_tp(*args, **kwargs):

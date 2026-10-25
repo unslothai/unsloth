@@ -650,7 +650,7 @@ def _trainer_args(tmp, bs, **overrides):
     return transformers.TrainingArguments(**kwargs)
 
 
-def _case_trainer(rank, world, tmp, dp, tp):
+def _case_trainer(rank, world, tmp, dp, tp, lora_kwargs = None):
     """The HF Trainer on a tp (dp = 1) or dp x tp (shard_model over mesh['dp']) model; tp = 1: the 1-process
     reference with a dp times larger batch. Sequential batches, so both read the same rows per step."""
     import torch.distributed as dist
@@ -675,7 +675,7 @@ def _case_trainer(rank, world, tmp, dp, tp):
             seen.append(inputs["input_ids"].clone())
             return super().compute_loss(model, inputs, *args, **kwargs)
 
-    model = build(LLAMA)
+    model = build(LLAMA, **(lora_kwargs or {}))
     data = _Rows(list(_batch(model, bsz = 12 * dp, seq = 9)))
     refusals = {}
     if tp > 1:
@@ -729,6 +729,7 @@ def _case_trainer(rank, world, tmp, dp, tp):
         else None,
         "wrapped": wrapped,
         "refusals": refusals,
+        "mixed_groups": fsdp2_native._mixed_param_groups(trainer.optimizer),
     }
 
 
@@ -1106,6 +1107,17 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
 def test_tp_x_fsdp2_refuses_trainable_head_norms():
     for res in _spawn("tp_fsdp2_trainable_norms", 4):
         assert res["error"] and "trainable per-head norms" in res["error"], res
+
+
+def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
+    # modules_to_save lm_head: a plain trainable next to the LoRA DTensors (foreach / fused take one kind).
+    kw = {"modules_to_save": ["lm_head"]}
+    ref = _spawn("trainer", 1, dp = 1, tp = 1, lora_kwargs = kw)[0]
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    for rank, res in enumerate(_spawn("trainer", 2, dp = 1, tp = 2, lora_kwargs = kw)):
+        assert res["mixed_groups"] == 0, rank
+        assert res["losses"] == pytest.approx(ref["losses"], rel = 1e-5), (rank, res["losses"], ref["losses"])
 
 
 @pytest.mark.parametrize("dp,tp", [(1, 2), (2, 2)])
