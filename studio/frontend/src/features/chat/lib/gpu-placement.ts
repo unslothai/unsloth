@@ -6,10 +6,26 @@
 // Manual-mode gpu_layers sentinel: -1 = Auto, letting llama.cpp --fit size layers and context.
 export const GPU_LAYERS_AUTO = -1;
 
+/** Why an automatic GGUF load runs on the CPU (`cpu_fallback_reason`); every reason is the same
+ *  CPU replay. Here, not in types/api.ts, because this module stays import-free for node:test. */
+export const CPU_FALLBACK_REASONS = [
+  "vulkan_startup_crash",
+  "vulkan_no_device",
+  "vulkan_startup_stall",
+] as const;
+
+export type CpuFallbackReason = (typeof CPU_FALLBACK_REASONS)[number];
+
+export function isCpuFallbackReason(
+  value: unknown,
+): value is CpuFallbackReason {
+  return (CPU_FALLBACK_REASONS as readonly unknown[]).includes(value);
+}
+
 export function shouldHydrateGpuPlacementControls(
-  cpuFallbackReason: "vulkan_startup_crash" | null | undefined,
+  cpuFallbackReason: CpuFallbackReason | null | undefined,
 ): boolean {
-  return cpuFallbackReason !== "vulkan_startup_crash";
+  return !isCpuFallbackReason(cpuFallbackReason);
 }
 
 /** A diffusion pane never inherits the shared snapshot: a leaked layer count masks devices. */

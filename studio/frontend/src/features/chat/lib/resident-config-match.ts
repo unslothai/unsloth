@@ -20,6 +20,7 @@ import {
 } from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
+import { isCpuFallbackReason } from "./gpu-placement";
 
 type ResidentRuntime = Pick<
   InferenceStatusResponse,
@@ -499,13 +500,16 @@ function diffusionManualNgl(
     : null;
 }
 
-/** Mirrors `_cpu_fallback_request_eligible` minus its environment terms. */
+/** Whether the backend would rewrite this request into the resident CPU fallback.
+ *  `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after any
+ *  Vulkan CPU fallback an Auto request becomes the resident manual/zero-layer intent and
+ *  dedupes. Mirrors `_cpu_fallback_request_eligible` minus its environment terms. */
 function cpuFallbackPlacementPreserved(
   config: PerModelConfig,
   status: ResidentRuntime,
   standing: StandingConfigDefaults,
 ): boolean {
-  if (status.cpu_fallback_reason !== "vulkan_startup_crash") {
+  if (!isCpuFallbackReason(status.cpu_fallback_reason)) {
     return false;
   }
   const mode = config.gpuMemoryMode ?? standing.gpuMemoryMode;

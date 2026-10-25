@@ -4,8 +4,9 @@
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
+import type { CpuFallbackReason } from "../lib/gpu-placement";
 
-export type CpuFallbackReason = "vulkan_startup_crash";
+export type { CpuFallbackReason };
 
 export type MmprojFallbackReason =
   | "cpu_offload"

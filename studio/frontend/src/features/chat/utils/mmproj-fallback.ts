@@ -7,6 +7,23 @@ import type { CpuFallbackReason, MmprojFallbackReason } from "../types/api";
 export const CPU_FALLBACK_MESSAGE =
   "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session.";
 
+const CPU_FALLBACK_MESSAGES: Record<CpuFallbackReason, string> = {
+  vulkan_startup_crash: CPU_FALLBACK_MESSAGE,
+  vulkan_no_device:
+    "No usable Vulkan GPU was found, so this model runs on the CPU. Generation will be slower than on a GPU.",
+  vulkan_startup_stall:
+    "The auto-selected Vulkan backend stopped responding during startup, so GPU acceleration is disabled for this model session.",
+};
+
+/** The sentence for a CPU fallback reason, or null for one this build does not know. */
+export function cpuFallbackMessage(
+  reason: string | null | undefined,
+): string | null {
+  return reason && Object.hasOwn(CPU_FALLBACK_MESSAGES, reason)
+    ? CPU_FALLBACK_MESSAGES[reason as CpuFallbackReason]
+    : null;
+}
+
 const MMPROJ_FALLBACK_MESSAGES: Record<MmprojFallbackReason, string> = {
   // Three causes lead here (predicted no-fit, GPU alloc failure, crash), so name only the outcome.
   cpu_offload:
@@ -70,7 +87,7 @@ export function loadFallbackNotice(
 
   const parts: string[] = [];
   if (cpuFallbackReason) {
-    parts.push(CPU_FALLBACK_MESSAGE);
+    parts.push(cpuFallbackMessage(cpuFallbackReason) ?? CPU_FALLBACK_MESSAGE);
   }
   if (offload) {
     parts.push(offload.description);

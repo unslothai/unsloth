@@ -115,6 +115,29 @@ test("the selected backend stays listed even when it stops being installable", (
   );
 });
 
+test("a selection with no options left is still listed, not rendered blank", () => {
+  // No options while resolution is pending or failed, or a job runs: the recorded choice
+  // still needs an item, and automatic names what the install runs on.
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    backend: "vulkan",
+    options: [],
+  });
+
+  const [auto] = visibleLlamaBackendOptions(status, "auto");
+  assert.equal(auto.backend, "auto");
+  assert.equal(auto.available, false);
+  assert.equal(auto.resolvedBackend, "vulkan");
+  assert.deepEqual(
+    visibleLlamaBackendOptions(status, "cpu").map((option) => [
+      option.backend,
+      option.resolvedBackend,
+    ]),
+    [["cpu", null]],
+  );
+  assert.equal(visibleLlamaBackendOptions(null, "auto").length, 0);
+});
+
 test("automatic can be applied again when it now resolves differently", () => {
   const status = parseLlamaBackendStatus({
     ...FULL_PAYLOAD,
