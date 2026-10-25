@@ -264,7 +264,7 @@ def test_moe_detection():
 
 
 def test_trainer_wires_the_choice():
-    src = (ROOT / "unsloth" / "trainer.py").read_text()
+    src = (ROOT / "unsloth" / "trainer.py").read_text(encoding = "utf-8")
     assert "_auto_padding_choice(" in src
     assert "from unsloth.utils.padding_choice import decide_auto_padding_free" in src
 
