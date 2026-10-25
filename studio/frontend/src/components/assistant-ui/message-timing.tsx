@@ -19,6 +19,27 @@ const formatNumber = (n: number): string => {
   return n.toLocaleString();
 };
 
+/** A user stop wins over the stream's last finish_reason. */
+function stopReasonLabel(
+  finishReason: unknown,
+  incompleteReason?: unknown,
+): string | null {
+  if (incompleteReason === "cancelled") return "Stopped by you";
+  switch (finishReason) {
+    case "stop":
+      return "End of turn";
+    case "length":
+      return "Length limit";
+    case "tool_calls":
+    case "function_call":
+      return "Tool call";
+    case "content_filter":
+      return "Content filter";
+    default:
+      return typeof finishReason === "string" && finishReason ? finishReason : null;
+  }
+}
+
 const formatRate = (r: number | undefined): string => {
   if (r === undefined || !Number.isFinite(r)) return "—";
   return `${Math.round(r).toLocaleString()} tok/s`;
@@ -48,9 +69,18 @@ export const MessageTiming: FC<{
           cachedTokens?: number;
           cacheWriteTokens?: number;
         };
+        stopReason?: unknown;
+        incomplete?: { reason?: unknown };
       }
     | undefined;
   const st = custom?.serverTimings;
+  const stopReason = stopReasonLabel(custom?.stopReason, custom?.incomplete?.reason);
+  const draftN = st?.draft_n ?? 0;
+  const draftAccepted = st?.draft_n_accepted;
+  const draftText =
+    draftN > 0 && typeof draftAccepted === "number" && Number.isFinite(draftAccepted)
+      ? `${formatNumber(draftAccepted)} / ${formatNumber(draftN)} (${Math.round((draftAccepted / draftN) * 100)}%)`
+      : null;
   // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
   // contextUsage.cachedTokens from a prior turn.
   const cacheHits =
@@ -239,6 +269,12 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
+              {draftText !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Draft accepted</span>
+                  <span className="font-mono tabular-nums">{draftText}</span>
+                </div>
+              )}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>
@@ -292,6 +328,12 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
             )
           ) : (
@@ -333,6 +375,12 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
           )}
         </div>

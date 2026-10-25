@@ -152,14 +152,7 @@ def test_build_dataset_download_leaves_no_temp_file_when_export_fails(tmp_path: 
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("export blew up")),
     )
 
-    # A private system temp dir, not the shared one. The claim is "the failed export unlinked
-    # what it created", and reading that off $TMPDIR made it a claim about the whole box: the
-    # siblings in this file each leave a NamedTemporaryFile(suffix = ".jsonl") in flight until
-    # their own finally runs, and CI shards this suite with `-n 4 --dist loadgroup`, so a
-    # sibling on another worker could put a .jsonl there between the two reads and fail this
-    # test for something it does not measure. Pointing tempfile.tempdir at a directory only
-    # this test can reach makes the reading exact instead of merely usually-quiet, and lets
-    # the assertion be "nothing at all" rather than "the same set as a moment ago".
+    # Private tempdir: siblings on other xdist workers leave .jsonl files in the shared one.
     system_temp = tmp_path / "system-temp"
     system_temp.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
@@ -275,7 +268,6 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
-    # These tests are about who may fetch the link, not about what the export is called.
     monkeypatch.setattr(
         jobs_route,
         "download_filename",
@@ -329,7 +321,6 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
             self.calls: list[tuple[int, int]] = []
 
         def get_status(self, job_id: str):
-            # A preview run: completed, but with nothing persisted to export from.
             return {"status": "completed", "artifact_path": None}
 
         def get_dataset(
@@ -353,7 +344,6 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
         artifact_path = None,
         filename = "big-run",
     )
-    # Called directly, so the response's background unlink never runs: take the file away here.
     try:
         assert response.filename == "big-run.jsonl"
         assert fake_manager.calls == [
@@ -397,7 +387,6 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
-    # These tests are about who may fetch the link, not about what the export ends up called.
     monkeypatch.setattr(
         jobs_route,
         "download_filename",
@@ -427,9 +416,7 @@ def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatc
     url = "/api/data-recipe" + minted.json()["path"]
     assert token not in url
 
-    # No Authorization header at all, the way the browser fetches it.
     assert client.get(url).status_code == 200
-    # And the header still works on its own, for an API client.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -466,7 +453,6 @@ def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_p
         ).status_code
         == 401
     )
-    # A session JWT is not a download link, however valid it is as a bearer.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -481,7 +467,6 @@ def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_p
         headers = {"Authorization": f"Bearer {token}"},
     ).json()["path"]
     signed = parse_qs(urlparse(url).query)["token"][0]
-    # Every parameter the export reads is signed, so the artifact cannot be swapped for another.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -960,7 +945,6 @@ def test_to_preview_jsonable_row_converts_each_column(tmp_path: Path):
     row = {"path": str(picture), "label": "keep-me"}
     assert to_preview_jsonable_row(row) == row
     assert to_preview_jsonable_row([row, row]) == [row, row]
-    # A column that really is an image dict is still rendered as a preview payload.
     cell = to_preview_jsonable_row({"image": {"path": str(picture)}})["image"]
     assert cell["type"] == "image" and cell["mime"] == "image/jpeg"
 

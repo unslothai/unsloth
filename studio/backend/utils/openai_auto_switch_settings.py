@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Mapping, Optional
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
@@ -389,7 +390,7 @@ BATCH_SIZE_MIN = 1
 BATCH_SIZE_MAX = 65536
 
 MAX_SEQ_LENGTH_CEILING = 1048576
-MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
+MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = MAX_CHAT_TEMPLATE_BYTES
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 
@@ -550,6 +551,13 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
 
+    for key in ("mlx_ple_offload", "mlx_expert_offload"):
+        value = payload.get(key)
+        if value == "off" or (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1
+        ):
+            entry[key] = value if value == "off" else float(value)
+
     # Stored only when off: absent is the 4-bit default, so an untouched model follows it.
     if payload.get("load_in_4bit") is False:
         entry["load_in_4bit"] = False
@@ -699,6 +707,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
+        ("mlx_ple_offload", "mlx_ple_offload"),
+        ("mlx_expert_offload", "mlx_expert_offload"),
     ):
         if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]

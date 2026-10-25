@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The estimate cache is what stops a long model list costing one metadata read
-// per row, so its key has to be exactly as specific as the request. Two rows
-// that would ask the backend different questions must not share an answer, and
-// a row that could not be sized must not stay blank for the rest of the session.
+// The cache key must be as specific as the request, and unsized rows must not stick.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -20,9 +17,7 @@ const { estimateCacheKey, estimateIsUnsized } = await import(
 const BASE = { repoId: "unsloth/gemma-4-12b-it-GGUF", quant: "Q4_K_M" };
 
 test("an omitted slot count is not the same request as an explicit one slot", () => {
-  // The request omits n_parallel when there is no override, and the backend
-  // fills in the server's standing count, which defaults above one. Keying both
-  // as 1 served a single-slot answer to a default-slot row.
+  // An omitted n_parallel means the server default (above one), so it must not key as 1.
   assert.notEqual(
     estimateCacheKey({ ...BASE }),
     estimateCacheKey({ ...BASE, nParallel: 1 }),
@@ -60,14 +55,11 @@ test("every input that changes the answer changes the key", () => {
   for (const v of variants) {
     assert.notEqual(estimateCacheKey(v), base);
   }
-  // and they are all distinct from one another
   const keys = variants.map(estimateCacheKey);
   assert.equal(new Set(keys).size, keys.length);
 });
 
 test("a re-download under a stable quant name re-keys", () => {
-  // Same repo and quant, different file: the cached weights would otherwise
-  // outrank the row's fresh size.
   assert.notEqual(
     estimateCacheKey({ ...BASE, sizeBytes: 7_000_000_000 }),
     estimateCacheKey({ ...BASE, sizeBytes: 7_100_000_000 }),
@@ -96,8 +88,7 @@ test("a 200 that sized nothing counts as unsized", () => {
 });
 
 test("any figure at all means the answer is real", () => {
-  // Weights alone is a real answer: a model whose header cannot be read still
-  // charts its file size, and that must not expire in 30 seconds.
+  // Weights alone is a real answer and must not expire in 30 seconds.
   assert.equal(
     estimateIsUnsized({
       kvBytes: null,
@@ -123,15 +114,12 @@ test("a zero figure is a measurement, not a missing one", () => {
   );
 });
 
-// --- settings that must reach the request, and the ones that must suppress it ---
-
 const { extraArgsOwnPlacement, PLACEMENT_OWNING_ARGS } = await import(
   "../src/lib/model-memory.ts"
 );
 
 test("draft depth and checkpoints key apart, including zero", () => {
-  // Zero is a real choice for both (no rollback states, no checkpoints), so it
-  // must not collapse into "unset" the way a `?? ""` would make it.
+  // Zero is a real choice, so it must not collapse into unset like `?? ""` would.
   for (const field of ["specDraftNMax", "ctxCheckpoints"] as const) {
     const unset = estimateCacheKey({ ...BASE });
     const zero = estimateCacheKey({ ...BASE, [field]: 0 });
@@ -154,31 +142,23 @@ test("draft cache dtype and vision both re-key", () => {
 });
 
 test("pass-through args that own placement make the bar abstain", () => {
-  // These are appended after Unsloth's own flags, so they decide where the load
-  // runs and the VRAM total stops describing it.
+  // These come after Unsloth's flags, so they decide placement.
   for (const flag of PLACEMENT_OWNING_ARGS) {
     assert.equal(
       extraArgsOwnPlacement([flag, "0"]),
       true,
       `${flag} did not suppress the bar`,
     );
-    // The "--flag=value" argv shape has to be recognised too.
     assert.equal(extraArgsOwnPlacement([`${flag}=0`]), true, `${flag}=0`);
   }
 });
 
 test("ordinary pass-through args do not suppress the bar", () => {
-  // Sampling and logging flags say nothing about placement.
   assert.equal(extraArgsOwnPlacement(null), false);
   assert.equal(extraArgsOwnPlacement(undefined), false);
   assert.equal(extraArgsOwnPlacement([]), false);
   assert.equal(extraArgsOwnPlacement(["--temp", "0.7", "--verbose"]), false);
-  // A near-miss must not match on a prefix. `--device-draft` is not a spelling
-  // any parser accepts, so it stays out.
   assert.equal(extraArgsOwnPlacement(["--device-draft"]), false);
-  // `--gpu-layers-draft` used to be listed here as a near-miss, which was wrong:
-  // it is in the backend's _DRAFT_GPU_LAYER_FLAGS and does own placement, just
-  // the drafter's rather than the target's. A drafter pinned off the GPU is host
-  // memory the bar would otherwise charge to the card.
+  // --gpu-layers-draft is in _DRAFT_GPU_LAYER_FLAGS and owns the drafter's placement.
   assert.equal(extraArgsOwnPlacement(["--gpu-layers-draft"]), true);
 });

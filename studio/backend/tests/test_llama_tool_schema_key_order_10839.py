@@ -19,7 +19,6 @@ from core.inference.llama_tool_schema import (
     relax_nested_object_key_order,
 )
 
-# Notion's notion-query-data-sources ``data`` branches, property order as the server declares it.
 _SQL_BRANCH = {
     "type": "object",
     "properties": {
@@ -267,7 +266,7 @@ def test_objects_under_items_and_refs_are_wrapped_where_they_are_used():
 
 
 def test_allof_ref_is_wrapped_around_the_use_and_not_the_definition():
-    # A wrapped $defs target compiles to "{}" under llama.cpp's allOf merge, dropping every key.
+    # A wrapped $defs target compiles to '{}' under llama.cpp's allOf merge.
     paging = {
         "type": "object",
         "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
@@ -315,7 +314,6 @@ def test_references_are_followed_to_the_object_llama_cpp_builds():
 
 
 def test_references_to_union_definitions_are_wrapped_at_the_use_site():
-    # pydantic emits these for a TypeAliasType union field (oneOf) and a RootModel union field (anyOf).
     view = {
         "type": "object",
         "properties": {

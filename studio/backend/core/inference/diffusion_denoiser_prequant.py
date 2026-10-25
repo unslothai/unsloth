@@ -136,7 +136,11 @@ def denoiser_prequant_pipe_kwargs(
         from .diffusion_prequant import load_prequantized_transformer
         from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
 
-        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        class_name = str(getattr(fam, "transformer_class", ""))
+        transformer_cls = getattr(diffusers, class_name, None)
+        if transformer_cls is None:
+            from .diffusion_moss_image import in_tree_class
+            transformer_cls = in_tree_class(class_name)
         if transformer_cls is None:
             _warn(
                 logger,
