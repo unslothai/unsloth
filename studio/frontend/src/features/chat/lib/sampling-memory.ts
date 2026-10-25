@@ -3,7 +3,7 @@
 
 import type { InferenceParams } from "../types/runtime";
 
-/** The sampling fields a model can have saved, and their names in `/api/settings/model-sampling-defaults`. */
+/** Saved sampling fields and their `/api/settings/model-sampling-defaults` names. */
 const API_FIELDS = {
   temperature: "temperature",
   topP: "top_p",
@@ -22,7 +22,7 @@ type SamplingParams = Pick<InferenceParams, SamplingField | "minPMode">;
 
 const FIELDS = Object.keys(API_FIELDS) as SamplingField[];
 
-/** What Save stores. Min P on the server's choice stays unsaved. */
+/** Min P on the server's choice stays unsaved. */
 export function samplingPayload(params: SamplingParams): SavedSampling {
   const sampling: SavedSampling = {};
   for (const field of FIELDS) {
@@ -67,7 +67,6 @@ export function sameSampling(a: SavedSampling, b: SavedSampling): boolean {
   });
 }
 
-/** The read-only line beside Remember, worded like Run settings'. */
 export function samplingSaveStatus(
   remember: boolean,
   saved: SavedSampling | null,
@@ -81,7 +80,7 @@ export function samplingSaveStatus(
   return saved ? "Saved settings will be forgotten" : null;
 }
 
-/** The model's recommended sampling from an inference status, the app defaults for what it leaves out. */
+/** App defaults fill what the model's recommendation leaves out. */
 export function recommendedSampling(
   inference: Record<string, unknown> | null | undefined,
   d: Pick<InferenceParams, SamplingField>,

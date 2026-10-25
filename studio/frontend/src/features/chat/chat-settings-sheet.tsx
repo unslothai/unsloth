@@ -1710,7 +1710,6 @@ export function ChatSettingsPanel({
                 />
               </div>
             ) : null}
-            {/* Remembers only these sampling values, so it sits under them. */}
             {!isExternalModel && currentCheckpoint ? (
               <Suspense fallback={null}>
                 <SamplingFooter

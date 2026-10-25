@@ -41,8 +41,7 @@ const OS_OPTIONS: { id: ExampleOs; labelKey: TranslationKey }[] = [
 // The btn-fill grey (index.css), so a selected pill matches a standard filled button.
 const LIGHT_FILL_PILL =
   "[html:not(.dark)_&]:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] [html:not(.dark)_&]:shadow-none";
-// In dark mode the toggle's --accent pill all but matches the example box's 5% white, so the
-// selection is a clear step above it.
+// Dark: the --accent pill nearly matches the example box's 5% white.
 const DARK_FILL_PILL =
   "[html.dark_&]:!bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]";
 

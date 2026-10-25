@@ -30,7 +30,6 @@ type Deps = {
 
 const DEFAULTS_URL = "/api/settings/model-sampling-defaults";
 
-/** What the server has saved for this model, or null for nothing. */
 async function readSavedSampling(
   modelId: string,
   signal: AbortSignal,
@@ -70,8 +69,7 @@ async function writeSavedSampling(
   }
 }
 
-/** Remember / Save / Forget / Reset for the loaded model's sampling, laid out like Run settings' footer.
- *  Saved sampling seeds new chats with the model and fills what an API request leaves out. */
+/** Saved sampling seeds new chats with the model and fills what an API request leaves out. */
 export default function SamplingFooter({
   store,
   notify,
@@ -181,7 +179,7 @@ export default function SamplingFooter({
 
   return (
     <div className="flex flex-col gap-3.5 border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] pt-4.75 dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]">
-      {/* The status sits under the label, not beside it: the sheet is too narrow for both on one line. */}
+      {/* Under the label: the sheet is too narrow for both on one line. */}
       <div>
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
@@ -207,7 +205,6 @@ export default function SamplingFooter({
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {/* Hidden with nothing to save or forget, like Run settings. */}
         {(remember || saved !== null) && (
           <Button
             type="button"
