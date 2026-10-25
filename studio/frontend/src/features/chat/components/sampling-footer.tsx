@@ -17,8 +17,8 @@ import {
   toApiSampling,
 } from "../lib/sampling-memory";
 import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import type { InferenceParams } from "../types/runtime";
 import type { InferenceStatusResponse } from "../types/api";
+import type { InferenceParams } from "../types/runtime";
 import type { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 
 // Passed in: importing them here splits shared modules out of the startup bundle.
