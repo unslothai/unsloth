@@ -170,8 +170,7 @@ _GPU_NEED_MIB = 4096
 # never denoises next to it. The prompt upsampler's tight rule.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
-# What the bf16 segmenter holds during a Find (1.62 GB of weights, 1.82 GB peak on the model card), rounded up. auto
-# picks a pre-quantized file only when the card's free memory minus this would read as tight.
+# The bf16 segmenter's footprint during a Find, rounded up; auto goes 8-bit only if free minus this reads tight.
 _BF16_RESIDENT_MIB = 2048
 
 
@@ -711,9 +710,7 @@ def download_plan(
     device = device or _host_device()
     if memory_tight is None:
         memory_tight = auto_memory_tight(device)
-    precision, why = resolve_precision(
-        device, available = tuple(offered), memory_tight = memory_tight
-    )
+    precision, why = resolve_precision(device, available = tuple(offered), memory_tight = memory_tight)
     if precision == PRECISION_BF16:
         return {
             "spec": variant.id,
@@ -858,9 +855,8 @@ def vram_is_tight(free_mib: Optional[int], total_mib: Optional[int]) -> bool:
 
 
 def auto_memory_tight(device: str) -> bool:
-    """The CUDA card ``device`` would read as tight once the bf16 segmenter sits on it: then (and only then) auto
-    picks a smaller pre-quantized file. False off CUDA, when free memory cannot be read, and while this process has
-    not initialised CUDA (reading it would create a context just to plan; nothing of ours is on a card then)."""
+    """The CUDA card ``device`` would read as tight with the bf16 segmenter on it. False off CUDA, when unreadable, and
+    before this process initialised CUDA (never create a context just to plan)."""
     if not device.startswith("cuda"):
         return False
     try:
@@ -1083,8 +1079,7 @@ class MaskSegmenter:
         self.weights_file: Optional[str] = None
         # Why the last pre-quantized load fell back to bf16, if one did.
         self.last_prequant_failure: Optional[str] = None
-        # auto's memory reading at the load that placed the model: reused while it stays on that device, since the
-        # free memory read with the model resident would otherwise flip the choice and reload it on the next call.
+        # Reused while loaded: a reading taken with the model resident would flip auto's choice and reload it.
         self._memory_tight: Optional[bool] = None
         # Planning reads the Hub cache only for the active variant's own snapshot, not an explicit folder.
         self._use_cache = True
