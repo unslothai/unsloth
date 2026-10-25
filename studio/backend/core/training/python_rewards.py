@@ -366,7 +366,7 @@ def make_python_reward_funcs(
             turns = kwargs.pop(PROMPT_TURNS_COLUMN, None)
             prefills = kwargs.pop(PREFILL_COLUMN, None)
             if isinstance(turns, list) and isinstance(prompts, list) and len(turns) == len(prompts):
-                prompts = turns
+                prompts = [json.loads(t) if isinstance(t, str) else t for t in turns]
             if isinstance(prompts, list):
                 prompts = [_without_padding(p) for p in prompts]
             if isinstance(prefills, list) and isinstance(completions, list):
