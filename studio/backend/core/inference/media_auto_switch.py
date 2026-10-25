@@ -283,8 +283,7 @@ async def _start_load(
         model_path = pick.model_path
         family_override = None
         seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
-        # A complete retired copy loads from its verified snapshot: by id only the active cache is searched, and a copy
-        # in an earlier Models folder would be redirected to its base.
+        # By id only the active cache is searched: a complete retired copy in an earlier Models folder keeps its path.
         if seeded_repo and retired_copy_loads_from_disk(pick.model_path):
             seeded_repo = None
         if seeded_repo:

@@ -4944,8 +4944,7 @@ class DiffusionLoadRequest(BaseModel):
                 )
             )
             if (not single or root_pick) and retired_copy_loads_from_disk(self.model_path):
-                # Loaded as the copy's own pipeline: an HF-cache snapshot's root file is a symlink into blobs/, which
-                # the single-file containment check refuses.
+                # As a pipeline: a cached snapshot's root file links into blobs/, which single-file validation refuses.
                 if root_pick:
                     self.gguf_filename, self.model_kind = None, "pipeline"
             elif not single or root_pick:
