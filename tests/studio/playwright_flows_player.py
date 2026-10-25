@@ -139,8 +139,10 @@ def play_world(page: Page) -> None:
     page.wait_for_timeout(500)
     shot(page, "world_quest_done")
     calls = page.evaluate("window.__flowsPlayerSmoke.calls")
-    assert [c["entry"] for c in calls] == ["reply", "reply"], calls
-    assert calls[1]["inputs"]["state"]["inventory"] == ["rod"], calls[1]
+    assert all(c["inputs"]["state"].get("task") in (None, "director") for c in calls), calls
+    replies = [c for c in calls if not c["inputs"]["state"].get("task")]
+    assert [c["entry"] for c in replies] == ["reply", "reply"], calls
+    assert replies[1]["inputs"]["state"]["inventory"] == ["rod"], replies[1]
 
 
 def play_world_3d(page: Page) -> None:

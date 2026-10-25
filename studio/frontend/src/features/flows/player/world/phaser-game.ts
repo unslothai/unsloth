@@ -6,7 +6,7 @@
 
 import * as Phaser from "phaser";
 
-import type { WorldSpec } from "../../types";
+import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
 import {
   type Point,
   SOLID,
@@ -49,6 +49,8 @@ export interface WorldGameHandle {
   destroy(): void;
   playerTile(): Point;
   removeItem(id: string): void;
+  addNpc(npc: WorldNpc, at: Point): void;
+  addItem(item: WorldItem, at: Point): void;
   faceNpc(id: string | null): void;
   walkTo(tile: Point): void;
   npcTile(id: string): Point | null;
@@ -140,6 +142,7 @@ export function createWorldGame(
     talking: string | null = null;
     pendingTalk: string | null = null;
     route: Point[] = [];
+    layer!: Phaser.Tilemaps.TilemapLayer;
 
     constructor() {
       super("world");
@@ -222,48 +225,14 @@ export function createWorldGame(
         "flows-player",
         layer,
       );
+      this.layer = layer;
       for (const n of spec.npcs) {
         const at = map.npcs[n.id];
-        if (!at) continue;
-        const a = this.makeActor(n.id, n.name, at, `flows-npc-${n.id}`, layer);
-        (a.body.body as Phaser.Physics.Arcade.Body).setImmovable(true);
-        this.physics.add.collider(this.player.body, a.body);
-        a.rest = 1 + Math.random() * 3;
-        this.npcs.push(a);
-        const label = this.add
-          .text(0, 0, n.name, {
-            fontFamily: "Inter, system-ui, sans-serif",
-            fontSize: `${Math.max(10, Math.round(T * 0.34))}px`,
-            color: "#ffffff",
-            stroke: "#1b1b28",
-            strokeThickness: 3,
-          })
-          .setOrigin(0.5, 1)
-          .setAlpha(0.9);
-        a.sprite.setData("label", label);
+        if (at) this.spawnNpc(n, at);
       }
       for (const it of spec.items) {
         const at = map.items[it.id];
-        if (!at || picked.includes(it.id)) continue;
-        const cx = at.x * T + T / 2;
-        const cy = at.y * T + T / 2;
-        const shadow = this.add
-          .image(cx, cy + T * 0.32, "flows-shadow")
-          .setDisplaySize(T * 0.6, T * 0.2)
-          .setAlpha(0.5);
-        const sprite = this.add
-          .image(cx, cy, `flows-item-${it.id}`)
-          .setOrigin(0.5, 0.8);
-        sprite.setDepth(cy);
-        this.tweens.add({
-          targets: sprite,
-          y: cy - T * 0.12,
-          duration: 900 + Math.random() * 400,
-          yoyo: true,
-          repeat: -1,
-          ease: "Sine.inOut",
-        });
-        this.items.set(it.id, { sprite, shadow, at, name: it.name });
+        if (at && !picked.includes(it.id)) this.spawnItem(it, at);
       }
 
       const g = this.add.graphics();
@@ -367,24 +336,76 @@ export function createWorldGame(
       sctx.fillStyle = grad;
       sctx.fillRect(0, 0, 64, 24);
       this.textures.addCanvas("flows-shadow", sh);
+      this.actorTexture("flows-player", "player");
+      for (const n of spec.npcs) this.actorTexture(`flows-npc-${n.id}`, n.id);
+      for (const it of spec.items) this.itemTexture(it.id);
+    }
+
+    actorTexture(key: string, id: string): void {
       const actorH = Math.round(T * 1.6);
-      const actor = (key: string, id: string) => {
-        const img = art.sprites[id];
-        this.textures.addCanvas(
-          key,
-          img ? fitImage(img, actorH * 0.85, actorH) : paintChibi(id, actorH),
-        );
-      };
-      actor("flows-player", "player");
-      for (const n of spec.npcs) actor(`flows-npc-${n.id}`, n.id);
-      for (const it of spec.items) {
-        const img = art.sprites[it.id];
-        const size = Math.round(T * 0.9);
-        this.textures.addCanvas(
-          `flows-item-${it.id}`,
-          img ? fitImage(img, size, size) : paintItem(it.id, size),
-        );
-      }
+      const img = art.sprites[id];
+      if (this.textures.exists(key)) return;
+      this.textures.addCanvas(
+        key,
+        img ? fitImage(img, actorH * 0.85, actorH) : paintChibi(id, actorH),
+      );
+    }
+
+    itemTexture(id: string): void {
+      const img = art.sprites[id];
+      const size = Math.round(T * 0.9);
+      if (this.textures.exists(`flows-item-${id}`)) return;
+      this.textures.addCanvas(
+        `flows-item-${id}`,
+        img ? fitImage(img, size, size) : paintItem(id, size),
+      );
+    }
+
+    spawnNpc(n: WorldNpc, at: Point): void {
+      const a = this.makeActor(
+        n.id,
+        n.name,
+        at,
+        `flows-npc-${n.id}`,
+        this.layer,
+      );
+      (a.body.body as Phaser.Physics.Arcade.Body).setImmovable(true);
+      this.physics.add.collider(this.player.body, a.body);
+      a.rest = 1 + Math.random() * 3;
+      this.npcs.push(a);
+      const label = this.add
+        .text(0, 0, n.name, {
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontSize: `${Math.max(10, Math.round(T * 0.34))}px`,
+          color: "#ffffff",
+          stroke: "#1b1b28",
+          strokeThickness: 3,
+        })
+        .setOrigin(0.5, 1)
+        .setAlpha(0.9);
+      a.sprite.setData("label", label);
+    }
+
+    spawnItem(it: WorldItem, at: Point): void {
+      const cx = at.x * T + T / 2;
+      const cy = at.y * T + T / 2;
+      const shadow = this.add
+        .image(cx, cy + T * 0.32, "flows-shadow")
+        .setDisplaySize(T * 0.6, T * 0.2)
+        .setAlpha(0.5);
+      const sprite = this.add
+        .image(cx, cy, `flows-item-${it.id}`)
+        .setOrigin(0.5, 0.8);
+      sprite.setDepth(cy);
+      this.tweens.add({
+        targets: sprite,
+        y: cy - T * 0.12,
+        duration: 900 + Math.random() * 400,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
+      this.items.set(it.id, { sprite, shadow, at, name: it.name });
     }
 
     makeActor(
@@ -677,6 +698,16 @@ export function createWorldGame(
       });
       it.shadow.destroy();
       sceneRef.items.delete(id);
+    },
+    addNpc(npc: WorldNpc, at: Point) {
+      if (!sceneRef || sceneRef.npcs.some((n) => n.id === npc.id)) return;
+      sceneRef.actorTexture(`flows-npc-${npc.id}`, npc.id);
+      sceneRef.spawnNpc(npc, at);
+    },
+    addItem(item: WorldItem, at: Point) {
+      if (!sceneRef || sceneRef.items.has(item.id)) return;
+      sceneRef.itemTexture(item.id);
+      sceneRef.spawnItem(item, at);
     },
     faceNpc(id: string | null) {
       if (sceneRef) {

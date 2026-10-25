@@ -20,6 +20,7 @@ from core.flows.world import (
     BIOME_TILES,
     NPC_MEMORY_REPLY_SCHEMA,
     NPC_REPLY_SCHEMA,
+    DIRECTOR_SCHEMA,
     SUMMARY_SCHEMA,
     TILE_PROMPTS,
     WorldError,
@@ -27,11 +28,13 @@ from core.flows.world import (
     chat_schema,
     clean_summary,
     compact_prompt,
+    director_prompt,
     has_memory,
     normalize_world,
     npc_prompt,
     plan_prompt,
     validate_chat,
+    validate_director,
     validate_npc_reply,
     talk_summary,
     world_schema,
@@ -285,6 +288,8 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         raise FlowNodeError("NPC Reply needs the conversation state from the world player.")
     if state.get("task") == "summarise":
         return await _summarise(ctx, state)
+    if state.get("task") == "director":
+        return await _direct(ctx, state)
     memories: Optional[list[dict]] = None
     if has_memory(state):
         npc = next(
@@ -344,6 +349,35 @@ async def _summarise(ctx: NodeContext, state: dict) -> dict:
         return {"reply": {"summary": clean_summary(raw)}}
     except WorldError as exc:
         raise FlowNodeError(str(exc), retryable = True) from exc
+
+
+async def _direct(ctx: NodeContext, state: dict) -> dict:
+    try:
+        system, prompt = director_prompt(state)
+    except WorldError as exc:
+        raise FlowNodeError(str(exc)) from exc
+    world = state.get("world") or {}
+    refused = ""
+    for attempt in range(2):
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt
+            + (
+                f"Your last answer was refused: {refused}. Answer again and fix that.\n"
+                if refused
+                else ""
+            ),
+            schema = DIRECTOR_SCHEMA,
+            temperature = 0.9,
+            max_tokens = 500,
+            seed = seed_from(ctx.seed, "director", len(world.get("quests") or []), attempt),
+        )
+        try:
+            return {"reply": {"patch": validate_director(raw, state)}}
+        except WorldError as exc:
+            refused = str(exc)
+    raise FlowNodeError(refused, retryable = True)
 
 
 def _sim_world(state: Any, who: str) -> dict:

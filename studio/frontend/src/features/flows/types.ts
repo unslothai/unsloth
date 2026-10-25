@@ -464,6 +464,8 @@ export interface WorldSpec {
   simulation?: WorldSimulation;
   /** Absent means on. */
   summarise?: boolean;
+  /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
+  new_quests?: boolean;
   render?: "2d" | "3d";
   view3d?: World3dView;
   props3d?: WorldProp3d[];

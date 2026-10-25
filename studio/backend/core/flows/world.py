@@ -527,6 +527,33 @@ SUMMARY_SCHEMA = {
 }
 
 
+DIRECTOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "reward_text": {"type": "string"},
+        "giver": {"type": "string"},
+        "item": {"type": "string"},
+        "new_item_name": {"type": "string"},
+        "new_item_description": {"type": "string"},
+        "new_npc_name": {"type": "string"},
+        "new_npc_persona": {"type": "string"},
+        "new_npc_greeting": {"type": "string"},
+        "region": {"type": "string"},
+    },
+    "required": [
+        "title",
+        "description",
+        "reward_text",
+        "giver",
+        "item",
+        "new_item_name",
+        "new_npc_name",
+    ],
+}
+
+
 def has_memory(state: dict) -> bool:
     """The world player sends `memory` only for simulated worlds; without it every prompt is the classic one."""
     return isinstance(state.get("memory"), list)
@@ -696,6 +723,145 @@ def clean_summary(raw: Any) -> str:
         end = cut.rfind(". ")
         text = cut[: end + 1] if end > SUMMARY_CHARS // 2 else cut
     return text
+
+
+def _used_items(world: dict, state: dict) -> set:
+    return (
+        {q.get("requires_item") for q in world.get("quests") or []}
+        | set(state.get("inventory") or [])
+        | set(state.get("picked") or [])
+    )
+
+
+def director_prompt(state: dict) -> tuple[str, str]:
+    world = state.get("world") if isinstance(state.get("world"), dict) else None
+    if world is None:
+        raise WorldError("the director needs the world in its state")
+    done = set(state.get("completed_quests") or [])
+    npcs = "\n".join(f"- {n['id']}: {n['name']}" for n in world.get("npcs") or [])
+    used = _used_items(world, state)
+    items = "\n".join(
+        f"- {i['id']}: {i['name']}" for i in world.get("items") or [] if i["id"] not in used
+    )
+    regions = "\n".join(f"- {r['id']}: {r['name']}" for r in world.get("regions") or [])
+    quests = "\n".join(
+        f"- {q['title']} ({'done' if q['id'] in done else 'open'})"
+        for q in world.get("quests") or []
+    )
+    events = "; ".join(str(e)[:160] for e in (state.get("events") or [])[-6:] if isinstance(e, str))
+    rules = [
+        "Make it fit the story so far and not repeat a quest.",
+        "`giver` is a villager id from the list.",
+        "`item` is the id of an item from the list that the quest asks the player to bring.",
+    ]
+    if state.get("allow_item"):
+        rules.append(
+            "Or invent one new item for it (new_item_name, new_item_description) and leave `item` empty."
+            if items
+            else "Every item is already used, so invent one new item for it (new_item_name, "
+            "new_item_description) and leave `item` empty."
+        )
+    if state.get("allow_npc"):
+        rules.append(
+            "Or invent one new villager to give it (new_npc_name, new_npc_persona, new_npc_greeting) and set "
+            "`giver` to their name."
+        )
+    if state.get("allow_item") or state.get("allow_npc"):
+        rules.append("`region` is the region id where anything new appears.")
+    system = (
+        f"You write the next quest for the game world \"{world.get('title')}\". {world.get('intro_text') or ''}\n"
+        + " ".join(rules)
+        + " Leave fields you do not use empty. Answer in JSON."
+    )
+    prompt = (
+        f"Villagers:\n{npcs or '- none'}\nItems:\n{items or '- none'}\nRegions:\n{regions or '- none'}\n"
+        f"Quests so far:\n{quests or '- none'}\nRecent events: {events or 'none'}\n"
+    )
+    return system, prompt
+
+
+def validate_director(raw: Any, state: dict) -> dict:
+    world = state.get("world") if isinstance(state.get("world"), dict) else None
+    if world is None or not isinstance(raw, dict):
+        raise WorldError("the director did not return a quest")
+
+    def text(key: str, limit: int) -> str:
+        t = re.sub(r"\s+", " ", str(raw.get(key) or "")).strip()
+        if len(t) <= limit:
+            return t
+        cut = t[:limit]
+        end = cut.rfind(". ")
+        return cut[: end + 1] if end > limit // 2 else cut
+
+    title = text("title", 120)
+    if not title:
+        raise WorldError("the new quest has no title")
+    npcs = world.get("npcs") or []
+    items = world.get("items") or []
+    quests = world.get("quests") or []
+    regions = world.get("regions") or []
+    taken = {
+        x["id"] for x in [*npcs, *items, *quests, *regions] if isinstance(x, dict) and x.get("id")
+    }
+    region_ids = {r["id"] for r in regions}
+    region = text("region", 80)
+    region = region if region in region_ids else (regions[0]["id"] if regions else None)
+
+    def find(pool: list[dict], key: str) -> Optional[str]:
+        k = key.strip().lower()
+        hit = next(
+            (x["id"] for x in pool if x["id"].lower() == k or str(x["name"]).lower() == k), None
+        )
+        return hit or next((x["id"] for x in pool if x["id"] == slug(k)), None)
+
+    patch: dict[str, Any] = {"npcs": [], "items": []}
+    giver = find(npcs, text("giver", 80))
+    new_npc_name = text("new_npc_name", 60)
+    if giver is None and new_npc_name and state.get("allow_npc"):
+        giver = _unique(slug(new_npc_name, "npc"), taken)
+        patch["npcs"].append(
+            {
+                "id": giver,
+                "name": new_npc_name,
+                "persona": text("new_npc_persona", 600) or "a friendly newcomer",
+                "greeting": text("new_npc_greeting", 300) or f"Hello, I'm {new_npc_name}.",
+                **({"region": region} if region else {}),
+            }
+        )
+    if giver is None:
+        raise WorldError("the new quest has no giver in the world")
+    used = _used_items(world, state)
+    asked = text("item", 80)
+    need = find(items, asked)
+    if need in used:
+        need = None
+    # Small models often name a fresh item in `item` instead of `new_item_name`: an unknown name is the new item.
+    new_item_name = text("new_item_name", 60) or (
+        asked[:60] if asked and find(items, asked) is None else ""
+    )
+    if re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)+", new_item_name):
+        new_item_name = new_item_name.replace("_", " ").capitalize()
+    if need is None and new_item_name and state.get("allow_item"):
+        need = _unique(slug(new_item_name, "item"), taken)
+        patch["items"].append(
+            {
+                "id": need,
+                "name": new_item_name,
+                "description": text("new_item_description", 300),
+                **({"region": region} if region else {}),
+            }
+        )
+    if need is None:
+        raise WorldError("the new quest needs an item that is in the world and not used yet")
+    patch["quest"] = {
+        "id": _unique(slug(title, "quest"), taken),
+        "title": title,
+        "description": text("description", 500),
+        "giver": giver,
+        "requires_item": need,
+        "reward_text": text("reward_text", 200) or "Thank you!",
+    }
+    return patch
 
 
 def world_places(world: dict) -> list[dict]:
@@ -935,6 +1101,8 @@ def resolve_world_report(
     reply = next((n for n in doc.get("nodes") or [] if n["id"] == eps.get("npc_reply")), None)
     if reply is not None and (reply.get("params") or {}).get("summarise") is False:
         world["summarise"] = False
+    if reply is not None and (reply.get("params") or {}).get("new_quests") is False:
+        world["new_quests"] = False
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")
