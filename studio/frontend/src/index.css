@@ -4392,11 +4392,25 @@ html[data-chat-font] .aui-root {
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
+	/* In em, so the gutter grows with the message font and digit count: a fixed 1.25rem let "1." (at a
+	   larger chat font) and "10." hang left of the column, past the composer's edge. */
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-left: 1.6em;
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
+	}
+
+	/* A list that continues past 9 (start="10") is two digits from its first item. */
+	[data-streamdown="ordered-list"]:is(
+			:has(> li:nth-child(10)),
+			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
+		) {
+		padding-left: 2.2em;
+	}
+
+	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
+		padding-left: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
