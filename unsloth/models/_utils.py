@@ -1038,15 +1038,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
-        if (
-            kernel_options is None
-            and tuned_bwd_device_ok
-            and hasattr(query, "dim")
-            and query.dim() == 4
-            and _flex_call_needs_backward(query, key, value)
-            and _flex_tuned_bwd_fits(args, kwargs)
-        ):
-            kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
+        # First: on these cards the default forward tile does not fit, so this full set beats a forced
+        # UNSLOTH_FLEX_TUNED_BACKWARD=1 (backward keys only).
         if (
             kernel_options is None
             and small_smem_device_ok
@@ -1059,6 +1052,15 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         ):
             kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
+        if (
+            kernel_options is None
+            and tuned_bwd_device_ok
+            and hasattr(query, "dim")
+            and query.dim() == 4
+            and _flex_call_needs_backward(query, key, value)
+            and _flex_tuned_bwd_fits(args, kwargs)
+        ):
+            kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
         # batch row after the first reads a shifted LSE and the gradients blow up.

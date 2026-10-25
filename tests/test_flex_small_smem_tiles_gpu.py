@@ -82,16 +82,18 @@ def _sdpa_reference(q, k, v):
 
 def test_small_tiles_reach_the_compiled_flex_kernel(monkeypatch):
     on, out_on, grads_on, qkv = _flex_kernels_shared(monkeypatch, True)
-    off, _, _, _ = _flex_kernels_shared(monkeypatch, False)
     fwd_on = [s for n, s in on if "backward" not in n]
-    fwd_off = [s for n, s in off if "backward" not in n]
     bwd_on = [s for n, s in on if "backward" in n]
-    assert fwd_on and fwd_off, (on, off)
+    assert fwd_on, on
     # engagement: with the gate on, every flex forward kernel fits an L4 / A10
     assert max(fwd_on) <= L4_SHARED_MEMORY, on
     assert bwd_on and max(bwd_on) <= L4_SHARED_MEMORY, on
-    # control: the kill-switch path compiles a different (default) forward tile
-    assert sorted(fwd_on) != sorted(fwd_off), (on, off)
+    smem = torch.cuda.get_device_properties(0).shared_memory_per_block_optin
+    if smem >= u._FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY:
+        # control (only where the default tiles fit): the kill-switch path compiles another tile
+        off, _, _, _ = _flex_kernels_shared(monkeypatch, False)
+        fwd_off = [s for n, s in off if "backward" not in n]
+        assert fwd_off and sorted(fwd_on) != sorted(fwd_off), (on, off)
     ref_out, ref_grads = _sdpa_reference(*qkv)
     assert torch.nn.functional.cosine_similarity(out_on.flatten(), ref_out.flatten(), dim = 0) > 0.999
     for g, r in zip(grads_on, ref_grads):

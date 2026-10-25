@@ -208,10 +208,19 @@ def test_wrapper_untouched_off_class_and_outside_range(monkeypatch):
 
 
 def test_a100_keeps_its_tuned_backward(monkeypatch):
-    # The two device classes never overlap; if both were on, the tuned backward wins.
-    wrapped, seen = _wrapped(monkeypatch, small_ok = True, tuned_ok = True)
+    wrapped, seen = _wrapped(monkeypatch, small_ok = False, tuned_ok = True)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
     wrapped(_Causal(), *_qkv(256), object())
     for k, v in u._FLEX_TUNED_BWD_KERNEL_OPTIONS.items():
         assert seen[k] == v
     assert "fwd_BLOCK_M" not in seen
+
+
+def test_small_card_with_tuned_backward_forced_keeps_fitting_tiles(monkeypatch):
+    # UNSLOTH_FLEX_TUNED_BACKWARD=1 on an L4: backward-only keys would leave the default forward
+    # tile, which does not fit, so the full small-memory set wins.
+    wrapped, seen = _wrapped(monkeypatch, small_ok = True, tuned_ok = True)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
+    wrapped(_Causal(), *_qkv(256), object())
+    for k, v in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS.items():
+        assert seen[k] == v
