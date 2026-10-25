@@ -21,7 +21,9 @@ from unsloth.kernels import cross_entropy_loss as ce_mod
 def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph):
     torch._dynamo.reset()
     generator = torch.Generator(device = "cuda").manual_seed(vocab)
-    logits = torch.randn(2, 5, vocab, device = "cuda", generator = generator).to(torch.bfloat16)
+    # sm75 (T4) has no bf16 Triton under torch.compile.
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    logits = torch.randn(2, 5, vocab, device = "cuda", generator = generator).to(dtype)
     labels = torch.randint(0, vocab, (2, 5), device = "cuda", generator = generator)
     labels[0, 1] = -100
     reference = logits.double().requires_grad_(True)
