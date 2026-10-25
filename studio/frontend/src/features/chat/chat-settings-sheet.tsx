@@ -135,6 +135,7 @@ import {
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 
@@ -1717,6 +1718,7 @@ export function ChatSettingsPanel({
                   notify={toast}
                   Checkbox={Checkbox}
                   defaults={DEFAULT_INFERENCE_PARAMS}
+                  qwenThinking={resolveQwenThinkingParams}
                 />
               </Suspense>
             ) : null}

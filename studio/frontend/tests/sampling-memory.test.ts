@@ -96,7 +96,7 @@ test("the Sampling section ends with the footer, not a lone Save button", () => 
   );
   assert.match(
     sampling,
-    /<SamplingFooter\s+store=\{useChatRuntimeStore\}\s+notify=\{toast\}\s+Checkbox=\{Checkbox\}\s+defaults=\{DEFAULT_INFERENCE_PARAMS\}\s+\/>/,
+    /<SamplingFooter\s+store=\{useChatRuntimeStore\}\s+notify=\{toast\}\s+Checkbox=\{Checkbox\}\s+defaults=\{DEFAULT_INFERENCE_PARAMS\}\s+qwenThinking=\{resolveQwenThinkingParams\}\s+\/>/,
   );
   assert.doesNotMatch(sheet, /SaveForModelButton|Save for this model/);
 });
@@ -120,5 +120,42 @@ test("a save or forget that finishes after a model switch leaves the new model's
   assert.match(
     footer,
     /await writeSavedSampling\(modelId, null\);\s*if \(stillOn\(\)\) \{\s*setSaved\(null\);/,
+  );
+});
+
+test("Reset layers Qwen3's thinking-mode table over the base recommendation", async () => {
+  const { resolveQwenThinkingParams } = await import(
+    "../src/features/chat/utils/qwen-sampling-table.ts"
+  );
+  assert.deepEqual(
+    {
+      ...recommendedSampling(
+        { temperature: 0.6, top_p: 0.95 },
+        DEFAULT_INFERENCE_PARAMS,
+      ),
+      ...resolveQwenThinkingParams("unsloth/Qwen3-8B-GGUF", false),
+    },
+    {
+      ...recommendedSampling({}, DEFAULT_INFERENCE_PARAMS),
+      temperature: 0.7,
+      topP: 0.8,
+      topK: 20,
+      minP: 0,
+    },
+  );
+  const footer = readFileSync(
+    new URL(
+      "../src/features/chat/components/sampling-footer.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    footer,
+    /const qwen = status\.supports_reasoning\s*\?\s*qwenThinking\(\s*modelId,\s*status\.reasoning_always_on === true \|\| state\.reasoningEnabled,?\s*\)\s*:\s*null;/,
+  );
+  assert.match(
+    footer,
+    /\.\.\.recommendedSampling\([\s\S]*?\),\s*\.\.\.qwen,\s*\}\);/,
   );
 });

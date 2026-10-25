@@ -19,6 +19,7 @@ import {
 import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { InferenceParams } from "../types/runtime";
 import type { InferenceStatusResponse } from "../types/api";
+import type { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 
 // Passed in: importing them here splits shared modules out of the startup bundle.
 type Deps = {
@@ -26,6 +27,7 @@ type Deps = {
   notify: typeof toast;
   Checkbox: typeof Checkbox;
   defaults: InferenceParams;
+  qwenThinking: typeof resolveQwenThinkingParams;
 };
 
 const DEFAULTS_URL = "/api/settings/model-sampling-defaults";
@@ -74,6 +76,7 @@ export default function SamplingFooter({
   notify,
   Checkbox,
   defaults,
+  qwenThinking,
 }: Deps) {
   const params = store((state) => state.params);
   const modelId = params.checkpoint;
@@ -164,12 +167,20 @@ export default function SamplingFooter({
         return;
       }
       const state = store.getState();
+      // Qwen3's recommendation depends on the thinking mode, layered on as the load paths do.
+      const qwen = status.supports_reasoning
+        ? qwenThinking(
+            modelId,
+            status.reasoning_always_on === true || state.reasoningEnabled,
+          )
+        : null;
       state.setParams({
         ...state.params,
         ...recommendedSampling(
           status.inference as Record<string, unknown> | undefined,
           defaults,
         ),
+        ...qwen,
       });
     });
 
