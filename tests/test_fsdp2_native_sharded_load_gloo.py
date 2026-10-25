@@ -50,6 +50,7 @@ def _save(
     arch,
     directory,
     overrides = None,
+    remap = False,
 ):
     if arch == "qwen2_5_vl":
         import transformers
@@ -64,7 +65,32 @@ def _save(
         model = build(repo, {**base, **(overrides or {})}, lora = False)
     model.generation_config.pad_token_id = None
     model.save_pretrained(directory, max_shard_size = "1MB", safe_serialization = True)
+    if remap:
+        _prefix_checkpoint_keys(directory)
     return directory
+
+
+# A VLM-style checkpoint of a text decoder, loaded through from_pretrained(key_mapping = ...) as Unsloth's
+# text-only loads do (_apply_text_only_key_mapping).
+REMAP = {r"^language_model\.model\.": "model.", r"^language_model\.lm_head\.": "lm_head."}
+
+
+def _prefix_checkpoint_keys(directory):
+    import glob
+    import json
+
+    from safetensors.torch import load_file, save_file
+
+    rename = lambda k: "language_model." + k
+    for path in glob.glob(os.path.join(directory, "*.safetensors")):
+        save_file({rename(k): v for k, v in load_file(path).items()}, path, metadata = {"format": "pt"})
+    index = os.path.join(directory, "model.safetensors.index.json")
+    if os.path.exists(index):
+        with open(index, encoding = "utf-8") as f:
+            data = json.load(f)
+        data["weight_map"] = {rename(k): v for k, v in data["weight_map"].items()}
+        with open(index, "w", encoding = "utf-8") as f:
+            json.dump(data, f)
 
 
 def _raised(fn):
@@ -162,11 +188,14 @@ def _case(
     fit,
     arch,
     ignore = None,
+    remap = False,
 ):
     native, loading = _load_module()
     AutoModelForCausalLM = _auto(arch)
 
     kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+    if remap:
+        kw["key_mapping"] = REMAP
     base_config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = "cpu")
 
     full = _prep(AutoModelForCausalLM.from_pretrained(ckpt, **kw), mode)
@@ -343,15 +372,21 @@ def _spawn(
         ("llama", {"intermediate_size": 37}, "full", "ignore"),
         ("llama", {"intermediate_size": 37}, "lora", "ignore"),
         ("llama", {"intermediate_size": 37}, "lora_mts", False),
+        # A load-specific key_mapping (VLM-prefixed checkpoint of a text decoder).
+        ("llama", {"intermediate_size": 37}, "lora", "remap"),
     ],
 )
 def test_sharded_loading_matches_full_load_shard_model(arch, overrides, mode, fit):
-    ignore = None
+    ignore, remap = None, fit == "remap"
     if fit == "ignore":
         fit, ignore = False, IGNORED[mode == "lora"]
+    if remap:
+        fit = False
     with tempfile.TemporaryDirectory() as ckpt:
-        _save(arch, ckpt, overrides)
-        results = _spawn("parity", ckpt = ckpt, mode = mode, fit = fit, arch = arch, ignore = ignore)
+        _save(arch, ckpt, overrides, remap = remap)
+        results = _spawn(
+            "parity", ckpt = ckpt, mode = mode, fit = fit, arch = arch, ignore = ignore, remap = remap
+        )
     sliced = [r["stats"]["read_bytes_sliced"] for r in results]
     for rank, res in enumerate(results):
         assert res["models"] == 1

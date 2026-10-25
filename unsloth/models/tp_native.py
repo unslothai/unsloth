@@ -1719,11 +1719,12 @@ def _checkpoint_key(names, model, index):
     return None
 
 
-def _checkpoint_aliases(model, index):
+def _checkpoint_aliases(model, index, key_mapping = None):
     """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
     mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
-    weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced."""
+    weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
+    load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads)."""
     legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
     renamings = converters = None
     try:
@@ -1734,11 +1735,15 @@ def _checkpoint_aliases(model, index):
             rename_source_key,
         )
 
-        transforms = get_model_conversion_mapping(model)
+        try:
+            transforms = get_model_conversion_mapping(model, key_mapping = key_mapping)
+        except TypeError:
+            transforms = get_model_conversion_mapping(model)
         renamings = [t for t in transforms if isinstance(t, WeightRenaming)]
         converters = [t for t in transforms if isinstance(t, WeightConverter)]
     except Exception:
-        pass
+        # transformers 4.x: from_pretrained's key_mapping replaces _checkpoint_conversion_mapping.
+        legacy = key_mapping or legacy
     if not legacy and not renamings and not converters:
         return {}
     meta = dict.fromkeys(model.state_dict().keys(), True)
@@ -1813,7 +1818,7 @@ def _fill_from_checkpoint(
         if key is not None:
             return key
         if aliases is None:
-            aliases = _checkpoint_aliases(model, index)
+            aliases = _checkpoint_aliases(model, index, (kwargs or {}).get("key_mapping"))
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
