@@ -763,7 +763,8 @@ _FLEX_TUNED_BWD_MIN_TORCH = "2.10"
 def _flex_tuned_bwd_device_ok():
     """True when every visible CUDA device has a capability the tuned backward was measured on.
 
-    Read once when the flex forward is wrapped (model load), never inside a compiled region.
+    Read once when the flex forward is wrapped, at `import unsloth` (set the env var before it), never
+    inside a compiled region.
     UNSLOTH_FLEX_TUNED_BACKWARD=0 turns it off, =1 forces it on any CUDA device with torch >= 2.10."""
     override = os.environ.get(_FLEX_TUNED_BWD_ENV_VAR, "").strip()
     if override == "0":
