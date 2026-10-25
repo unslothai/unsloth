@@ -492,7 +492,7 @@ export function WindowTitlebar({
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",
-              pinned && "rounded-tl-[12px] border-l",
+              pinned && "rounded-tl-md border-l",
             )}
             style={{ left: pinned ? cornerLeft : 0 }}
           />

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The installation-wide switch for managed-account private provider URLs.
-
-The switch lives in the owner's app_settings, but every interesting read happens
-while a MANAGED account is bound: ``workspace_root`` sends a managed caller to
-``accounts/<id>/`` and ``account_path`` raises on anything outside it, so the
-read has to cross back into the owner's tree deliberately. If it did not, the
-feature would fail closed forever and the owner's switch would do nothing.
-"""
+"""The owner's switch must be read across the managed-account boundary, or it fails closed forever."""
 
 from pathlib import Path
 import sys
@@ -32,7 +25,6 @@ BOB = AccountContext("b" * 32, "bob")
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    # The helper holds its answer briefly, and each test has its own home.
     mpu.forget_cached_setting()
     yield
     mpu.forget_cached_setting()
@@ -129,7 +121,6 @@ def test_account_path_would_have_raised_without_the_owner_hop(as_account):
         ("off", False),
         ("", False),
         (None, False),
-        # Junk is not a yes.
         ("maybe", False),
         (1, False),
     ],
@@ -154,7 +145,6 @@ def test_the_held_answer_is_dropped_by_a_write(as_account):
     assert mpu.get_managed_private_provider_urls_allowed() is True
 
     mpu.set_managed_private_provider_urls_allowed(False)
-    # No sleep: if this read came from the held answer it would still say True.
     assert mpu.get_managed_private_provider_urls_allowed() is False
 
 
@@ -187,7 +177,7 @@ def test_a_read_failure_is_never_remembered(monkeypatch, as_account):
         assert mpu.get_managed_private_provider_urls_allowed() is False
         assert mpu._remembered() is None
     finally:
-        # By hand: monkeypatch.undo() would also undo the isolated-home fixture.
+        # Restore by hand: monkeypatch.undo() would also undo the isolated-home fixture.
         studio_db_module.get_app_setting = real
     assert mpu.get_managed_private_provider_urls_allowed() is True
 
@@ -198,7 +188,6 @@ def test_the_held_answer_expires(monkeypatch, as_account):
     mpu.set_managed_private_provider_urls_allowed(False)
     assert mpu.get_managed_private_provider_urls_allowed() is False
 
-    # Written behind this module's back, the way a second process would.
     from storage.studio_db import upsert_app_settings
     from utils.account_context import run_as
 
@@ -207,7 +196,7 @@ def test_the_held_answer_expires(monkeypatch, as_account):
         upsert_app_settings,
         {mpu.MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY: True},
     )
-    assert mpu.get_managed_private_provider_urls_allowed() is False  # still held
+    assert mpu.get_managed_private_provider_urls_allowed() is False
 
     # Age the entry, not the clock: patching time.monotonic recurses through the cache's own call.
     with mpu._cache_lock:
@@ -217,15 +206,7 @@ def test_the_held_answer_expires(monkeypatch, as_account):
 
 
 def test_a_read_in_flight_cannot_republish_what_a_write_replaced(as_account):
-    """The owner disabling the switch is not undone by a read that started before it.
-
-    The losing interleaving is: a managed request finds nothing held and goes to
-    the store, the owner's PUT commits False and drops the cache, and only then
-    does the older read hand back the True it saw. Without the generation check
-    that True is held for the whole TTL, so private egress keeps working after
-    the owner switched it off. The write is driven from inside the store read,
-    which is that interleaving exactly rather than a sleep hoping to hit it.
-    """
+    """A read that started before a write must not republish the value the write replaced."""
     as_account(OWNER)
     mpu.set_managed_private_provider_urls_allowed(True)
     mpu.forget_cached_setting()
@@ -236,15 +217,13 @@ def test_a_read_in_flight_cannot_republish_what_a_write_replaced(as_account):
 
     def _write_lands_mid_read(*args, **kwargs):
         stored = real(*args, **kwargs)
-        studio_db_module.get_app_setting = real  # the setter must not re-enter this
+        studio_db_module.get_app_setting = real
         mpu.set_managed_private_provider_urls_allowed(False)
         return stored
 
     studio_db_module.get_app_setting = _write_lands_mid_read
     try:
-        # The stale value is still what THIS call returns: it is the answer the
-        # caller was already committed to. What must not happen is it outliving
-        # the call.
+        # The stale value may answer this call, but must not outlive it.
         assert mpu.get_managed_private_provider_urls_allowed() is True
         assert mpu._remembered() is None
         assert mpu.get_managed_private_provider_urls_allowed() is False

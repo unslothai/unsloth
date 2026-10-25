@@ -21,6 +21,9 @@ name: Windows Unsloth Update CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
@@ -94,6 +97,7 @@ permissions:
 
 jobs:
   update-idempotency:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth Updating Tests
     runs-on: windows-latest
     timeout-minutes: 30

@@ -24,10 +24,10 @@ import {
 export const KEYBOARD_SHORTCUTS_STORAGE_KEY = "unsloth_keyboard_shortcuts";
 const STORAGE_KEY = KEYBOARD_SHORTCUTS_STORAGE_KEY;
 
-/** Per-slot delta. An absent slot means "use the shipped default". */
+/** Per-slot delta. An absent slot means "use the shipped default"; `disabled` keeps the chords but fires none. */
 export type ShortcutOverrideEntry = Partial<
   Record<ShortcutSlot, string | null>
->;
+> & { disabled?: true };
 
 /**
  * Deltas only, so a changed default still reaches rows the user never touched.
@@ -55,6 +55,9 @@ function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
     if (slotValue === null || typeof slotValue === "string") {
       entry[slot] = slotValue;
     }
+  }
+  if ((value as Record<string, unknown>).disabled === true) {
+    entry.disabled = true;
   }
   return Object.keys(entry).length > 0 ? entry : null;
 }
@@ -106,14 +109,21 @@ function withSlot(
   const entry: ShortcutOverrideEntry = { ...overrides[id] };
   if (value === undefined) delete entry[slot];
   else entry[slot] = value;
+  return withEntry(overrides, id, entry);
+}
+
+function withEntry(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+  entry: ShortcutOverrideEntry,
+): ShortcutOverrides {
   const next = { ...overrides };
   if (Object.keys(entry).length === 0) delete next[id];
   else next[id] = entry;
   return next;
 }
 
-/** The binding actually in force for one slot of `id`. */
-export function resolveBinding(
+export function assignedBinding(
   overrides: ShortcutOverrides,
   id: ShortcutId,
   slot: ShortcutSlot = "primary",
@@ -121,6 +131,23 @@ export function resolveBinding(
   const entry = overrides[id];
   if (entry && Object.hasOwn(entry, slot)) return entry[slot] ?? null;
   return defaultBindingFor(SHORTCUT_DEF_BY_ID[id], slot);
+}
+
+export function isShortcutEnabled(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+): boolean {
+  return overrides[id]?.disabled !== true;
+}
+
+/** The binding actually in force for one slot of `id`: none while the action is switched off. */
+export function resolveBinding(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+  slot: ShortcutSlot = "primary",
+): string | null {
+  if (!isShortcutEnabled(overrides, id)) return null;
+  return assignedBinding(overrides, id, slot);
 }
 
 /** Both chords in force for `id`, in slot order. */
@@ -220,8 +247,9 @@ export function shortcutMatchingEvent<Id extends ShortcutId>(
 
 interface KeyboardShortcutsState {
   overrides: ShortcutOverrides;
-  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO". */
+  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO"; also switches the action back on. */
   setBinding: (id: ShortcutId, slot: ShortcutSlot, value: string) => void;
+  setEnabled: (id: ShortcutId, enabled: boolean) => void;
   /** Leave the slot with no binding at all. */
   clearBinding: (id: ShortcutId, slot: ShortcutSlot) => void;
   /** Drop the override so the shipped default applies again. */
@@ -236,7 +264,23 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
     overrides: loadOverrides(),
     setBinding: (id, slot, value) =>
       set((state) => {
-        const overrides = withSlot(state.overrides, id, slot, value);
+        const { disabled: _, ...entry } = state.overrides[id] ?? {};
+        const overrides = withEntry(state.overrides, id, {
+          ...entry,
+          [slot]: value,
+        });
+        persist(overrides);
+        return { overrides };
+      }),
+    setEnabled: (id, enabled) =>
+      set((state) => {
+        if (isShortcutEnabled(state.overrides, id) === enabled) return state;
+        const { disabled: _, ...entry } = state.overrides[id] ?? {};
+        const overrides = withEntry(
+          state.overrides,
+          id,
+          enabled ? entry : { ...entry, disabled: true },
+        );
         persist(overrides);
         return { overrides };
       }),

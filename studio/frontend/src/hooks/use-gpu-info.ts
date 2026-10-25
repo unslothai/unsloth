@@ -24,6 +24,7 @@ import {
   systemRamAvailableOutsideSharedPoolGb,
 } from "./gpu-vram";
 import {
+  type GpuDevice,
   type SystemInfoResponse,
   fetchSystemInfo,
   getCachedSystemInfo,
@@ -93,6 +94,55 @@ export interface GpuInfo {
   /** Whether host available memory was reported, including a real zero. */
   systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
+  /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
+   *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
+  unifiedLoadBudgetGb?: number | null;
+  /** `min(working set, free + AGX in use) * 0.85`: the budget once the loader has freed a resident model. */
+  unifiedLoadCeilingGb?: number | null;
+}
+
+/** `_APPLE_UNIFIED_MEMORY_FRACTION` in llama_cpp.py and mlx_inference.py. */
+const APPLE_UNIFIED_MEMORY_FRACTION = 0.85;
+
+function finitePositive(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+// A real 0 GiB free reading is the most pressured case, so it must not read as unknown.
+function finiteNonNegative(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function appleUnifiedLoadBudgetGb(
+  data: SystemInfoResponse | null,
+  devices: readonly GpuDevice[],
+  afterUnload = false,
+): number | null {
+  if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
+  const device = devices[0];
+  const workingSetGb = finitePositive(device.metal_working_set_gb);
+  if (device.shared_memory !== true || workingSetGb === null) return null;
+  let freeGb =
+    finiteNonNegative(device.vram_free_gb) ??
+    finiteNonNegative(data.memory?.available_gb);
+  if (afterUnload) {
+    // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
+    // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
+    const usedGb = finiteNonNegative(device.vram_used_gb);
+    freeGb = freeGb !== null && usedGb !== null ? freeGb + usedGb : null;
+  }
+  // Floored to 0.25 GiB: free memory drifts every poll, and each change re-renders every picker row.
+  return (
+    Math.floor(
+      Math.min(workingSetGb, freeGb ?? workingSetGb) *
+        APPLE_UNIFIED_MEMORY_FRACTION *
+        4,
+    ) / 4
+  );
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -121,6 +171,8 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableHostGb: 0,
   systemRamAvailableKnown: false,
   systemRamTotalGb: 0,
+  unifiedLoadBudgetGb: null,
+  unifiedLoadCeilingGb: null,
 };
 
 function toGpuInfo(
@@ -190,6 +242,8 @@ function toGpuInfo(
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
     deviceCount: devices.length,
+    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
+    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, true),
   };
 }
 
@@ -288,6 +342,29 @@ export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
   return next;
 }
 
+const RAM_DRIFT_TOLERANCE_GB = 0.25;
+
+/** Keeps `current` when only free RAM drifted, so subscribed pages do not re-render on every poll. */
+export function nextGpuInfo(current: GpuInfo, next: GpuInfo): GpuInfo {
+  const ramDrift = Math.max(
+    Math.abs(current.systemRamAvailableGb - next.systemRamAvailableGb),
+    Math.abs(current.systemRamAvailableHostGb - next.systemRamAvailableHostGb),
+  );
+  const withoutLiveRam = (info: GpuInfo) =>
+    JSON.stringify({
+      ...info,
+      systemRamAvailableGb: 0,
+      systemRamAvailableHostGb: 0,
+    });
+  if (
+    ramDrift < RAM_DRIFT_TOLERANCE_GB &&
+    withoutLiveRam(current) === withoutLiveRam(next)
+  ) {
+    return current;
+  }
+  return withStableSchemes(current, next);
+}
+
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
@@ -301,11 +378,7 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
     const sync = (data: SystemInfoResponse) => {
       if (cancelled) return;
       const next = toGpuInfo(data, source);
-      setGpu((current) =>
-        JSON.stringify(current) === JSON.stringify(next)
-          ? current
-          : withStableSchemes(current, next),
-      );
+      setGpu((current) => nextGpuInfo(current, next));
     };
     const update = () => {
       fetchSystemInfo().then((d) => {
