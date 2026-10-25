@@ -1537,25 +1537,22 @@ export function ApiMonitorPage(): ReactElement {
                 <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
                   {served.map((model) => (
                     <div key={model.checkpoint} className="contents">
-                      <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
-                        <span
-                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                          aria-hidden={true}
-                        />
-                        <span className="ml-1 truncate font-mono text-foreground">
-                          {model.name}
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
+                          <span
+                            className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                            aria-hidden={true}
+                          />
+                          <span className="ml-1 truncate font-mono text-foreground">
+                            {model.name}
+                          </span>
+                          <CopyButton
+                            value={model.name}
+                            label="Copy model name"
+                            revealOnHover={true}
+                          />
                         </span>
-                        <CopyButton
-                          value={model.name}
-                          label="Copy model name"
-                          revealOnHover={true}
-                        />
-                      </span>
-                      <span className="flex items-center gap-0.5">
-                        {reloadButton(model)}
-                        {settingsButton(model)}
                         {exampleButton(model)}
-                        {ejectButton(model)}
                       </span>
                       <dl className="min-w-0">
                         {model.active ? contextFact : null}
@@ -1563,6 +1560,12 @@ export function ApiMonitorPage(): ReactElement {
                       <dl className="min-w-0">
                         {model.active ? slotsFact : null}
                       </dl>
+                      {/* What acts on the model sits at the row's end; the code example stays with its name. */}
+                      <span className="flex items-center gap-0.5 justify-self-end">
+                        {settingsButton(model)}
+                        {reloadButton(model)}
+                        {ejectButton(model)}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -1583,16 +1586,20 @@ export function ApiMonitorPage(): ReactElement {
                           revealOnHover={true}
                         />
                       </span>
-                      {reloadButton(served[0])}
-                      {settingsButton(served[0])}
                       {exampleButton(served[0])}
-                      {ejectButton(served[0])}
                     </>
                   ) : (
                     <span className="text-muted-foreground">None loaded</span>
                   )}
                 </Fact>
                 {served[0]?.active ? activeFacts : null}
+                {served.length === 1 ? (
+                  <div className="ml-auto flex items-center gap-0.5">
+                    {settingsButton(served[0])}
+                    {reloadButton(served[0])}
+                    {ejectButton(served[0])}
+                  </div>
+                ) : null}
               </dl>
             )}
           </div>

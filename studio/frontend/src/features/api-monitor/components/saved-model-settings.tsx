@@ -255,7 +255,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  className="shrink-0 text-destructive hover:text-destructive"
                   aria-label={`Forget settings for ${modelId}`}
                   title="Forget these settings"
                   disabled={forgetting.has(modelId)}
