@@ -116,3 +116,69 @@ def test_helper_follows_the_zoo_check(monkeypatch):
     monkeypatch.setattr(zoo, "_xpu_vllm_refuses_bf16", lambda: True, raising = False)
     monkeypatch.setattr(dt, "DEVICE_TYPE", "cuda")
     assert dt.xpu_vllm_refuses_bf16() is False
+
+
+def _loader_family_gate():
+    """FastModel.from_pretrained's FORCE_FLOAT32 loop through the vLLM gate after it."""
+    tree = ast.parse((MODELS / "loader.py").read_text(encoding = "utf-8"))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if isinstance(stmt, ast.For) and ast.unparse(stmt.iter) == "FORCE_FLOAT32":
+                for j in range(i + 1, len(body)):
+                    if isinstance(body[j], ast.If) and "xpu_vllm_refuses_bf16()" in ast.unparse(
+                        body[j].test
+                    ):
+                        module = ast.Module(body = body[i : j + 1], type_ignores = [])
+                        return compile(module, "loader.py", "exec")
+    raise AssertionError("FORCE_FLOAT32 family gate not found in loader.py")
+
+
+def _load_family(
+    arch,
+    dtype,
+    supports_bf16,
+    refuses,
+    device_type = "xpu",
+    fast_inference = True,
+):
+    env = {}
+    namespace = {
+        "torch": torch,
+        "os": types.SimpleNamespace(environ = env),
+        "dtype": dtype,
+        "model_type_arch": arch,
+        "model_types_all": arch + ",",
+        "FORCE_FLOAT32": ["gemma3,", "qwen3_5"],
+        "SUPPORTS_BFLOAT16": supports_bf16,
+        "do_forced_float32": False,
+        "fast_inference": fast_inference,
+        "DEVICE_TYPE": device_type,
+        "is_vLLM_available": lambda: True,
+        "xpu_vllm_refuses_bf16": lambda: refuses,
+    }
+    exec(_loader_family_gate(), namespace)
+    return namespace["dtype"], env.get("UNSLOTH_FORCE_FLOAT32")
+
+
+@pytest.mark.parametrize(
+    "dtype,supports_bf16",
+    [(torch.bfloat16, False), (torch.bfloat16, True), (None, True)],
+    ids = ["explicit-bf16-emulated", "explicit-bf16-native", "auto-native"],
+)
+def test_a_fp16_unsafe_family_refuses_vllm_fp16_when_bf16_is_not_forced(dtype, supports_bf16):
+    # These loads skip forced float32, so the FastBaseModel gate alone would drop Gemma 3 to fp16.
+    with pytest.raises(RuntimeError, match = "fast_inference = False"):
+        _load_family("gemma3", dtype, supports_bf16, refuses = True)
+    assert _load_family("gemma3", dtype, supports_bf16, refuses = False)[0] is dtype
+    assert _load_family("gemma3", dtype, supports_bf16, True, fast_inference = False)[0] is dtype
+    assert _load_family("gemma3", dtype, supports_bf16, True, device_type = "cuda")[0] is dtype
+    # Families that run in fp16 still switch quietly in FastBaseModel.
+    assert _load_family("llama", dtype, supports_bf16, refuses = True)[0] is dtype
+
+
+def test_forced_float32_family_is_left_to_the_fast_base_model_gate():
+    assert _load_family("gemma3", torch.float16, True, refuses = True) == (torch.bfloat16, "1")
+    assert _load_family("qwen3_5", None, False, refuses = True) == (torch.bfloat16, "1")
