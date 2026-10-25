@@ -8,6 +8,7 @@ from core.flows.registry import FlowNodeError
 from core.flows.schema import WorldSpec
 from core.flows.world import (
     BIOME_TILES,
+    apply_play_view,
     WorldError,
     normalize_world,
     npc_prompt,
