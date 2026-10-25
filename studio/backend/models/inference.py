@@ -4931,18 +4931,9 @@ class DiffusionLoadRequest(BaseModel):
         base = retired_full_copy_base(self.model_path) or retired_full_copy_base(
             self.display_repo_id
         )
-        if base is not None and retired_copy_loads_from_disk(self.model_path, self.gguf_filename):
-            base = None
-            # With no base named, the root transformer pick would take companions from the family default (-FP8 mirror).
-            if (self.gguf_filename or "").strip().replace(
-                "\\", "/"
-            ) == "model.safetensors" and not (self.base_repo or "").strip():
-                self.base_repo = self.model_path
         if base is not None:
             single = (self.gguf_filename or "").strip().replace("\\", "/")
-            if not single:
-                self.model_path, self.display_repo_id = base, None
-            elif (
+            root_pick = (
                 single == "model.safetensors"
                 and self.text_encoder_file is None
                 and self.vae_file is None
@@ -4951,12 +4942,18 @@ class DiffusionLoadRequest(BaseModel):
                     not (self.base_repo or "").strip()
                     or (retired_full_copy_base(self.base_repo) or self.base_repo) == base
                 )
-            ):
+            )
+            if (not single or root_pick) and retired_copy_loads_from_disk(self.model_path):
+                # Loaded as the copy's own pipeline: an HF-cache snapshot's root file is a symlink into blobs/, which
+                # the single-file containment check refuses.
+                if root_pick:
+                    self.gguf_filename, self.model_kind = None, "pipeline"
+            elif not single or root_pick:
                 self.model_path, self.display_repo_id = base, None
                 self.gguf_filename, self.model_kind = None, "pipeline"
-        # A companion base serves a single file, which supplies the transformer: its folder needs only the config.
+        # A companion base serving a single file only needs the transformer config; a pipeline opens its weights.
         if retired_full_copy_base(self.base_repo) is not None and not retired_copy_loads_from_disk(
-            self.base_repo, companion = True
+            self.base_repo, companion = bool((self.gguf_filename or "").strip())
         ):
             self.base_repo = retired_full_copy_base(self.base_repo)
         return self

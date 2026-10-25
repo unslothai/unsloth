@@ -1823,16 +1823,11 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
     return base
 
 
-def retired_copy_loads_from_disk(
-    source: Optional[str],
-    filename: Optional[str] = None,
-    *,
-    companion: bool = False,
-) -> bool:
+def retired_copy_loads_from_disk(source: Optional[str], *, companion: bool = False) -> bool:
     """Whether a retired full copy complete on disk (snapshot path, or id with a ``refs/main`` snapshot) loads as itself.
 
     Its files are the base's own, and the base's mirror may not be cached (offline) or would download again (online).
-    A single file (``filename``) or ``companion`` base supplies the transformer, so that folder needs only its config.
+    A ``companion`` base serves a single file that supplies the transformer, so that folder needs only its config.
     PURE: local stat only."""
     key = (source or "").strip()
     if not key or retired_full_copy_base(key) is None and not _is_local_path(key):
@@ -1850,18 +1845,12 @@ def retired_copy_loads_from_disk(
             root = repo / "snapshots" / commit if commit else None
         if root is None or not root.is_dir():
             return False
-        single = (filename or "").strip().replace("\\", "/")
-        if single and (
-            _safe_relative_parts(single) is None
-            or not _nonempty_file(root.joinpath(*single.split("/")))
-        ):
-            return False
         from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX
 
         return local_pipeline_components_are_complete(
             root,
             FLUX3_INDEX,
-            excluded_components = ("transformer",) if single or companion else (),
+            excluded_components = ("transformer",) if companion else (),
             fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
         )
     except (OSError, StopIteration):

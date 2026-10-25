@@ -46,6 +46,9 @@ export function retiredSnapshotAsLoaded<T extends RememberedImageModel & { displ
   status: Parameters<typeof matchesRememberedModel>[1],
 ): T {
   if (!isRetiredCopySnapshot(pick) || matchesRememberedModel(pick, status)) return pick;
+  // A complete snapshot's root model.safetensors pick loads as the snapshot's own pipeline.
+  const { filename: _filename, baseRepo: _base, ...asPipeline } = { ...pick, kind: "pipeline" as const };
+  if (matchesRememberedModel(asPipeline as T, status)) return asPipeline as T;
   const display = (pick.displayRepoId ?? "").trim().toLowerCase();
   const copy = RETIRED_FULL_COPIES[display] ? display : retiredSnapshotRepo(pick.repoId);
   // A redirect loads another checkpoint, whose base the backend infers (handleLoad drops it the same way).

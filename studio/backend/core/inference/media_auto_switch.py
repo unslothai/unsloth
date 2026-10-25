@@ -154,7 +154,7 @@ def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
     single = (pick.gguf_filename or "").replace("\\", "/")
     if single and single != "model.safetensors":
         return pick
-    if retired_copy_loads_from_disk(pick.model_path, pick.gguf_filename):
+    if retired_copy_loads_from_disk(pick.model_path):
         return pick
     return MediaModelPick(base, base, None, "pipeline")
 
@@ -273,6 +273,7 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.diffusion_families import retired_copy_loads_from_disk
         from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
@@ -282,6 +283,10 @@ async def _start_load(
         model_path = pick.model_path
         family_override = None
         seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
+        # A complete retired copy loads from its verified snapshot: by id only the active cache is searched, and a copy
+        # in an earlier Models folder would be redirected to its base.
+        if seeded_repo and retired_copy_loads_from_disk(pick.model_path):
+            seeded_repo = None
         if seeded_repo:
             model_path = seeded_repo
             # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id

@@ -86,68 +86,6 @@ def test_a_complete_downloaded_copy_loads_offline_from_its_snapshot(tmp_path, of
     assert index == {"_class_name": "Flux3ModularPipeline"} and hub_lookups == 0
 
 
-def test_its_root_transformer_pick_stays_on_the_snapshot(tmp_path, offline_hub):
-    snapshot = str(_snapshot(tmp_path))
-    request = DiffusionLoadRequest(
-        model_path = snapshot,
-        display_repo_id = _COPY,
-        gguf_filename = "model.safetensors",
-        model_kind = "single_file",
-    )
-    assert (request.model_path, request.gguf_filename, request.model_kind) == (
-        snapshot,
-        "model.safetensors",
-        "single_file",
-    )
-
-
-def _companion_base(request):
-    """The companion base the single-file loader assembles the pipeline around (``_resolve_base_repo``, no card tag
-    offline), as the repo it fetches from."""
-    from core.inference import diffusion
-
-    fam = next(f for f in df._FAMILIES if f.name == "flux.3-klein")
-    with patch.object(diffusion, "_hf_base_model", return_value = None):
-        resolved = diffusion._resolve_base_repo(
-            request.model_path, request.base_repo, fam, None, request.gguf_filename
-        )
-    return df.prefer_ungated_mirror(resolved)
-
-
-@pytest.mark.parametrize("by_id", [False, True])
-def test_its_root_transformer_pick_takes_companions_from_the_copy(tmp_path, offline_hub, by_id):
-    """The root transformer pick of a complete copy, with no explicit base, assembles around the copy itself: the
-    family default would be the base's -FP8 mirror, absent offline and a second download online."""
-    snapshot = str(_snapshot(tmp_path))
-    source = _COPY if by_id else snapshot
-    request = DiffusionLoadRequest(
-        model_path = source,
-        display_repo_id = None if by_id else _COPY,
-        gguf_filename = "model.safetensors",
-        model_kind = "single_file",
-    )
-    assert (request.model_path, request.base_repo) == (source, source)
-    fetched = _companion_base(request)
-    assert fetched == source
-    if not by_id:
-        from core.inference import diffusion
-        from huggingface_hub.errors import LocalEntryNotFoundError
-
-        # The route's preflight accepts the snapshot as a companion base (what validate_load_request runs on it).
-        diffusion._assert_local_base_is_pipeline(
-            request.base_repo,
-            modular_only = True,
-            excluded_components = ("transformer",),
-            fixed_component_folders = flux3.FLUX3_COMPONENT_FOLDERS,
-        )
-
-        with patch(
-            "huggingface_hub.hf_hub_download", side_effect = LocalEntryNotFoundError("offline")
-        ) as hub:
-            assert flux3._read_index(fetched, None, True) == {"_class_name": "Flux3ModularPipeline"}
-        assert hub.call_count == 0
-
-
 def test_an_explicit_base_on_the_root_transformer_pick_is_kept(tmp_path, offline_hub):
     snapshot = str(_snapshot(tmp_path))
     request = DiffusionLoadRequest(
@@ -173,21 +111,6 @@ def test_an_incomplete_copy_still_loads_through_its_base(tmp_path, offline_hub):
     assert DiffusionLoadRequest(model_path = _COPY).model_path == _BASE
 
 
-def test_a_root_transformer_pick_missing_its_file_loads_through_its_base(tmp_path, offline_hub):
-    snapshot = _snapshot(tmp_path)
-    (snapshot / "model.safetensors").unlink()
-    request = DiffusionLoadRequest(
-        model_path = str(snapshot),
-        gguf_filename = "model.safetensors",
-        model_kind = "single_file",
-    )
-    assert (request.model_path, request.gguf_filename, request.model_kind) == (
-        _BASE,
-        None,
-        "pipeline",
-    )
-
-
 def test_a_copy_not_on_disk_loads_through_its_base(offline_hub):
     assert DiffusionLoadRequest(model_path = _COPY).model_path == _BASE
     assert (
@@ -198,27 +121,6 @@ def test_a_copy_not_on_disk_loads_through_its_base(offline_hub):
     )
 
 
-@pytest.mark.parametrize("by_id", [False, True])
-def test_a_root_transformer_pick_needs_only_the_transformer_config(tmp_path, offline_hub, by_id):
-    """The root model.safetensors supplies the transformer, so a copy without transformer/ weights (config only) is a
-    complete single-file assembly and stays on the copy; its pipeline pick, which opens those weights, still does not."""
-    snapshot = str(_snapshot(tmp_path, complete = False))
-    source = _COPY if by_id else snapshot
-    request = DiffusionLoadRequest(
-        model_path = source,
-        display_repo_id = None if by_id else _COPY,
-        gguf_filename = "model.safetensors",
-        model_kind = "single_file",
-    )
-    assert (request.model_path, request.gguf_filename, request.base_repo) == (
-        source,
-        "model.safetensors",
-        source,
-    )
-    assert df.retired_copy_loads_from_disk(source, "model.safetensors")
-    assert not df.retired_copy_loads_from_disk(source)
-
-
 def test_the_copy_named_by_id_needs_its_main_ref(tmp_path, offline_hub):
     """A load by id resolves refs/main, so a lone commit-pinned snapshot with no main ref cannot serve it offline."""
     snapshot = _snapshot(tmp_path)
@@ -227,3 +129,112 @@ def test_the_copy_named_by_id_needs_its_main_ref(tmp_path, offline_hub):
     assert DiffusionLoadRequest(model_path = _COPY).model_path == _BASE
     # Its path still loads from disk: a snapshot path needs no ref.
     assert df.retired_copy_loads_from_disk(str(snapshot))
+
+
+@pytest.mark.parametrize("by_id", [False, True])
+def test_its_root_transformer_pick_loads_the_copy_as_its_pipeline(tmp_path, offline_hub, by_id):
+    """The root model.safetensors is the copy's own transformer, so the pick loads the copy's pipeline from disk."""
+    snapshot = str(_snapshot(tmp_path))
+    source = _COPY if by_id else snapshot
+    request = DiffusionLoadRequest(
+        model_path = source,
+        display_repo_id = None if by_id else _COPY,
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+    )
+    assert (request.model_path, request.gguf_filename, request.model_kind) == (
+        source,
+        None,
+        "pipeline",
+    )
+    if not by_id:
+        index, lookups = _load_reads_local_index(request)
+        assert index == {"_class_name": "Flux3ModularPipeline"} and lookups == 0
+
+
+def _hf_cache_snapshot(tmp_path):
+    """A complete copy as huggingface_hub stores it: every snapshot file a symlink into blobs/."""
+    import os
+
+    snapshot = _snapshot(tmp_path)
+    blobs = snapshot.parent.parent / "blobs"
+    blobs.mkdir()
+    for i, path in enumerate(sorted(p for p in snapshot.rglob("*") if p.is_file())):
+        blob = blobs / f"blob{i}"
+        path.replace(blob)
+        path.symlink_to(os.path.relpath(blob, path.parent))
+    return snapshot
+
+
+@pytest.mark.parametrize("pick", ["pipeline", "root"])
+def test_a_snapshot_in_the_hf_cache_layout_passes_the_route_validator(tmp_path, offline_hub, pick):
+    """The root file of a cached snapshot resolves into blobs/, outside the snapshot, which a single-file pick of that
+    path refuses ("gguf_filename must resolve to a file inside the repo"); as the pipeline load it validates."""
+    from core.inference.diffusion import DiffusionBackend
+
+    snapshot = str(_hf_cache_snapshot(tmp_path))
+    single = (
+        {"gguf_filename": "model.safetensors", "model_kind": "single_file"}
+        if pick == "root"
+        else {}
+    )
+    request = DiffusionLoadRequest(model_path = snapshot, display_repo_id = _COPY, **single)
+    assert request.model_path == snapshot
+    DiffusionBackend.__new__(DiffusionBackend).validate_load_request(
+        request.model_path,
+        gguf_filename = request.gguf_filename,
+        model_kind = request.model_kind,
+        base_repo = request.base_repo,
+        family_override = "flux.3-klein",
+    )
+
+
+def test_a_root_transformer_pick_missing_its_file_loads_the_copys_pipeline(tmp_path, offline_hub):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "model.safetensors").unlink()
+    request = DiffusionLoadRequest(
+        model_path = str(snapshot), gguf_filename = "model.safetensors", model_kind = "single_file"
+    )
+    assert (request.model_path, request.gguf_filename, request.model_kind) == (
+        str(snapshot),
+        None,
+        "pipeline",
+    )
+
+
+def test_a_copy_without_transformer_weights(tmp_path, offline_hub):
+    """Its pipeline (and the root pick, loaded as that pipeline) goes through the base; as the companion base of
+    another single file, which supplies the transformer, only the config is read, so it stays."""
+    snapshot = str(_snapshot(tmp_path, complete = False))
+    root = DiffusionLoadRequest(
+        model_path = snapshot, gguf_filename = "model.safetensors", model_kind = "single_file"
+    )
+    assert (root.model_path, root.gguf_filename, root.model_kind) == (_BASE, None, "pipeline")
+    gguf = DiffusionLoadRequest(
+        model_path = "/models/klein.gguf", gguf_filename = "klein.gguf", base_repo = snapshot
+    )
+    assert gguf.base_repo == snapshot
+    # A pipeline redirected to the base cannot use it as its base either: the pipeline opens the transformer weights.
+    pipeline = DiffusionLoadRequest(model_path = snapshot, base_repo = snapshot, model_kind = "pipeline")
+    assert (pipeline.model_path, pipeline.base_repo) == (_BASE, _BASE)
+
+
+def test_the_auto_switch_loads_a_copy_in_an_earlier_models_folder_from_its_snapshot(
+    tmp_path, offline_hub
+):
+    """The seeded-snapshot rewrite would load it by id, which searches only the active cache, so the copy kept in an
+    earlier Models folder would be redirected to its base."""
+    import asyncio
+
+    from core.inference import media_auto_switch as mas
+
+    snapshot = _snapshot(tmp_path / "earlier")
+    pick = mas.MediaModelPick(_COPY, str(snapshot), None, "pipeline")
+    sent = []
+
+    async def _gated(request, *_args, **_kwargs):
+        sent.append(request)
+
+    with patch("routes.inference.load_diffusion_model_gated", _gated):
+        asyncio.run(mas._start_load(mas.DIFFUSION, pick, "subject"))
+    assert [(r.model_path, r.gguf_filename) for r in sent] == [(str(snapshot), None)]

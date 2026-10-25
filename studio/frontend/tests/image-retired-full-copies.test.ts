@@ -137,6 +137,11 @@ test("a retired copy's snapshot that loaded through its base is remembered as th
   assert.equal(retiredSnapshotAsLoaded(pipeline, asItself), pipeline);
   const other = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein-base", model_kind: "pipeline" };
   assert.equal(retiredSnapshotAsLoaded(pipeline, other), pipeline);
+  // A complete snapshot's root transformer pick loaded as that snapshot's pipeline.
+  assert.deepEqual(retiredSnapshotAsLoaded(rootTransformer, asItself), {
+    repoId: snapshot,
+    kind: "pipeline",
+  });
   const unrelated = { repoId: "/models/sdxl", kind: "pipeline" as const };
   assert.equal(retiredSnapshotAsLoaded(unrelated, base), unrelated);
 
