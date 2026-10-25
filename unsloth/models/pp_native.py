@@ -660,6 +660,27 @@ def _zoo_slot_lease_present():
     return hasattr(module, "_CpuSlotLease")
 
 
+def _check_torch_pipelining():
+    """The schedule calls pass scale_grads (torch >= 2.7) and step(return_outputs = ...) (torch >= 2.10).
+    Probe the signatures, not the version string: on older torch the first step fails (2.6) or passes
+    return_outputs into the model as a keyword (2.7 - 2.9) after this rank's stage was already cut out."""
+    try:
+        from torch.distributed.pipelining import Schedule1F1B, ScheduleGPipe
+    except ImportError as e:
+        raise RuntimeError(
+            f"Unsloth: pipeline parallelism needs torch.distributed.pipelining (torch >= 2.10); "
+            f"torch {torch.__version__} has none ({e})."
+        ) from None
+    for cls in (ScheduleGPipe, Schedule1F1B):
+        init = inspect.signature(cls.__init__).parameters
+        step = inspect.signature(cls.step).parameters
+        if "scale_grads" not in init or "return_outputs" not in step:
+            raise RuntimeError(
+                f"Unsloth: pipeline parallelism needs torch >= 2.10 (Schedule scale_grads and "
+                f"step(return_outputs)); torch {torch.__version__} lacks them. The model was not modified."
+            )
+
+
 def _check_schedule(model, schedule):
     if schedule not in _SCHEDULES:
         raise ValueError(
@@ -1020,6 +1041,7 @@ def apply_pipeline_parallel(
         existing = existing or level.__dict__.get("_unsloth_pp_stage")
     if existing is not None:
         return existing
+    _check_torch_pipelining()
     config = config or PPConfig()
     schedule = str(schedule).lower().replace("-", "").replace("_", "")
     if pp_mesh is None:
