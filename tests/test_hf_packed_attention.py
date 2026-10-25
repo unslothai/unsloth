@@ -403,18 +403,25 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
         assert seen and not dispatched
 
 
-def _block_flag(monkeypatch, value):
+def _block_flag(
+    monkeypatch,
+    value,
+    leaves = None,
+):
     monkeypatch.setattr(hpa, "IN_COMPILED_BLOCK", [value])
+    if leaves is not None:
+        monkeypatch.setattr(hpa, "_leaves_block", lambda *args: leaves)
 
 
-@pytest.mark.parametrize("in_block", [True, False])
-def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, in_block):
-    """Inside an Unsloth compiled block a packed call runs the wrapper eagerly (one graph break),
-    else the traced fallback was SDPA over the dense mask: cuDNN on SM100, a plan per length.
-    A user's own compile (flag off) keeps the wrapped sdpa in its graph."""
+@pytest.mark.parametrize("in_block,leaves", [(True, True), (True, None), (False, True)])
+def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, in_block, leaves):
+    """Inside an Unsloth compiled block a packed call the predicate sends out runs the wrapper
+    eagerly (one graph break). A CPU row (real predicate) and a user's own compile (flag off) keep
+    the wrapped sdpa in the graph."""
     hpa._ORIG_SDPA[0] = _plain_sdpa
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
-    _block_flag(monkeypatch, in_block)
+    _block_flag(monkeypatch, in_block, leaves)
+    leaving = in_block and leaves is True
     lengths = [3, 3]
     module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
     q = torch.randn(1, 4, 6, 16)
@@ -430,7 +437,7 @@ def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, i
     torch.testing.assert_close(out, _plain_sdpa(module, q, q, q, mask)[0] * 2)
     breaks = sum(torch._dynamo.utils.counters["graph_break"].values())
     # CPU rows take the eager wrapper's own fallback, counted only outside a trace.
-    if in_block:
+    if leaving:
         assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + 1
         assert breaks >= 1
     else:
@@ -443,12 +450,57 @@ def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, i
         lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask)[0], backend = "eager", fullgraph = True
     )
     plain(q)
-    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + int(in_block)
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + int(leaving)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("cpu", None, torch.bfloat16, 64, None),
+        ("cuda", 0, torch.bfloat16, 64, -1),  # a window varlen cannot take
+        ("cuda", 0, torch.bfloat16, 512, None),  # past flash
+        ("cuda", 0, torch.bfloat16, 60, None),
+    ],
+)
+def test_compiled_block_keeps_rows_without_a_varlen_win(monkeypatch, args):
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    assert hpa._leaves_block_eager(*args) is False
+
+
+def test_compiled_block_keeps_rows_on_torch_with_cheap_cudnn_plans(monkeypatch):
+    monkeypatch.setattr(hpa, "_SLOW_CUDNN_PLANS", False)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    hpa._LEAVES_BLOCK.clear()
+    assert hpa._leaves_block_eager("cuda", 0, torch.bfloat16, 64, None) is False
+
+
+def test_compiled_block_verdict_is_computed_eagerly_while_tracing(monkeypatch):
+    """The probe runs real tensors once per key; traced instead (an lru_cache wrapper is traced
+    through __wrapped__) it saw fake tensors and kept every row in the graph."""
+    calls = []
+
+    def probe(*key):
+        calls.append(type(torch.zeros(1)) is torch.Tensor)
+        return True
+
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    torch._dynamo.reset()
+    fn = torch.compile(
+        lambda x: x * 2 if hpa._leaves_block("cuda", 0, torch.bfloat16, 64, None) else x,
+        backend = "eager",
+        fullgraph = True,
+    )
+    torch.testing.assert_close(fn(torch.ones(3)), torch.full((3,), 2.0))
+    fn(torch.ones(3))
+    assert calls == [True]
 
 
 @_CUDA
 @_TORCH_VARLEN_HOST
 def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
+    """Real predicate, evaluated while tracing: it must agree with the eager verdict, and a row it
+    sends out takes the varlen kernel."""
     if hpa._torch_varlen(torch.device("cuda", 0)) is None:
         pytest.skip(
             reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
@@ -458,6 +510,7 @@ def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
     hpa._ORIG_SDPA[0] = sdpa_attention_forward
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
     torch.manual_seed(0)
     lengths = [37, 100, 2, 5, 230]
     T, H, n_kv, D = sum(lengths), 8, 2, 64
@@ -475,7 +528,11 @@ def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
     )
     before = hpa.HF_PACKED_ATTENTION_STATS["fast"]
     fast = fn(q, k, v)
-    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before + 1
+    expected = hpa._leaves_block_probe("cuda", 0, torch.bfloat16, D, None)
+    assert hpa._LEAVES_BLOCK[("cuda", 0, torch.bfloat16, D, None)] is expected
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before + int(expected)
+    if hpa._SLOW_CUDNN_PLANS and torch.cuda.get_device_capability(0)[0] == 10:
+        assert expected  # the case this exists for: SM100 picks cuDNN for the dense mask
     ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
     torch.testing.assert_close(fast.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
 

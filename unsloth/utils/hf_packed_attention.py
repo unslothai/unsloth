@@ -339,6 +339,13 @@ def _sdpa_packed_varlen(
         and torch.compiler.is_compiling()
         and kwargs.get("packed_seq_lengths") is not None
         and not _disabled()
+        and _leaves_block(
+            query.device.type,
+            query.device.index,
+            query.dtype,
+            query.shape[-1],
+            _window_key(module, kwargs),
+        )
     ):
         # One graph break per layer; norms, MLP and LoRA around it stay compiled.
         return _sdpa_packed_varlen_eager(
@@ -556,6 +563,56 @@ def _sdpa_packed_varlen(
 
 
 _sdpa_packed_varlen_eager = torch.compiler.disable(_sdpa_packed_varlen)
+
+# Compiled cuDNN SDPA over a dense mask rebuilds a plan per new length: ~0.3-12 s on torch 2.11 (cuDNN
+# 9.19 or 9.20 alike), ~0.15 s on 2.13, where the graph break costs more than it saves (B200).
+_SLOW_CUDNN_PLANS = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (2, 13)
+_LEAVES_BLOCK = {}
+
+
+def _window_key(module, kwargs):
+    window = _sliding_window(module, kwargs)
+    return -1 if window is _NO_WINDOW else window
+
+
+def _leaves_block_eager(device_type, device_index, dtype, head_dim, window):
+    """Packed rows leave a compiled block only to dodge per-length cuDNN plans, and only when the
+    eager wrapper has a varlen kernel for them; elsewhere the graph break is pure cost (T4: +50%)."""
+    key = (device_type, device_index, dtype, head_dim, window)
+    if key not in _LEAVES_BLOCK:
+        _LEAVES_BLOCK[key] = _leaves_block_probe(*key)
+    return _LEAVES_BLOCK[key]
+
+
+def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
+    if (
+        not _SLOW_CUDNN_PLANS
+        or device_type != "cuda"
+        or window == -1
+        or head_dim % 8
+        or head_dim > 256
+    ):
+        return False
+    try:
+        from .flash_impl import flash_impl_allows
+        from .attention_dispatch import FLASH_VARLEN, XFORMERS, select_attention_backend
+        from torch.nn.attention import SDPBackend
+
+        device = torch.device("cuda", device_index)
+        kernel = _torch_varlen(device) is not None and flash_impl_allows(head_dim, window, device)
+        if not kernel and select_attention_backend(use_varlen = True) not in (FLASH_VARLEN, XFORMERS):
+            return False
+        q = torch.zeros(1, 2, 64, head_dim, device = device, dtype = dtype, requires_grad = True)
+        mask = torch.ones(64, 64, dtype = torch.bool, device = device).tril()[None, None]
+        choice = torch._fused_sdp_choice(q, q, q, attn_mask = mask, dropout_p = 0.0, is_causal = False)
+        return choice == int(SDPBackend.CUDNN_ATTENTION)
+    except Exception:
+        return False
+
+
+# Called while tracing with constant arguments: the verdict is baked into the block's graph. Not an
+# lru_cache: Dynamo traces those through __wrapped__, running the probe on fake tensors (always False).
+_leaves_block = torch._dynamo.assume_constant_result(_leaves_block_eager)
 
 
 def enable_hf_packed_attention() -> bool:
