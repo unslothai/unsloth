@@ -199,6 +199,7 @@ def _case_parity(
     gc = False,
     steps = 3,
     tie = None,
+    output_attentions = False,
 ):
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -221,7 +222,17 @@ def _case_parity(
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
     gc_module.collect()
     alive = {k: r() is not None for k, r in originals.items()}
+    seen = []
+    if output_attentions:
+        # Unsloth's tuple-format decoder reads layer_outputs[1] when attentions are requested; a pass-through
+        # layer returns hidden states only, so the stage forward must turn them off.
+        model.config.output_attentions = True
+        hook = model.get_base_model().register_forward_pre_hook(
+            lambda m, a, k: seen.append(k.get("output_attentions")), with_kwargs = True
+        )
     pp_res = _pp_run(model, pp, ids, labels, steps)
+    if output_attentions:
+        hook.remove()
     pp.save_adapter(os.path.join(tmp, "pp"))
     generate_error = None
     try:
@@ -251,6 +262,7 @@ def _case_parity(
         "direct_error": direct_error,
         "tied": pp.parts.tied,
         "alive": alive,
+        "seen_output_attentions": seen,
         "n_params": sum(p.numel() for p in model.parameters()),
     }
 
@@ -627,6 +639,15 @@ def test_pp4_1f1b_matches_one_process():
     _check_parity(
         _spawn("parity", 4, keep = saved, arch = "mistral", schedule = "1f1b", n_mb = 4), saved, 4
     )
+
+
+def test_pp2_stage_forward_turns_off_attention_outputs():
+    saved = {}
+    results = _spawn("parity", 2, keep = saved, arch = "llama", output_attentions = True)
+    _check_parity(results, saved, 2)
+    for res in results:
+        assert res["seen_output_attentions"], res
+        assert all(v is False for v in res["seen_output_attentions"]), res["seen_output_attentions"]
 
 
 def test_pp2_tied_embeddings_kept_on_both_ends():

@@ -609,6 +609,8 @@ class _PPStageModule(nn.Module):
             ctx.stage_input = x
         ctx.active = True
         try:
+            # Pass-through layers return hidden states only: no per-layer attentions / hidden states.
+            kwargs.update(output_attentions = False, output_hidden_states = False)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
             hidden = stop.hidden
