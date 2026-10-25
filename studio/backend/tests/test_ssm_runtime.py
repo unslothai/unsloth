@@ -966,6 +966,35 @@ def test_qwen_gdn_configs_skip_causal_conv1d_when_zoo_covers_decode(monkeypatch,
     assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is False
 
 
+@pytest.mark.parametrize("trust_remote_code", [True, None])
+def test_qwen_gdn_remote_code_keeps_causal_conv1d(monkeypatch, tmp_path, trust_remote_code):
+    # zoo patches the native modeling modules only; a remote implementation may import the package.
+    _zoo_covers_gdn(monkeypatch)
+    config = {
+        "model_type": "qwen3_5",
+        "architectures": ["CustomForCausalLM"],
+        "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+    }
+    target = str(_write_config(tmp_path / "remote", config))
+    kernels = ssm_runtime.resolve_ssm_kernels(
+        "acme/x", target, None, trust_remote_code = trust_remote_code
+    )
+    assert kernels.causal_conv1d is True
+    assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is True
+
+
+def test_qwen_gdn_auto_map_without_trust_remote_code_uses_native_modeling(monkeypatch, tmp_path):
+    # Without trust_remote_code transformers runs the native class, which zoo covers.
+    _zoo_covers_gdn(monkeypatch)
+    config = {
+        "model_type": "qwen3_5",
+        "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+    }
+    target = str(_write_config(tmp_path / "remote", config))
+    kernels = ssm_runtime.resolve_ssm_kernels("acme/x", target, None, trust_remote_code = False)
+    assert kernels.causal_conv1d is False
+
+
 @pytest.mark.parametrize("missing", ["kill_switch", "decode_kernel", "platform"])
 def test_qwen_gdn_request_returns_without_full_zoo_coverage(monkeypatch, missing):
     _zoo_covers_gdn(monkeypatch, decode = missing != "decode_kernel", platform = missing != "platform")

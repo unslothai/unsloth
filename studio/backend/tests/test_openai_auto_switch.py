@@ -2788,6 +2788,9 @@ def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
 
 def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
     """A cache row must load from its exact repo directory, not a case-folded peer."""
+    (tmp_path / "Case").mkdir()
+    if (tmp_path / "case").exists():
+        pytest.skip("case-insensitive file system: the two repo directories are one")
     scanned_repo = tmp_path / "models--Org--Repo"
     scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
     scanned_snapshot.mkdir(parents = True)
@@ -2827,8 +2830,7 @@ def test_hf_cache_entry_excludes_torn_quant_from_selected_snapshot(tmp_path):
     assert entry.variants == ("Q4_K_M",)
 
 
-def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
-    """A repo with no complete quant keeps the pre-existing fallback listing."""
+def test_hf_cache_entry_offers_no_quant_from_a_partial_only_repo(tmp_path):
     repo = tmp_path / "models--org--Repo"
     snapshot = repo / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
@@ -2839,8 +2841,7 @@ def test_hf_cache_entry_keeps_partial_only_fallback(tmp_path):
         SimpleNamespace(id = "org/Repo", path = str(repo), source = "hf_cache"),
     )
 
-    assert entry is not None
-    assert entry.variants == ("Q4_K_M",)
+    assert entry is None
 
 
 def test_selected_snapshot_preserves_local_variant_labels(tmp_path):
@@ -3889,6 +3890,74 @@ def test_preview_scope_disables_auto_switch(monkeypatch):
     # Control: a fresh request without the flag would switch.
     req2 = _Req()
     asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", req2, "tester"))
+    assert len(rec.calls) == 1
+
+
+def test_loaded_models_only_scope_routes_but_never_loads(monkeypatch):
+    # Scheduled runs name the model kept alongside; one unloaded before routing must not come back.
+    backend, rec = _wired(monkeypatch, _FakeBackend(None), ("/p/B", "Q8_0", "org/B-GGUF"))
+    routed = []
+
+    async def route(requested):
+        routed.append(requested)
+        return None
+
+    monkeypatch.setattr(inference_route, "_route_to_extra_slot", route)
+
+    class _Req:
+        def __init__(self, scope):
+            self.scope = scope
+
+    def only():
+        return _Req({inference_route.LOADED_MODELS_ONLY_SCOPE_KEY: True})
+
+    def switch(req):
+        asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", req, "tester"))
+
+    with pytest.raises(HTTPException) as gone:
+        switch(only())
+    assert gone.value.status_code == 404
+    assert routed == ["org/B-GGUF"] and rec.calls == []
+
+    # An omitted model (the reload-only sentinel) is not a name: the loaded one answers.
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, only(), "tester"
+        )
+    )
+    assert rec.calls == []
+
+    # A resident answering to the name serves it, but only under the resident access check:
+    # an account's request never lands on another account's hidden primary.
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", lambda name: True)
+    switch(only())
+    assert rec.calls == []
+
+    async def allowed(*_):
+        return None
+
+    monkeypatch.setattr(inference_route, "_require_named_model_access", allowed)
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inference_route.account_access, "resident_hidden", lambda *a: True)
+    monkeypatch.setattr(
+        inference_route.account_access,
+        "require_model_access",
+        lambda ref: (_ for _ in ()).throw(HTTPException(status_code = 404, detail = "Model not found")),
+    )
+    monkeypatch.setattr(inference_route.account_access, "cached_model_repo", lambda ref: None)
+
+    async def no_token(*_):
+        return False
+
+    monkeypatch.setattr(inference_route, "_caller_token_authorizes_download", no_token)
+    with pytest.raises(HTTPException) as hidden:
+        switch(only())
+    assert hidden.value.status_code == 404 and rec.calls == []
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: False)
+
+    # Control: without the flag the same request loads it.
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", lambda name: False)
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", _Req({}), "tester"))
     assert len(rec.calls) == 1
 
 
@@ -7607,6 +7676,19 @@ def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_st
     assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
 
 
+def test_the_retired_snapshot_path_entry_hands_over_its_mlx_offload(override_store):
+    # A client that predates the offload knobs omits them, so retiring the row a load read keeps them.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", mlx_ple_offload = 1.0)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["mlx_ple_offload"] == 1.0 and entry["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    # An explicit null still resets it.
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, mlx_ple_offload = None)
+    assert "mlx_ple_offload" not in resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
 def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
     path = "/models/Qwen3-8B-Q4_K_M.gguf"
     settings.set_model_override(
@@ -9025,6 +9107,15 @@ def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatc
     assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
     _put("org/m", mlx_int8_prefill = False)
     assert "org/m" not in settings.get_model_overrides()
+
+
+def test_mlx_offload_is_stored_unless_auto_and_survives_a_client_that_omits_it(monkeypatch):
+    _mock_override_store(monkeypatch)
+    knobs = {"mlx_ple_offload": "off", "mlx_expert_offload": 0.5}
+    row = _put("m", **knobs).overrides["m"]
+    assert settings.model_override_load_kwargs(row, is_gguf = False) == row == knobs
+    assert _put("m", mlx_expert_offload = None).overrides["m"] == {"mlx_ple_offload": "off"}
+    assert "m" not in _put("m", mlx_ple_offload = "auto").overrides
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
@@ -11318,6 +11409,12 @@ def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU, raising = False)
     assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is False
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    # The check also asks for torch, which a runner without it would answer False.
+    import importlib.util
+
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: object() if name == "torch" else None
+    )
     assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is True
 
 

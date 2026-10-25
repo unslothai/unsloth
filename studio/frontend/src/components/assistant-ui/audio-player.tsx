@@ -81,7 +81,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
   };
 
   return (
-    <div className="my-2 flex max-w-md items-center gap-3 rounded-xl border bg-muted/50 px-4 py-3">
+    <div className="my-2 flex max-w-md items-center gap-3 rounded-lg border bg-muted/50 px-4 py-3">
       <audio
         ref={audioRef}
         src={src}
