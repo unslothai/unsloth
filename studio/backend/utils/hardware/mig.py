@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""R570 MIG device identities. CUDA enumerates; NVML only supplies memory.
-
-A physical card index and a CUDA device ordinal are separate namespaces. Keep the
-UUID with each ordinal so a worker can reproduce exactly the set that was sized.
-"""
+"""R570+ MIG: CUDA device ordinals (one per GPU instance) joined to NVML slice memory by UUID."""
 
 import json
 import os
@@ -19,32 +15,25 @@ from utils.child_stdio import utf8_child_env
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
-# key -> (monotonic time, rows, state); state is "rows", "legacy" (the probe answered: keep the
-# old rule) or "failed" (no answer; rows may hold retained identities with zero memory).
+# key -> (monotonic time, rows, state); state "rows", "legacy" (old rule) or "failed" (rows keep identities, zero memory).
 _cache = {}
 _flights = {}
 _flights_lock = threading.Lock()
 _FAILED_BACKOFF_S = 5.0
 _ROWS_TTL_S = 60.0
-# A fresh sample this young is shared: polling callers never start more than one child per window.
 _FRESH_SHARE_S = 2.0
-# The parent's ordinal -> MIG uuid map, inherited by spawned workers: their apply_gpu_ids runs
-# before any probe there, so it pins the exact instances the parent sized without re-probing.
+# Parent's ordinal -> MIG uuid map; workers pin from it and never probe.
 _ENV = "UNSLOTH_MIG_CUDA_DEVICES"
 
 
 def possible() -> bool:
-    """MIG runs only on bare-metal Linux with the NVIDIA kernel driver loaded (not WSL), so
-    every other host skips the listing and the probe without starting a process."""
+    """MIG needs bare-metal Linux with the NVIDIA kernel driver (not WSL); elsewhere nothing starts."""
     return sys.platform == "linux" and os.path.isfile("/proc/driver/nvidia/version")
 
 
 def rows_from_payload(payload):
-    """None means legacy/unknown; [] means CUDA confirmed an empty visible set.
-
-    Use the driver's actual UUID enumeration, rather than counting MIG child rows:
-    several CIs can share a GI (and its memory), and containers may expose only some.
-    """
+    """None = legacy/unknown; [] = CUDA confirmed an empty set. Uses CUDA's UUIDs, not MIG row
+    counts: several CIs share a GI, and containers may expose only some."""
     if not isinstance(payload, dict) or payload.get("source") != "nvml":
         return None
     match = re.match(r"(\d+)\.", str(payload.get("driver_version") or ""))
@@ -80,11 +69,8 @@ def rows_from_payload(payload):
 
 
 def _mig_instances(listing):
-    """Physical cards with MIG instances, from the ``nvidia-smi -L`` the NVIDIA paths already
-    read. ``listing`` callers (GGUF placement, which lists on every host anyway) always may start
-    one. The rest reuse a fresh answer, skip when the last answer of any age found none, and
-    start one only when no listing has run this hardware generation, so the first read on a MIG
-    host already uses the instance namespace instead of switching it after the first placement."""
+    """Cards with MIG instances from the cached ``nvidia-smi -L``. Only ``listing`` callers (GGUF
+    placement) may always relist; others list once per hardware generation, then reuse the answer."""
     if listing:
         return nvidia.get_mig_gpu_indices_or_none()
     cached = nvidia._mig_cached()
@@ -97,24 +83,18 @@ def _mig_instances(listing):
 
 
 def visible_devices(*, fresh = False, listing = False):
-    """Bounded out-of-process probe, gated off ordinary hosts; cache identities only.
-
-    Memory callers request a fresh sample. Failed probes back off and retire at the
-    hardware generation boundary, like the other NVIDIA inventory probes.
-    """
+    """R570+ MIG rows from a bounded out-of-process probe, or None (old rule). ``fresh`` for memory."""
     if not possible() or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
         return None
     raw = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not (raw and "mig-" in raw.lower()) and not _mig_instances(listing):
-        # The cached ``nvidia-smi -L`` the NVIDIA paths already read: no MIG instances (or
-        # unknown) keeps the existing rule, and the NVML probe never starts.
         os.environ.pop(_ENV, None)
         return None
     key = _current_key()
     hit = _cached_answer(key, fresh)
     if hit is not _MISS:
         return hit
-    # One probe child per key at a time: concurrent callers wait for it and share its answer.
+    # Single flight per key.
     with _flights_lock:
         flight = _flights.get(key)
         leader = flight is None
@@ -151,10 +131,8 @@ def _cached_answer(key, fresh):
     age = time.monotonic() - entry[0]
     state = entry[2]
     if state == "failed":
-        # A failed probe backs off even for fresh callers, retained identities or not.
         return entry[1] if age < _FAILED_BACKOFF_S else _MISS
     if state == "legacy":
-        # The probe answered that the old rule applies; nothing here carries memory to refresh.
         return None if age < _ROWS_TTL_S else _MISS
     if age < _FRESH_SHARE_S or (not fresh and age < _ROWS_TTL_S):
         return entry[1]
@@ -184,8 +162,7 @@ def _probe():
         if result.returncode != 0:
             return None, False
         payload = json.loads(result.stdout)
-        # Only NVML answers the MIG question; the CUDA fallback means NVML itself failed. An R570+
-        # MIG host whose strict CUDA enumeration failed (no ``cuda_devices``) has not answered either.
+        # Only NVML answers; an R570+ MIG payload without ``cuda_devices`` has not answered either.
         answered = isinstance(payload, dict) and payload.get("source") == "nvml"
         if answered and not isinstance(payload.get("cuda_devices"), list):
             match = re.match(r"(\d+)\.", str(payload.get("driver_version") or ""))
@@ -210,13 +187,11 @@ def _refresh(key, raw):
     else:
         state = "failed"
         if previous is not None and previous[1] is not None:
-            # A failed memory/identity refresh cannot collapse a known device set to
-            # physical cards. Retain identities, but never reuse stale free memory.
+            # Never collapse a known set to physical cards; keep identities, drop stale memory.
             rows = [{**r, "memory_free_mib": "0", "memory_total_mib": "0"} for r in previous[1]]
     _cache[key] = (time.monotonic(), rows, state)
     if key != _current_key():
-        # Retired while it ran (re-detection, a new mask): the worker map belongs to the
-        # current key's probe, never to this one.
+        # Retired while it ran: the worker map belongs to the current key only.
         return rows
     if rows is not None:
         os.environ[_ENV] = json.dumps(
@@ -231,7 +206,7 @@ def _refresh(key, raw):
 
 
 def _inherited_uuids():
-    """The parent's map when it was made under this process's own mask and order, else None."""
+    """The parent's map if made under this process's mask and order, else None."""
     try:
         data = json.loads(os.environ.get(_ENV) or "null")
         if data["key"] != [
@@ -245,16 +220,14 @@ def _inherited_uuids():
 
 
 def mask_for(gpu_ids):
-    """The CUDA_VISIBLE_DEVICES value pinning these CUDA device ids on an R570+ MIG host, or
-    None when this is not one (callers keep their own rule). Workers call this before anything
-    else, so it reads only the map the parent published and never starts a probe."""
+    """CUDA_VISIBLE_DEVICES pinning these ids on an R570+ MIG host, else None. Reads only the
+    published map, never probes."""
     by_id = _inherited_uuids()
     return None if by_id is None else _pin(by_id, gpu_ids)
 
 
 def rows_for(gpu_ids):
-    """The current MIG rows for these CUDA device ids, in order, or None when this is not an R570+
-    MIG host. Raises ValueError for an id outside the visible set."""
+    """MIG rows for these ids in order, None off R570+ MIG; ValueError outside the visible set."""
     rows = visible_devices(fresh = True)
     if rows is None:
         return None
@@ -266,7 +239,6 @@ def rows_for(gpu_ids):
 
 
 def visibility_for(rows, gpu_ids):
-    """Pin only UUIDs in the current parent's enumerated device set."""
     return _pin({int(r["index"]): r["uuid"] for r in rows}, gpu_ids)
 
 

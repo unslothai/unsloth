@@ -320,7 +320,6 @@ function toGpuDevices(
         (d.index_kind === "vulkan" ||
           (data?.device_backend !== "xpu" &&
             (d.index_kind === "physical" || d.index_kind === "cuda_device"))),
-      // The runner pins a MIG instance by its UUID, so CUDA-device ids are usable there too.
       diffusionPinnable:
         diffusionBackend &&
         (d.index_kind === "physical" || d.index_kind === "cuda_device"),

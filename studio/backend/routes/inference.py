@@ -16524,7 +16524,6 @@ async def _override_gpu_ids_still_resolve(
         device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
         from utils.hardware.hardware import current_gpu_index_kind
 
-        # A physical pin on a MIG host (or the reverse) names a different device in the other space.
         current_kind = await asyncio.to_thread(current_gpu_index_kind, is_vulkan)
         if stored_index_kind != current_kind:
             return False

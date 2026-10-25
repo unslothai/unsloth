@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** "cuda_device": an R570+ MIG host, where CUDA enumerates one device per GPU
- *  instance and ids name those devices, not physical cards. A pick saved in one
- *  namespace is never reinterpreted in another (reconcileGpuSelection drops it). */
+/** "cuda_device": R570+ MIG, ids name GPU instances, not cards. */
 export type GpuIndexKind = "physical" | "vulkan" | "cuda_device";
 
 export interface SystemGpuDevice {

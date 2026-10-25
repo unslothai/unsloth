@@ -179,8 +179,7 @@ def _probe_nvml() -> dict | None:
                         "mig": "1",
                     }
                 )
-        # R570 enumerates one CI per GI. Read the driver's UUID order in this
-        # disposable child (cuInit creates no context); NVML indices remain physical.
+        # R570+ enumerates one CI per GI: read CUDA's UUID order here (cuInit, no context).
         cuda_devices = None
         if sys.platform == "linux" and any(r.get("mig") for r in devices):
             match = re.match(r"(\d+)\.", version)
@@ -230,7 +229,7 @@ def _probe_cuda_driver(strict: bool = False) -> dict | None:
         ok = cuda.cuDeviceGetAttribute(ctypes.byref(major), 75, device) == 0
         ok = ok and cuda.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) == 0
         device_uuid = ""
-        # The MIG UUID of the compute instance on a MIG device (CUDA driver API, 11.4+).
+        # The instance's MIG UUID on a MIG device (CUDA 11.4+).
         get_uuid = getattr(cuda, "cuDeviceGetUuid_v2", None) if strict else None
         if get_uuid is not None:
             raw_uuid = (ctypes.c_ubyte * 16)()

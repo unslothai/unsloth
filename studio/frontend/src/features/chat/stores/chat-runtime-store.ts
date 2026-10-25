@@ -2347,7 +2347,6 @@ export function loadedGpuMemoryFields(resp: {
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
       : null;
-    // Managed engines never take Vulkan ordinals; on an R570+ MIG host their ids are CUDA devices.
     const indexKind = managed
       ? cachedPinnableGpuIndexKind() === "cuda_device"
         ? ("cuda_device" as const)

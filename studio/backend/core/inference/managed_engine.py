@@ -57,9 +57,7 @@ def _offline(env) -> bool:
 
 
 def _mig_rows(gpu_ids: list[int]):
-    """The R570+ MIG rows for these CUDA device ids (each with its slice UUID, memory and the
-    nvidia-smi index of its card), or None when this host does not number GPUs that way or the
-    ids cannot be translated reliably, in which case the launch keeps the physical-id behaviour."""
+    """R570+ MIG rows for these ids, or None (untranslatable: keep the physical-id behaviour)."""
     try:
         from utils.hardware import mig
 
@@ -76,9 +74,7 @@ def _mig_rows(gpu_ids: list[int]):
 
 
 def _child_cuda_mask(gpu_ids: list[int]) -> str:
-    """The engine replaces Studio's mask. On an R570+ MIG host the ids are CUDA devices, which a
-    numeric mask would resolve against the whole host: pin the exact instance UUIDs instead. Ids
-    the published map cannot translate keep the numeric mask, as before."""
+    """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
     try:
         from utils.hardware import mig
         pinned = mig.mask_for(gpu_ids)
@@ -121,7 +117,6 @@ def validate_load(engine: str, request) -> list[int]:
             )
     mig_rows = _mig_rows(gpu_ids)
     for position, gpu_id in enumerate(gpu_ids):
-        # R570+ MIG: the ids are CUDA devices; the driver / capability check reads the card behind each.
         checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
         reason = support_reason(engine, checked)
         if reason:
