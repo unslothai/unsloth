@@ -3978,12 +3978,17 @@ export function ModelConfigPage({
     handleSharedConfigEdit();
     markModelConfigDraftEdited(draftKey);
     clearExtraArgsEditForDraft(draftKey);
-    setConfig({
+    const applied: PerModelConfig = {
       ...DEFAULT_PER_MODEL_CONFIG,
       ...next,
       // null, not absent: absent makes a reload inherit the running process's arguments.
       llamaExtraArgs: next.llamaExtraArgs ?? null,
-    });
+    };
+    setConfig(applied);
+    // The arguments are now stored tokens, not the typed text an objection was about. The collapsed
+    // check only tightens, so it would never lift a stale one; it re-flags invalid tokens itself.
+    setExtraArgsLoadable(true);
+    return applied;
   };
 
   // The model loads with whatever was picked last: picking takes effect without a Save.
@@ -3995,8 +4000,8 @@ export function ModelConfigPage({
     setNaming(null);
     const entry = name === null ? null : findSavedRunSettings(savedSets, name);
     const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;
-    applyToPanel(next);
-    const { saved, defaultConfig } = persistConfig(next, entry !== null);
+    // What the panel shows, explicit argument clear included: an omitted field keeps the server's old flags.
+    const { saved, defaultConfig } = persistConfig(applyToPanel(next), entry !== null);
     if (!saved) {
       setPickedSet(entry?.name ?? null);
       toast.error("Couldn't save settings for this model.");

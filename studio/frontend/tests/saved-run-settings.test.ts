@@ -262,7 +262,7 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // Picking a set (or the recommended settings) is what the model loads with next.
   assert.match(
     page,
-    /const pickSet = [\s\S]*?persistConfig\(next, entry !== null\)[\s\S]*?keepSelection\(/,
+    /const pickSet = [\s\S]*?persistConfig\(applyToPanel\(next\), entry !== null\)[\s\S]*?keepSelection\(/,
   );
   // Load saves into the selected set (an edited Default becomes one), so the set and what loads
   // never drift apart.
@@ -330,6 +330,13 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   assert.match(
     page,
     /savePerModelConfig\(configId, variant, stored, evicted\)[\s\S]{0,400}for \(const dropped of evicted\) \{\s*syncModelOverride\(dropped\.modelId, dropped\.ggufVariant, null/,
+  );
+  // A pick persists what the panel shows, so a set without arguments clears the server's old flags,
+  // and it lifts a stale objection to arguments the pick replaced.
+  assert.match(page, /persistConfig\(applyToPanel\(next\), entry !== null\)/);
+  assert.match(
+    page,
+    /setConfig\(applied\);[\s\S]{0,300}setExtraArgsLoadable\(true\);\s*return applied;/,
   );
   // The pencil beside the dropdown renames a set, or names an edited Default before it exists.
   assert.match(
