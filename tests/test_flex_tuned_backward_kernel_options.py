@@ -200,7 +200,9 @@ def test_tuned_backward_compiles_for_small_blocks_and_partial_caller_tiles(monke
         try:
             flex(q, k, v, block_mask = mask).float().sum().backward()
         except Exception as error:
-            pytest.skip(f"this torch cannot compile 16-wide sparse blocks without Unsloth: {type(error).__name__}")
+            pytest.skip(
+                f"this torch cannot compile 16-wide sparse blocks without Unsloth: {type(error).__name__}"
+            )
         q.grad = k.grad = v.grad = None
         torch._dynamo.reset()
     extra = {"kernel_options": {"bwd_BLOCK_M1": 64}} if case == "caller_m1_64" else {}
