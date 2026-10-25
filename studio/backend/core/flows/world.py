@@ -46,6 +46,17 @@ TILE_PROMPTS = {
 }
 # Turns of conversation a reply reads; the world player sends exactly these (MAX_HISTORY in world-state.ts).
 MAX_HISTORY = 24
+# What villagers may do on their own (roles.ts), and the NPC Reply setting that turns them on.
+AUTONOMY_FLAGS = ("trade", "homes", "quests", "rivals", "enemies")
+AUTONOMY_LEVELS = {
+    "off": (),
+    "village": ("trade", "homes"),
+    "rivals": ("trade", "homes", "quests", "rivals"),
+    "full": AUTONOMY_FLAGS,
+}
+NPC_ROLES = ("rival", "hostile")
+# Rivals or hostiles the quest director may add, each (MAX_ADDED_ROLE in roles.ts).
+MAX_ADDED_ROLE = 2
 SUMMARY_CHARS = 600
 
 
@@ -115,6 +126,7 @@ def normalize_world(
             "sprite": n.get("sprite") if isinstance(n.get("sprite"), dict) else None,
             "sprite_prompt": str(n.get("sprite_prompt") or n.get("look") or "")[:400] or None,
             "wander": n.get("wander", True) is not False,
+            **({"role": n["role"]} if n.get("role") in NPC_ROLES else {}),
             **pos(n),
             **_npc_life(n, ref, npc_ids),
         }
@@ -215,6 +227,9 @@ def normalize_world(
     sim = _simulation(raw.get("simulation"), width, height, regions)
     if sim is not None:
         world["simulation"] = sim
+    auto = raw.get("autonomy")
+    if isinstance(auto, dict) and any(auto.get(k) is True for k in AUTONOMY_FLAGS):
+        world["autonomy"] = {k: auto.get(k) is True for k in AUTONOMY_FLAGS}
     return WorldSpec.model_validate(world).model_dump(exclude_none = True)
 
 
@@ -351,6 +366,7 @@ FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag 
 FOLLOW_STOP = re.compile(
     r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
 )
+TRADE_ASK = re.compile(r"\b(buy|sell|trade|for sale|wares|what do you have|how much)\b")
 
 NPC_REPLY_SCHEMA = {
     "type": "object",
@@ -361,6 +377,7 @@ NPC_REPLY_SCHEMA = {
         "complete_quest": {"type": "string"},
         "action": {"type": "string", "enum": ["", *REPLY_ACTIONS]},
         "place": {"type": "string"},
+        "offer_trade": {"type": "string"},
         "set": {
             "type": "array",
             "maxItems": 3,
@@ -412,6 +429,7 @@ DIRECTOR_SCHEMA = {
         "new_npc_name": {"type": "string"},
         "new_npc_persona": {"type": "string"},
         "new_npc_greeting": {"type": "string"},
+        "new_npc_role": {"type": "string", "enum": ["", *NPC_ROLES]},
         "region": {"type": "string"},
     },
     "required": [
@@ -550,6 +568,13 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         out["action"], out["place"] = action, place
     elif action in ("follow_player", "stop_following"):
         out["action"] = action
+    # A villager only offers what they have; asked to trade, one who forgot to offer offers their first good.
+    goods = [g["id"] for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
+    offer = str(raw.get("offer_trade") or "").strip().lower()
+    if offer in goods:
+        out["offer_trade"] = offer
+    elif goods and TRADE_ASK.search(asked):
+        out["offer_trade"] = goods[0]
     if has_memory(state):
         out["remember"] = clean_notes(raw.get("remember"))
     return out
@@ -642,6 +667,17 @@ def director_prompt(state: dict) -> tuple[str, str]:
             "Or invent one new villager to give it (new_npc_name, new_npc_persona, new_npc_greeting) and set "
             "`giver` to their name."
         )
+    roles = {
+        "rival": "rival (races the player for quest items)",
+        "hostile": "hostile (chases and robs the player, never hurts anyone)",
+    }
+    allowed = [roles[r] for r in NPC_ROLES if state.get("allow_npc") and state.get(f"allow_{r}")]
+    if allowed:
+        rules.append(
+            "A new villager may set `new_npc_role` to "
+            + " or ".join(allowed)
+            + " when it suits the story; leave it empty for a friendly villager."
+        )
     if state.get("allow_item") or state.get("allow_npc"):
         rules.append("`region` is the region id where anything new appears.")
     system = (
@@ -703,6 +739,12 @@ def validate_director(raw: Any, state: dict) -> dict:
                 "persona": text("new_npc_persona", 600) or "a friendly newcomer",
                 "greeting": text("new_npc_greeting", 300) or f"Hello, I'm {new_npc_name}.",
                 **({"region": region} if region else {}),
+                **(
+                    {"role": role}
+                    if (role := text("new_npc_role", 20)) in NPC_ROLES
+                    and state.get(f"allow_{role}")
+                    else {}
+                ),
             }
         )
     if giver is None:
@@ -769,6 +811,32 @@ def action_rules(world: dict) -> str:
     )
 
 
+def role_rules(state: dict, npc: dict) -> str:
+    """Lines for a world with autonomy on: the villager's role and what they sell (empty otherwise)."""
+    role = state.get("role") if state.get("role") in NPC_ROLES else None
+    out = ""
+    if role == "rival":
+        out += (
+            "\nYou are the player's rival: competitive and a little smug, racing them for the things they look "
+            "for, but never cruel."
+        )
+    elif role == "hostile":
+        out += (
+            "\nYou are hostile to the player: gruff and threatening, you may demand coins, but you never hurt "
+            "anyone."
+        )
+    goods = [g for g in state.get("goods") or [] if isinstance(g, dict) and g.get("id")]
+    if goods:
+        wares = ", ".join(
+            f"{g.get('name') or g['id']} (id {g['id']}, {g.get('price')} coins)" for g in goods[:7]
+        )
+        out += (
+            f"\nYou sell: {wares}. When the player wants to buy, set `offer_trade` to one of those ids; the "
+            "player decides in the trade panel."
+        )
+    return out
+
+
 def npc_prompt(
     state: dict,
     rules: str,
@@ -802,6 +870,7 @@ def npc_prompt(
     )
     if npc.get("wander") is not False:
         system += action_rules(world)
+    system += role_rules(state, npc)
     # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
     # only when turns are folded, so llama-server keeps reusing the cached prefix.
     history = [
@@ -980,6 +1049,9 @@ def resolve_world_report(
         world["summarise"] = False
     if reply is not None and (reply.get("params") or {}).get("new_quests") is False:
         world["new_quests"] = False
+    level = (reply.get("params") or {}).get("autonomy") if reply is not None else None
+    if level in AUTONOMY_LEVELS and level != "off":
+        world["autonomy"] = {k: k in AUTONOMY_LEVELS[level] for k in AUTONOMY_FLAGS}
     if "npc_reply" not in eps:
         warnings.append("No NPC Reply (live) node: NPCs will only say their greeting")
     sim = world.get("simulation")

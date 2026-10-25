@@ -330,6 +330,8 @@ class WorldNpc(_Strict):
     routine: Optional[str] = None
     relationships: Optional[dict[str, str]] = None
     seed_memories: Optional[list[dict[str, Any]]] = None  # [{text, importance}]
+    # Only read when the world's `autonomy` allows it.
+    role: Optional[Literal["rival", "hostile"]] = None
 
 
 class WorldItem(_Strict):
@@ -383,6 +385,16 @@ class WorldSimulation(_Strict):
     needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
 
 
+class WorldAutonomy(_Strict):
+    """What villagers may do on their own; every flag off keeps the world as it was."""
+
+    trade: bool = False  # make, buy and sell goods
+    homes: bool = False  # claim a free house or build one
+    quests: bool = False  # a rival races the player for quest items
+    rivals: bool = False  # the quest director may add rivals
+    enemies: bool = False  # hostile villagers chase and rob (non-lethal)
+
+
 class WorldSpec(_Strict):
     title: str
     seed: int = 0
@@ -402,6 +414,7 @@ class WorldSpec(_Strict):
     style: Optional[str] = None
     entry_points: dict[str, str] = Field(default_factory = dict)  # e.g. {"npc_reply": "<node id>"}
     simulation: Optional[WorldSimulation] = None
+    autonomy: Optional[WorldAutonomy] = None
 
 
 # Run events (SSE `data:` payloads; `id:` is `seq`)
