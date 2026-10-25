@@ -35,7 +35,12 @@ async def _invoke(
     **kw,
 ):
     return await eng.invoke(
-        app = None, flow_id = "f1", doc = d, entry = entry, inputs = {"state": state or {}}, **kw
+        app = None,
+        flow_id = "f1",
+        doc = d,
+        entry = entry,
+        inputs = {"state": state or {}, "prompt": (state or {}).get("name")},
+        **kw,
     )
 
 
@@ -109,3 +114,220 @@ def test_a_dropped_background_call_stops_within_a_fraction_of_a_second(monkeypat
 
     asyncio.run(go())
     assert stopped_at[0] - left_at[0] < 0.3
+
+
+class _Probe:
+    """Handlers that record when they run and wait to be released, keyed by a name in the state."""
+
+    def __init__(self):
+        self.running: set[str] = set()
+        self.peak: dict[str, set[str]] = {}
+        self.started: dict[str, asyncio.Event] = {}
+        self.gates: dict[str, asyncio.Event] = {}
+        self.order: list[str] = []
+
+    def handler(self, port: str):
+        async def run(ctx):
+            name = (ctx.inputs.get("state") or {}).get("name") or ctx.inputs.get("prompt")
+            self.order.append(name)
+            self.running.add(name)
+            self.peak[name] = set(self.running)
+            self.started.setdefault(name, asyncio.Event()).set()
+            try:
+                await self.gates.setdefault(name, asyncio.Event()).wait()
+            finally:
+                self.running.discard(name)
+            return {port: {}}
+
+        return run
+
+    async def wait_started(self, name: str):
+        await asyncio.wait_for(self.started.setdefault(name, asyncio.Event()).wait(), 5)
+
+    def release(self, name: str):
+        self.gates.setdefault(name, asyncio.Event()).set()
+
+
+def _world(monkeypatch, slots: int):
+    from core.flows import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "chat_slots", lambda: slots)
+    probe = _Probe()
+    eng = _engine(
+        {
+            "world.npc_reply": probe.handler("reply"),
+            "world.npc_plan": probe.handler("plan"),
+            "story.scene_art": probe.handler("image"),
+        }
+    )
+    d = _doc("world.npc_reply", "world.npc_plan", "story.scene_art")
+    return eng, d, probe
+
+
+async def _settle():
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+
+
+def test_chat_calls_on_the_loaded_model_run_side_by_side(monkeypatch):
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        await probe.wait_started("a")
+        await probe.wait_started("b")
+        assert probe.running == {"a", "b"}
+        probe.release("a")
+        probe.release("b")
+        await asyncio.gather(a, b)
+
+    asyncio.run(go())
+
+
+def test_one_slot_keeps_chat_calls_one_at_a_time(monkeypatch):
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 1)
+        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        await probe.wait_started("a")
+        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        await _settle()
+        assert probe.running == {"a"}
+        probe.release("a")
+        await probe.wait_started("b")
+        probe.release("b")
+        await asyncio.gather(a, b)
+
+    asyncio.run(go())
+
+
+def test_an_image_step_waits_for_chat_calls_and_holds_new_ones_back(monkeypatch):
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        await probe.wait_started("a")
+        img = asyncio.create_task(_invoke(eng, d, "story_scene_art", {"name": "img"}))
+        await _settle()
+        # A chat call arriving after the image step waits behind it: the image model may evict the chat model.
+        b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
+        await _settle()
+        assert probe.running == {"a"}
+        probe.release("a")
+        await probe.wait_started("img")
+        await _settle()
+        assert probe.running == {"img"}
+        probe.release("img")
+        await probe.wait_started("b")
+        assert probe.peak["b"] == {"b"}
+        probe.release("b")
+        await asyncio.gather(a, img, b)
+
+    asyncio.run(go())
+
+
+def test_background_calls_leave_a_slot_for_the_player(monkeypatch):
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 2)
+        p1 = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p1"}))
+        await probe.wait_started("p1")
+        p2 = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p2"}))
+        summary = asyncio.create_task(
+            _invoke(eng, d, "world_npc_reply", {"name": "s", "task": "summarise"})
+        )
+        await _settle()
+        assert probe.running == {"p1"}
+        reply = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "player"}))
+        await probe.wait_started("player")
+        assert probe.running == {"p1", "player"}
+        for name in ("p1", "player"):
+            probe.release(name)
+        await asyncio.gather(p1, reply)
+        # The two left share the one background slot: whichever got it first runs alone, then the other.
+        for _ in range(2):
+            for _ in range(500):
+                if probe.running:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(probe.running) == 1, probe.running
+            probe.release(next(iter(probe.running)))
+            await _settle()
+        await asyncio.gather(p2, summary)
+
+    asyncio.run(go())
+
+
+def test_a_cancelled_chat_call_gives_its_slot_back(monkeypatch):
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 4)
+        a = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "a"}))
+        await probe.wait_started("a")
+        a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await a
+        lease = eng.gpu_lock()
+        assert not lease.locked()
+        img = asyncio.create_task(_invoke(eng, d, "story_scene_art", {"name": "img"}))
+        await probe.wait_started("img")
+        probe.release("img")
+        await img
+
+    asyncio.run(go())
+
+
+def test_a_chat_call_that_needs_a_load_waits_to_run_alone(monkeypatch):
+    from core.flows.engine import NeedsExclusiveGpu
+    async def go():
+        eng, d, probe = _world(monkeypatch, slots = 4)
+        loads: list[set[str]] = []
+        tries: list[bool] = []
+
+        async def needs_load(ctx):
+            tries.append(ctx.gpu_shared)
+            if ctx.gpu_shared:
+                raise NeedsExclusiveGpu()
+            loads.append(set(probe.running))
+            return {"reply": {"text": "hi"}}
+
+        eng.handlers["world.npc_reply"] = needs_load
+        eng.handlers["world.npc_plan"] = probe.handler("plan")
+        p = asyncio.create_task(_invoke(eng, d, "world_npc_plan", {"name": "p"}))
+        await probe.wait_started("p")
+        r = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "r"}))
+        await _settle()
+        assert loads == []
+        probe.release("p")
+        out = await asyncio.wait_for(r, 5)
+        await p
+        assert out == {"reply": {"text": "hi"}}
+        assert tries == [True, False]
+        assert loads == [set()]
+
+    asyncio.run(go())
+
+
+def test_ensure_model_never_loads_while_the_lane_is_shared(monkeypatch):
+    from core.flows.engine import NeedsExclusiveGpu
+    from core.flows.nodes import _common
+    from studio_mcp import loading
+
+    loaded: list[str] = []
+
+    async def resident(ctx, kind):
+        return "other/model"
+
+    async def load_llm(*_a, **kw):
+        loaded.append(kw["model"])
+
+    monkeypatch.setattr(_common, "resident_name", resident)
+    monkeypatch.setattr(loading, "load_llm", load_llm)
+
+    class Ctx:
+        gpu_shared = True
+        resident: dict = {}
+        spec: dict = {}
+
+        def set_status(self, *_a):
+            pass
+
+    with pytest.raises(NeedsExclusiveGpu):
+        asyncio.run(_common._ensure_model(Ctx(), "chat", {"repo": "want/model"}, None))
+    assert loaded == []

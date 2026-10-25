@@ -4,8 +4,9 @@
 """The Flows run supervisor.
 
 One asyncio task per run, bound to the run's account. Nodes run in data order: CPU nodes up to ``CPU_CONCURRENCY`` at a
-time, GPU nodes one at a time process-wide (the GPU lock) and, among ready GPU nodes, the one that keeps the resident
-model first, so a flow swaps models as rarely as it can. If and Switch skip the branch they do not take: a node whose
+time, GPU nodes one at a time process-wide (the GPU lease; player chat calls on the loaded model share it, one per
+llama-server slot) and, among ready GPU nodes, the one that keeps the resident model first, so a flow swaps models as
+rarely as it can. If and Switch skip the branch they do not take: a node whose
 required input was skipped is skipped too, and First Available joins branches. Outputs are cached by content key;
 side-effecting nodes never are. Every event carries a per-run ``seq`` and is stored, so a client replays from any
 point. Cancelling stops admitting nodes, asks in-flight nodes to stop through the routes they called, and keeps what
@@ -14,6 +15,7 @@ already finished. Each run reaches Studio as its own internal API key, revoked w
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import base64
 import hashlib
@@ -214,6 +216,8 @@ class RunState:
     approvals: dict = field(default_factory = dict)
     # Monotonic marks of a player call (/invoke): start, GPU wait and hold, first text; read by timing_of().
     marks: dict[str, float] = field(default_factory = dict)
+    # A call the player is not waiting on (summaries, quests, village life): it leaves a chat slot for the player.
+    background: bool = False
 
     def node(self, node_id: str) -> NodeState:
         state = self.nodes.get(node_id)
@@ -363,6 +367,8 @@ class NodeContextImpl:
         self.seed = seed
         self.flow_params = rs.options.get("params") or {}
         self.iteration = iteration
+        # Set while the step shares the GPU lane with other chat calls (no model loads then).
+        self.gpu_shared = False
         self.doc = rs.doc
         self.origin = dict(rs.origin)
         self.outputs_extra: dict[str, Any] = {}
@@ -586,6 +592,93 @@ class NodeContextImpl:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
+# Player entry points that only talk to the chat model already loaded: several of them run at once, one per
+# llama-server slot. Every other GPU step (loads, image, video, audio, training) still runs alone.
+SHARED_CHAT_NODES = frozenset(
+    {"story.next_scene", "world.npc_reply", "world.npc_plan", "world.npc_chat"}
+)
+# Village life and the NPC Reply's summaries and quests run behind the player's back; a slot always stays free for
+# the player's own reply.
+BACKGROUND_NODES = frozenset({"world.npc_plan", "world.npc_chat"})
+BACKGROUND_TASKS = frozenset({"summarise", "director"})
+
+
+class NeedsExclusiveGpu(Exception):
+    """A shared chat step found its model is not the one loaded: it gives the lane back and runs alone."""
+
+
+def chat_slots() -> int:
+    """How many requests the loaded chat model serves at once: llama-server's parallel slots, else 1."""
+    try:
+        from core.inference import llama_admission
+        with llama_admission._QUEUES_LOCK:
+            queues = list(llama_admission._QUEUES.values())
+        return max([int(q._capacity) for q in queues] or [1])
+    except Exception:
+        return 1
+
+
+class GpuLease:
+    """The Flows GPU lane. ``async with lease`` (or ``exclusive()``) runs alone, as the old lock did; ``shared()``
+    holders run side by side on the chat model already loaded, up to its slots, and never while an exclusive
+    holder runs or waits, so a model is never swapped under a generation."""
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._exclusive = False
+        self._waiting = 0
+        self._shared = 0
+        self._background = 0
+
+    def locked(self) -> bool:
+        return self._exclusive or self._shared > 0 or self._waiting > 0
+
+    async def __aenter__(self) -> "GpuLease":
+        async with self._cond:
+            self._waiting += 1
+            try:
+                await self._cond.wait_for(lambda: not self._exclusive and self._shared == 0)
+            finally:
+                self._waiting -= 1
+            self._exclusive = True
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        async with self._cond:
+            self._exclusive = False
+            self._cond.notify_all()
+
+    def exclusive(self) -> "GpuLease":
+        return self
+
+    @contextlib.asynccontextmanager
+    async def shared(
+        self,
+        *,
+        background: bool = False,
+        slots: int = 1,
+    ):
+        slots = max(1, int(slots))
+        # One slot is the player's: background calls take at most the others (all of one when there is only one).
+        cap = max(1, slots - 1) if background else slots
+        async with self._cond:
+            await self._cond.wait_for(
+                lambda: not self._exclusive
+                and self._waiting == 0
+                and self._shared < slots
+                and (not background or self._background < cap)
+            )
+            self._shared += 1
+            self._background += background
+        try:
+            yield
+        finally:
+            async with self._cond:
+                self._shared -= 1
+                self._background -= background
+                self._cond.notify_all()
+
+
 def timing_of(marks: dict[str, float]) -> dict:
     """Milliseconds from the start of a call: waiting for the GPU, first text, the end; after a cancel, how long
     stopping took (until the GPU lane was free again)."""
@@ -608,7 +701,7 @@ def timing_of(marks: dict[str, float]) -> dict:
 class FlowEngine:
     def __init__(self) -> None:
         self.runs: dict[str, RunState] = {}
-        self._gpu_lock: Optional[asyncio.Lock] = None
+        self._gpu_lock: Optional[GpuLease] = None
         self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.handlers: Optional[dict] = None
@@ -618,10 +711,10 @@ class FlowEngine:
         )
         self.revoke_key: Callable[[Optional[int]], None] = flow_caller.revoke_run_key
 
-    def gpu_lock(self) -> asyncio.Lock:
+    def gpu_lock(self) -> GpuLease:
         loop = asyncio.get_running_loop()
         if self._gpu_lock is None or self._loop is not loop:
-            self._gpu_lock = asyncio.Lock()
+            self._gpu_lock = GpuLease()
             self._loop = loop
         return self._gpu_lock
 
@@ -710,6 +803,7 @@ class FlowEngine:
         origin: Optional[str] = "player",
         events: Optional[asyncio.Queue] = None,
         timing: Optional[dict] = None,
+        background: bool = False,
     ) -> dict:
         """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
         ``events`` receives the run's events as they happen, text deltas included, for a streamed answer.
@@ -735,6 +829,12 @@ class FlowEngine:
             k: v for k, v in (inputs or {}).items() if any(p["id"] == k for p in spec["inputs"])
         }
         rs.input_overrides[entry] = overrides
+        state = overrides.get("state")
+        rs.background = (
+            background
+            or spec["type"] in BACKGROUND_NODES
+            or (isinstance(state, dict) and state.get("task") in BACKGROUND_TASKS)
+        )
         # Ports supplied by the player do not need their upstream nodes.
         need = {entry}
         for port, sources in plan.inputs.get(entry, {}).items():
@@ -1309,15 +1409,32 @@ class FlowEngine:
                 if lock.locked():
                     rs.set_status(nid, "waiting", "Waiting for the GPU")
                 rs.marks.setdefault("gpu_wait", time.monotonic())
-                async with lock:
-                    rs.marks.setdefault("gpu_held", time.monotonic())
-                    ctx.check_cancelled()
-                    ctx.count_gpu_op()
-                    if spec.get("exclusive_gpu"):
-                        outputs = await self._exclusive(rs, nid, spec, handler, ctx)
-                    else:
-                        rs.set_status(nid, "running")
-                        outputs = await handler(ctx)
+                outputs = None
+                shared = spec["type"] in SHARED_CHAT_NODES and not spec.get("exclusive_gpu")
+                if shared:
+                    try:
+                        async with lock.shared(background = rs.background, slots = chat_slots()):
+                            rs.marks.setdefault("gpu_held", time.monotonic())
+                            ctx.check_cancelled()
+                            ctx.count_gpu_op()
+                            ctx.gpu_shared = True
+                            rs.set_status(nid, "running")
+                            outputs = await handler(ctx)
+                    except NeedsExclusiveGpu:
+                        shared = None
+                    finally:
+                        ctx.gpu_shared = False
+                if not shared:
+                    async with lock:
+                        rs.marks.setdefault("gpu_held", time.monotonic())
+                        ctx.check_cancelled()
+                        if shared is not None:
+                            ctx.count_gpu_op()
+                        if spec.get("exclusive_gpu"):
+                            outputs = await self._exclusive(rs, nid, spec, handler, ctx)
+                        else:
+                            rs.set_status(nid, "running")
+                            outputs = await handler(ctx)
             else:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)

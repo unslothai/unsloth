@@ -86,6 +86,8 @@ class InvokeBody(BaseModel):
     stream: bool = False
     # Only load the model this entry point answers with, ahead of the first call.
     warm: bool = False
+    # Nobody waits on this call (writing ahead, background upkeep): it leaves a chat slot free for the player.
+    background: bool = False
 
 
 class SessionBody(BaseModel):
@@ -670,6 +672,7 @@ async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
         params = body.params,
         hf_token = _hf_token(request),
         timing = {},
+        background = body.background,
     )
     if body.stream:
         return _invoke_stream(request, engine, call, body)
