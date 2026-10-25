@@ -2616,6 +2616,9 @@ export const sv = {
         noRamReserveHint:
           "Hoppar över minnesmappad inläsning i Windows-versioner som stöds när modellen är helt avlastad till GPU:n, så att dess sidor inte hålls kvar i minnet. Annars behålls minnesmappad inläsning. Nödvändiga CPU-buffertar kan fortfarande använda RAM. Tar bort --no-mmap och --mlock.",
         multiModel: "Behåll flera modeller inlästa",
+        moreSettings: "Fler minnesinställningar",
+        moreSettingsDescription: "Reservering av system-RAM, för stora inläsningar och urladdning vid inaktivitet för bild och video.",
+        openSystemSettings: "Systeminställningar",
         multiModelOff: "Av",
         multiModelFit: "När de får plats",
         multiModelAlways: "Alltid",

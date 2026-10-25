@@ -2541,6 +2541,9 @@ export const he = {
         noRamReserveHint:
           "מדלג על טעינה ממופת זיכרון (Memory-mapped) בגרסאות Windows נתמכות כאשר המודל נפרק במלואו ל-GPU, כך שדפי הזיכרון שלו אינם נשמרים כתושבים. במקרים אחרים שומר על טעינה ממופת זיכרון. חוצצי CPU נדרשים עדיין יכולים להשתמש ב-RAM. מבטל את --no-mmap ו---mlock.",
         multiModel: "השאר מספר מודלים טעונים",
+        moreSettings: "הגדרות זיכרון נוספות",
+        moreSettingsDescription: "הקצאת זיכרון מערכת, טעינות גדולות מדי ופריקה במצב סרק לתמונה ולווידאו.",
+        openSystemSettings: "הגדרות מערכת",
         multiModelOff: "כבוי",
         multiModelFit: "כשהם נכנסים",
         multiModelAlways: "תמיד",

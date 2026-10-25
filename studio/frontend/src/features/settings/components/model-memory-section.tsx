@@ -8,9 +8,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { ALLOW_OVERSIZED_LOAD_STORAGE_KEY } from "@/lib/unified-memory-load-refusal";
@@ -28,6 +31,7 @@ import {
   loadMultiModelMode,
   updateMultiModelMode,
 } from "../api/multi-model";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { MediaIdleUnloadSetting } from "./model-auto-switch-section";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -316,7 +320,25 @@ export function ModelMemorySection({
       )}
       {full ? (
         <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
-      ) : null}
+      ) : (
+        <SettingsRow
+          label={t("settings.resources.modelMemory.moreSettings")}
+          description={t("settings.resources.modelMemory.moreSettingsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              useSettingsDialogStore
+                .getState()
+                .openDialog("resources", { scrollTarget: "resources-model-memory" })
+            }
+          >
+            {t("settings.resources.modelMemory.openSystemSettings")}
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
+          </Button>
+        </SettingsRow>
+      )}
     </SettingsSection>
   );
 }
