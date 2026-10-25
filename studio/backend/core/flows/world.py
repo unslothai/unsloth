@@ -44,7 +44,7 @@ TILE_PROMPTS = {
     "tree": "dense tree canopy seen from above",
     "rock": "mossy grey boulders",
 }
-# Turns of conversation a reply reads; the world player sends exactly these (MAX_HISTORY in world-state.ts).
+# Keep in sync with MAX_HISTORY in world-state.ts.
 MAX_HISTORY = 24
 SUMMARY_CHARS = 600
 
@@ -527,7 +527,6 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
 
 
 def talk_summary(state: dict) -> tuple[str, int]:
-    """What the NPC remembers of turns already folded away, and the seq of the last turn it covers (-1 for none)."""
     s = state.get("summary") if isinstance(state.get("summary"), dict) else {}
     text = re.sub(r"\s+", " ", str(s.get("text") or "")).strip()[:SUMMARY_CHARS]
     upto = s.get("upto")
@@ -628,8 +627,7 @@ def npc_prompt(
     )
     if npc.get("wander") is not False:
         system += action_rules(world)
-    # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
-    # only when turns are folded, so llama-server keeps reusing the cached prefix.
+    # Summary lives in the system prompt (changes only on fold) so llama-server reuses the cached prefix.
     history = [
         h
         for h in state.get("history") or []

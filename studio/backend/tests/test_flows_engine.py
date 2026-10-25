@@ -592,7 +592,6 @@ async def test_an_error_outside_a_handler_fails_the_run():
 
 @run_async
 async def test_a_cancelled_invoke_stops_its_model_call_through_the_cancel_hooks():
-    # A dropped invoke must run the model call's cancel hook, or llama-server keeps generating.
     started = asyncio.Event()
     stopped = []
 
