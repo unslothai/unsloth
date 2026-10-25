@@ -193,7 +193,7 @@ def gkd_trainer_generate_before_counting(function_name, function):
     generation = function[start:end]
     function = (
         function[:start]
-        + '''        pending = getattr(self, "_unsloth_gkd_pending_batches", None)
+        + """        pending = getattr(self, "_unsloth_gkd_pending_batches", None)
         if pending is not None:
             batches, batch_args, batch_kwargs = pending
             self._unsloth_gkd_pending_batches = None
@@ -213,7 +213,7 @@ def gkd_trainer_generate_before_counting(function_name, function):
             num_items_in_batch = inputs.pop("_unsloth_gkd_num_items")
         else:
             self._unsloth_prepare_gkd_batch(model, inputs)
-'''
+"""
         + function[end:]
     )
     # Prepare the whole accumulation window before counting its replacement
@@ -222,13 +222,13 @@ def gkd_trainer_generate_before_counting(function_name, function):
         function
         + "\n    def _unsloth_prepare_gkd_batch(self, model, inputs):\n"
         + generation
-        + '''
+        + """
     def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
         batches, count = super().get_batch_samples(epoch_iterator, num_batches, *args, **kwargs)
         if self.lmbda > 0 or self.seq_kd:
             self._unsloth_gkd_pending_batches = (batches, args, kwargs)
         return batches, count
-'''
+"""
     )
 
 
