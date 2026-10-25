@@ -169,8 +169,7 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Show installable options and preserve the selected value if it became unavailable, even when
- *  no options resolved: a Select whose value has no item renders blank. */
+/** Keep the selected value as an item even with no options: a Select whose value has no item renders blank. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,

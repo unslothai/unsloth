@@ -8335,8 +8335,7 @@ def _arm_load_probe_memo() -> None:
     against VRAM that has since been allocated. `_load_probe_memo_scope` on the load
     call owns the lifetime, so this never has to be unwound by hand.
     """
-    # Already armed by an earlier placement step of this load: keep its rows, so the
-    # launch reuses that answer instead of asking the subprocess a second time.
+    # Already armed this load: keep the rows the launch reuses.
     if _load_probe_memo_armed():
         return
     _LOAD_PROBE_STATE.armed = True
@@ -16246,14 +16245,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _vulkan_probe_outcome(binary: Optional[str] = None) -> str:
-        """How this load's Vulkan probe ended: ``devices``, ``none`` (enumerated zero),
-        ``timeout`` (no answer in time; a slow healthy driver looks the same),
-        ``crashed`` (driver fault) or ``error`` (anything else, including an outcome
-        that was not recorded).
-
-        Reads the per-load memo ``_run_vulkan_probe`` fills, so it costs no extra
-        subprocess. Outside a load the memo is unarmed and only ``devices`` or
-        ``error`` can come back, which no caller acts on.
+        """``devices``, ``none`` (enumerated zero), ``timeout``, ``crashed`` or ``error``,
+        from this load's probe memo. Unarmed (outside a load) only ``devices`` / ``error``.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -25577,9 +25570,7 @@ class LlamaCppBackend:
             return intent
         if not source_matches and not self.matches_load_source(intent):
             return intent
-        # A reload after a zero-device probe or a stall replay is decided by that load's own
-        # (single, memoised) probe: only a conclusive zero-device answer takes the CPU route,
-        # and devices, a timeout or a fault launch Vulkan, where the stall rule judges a hang.
+        # Decided by this load's own probe: only a zero-device answer takes the CPU route.
         if not source_matches and self._cpu_fallback_reason in (
             "vulkan_no_device",
             "vulkan_startup_stall",
@@ -27605,8 +27596,7 @@ class LlamaCppBackend:
                     # `--fit on`, yet `gpu_indices` is restored from `gpu_ids` below
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
-                    # After the download, so the rows are fresh: the launch below reads the
-                    # same Vulkan answer instead of probing (up to 15 s) a second time.
+                    # After the download, so the launch reuses fresh rows instead of re-probing (15 s).
                     if self._is_vulkan_backend(binary):
                         _arm_load_probe_memo()
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
@@ -33780,9 +33770,7 @@ class LlamaCppBackend:
                         timeout = min(timeout, self._SUSPECT_VULKAN_STALL_TIMEOUT_S)
                         floor = timeout
                     elif not _vulkan_suspect:
-                        # A probe that listed a device only ever fails with advice, never moves
-                        # to CPU: CPU work counts as progress (a first shader compile), and only
-                        # a far larger ceiling ends a driver that spins forever.
+                        # Listed device: ends with advice only, so CPU work (shader compile) is progress.
                         per_gib *= self._LISTED_VULKAN_CEILING_FACTOR
                         floor = timeout * self._LISTED_VULKAN_CEILING_FACTOR
                     ceiling = (model_size or 0) / (1 << 30) * per_gib
@@ -34219,10 +34207,8 @@ class LlamaCppBackend:
                     raise RuntimeError(detail)
 
                 def _recover_vulkan_stall(stalled_cmd: list[str]) -> bool:
-                    """The stall rule for any auto-Vulkan health wait (#142), the first launch or a
-                    later bounded retry. A probe that could not enumerate (timed out or faulted)
-                    plus a child that did no loading work replays this load on CPU: True once up,
-                    False if that replay could not start. Any other stall fails with advice."""
+                    """A probe that could not enumerate plus no loading work replays on CPU (True
+                    once up, False if it could not start); any other stall fails with advice."""
                     if (
                         _vulkan_suspect
                         and getattr(self, "_health_wait_stall_kind", None) == "no_progress"
@@ -34526,9 +34512,7 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_cuda_ctx_notice)
 
-                # Zero Vulkan devices: the bundle would still init a driver that can hang
-                # or crash (#7213, #142). A timed-out or faulted probe stays on Vulkan, and
-                # nothing is remembered across loads: every load re-probes.
+                # Zero Vulkan devices: the bundle would still init a driver that can hang (#7213).
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
@@ -34655,11 +34639,7 @@ class LlamaCppBackend:
                     "Load cancelled during the llama-server health wait"
                 ):
                     return False
-                # A stalled auto-Vulkan launch (#142). Every rung below relaunches the same
-                # driver, so this ends the load either way. A stall alone does not prove the
-                # GPU unusable: only a probe that could not enumerate (timed out or faulted)
-                # plus a child that did no loading work for the whole window replays this
-                # load on CPU. A probe that listed a device fails with advice instead.
+                # Stalled auto-Vulkan launch (#142): every rung below relaunches the same driver.
                 if not healthy and _vulkan_stall_pending():
                     _stalled_cmd = list(_last_spawn_cmd)
                     self._kill_process()
@@ -35514,8 +35494,7 @@ class LlamaCppBackend:
                             )
                             extra_args = _fb_stripped_extras
 
-                # A later bounded retry (no-flash, drafterless, ...) that stalled gets the same
-                # rule as the first launch: a live child has no exit code for the crash gate.
+                # A stalled later retry: a live child has no exit code for the crash gate.
                 if not healthy and _vulkan_stall_pending():
                     _stalled_cmd = list(_last_spawn_cmd)
                     self._kill_process()
@@ -35731,7 +35710,6 @@ class LlamaCppBackend:
                                     "Load cancelled during the text-only retry health wait"
                                 ):
                                     return False
-                                # A stalled text-only retry: the same stall rule as every launch.
                                 if _vulkan_stall_pending():
                                     if _recover_vulkan_stall(
                                         _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
@@ -39209,10 +39187,8 @@ class LlamaCppBackend:
     ) -> bool:
         """Poll /health until success, exit, cancellation, or a startup stall.
 
-        ``cpu_counts_as_progress`` False renews the stall deadline on loading work only
-        (RSS, bytes read, page faults): a GPU driver spinning in device init or shader
-        compilation burns CPU forever without the server ever coming up (#142).
-        ``max_total_s`` caps the whole wait, renewals included, and ends it as a stall.
+        ``cpu_counts_as_progress`` False renews only on loading work (RSS, reads, faults):
+        a spinning GPU driver burns CPU forever (#142). ``max_total_s`` caps the whole wait.
         """
         deadline = time.monotonic() + timeout
         ceiling = deadline - timeout + max_total_s if max_total_s is not None else None
