@@ -157,6 +157,10 @@ def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> 
 
     One HEAD, no body: the caller only needs to know whether the local copy is still the current
     one, and an offline or erroring host must leave today's verdict alone."""
+    from core.inference import hub_reachability
+
+    if hub_reachability.hub_unreachable():
+        return None  # the Hub failed to connect moments ago: unanswerable, without another timeout
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         meta = get_hf_file_metadata(
@@ -164,8 +168,10 @@ def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> 
             token = hf_token,
             timeout = _HEADER_TIMEOUT_SECONDS,
         )
-    except Exception:  # noqa: BLE001 — a revision we cannot read is not a verdict
+    except Exception as exc:  # noqa: BLE001 — a revision we cannot read is not a verdict
+        hub_reachability.note_hub_failure(exc)
         return None
+    hub_reachability.note_hub_success()
     return getattr(meta, "commit_hash", None) or None
 
 

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import {
+  detailerFromInfotext,
+  detailerInfotextNotApplied,
+  detailerRecordOf,
+  type DetailerRecord,
+} from "./detailer.ts";
+import { parseHiresInfotext } from "./hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
+import type { SdControlsCapability } from "./sd-controls.ts";
 
 /** Generation settings in exported images, read back from dropped ones. PNG: `unsloth` + `parameters` text chunks;
  *  JPEG / WebP: EXIF UserComment (`parameters`, read by AUTOMATIC1111 / Forge / Civitai) + MakerNote (recipe). */
@@ -753,6 +761,9 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   if (escaped.length > 0) out.prompt_escaped_brackets = escaped;
   const notApplied: string[] = networks.other.slice();
   const hires: Record<string, string> = {};
+  // ADetailer's own keys (adetailer/args.py), read as one Detailer pass.
+  const adetailer: Record<string, string> = {};
+  const adetailerLabels: Record<string, string> = {};
   let legacySchedule: string | undefined;
   for (const [label, value] of hasSettings ? fields : []) {
     const key = label.toLowerCase();
@@ -794,11 +805,33 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       if (names.length > 0) out.textual_inversions = names;
     }
     else if (key === "shift" && n !== undefined) out.shift = n;
+    // Studio's compare grid: its adapters by exact id (Hub ones too, which a prompt tag matches only locally) and
+    // the prompt enhancer it forced off.
+    else if (key === "loras" && value) {
+      // CSV items: an entry whose id holds a comma or quote is written "id: weight" with "" for a quote.
+      const items = [...value.matchAll(/\s*(?:"((?:[^"]|"")*)"|([^,]+))\s*(?:,|$)/g)].map((m) =>
+        m[1] !== undefined ? m[1].replace(/""/g, '"') : (m[2] ?? "").trim(),
+      );
+      const loras = items.flatMap((item) => {
+        const at = item.lastIndexOf(":");
+        return at > 0 ? [`${item.slice(0, at).trim()}:${item.slice(at + 1).trim()}`] : [];
+      });
+      if (loras.length > 0) out.loras = loras;
+    } else if (key === "prompt enhancement" && value.toLowerCase() === "off") out.prompt_enhancement = "off";
+    // Flux's resolution-dependent shift, as Studio's compare grid writes it.
+    else if (key === "base shift" && n !== undefined) out.base_shift = n;
+    else if (key === "max shift" && n !== undefined) out.max_shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
+    // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
     else if (key === "emphasis") {
-      if (value && value.toLowerCase() !== "original")
+      if (value.toLowerCase() === "none") out.prompt_weighting = false;
+      else if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
+    else if (key.startsWith("adetailer ")) {
+      adetailer[key] = value;
+      adetailerLabels[key] = label;
+    }
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
@@ -824,12 +857,19 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       notApplied.push(`${label}: ${value}`);
   }
   out.schedule_type ??= legacySchedule;
+  const hadHires = Object.keys(hires).length > 0;
+  // Maps Hires upscale / steps / upscaler / CFG Scale; whatever stays in `hires` is named as not applied.
+  if (hadHires) Object.assign(out, parseHiresInfotext(hires, typeof out.strength === "number" ? out.strength : undefined, { width: out.width, height: out.height }));
   const hiresKeys = Object.keys(hires);
   if (hiresKeys.length > 0) out.hires = hires;
+  const detailer = detailerFromInfotext(adetailer);
+  if (detailer) out.detailer = detailer;
+  for (const key of detailerInfotextNotApplied(adetailer))
+    notApplied.push(`${adetailerLabels[key]}: ${adetailer[key]}`);
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
   // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {
-    if (hiresKeys.length > 0) delete out.strength;
+    if (hadHires) delete out.strength;
     else
       out.workflow ??=
         out.mask_blur !== undefined ||
@@ -903,6 +943,12 @@ export interface RestorableRecipe {
   model_kind?: string;
   sampler?: string;
   schedule_type?: string;
+  // SDXL controls (lib/sd-controls); absent = off, except prompt_weighting (absent = on).
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  cfg_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
   shift?: number;
   base_shift?: number;
   max_shift?: number;
@@ -912,6 +958,15 @@ export interface RestorableRecipe {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  detailer?: DetailerRecord | null;
+  upscale_model?: string | null;
+  hires_scale?: number;
+  hires_denoise?: number;
+  hires_steps?: number;
+  hires_upscaler?: string;
+  hires_guidance?: number;
+  hires_base_width?: number;
+  hires_base_height?: number;
 }
 
 export const APPLIED_RECIPE_KEYS = [
@@ -933,6 +988,10 @@ export const APPLIED_RECIPE_KEYS = [
   "localized_edit",
   "sampler",
   "schedule_type",
+  "clip_skip",
+  "cfg_rescale",
+  "variation_seed",
+  "variation_strength",
   "shift",
   "base_shift",
   "max_shift",
@@ -941,6 +1000,15 @@ export const APPLIED_RECIPE_KEYS = [
   "mask_blur",
   "inpaint_only_masked",
   "inpaint_padding",
+  "detailer",
+  "upscale_model",
+  "hires_scale",
+  "hires_denoise",
+  "hires_steps",
+  "hires_upscaler",
+  "hires_guidance",
+  "hires_base_width",
+  "hires_base_height",
 ] as const;
 
 /** Known but not applied: loading a model or a ControlNet image stays the user's call. */
@@ -964,6 +1032,7 @@ export const INFO_RECIPE_KEYS = [
   "engine",
   "generator",
   "schema_version",
+  "prompt_weighting",
   // The prompt names the embeddings it used, so restoring the prompt is what applies them.
   "embeddings",
 ] as const;
@@ -973,10 +1042,6 @@ export const RECIPE_SCHEMA_VERSION = 1;
 
 /** Read from AUTOMATIC1111 text but not sent by this build. */
 export const PENDING_RECIPE_KEYS = [
-  "clip_skip",
-  "cfg_rescale",
-  "variation_seed",
-  "variation_strength",
   "hires",
   "lora_tags",
   "prompt_emphasis",
@@ -1023,18 +1088,24 @@ const bounded = (r: ImportedRecipe, key: keyof typeof RECIPE_BOUNDS): number | u
 };
 
 /** `family`: the loaded model's family, when one is loaded. `parsesEmphasis`: the loaded engine reads
- *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not. */
+ *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not.
+ *  `sdControls`: status `sd_controls`; only the controls it lacks are named. */
 export function importNotApplied(
   r: ImportedRecipe,
   family?: string | null,
   parsesEmphasis = false,
+  sdControls?: SdControlsCapability | null,
 ): string[] {
   const out: string[] = [];
+  const literal = literalPromptNotApplied(r, parsesEmphasis, sdControls);
+  if (literal) out.push(literal);
+  // Weighting off reads brackets and escapes as typed, which an engine without the parser does too.
+  if (sdControls?.prompt_weighting || r.prompt_weighting === false) parsesEmphasis = true;
   if (!parsesEmphasis && Array.isArray(r.prompt_emphasis) && r.prompt_emphasis.length > 0) {
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
     const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");
     out.push(`prompt emphasis (${shown}) is passed as plain text`);
-  }
+  } else if (!parsesEmphasis && r.prompt_weighting) out.push("prompt weighting");
   if (
     !parsesEmphasis &&
     Array.isArray(r.prompt_escaped_brackets) &&
@@ -1054,14 +1125,23 @@ export function importNotApplied(
   // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
   // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
   // Elsewhere Studio applies no clip skip, so anything past A1111's default 1 is not applied.
-  if (clipSkip !== undefined && clipSkip > (family === "sdxl" ? 2 : 1))
-    out.push(`Clip skip ${clipSkip}`);
+  const clipMax = sdControls?.clip_skip?.max;
+  if (clipSkip !== undefined && clipSkip > (family === "sdxl" ? 2 : 1)) {
+    if (clipMax === undefined) out.push(`Clip skip ${clipSkip}`);
+    else if (clipSkip > clipMax) out.push(`Clip skip ${clipSkip} (clamped to ${clipMax})`);
+  }
   const rescale = num(r.cfg_rescale);
-  if (rescale !== undefined && rescale !== 0)
-    out.push(`CFG rescale ${rescale}`);
+  if (rescale !== undefined && rescale !== 0) {
+    // recipeSettings clamps to the request's [0, 1], the request to the model's max.
+    const hi = sdControls?.cfg_rescale ? Math.min(1, sdControls.cfg_rescale.max) : undefined;
+    const sent = hi === undefined ? undefined : clamp(rescale, 0, hi);
+    if (sent === undefined) out.push(`CFG rescale ${rescale}`);
+    else if (sent !== rescale) out.push(`CFG rescale ${rescale} (clamped to ${sent})`);
+  }
   const variation = num(r.variation_seed);
   const variationStrength = num(r.variation_strength);
-  if (variation !== undefined && variationStrength !== 0) {
+  if (variationApplies(r, sdControls)) {
+  } else if (variation !== undefined && variationStrength !== 0) {
     out.push(
       `variation seed ${variation}${variationStrength !== undefined ? ` (strength ${variationStrength})` : ""}`,
     );
@@ -1084,6 +1164,33 @@ export function importNotApplied(
       if (typeof item === "string") out.push(item);
   }
   return out;
+}
+
+/** A run that turned prompt weighting off (its prompt has attention syntax) cannot be replayed literally on an
+ *  engine that always parses that syntax itself (sd.cpp) and has no off switch. */
+export function literalPromptNotApplied(
+  r: ImportedRecipe | { prompt_weighting?: boolean | null },
+  parsesEmphasis: boolean,
+  sdControls?: SdControlsCapability | null,
+): string | null {
+  return r.prompt_weighting === false && parsesEmphasis && !sdControls?.prompt_weighting
+    ? "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)"
+    : null;
+}
+
+/** The variation seed restores only on a model that offers it, for text-to-image (and ControlNet):
+ *  the backend refuses it for a workflow that derives its noise from a source image. */
+export function variationApplies(
+  r: ImportedRecipe,
+  sdControls?: SdControlsCapability | null,
+): boolean {
+  const strength = num(r.variation_strength);
+  if (!sdControls?.variation_seed || strength === undefined || strength <= 0) return false;
+  // Out of the request's bounds (32-bit seed, strength up to 1) it would restore changed: a random seed, a clamped strength.
+  const seed = num(r.variation_seed);
+  if (strength > 1 || (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 2 ** 32))) return false;
+  const workflow = typeof r.workflow === "string" ? r.workflow : undefined;
+  return workflow === undefined || workflow === "txt2img" || workflow === "create" || workflow === "controlnet";
 }
 
 /** How importNotApplied names a TI hashes embedding; the page re-labels the ones it matched. */
@@ -1180,6 +1287,14 @@ export function recipeSettings(
     model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
+    prompt_weighting: r.prompt_weighting === false ? false : undefined,
+    clip_skip: clamp(int(r.clip_skip), 1, 12),
+    cfg_rescale: clamp(num(r.cfg_rescale), 0, 1),
+    variation_seed: (() => {
+      const n = int(r.variation_seed);
+      return n !== undefined && n >= 0 && n < 2 ** 32 ? n : undefined;
+    })(),
+    variation_strength: clamp(num(r.variation_strength), 0, 1),
     // The request's bounds: shift in (0, 100], base / max shift in [0, 100].
     shift: (() => {
       const n = num(r.shift);
@@ -1201,7 +1316,32 @@ export function recipeSettings(
         ? r.inpaint_only_masked
         : undefined,
     inpaint_padding: bounded(r, "inpaint_padding"),
+    detailer: detailerRecordOf(r.detailer),
+    ...hiresRecipeFields(r),
   };
+}
+
+function hiresRecipeFields(r: ImportedRecipe): Partial<RestorableRecipe> {
+  const out: Partial<RestorableRecipe> = {};
+  const upscaleModel = str(r.upscale_model);
+  if (upscaleModel) out.upscale_model = upscaleModel;
+  const scale = clamp(num(r.hires_scale), 1, 4);
+  if (scale === undefined) return out;
+  out.hires_scale = scale;
+  out.hires_denoise = clamp(num(r.hires_denoise), 0, 1);
+  const steps = int(r.hires_steps);
+  if (steps !== undefined && steps > 0) out.hires_steps = Math.min(steps, 100);
+  const upscaler = str(r.hires_upscaler);
+  if (upscaler) out.hires_upscaler = upscaler;
+  const cfg = clamp(num(r.hires_guidance), 0, 20);
+  if (cfg !== undefined) out.hires_guidance = cfg;
+  const w = int(r.hires_base_width);
+  const h = int(r.hires_base_height);
+  if (w && h && w > 0 && h > 0) {
+    out.hires_base_width = w;
+    out.hires_base_height = h;
+  }
+  return out;
 }
 
 const LORA_EXTENSIONS = /\.(safetensors|gguf|ckpt|pt|bin)$/i;

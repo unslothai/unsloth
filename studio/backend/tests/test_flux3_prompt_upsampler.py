@@ -11,6 +11,7 @@ import hashlib
 import io
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1413,6 +1414,268 @@ def test_model_and_projector_come_from_one_revision(monkeypatch):
     assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
 
 
+_OLD_REV = "1" * 40
+_NEW_REV = "2" * 40
+
+
+@pytest.fixture
+def offline_upsampler_cache(monkeypatch, tmp_path):
+    """An offline HF cache holding what an install made before the UD-Q4_K_XL default has: Q4_K_M + projector."""
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    repo = tmp_path / f"models--{pup.UPSAMPLER_REPO.replace('/', '--')}"
+
+    def put(revision, name):
+        path = repo / "snapshots" / revision / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"gguf")
+        (repo / "refs").mkdir(parents = True, exist_ok = True)
+        (repo / "refs" / "main").write_text(revision)
+        return str(path)
+
+    put(_OLD_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    old = put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])
+    return put, old
+
+
+def test_an_install_holding_only_the_earlier_q4_k_m_keeps_enhancing_offline(
+    monkeypatch, offline_upsampler_cache
+):
+    _put, old = offline_upsampler_cache
+    assert pup.UPSAMPLER_MODEL_FILE != pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    assert pup.model_path() == old
+    assert pup.mmproj_path().endswith(pup.UPSAMPLER_MMPROJ_FILE)
+    status = pup.status()
+    assert status["downloaded"] and status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    # The download still fetches the current default: the earlier file does not complete it.
+    assert status["current_downloaded"] is False
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID, revision = _OLD_REV) is None
+
+    sidecar = _FakeSidecar(reply = "An enhanced caption.")
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(pup, "get_sidecar", lambda: sidecar)
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == "applied" and out.encoded("a cat") == "An enhanced caption."
+    assert [call["model"] for call in sidecar.calls] == [old]
+
+
+def test_the_default_quant_wins_once_it_is_downloaded(offline_upsampler_cache):
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new
+    assert pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) == (
+        new,
+        new.replace(pup.UPSAMPLER_MODEL_FILE, pup.UPSAMPLER_MMPROJ_FILE),
+    )
+
+
+def test_a_complete_earlier_pair_beats_a_default_model_with_no_projector(offline_upsampler_cache):
+    """An interrupted default download (model, no projector) must not hide a complete earlier quant + projector:
+    edits would otherwise drop their reference images."""
+    put, old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])  # refs/main back on the complete revision
+    assert pup.model_path() == old
+    assert pup.mmproj_path() == old.replace(
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE
+    )
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    # The default is still not complete at one revision, so the control stays offered; both blobs are on disk.
+    assert status["current_downloaded"] is False and status["current_missing_bytes"] == 0
+
+
+def test_a_default_model_alone_still_runs_text_only(offline_upsampler_cache):
+    """No complete pair anywhere: the default model (no projector) still wins over an earlier model alone."""
+    put, old = offline_upsampler_cache
+    Path(old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)).unlink()
+    new = put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    assert pup.model_path() == new and pup.mmproj_path() is None
+
+
+def test_an_earlier_quant_serving_still_offers_the_default_download(offline_upsampler_cache):
+    """Run availability (downloaded / mmproj_downloaded) is not download completion: the current default stays
+    offered while an earlier quant serves."""
+    status = pup.status()
+    assert status["downloaded"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is False
+    assert status["current_filename"] == pup.UPSAMPLER_MODEL_FILE
+    assert status["current_missing_bytes"] == pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
+    status = pup.status()
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
+
+
+def test_a_q8_0_pair_is_not_offered_the_smaller_default(offline_upsampler_cache):
+    """Q8_0 is closer to BF16 than the default: serving it, the panel offers no download "for better captions"."""
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILES["Q8_0"])
+    status = pup.status()
+    assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q8_0"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
+
+
+def test_an_earlier_model_alone_reports_the_whole_default_download(offline_upsampler_cache):
+    """An earlier quant with no projector serves text-only prompts, but the Download fetches the default model AND the
+    projector: the status names the earlier file and prices both, which the panel reads instead of the projector size."""
+    _put, old = offline_upsampler_cache
+    Path(old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)).unlink()
+    status = pup.status()
+    assert status["downloaded"] and not status["mmproj_downloaded"]
+    assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"] != status["current_filename"]
+    assert status["current_downloaded"] is False
+    assert status["current_missing_bytes"] == (
+        pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+        + pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MMPROJ_FILE]
+    )
+
+
+def test_nothing_downloaded_is_still_unavailable(monkeypatch, tmp_path):
+    from core.inference import stt_sidecar
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: tmp_path)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/bin/llama-server")
+    assert pup.model_path() is None and pup.status()["filename"] == pup.UPSAMPLER_MODEL_FILE
+    out = pup.enhance_for_generation(["a cat"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == pup.STATUS_UNAVAILABLE
+
+
+# ── an earlier default quant already in the cache ───────────────────────────────────────────────────────────────────
+_REV_A = "a" * 40
+_REV_B = "b" * 40
+
+
+@pytest.fixture
+def fake_hub(monkeypatch, tmp_path):
+    """A real Hugging Face cache layout under tmp_path, with no revision record, so lookups go through
+    hf_hub_download(local_files_only=True) the way the app does."""
+    from core.inference import stt_sidecar
+
+    hub = tmp_path / "hub"
+    repo_dir = hub / f"models--{pup.UPSAMPLER_REPO.replace('/', '--')}"
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: hub)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/usr/bin/llama-server")
+
+    def put(
+        revision,
+        *filenames,
+        main = False,
+    ):
+        snapshot = repo_dir / "snapshots" / revision
+        snapshot.mkdir(parents = True, exist_ok = True)
+        for name in filenames:
+            (snapshot / name).write_bytes(name.encode())
+        if main:
+            (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+            (repo_dir / "refs" / "main").write_text(revision)
+        return snapshot
+
+    return put
+
+
+def test_a_cached_earlier_quant_is_used_when_the_default_is_missing(fake_hub):
+    q4 = pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    snapshot = fake_hub(_REV_A, q4, pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    assert pup.model_path() == str(snapshot / q4)
+    assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) == (
+        str(snapshot / q4),
+        str(snapshot / pup.UPSAMPLER_MMPROJ_FILE),
+    )
+    out = pup.status()
+    # Ready to enhance; the current default is still offered beside it (current_downloaded).
+    assert (
+        out["supported"] is True and out["downloaded"] is True and out["mmproj_downloaded"] is True
+    )
+    assert out["current_downloaded"] is False
+    assert out["override"] is False
+    assert out["filename"] == q4 and out["size_bytes"] == len(q4.encode())
+
+
+def test_the_default_quant_wins_over_a_cached_fallback(fake_hub):
+    fake_hub(_REV_B, pup.UPSAMPLER_MODEL_FILES["Q8_0"], pup.UPSAMPLER_MMPROJ_FILE)
+    snapshot = fake_hub(
+        _REV_A,
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+        pup.UPSAMPLER_MMPROJ_FILE,
+        main = True,
+    )
+    assert pup.model_path() == str(snapshot / pup.UPSAMPLER_MODEL_FILE)
+    out = pup.status()
+    assert out["downloaded"] is True and out["filename"] == pup.UPSAMPLER_MODEL_FILE
+
+
+def test_q8_0_is_preferred_over_q4_k_m_among_fallbacks(fake_hub):
+    snapshot = fake_hub(
+        _REV_A,
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+        pup.UPSAMPLER_MODEL_FILES["Q8_0"],
+        pup.UPSAMPLER_MMPROJ_FILE,
+        main = True,
+    )
+    assert pup.model_path() == str(snapshot / pup.UPSAMPLER_MODEL_FILES["Q8_0"])
+    assert pup.UPSAMPLER_MODEL_FILE_PREFERENCE == (
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MODEL_FILES["Q8_0"],
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+    )
+    assert set(pup.UPSAMPLER_MODEL_FILE_PREFERENCE) == set(pup.UPSAMPLER_MODEL_FILES.values())
+
+
+def test_a_fallback_quant_pairs_with_the_projector_at_its_own_revision(fake_hub):
+    q4 = pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    # The newest revision holds only the projector; the old quant and its projector sit at an older one.
+    fake_hub(_REV_B, pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    old = fake_hub(_REV_A, q4, pup.UPSAMPLER_MMPROJ_FILE)
+    assert (pup.model_path(), pup.mmproj_path()) == (
+        str(old / q4),
+        str(old / pup.UPSAMPLER_MMPROJ_FILE),
+    )
+
+
+def test_the_completion_check_of_a_pinned_download_still_wants_the_default(fake_hub):
+    # A download pins the revision it fetched; an older quant there does not complete the default's download.
+    fake_hub(_REV_A, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID, revision = _REV_A) is None
+
+
+def test_nothing_cached_is_not_ready_and_downloads_the_default(fake_hub):
+    out = pup.status()
+    assert out["downloaded"] is False and out["mmproj_downloaded"] is False
+    assert out["filename"] == pup.UPSAMPLER_MODEL_FILE == "flux-3-image-klein-pup-UD-Q4_K_XL.gguf"
+    assert out["size_bytes"] == pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+    assert pup.model_path() is None and pup._cached_download_paths(pup.UPSAMPLER_ID) is None
+    spec = pup._get_download_state()._spec(pup.UPSAMPLER_ID)
+    assert (spec.model_file, spec.mmproj_file) == (
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MMPROJ_FILE,
+    )
+
+
+def test_an_override_still_beats_a_cached_quant(fake_hub, monkeypatch, tmp_path):
+    fake_hub(_REV_A, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    local = tmp_path / "local.gguf"
+    local.write_bytes(b"x")
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(local))
+    assert pup.model_path() == str(local)
+    assert pup.status()["filename"] == "local.gguf" and pup.status()["override"] is True
+    # A missing override is a typo: not ready, never the cached quant instead.
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(tmp_path / "missing.gguf"))
+    assert pup.model_path() is None
+
+
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
@@ -1779,6 +2042,118 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     sidecar._cancel_idle_locked()
 
 
+@pytest.fixture
+def cold_render(monkeypatch):
+    """A GPU host with the image model resident; returns (engine, sidecar, spawned) where spawned records whether
+    the engine's generation slot was held at each spawn."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    class _Engine:
+        def __init__(self):
+            self._generate_lock = threading.Lock()
+            self._loading = None
+
+    engine = _Engine()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.setattr(pup, "_accelerator_memory_mib", lambda ordinal = None: (20000, 24000, "cuda"))
+    monkeypatch.setattr(pup, "_post_chat", lambda *a, **k: "caption")
+    sidecar = pup.PromptUpsamplerSidecar(keep_alive_seconds = 0)
+    spawned = []
+
+    def spawn(binary, model, mmproj):
+        spawned.append(engine._generate_lock.locked())
+        sidecar._process = type("P", (), {"poll": lambda self: None})()
+        sidecar._port, sidecar._key, sidecar._gpu_layers = 1, (binary, model, mmproj), 32
+
+    monkeypatch.setattr(sidecar, "_spawn_server", spawn)
+    return engine, sidecar, spawned
+
+
+def _generate_in_thread(sidecar, **kwargs):
+    out = {}
+
+    def run():
+        try:
+            out["text"] = sidecar.generate({}, binary = "b", model = "m", mmproj = None, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = exc
+
+    worker = threading.Thread(target = run, daemon = True)
+    worker.start()
+    return worker, out
+
+
+def test_a_cold_start_waits_for_a_render_in_flight(cold_render):
+    """Another request denoising holds the slot: the cold start (which sizes its offload to free memory) waits for
+    it, holds the slot while the server comes up, and leaves it free for this request's own render."""
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    worker, out = _generate_in_thread(sidecar)
+    time.sleep(0.6)
+    assert spawned == [] and worker.is_alive()
+    engine._generate_lock.release()
+    worker.join(5)
+    assert out == {"text": "caption"} and spawned == [True]
+    assert not engine._generate_lock.locked()
+    # Warm: no start, so no wait beside a render.
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
+def test_a_stop_while_a_cold_start_waits_for_the_slot_cancels_it(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    try:
+        stop = threading.Event()
+        worker, out = _generate_in_thread(sidecar, cancel_event = stop)
+        time.sleep(0.4)
+        stop.set()
+        worker.join(5)
+        assert isinstance(out.get("error"), pup.UpsamplerCancelledError) and spawned == []
+        assert not sidecar.is_loading()
+    finally:
+        engine._generate_lock.release()
+
+
+def test_a_cold_start_after_the_slot_for_a_leaving_model_is_unavailable(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._loading = type("L", (), {"error": None})()
+    with pytest.raises(pup.UpsamplerUnavailableError):
+        sidecar.generate({}, binary = "b", model = "m", mmproj = None)
+    assert spawned == [] and not engine._generate_lock.locked()
+
+
+@pytest.mark.parametrize("why", ["cpu", "training", "unowned", "engine"])
+def test_a_cold_start_that_cannot_offload_does_not_wait_for_a_render(cold_render, monkeypatch, why):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    engine, sidecar, spawned = cold_render
+    if why == "cpu":
+        monkeypatch.setattr(
+            pup, "_accelerator_memory_mib", lambda ordinal = None: (None, None, "cpu")
+        )
+    elif why == "training":
+        monkeypatch.setattr(stt_sidecar, "_training_active", lambda: True)
+    elif why == "unowned":
+        monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    else:
+        monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: 1 / 0)
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
 def test_render_slot_is_never_taken_beside_a_render_or_a_load(monkeypatch):
     import core.inference.diffusion_engine_router as engine_router
 
@@ -2135,7 +2510,7 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
     monkeypatch.setattr(
-        pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or []
+        pup, "_vulkan_rows", lambda b, retry_empty = False, **_kw: order.append("probe") or []
     )
     sidecar.warm(binary = "b", model = model, mmproj = None)
     # An empty answer is retried once, still before the slot.
@@ -2655,6 +3030,86 @@ def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(
     state["rows"] = [{"index": 0, "name": "NVIDIA GeForce RTX 4090"}]
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
     sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "name", ["Tesla T4", "Quadro RTX 8000", "GeForce GTX 1080 Ti", "NVIDIA GeForce RTX 4090"]
+)
+def test_an_nvidia_vulkan_row_without_the_vendor_name_warm_starts(
+    spawn_argv, warmable, monkeypatch, name
+):
+    # Older NVIDIA drivers name the Vulkan device "Tesla T4": that is the image model's card, not another vendor's.
+    import torch
+
+    state, _run = spawn_argv
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    state["names"] = [name]
+    state["ordinal"] = 0
+    state["rows"] = [{"index": 0, "name": name}]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "rocm, card, row, other",
+    [
+        (False, "Tesla T4", "AMD Radeon Graphics (RADV RAPHAEL)", True),
+        (False, "NVIDIA GeForce RTX 4090", "Intel(R) Arc(tm) A770 Graphics (DG2)", True),
+        (False, "NVIDIA GeForce RTX 4090", "llvmpipe (LLVM 17.0.6, 256 bits)", True),
+        (True, "AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 3060", True),
+        (True, "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX (RADV NAVI31)", False),
+        (False, "Tesla T4", "Tesla T4", False),
+        # A generic card name never outweighs a row that names another vendor.
+        (False, "NVIDIA Graphics Device", "Intel(R) Graphics", True),
+        (False, "GeForce GTX 1080 Ti", "NVIDIA GeForce GTX 1080 Ti", False),
+        (False, "NVIDIA A100-SXM4-40GB", "Virtual GPU 0", False),
+        (True, "AMD Radeon RX 7900 XTX", "Virtual GPU 0", False),
+    ],
+)
+def test_another_vendor_needs_positive_evidence(monkeypatch, rocm, card, row, other):
+    # Only a row naming a different vendor is another card; an unknown name is not evidence either way.
+    from core.inference import llama_cpp
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda t = None: rocm)
+    )
+    assert pup._vulkan_row_is_another_vendor(row, object()) is other
+
+
+def test_repeated_prefetches_retry_an_empty_probe_once_per_window(monkeypatch):
+    # The retry stands for the window: two prefetches cost one probe and one retry, not two each.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    # A new window probes (and may retry) again.
+    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)
+    pup._prefetch_vulkan_rows("b")
+    assert len(calls) == 4
+
+
+def test_a_real_launch_reprobes_after_throttled_prefetches(monkeypatch):
+    # Prefetches stop retrying for the window, a launch does not: a device that came up since is found.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    pup._vulkan_rows("b", retry_empty = True)
+    assert len(calls) == 3
+
+
+def test_concurrent_prefetches_share_one_probe(monkeypatch):
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    threads = [threading.Thread(target = pup._prefetch_vulkan_rows, args = ("b",)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert calls == ["b", "b"]
 
 
 def test_maintenance_never_joins_an_unstarted_probe(monkeypatch):

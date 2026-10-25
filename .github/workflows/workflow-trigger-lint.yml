@@ -135,6 +135,7 @@ jobs:
             tests/studio/test_absorbed_lanes_still_run.py \
             tests/studio/test_lint_ci_scans_committed_files.py \
             tests/studio/test_agent_guides_verdicts.py \
+            tests/studio/test_agent_guides_openclaw_node.py \
             tests/studio/test_apt_steps_are_bounded.py \
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
@@ -157,6 +158,7 @@ jobs:
             tests/studio/test_en_catalog.py \
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_frontend_dist_cache.py \
+            tests/studio/test_heavy_suites_skip_draft_prs.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
             tests/studio/test_inference_smoke_http_diagnostics.py \

@@ -483,6 +483,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             fork_title_base TEXT,
             settings_json TEXT,
             modified_at INTEGER,
+            scheduled_task_id TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -519,6 +520,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on every earlier row, which then numbers from its whole title.
     if "fork_title_base" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
+    # The task whose run made this chat; kept after the task is deleted.
+    if "scheduled_task_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN scheduled_task_id TEXT")
     # Last rename, move or (un)archive. Null until then.
     if "modified_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN modified_at INTEGER")
@@ -733,6 +737,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_forked_from "
+        "ON chat_threads(forked_from_thread_id, forked_from_message_id)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
     )
     conn.execute(
@@ -849,6 +857,71 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
         " ON data_recipe_executions(recipe_id, created_at)"
+    )
+    # next_run_at NULL = nothing left to run; notify = all|failures|none; named=0 = title follows the instructions.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            title TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            schedule_json TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            next_run_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            notify TEXT NOT NULL DEFAULT 'all',
+            named INTEGER NOT NULL DEFAULT 1,
+            archive_successful INTEGER NOT NULL DEFAULT 0,
+            project_id TEXT
+        )
+        """
+    )
+    scheduled_task_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()
+    }
+    if "notify" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
+    if "named" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN named INTEGER NOT NULL DEFAULT 1")
+    if "archive_successful" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN archive_successful INTEGER NOT NULL DEFAULT 0"
+        )
+    if "project_id" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            scheduled_for INTEGER,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            heartbeat_at INTEGER,
+            worker_id TEXT,
+            thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
+            model TEXT,
+            error_code TEXT,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task"
+        " ON scheduled_task_runs(task_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_finished"
+        " ON scheduled_task_runs(finished_at)"
     )
     conn.execute(
         """
@@ -2076,6 +2149,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
         "forkTitleBase": data.get("fork_title_base"),
         "modifiedAt": data.get("modified_at"),
+        "scheduledTaskId": data.get("scheduled_task_id") or None,
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2139,8 +2213,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json, scheduled_task_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -2173,7 +2247,9 @@ def upsert_chat_thread(thread: dict) -> dict:
                     ELSE NULL
                 END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
-                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
+                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json),
+                -- Set by the scheduler when it makes the chat; no later writer changes it.
+                scheduled_task_id = COALESCE(chat_threads.scheduled_task_id, excluded.scheduled_task_id)
             """,
             (
                 thread["id"],
@@ -2193,6 +2269,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("forkBoundaryMessageId"),
                 thread.get("forkTitleBase"),
                 json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
+                thread.get("scheduledTaskId"),
             ),
         )
         conn.commit()
@@ -2565,6 +2642,7 @@ def list_chat_sidebar_rows(
                    {_SIDEBAR_ACTIVITY_SQL} AS activity_at,
                    NULLIF(modified_at, 0) AS modified_at,
                    CASE WHEN COALESCE(forked_from_thread_id, '') <> '' THEN 1 ELSE 0 END AS is_fork,
+                   CASE WHEN COALESCE(scheduled_task_id, '') <> '' THEN 1 ELSE 0 END AS is_scheduled,
                    rowid AS member_rowid,
                    ROW_NUMBER() OVER (
                        PARTITION BY {_SIDEBAR_ROW_ID_SQL}
@@ -2582,6 +2660,7 @@ def list_chat_sidebar_rows(
                    MAX(CASE WHEN member_rank = 1 THEN title END) AS title,
                    MAX(CASE WHEN member_rank = 1 THEN project_id END) AS project_id,
                    MAX(CASE WHEN member_rank = 1 THEN is_fork END) AS is_fork,
+                   MAX(CASE WHEN member_rank = 1 THEN is_scheduled END) AS is_scheduled,
                    -- groupThreads sorts stably, so rows tied on updatedAt keep list order: their newest
                    -- member's created_at DESC, then storage order.
                    MAX(CASE WHEN member_rank = 1 THEN created_at END) AS lead_created_at,
@@ -2675,6 +2754,8 @@ def list_chat_sidebar_rows(
             item["modelIds"] = model_ids
         if not row["is_pair"]:
             item["isFork"] = bool(row["is_fork"])
+            if row["is_scheduled"]:
+                item["isScheduled"] = True
         else:
             item["threadTitles"] = [member["title"] or "" for member in members]
         rows.append(item)
@@ -2857,28 +2938,34 @@ def _active_chat_generation_run_ids(
     return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
 
 
+def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[list[str], list[str]]:
+    """Delete chats in the caller's write transaction; returns the still-active research and chat run ids."""
+    _ensure_chat_attachment_inventory_current(conn)
+    thread_ids = set(ids)
+    active_research_run_ids = _active_research_run_ids(conn, thread_ids)
+    active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
+    _reparent_surviving_forks(conn, thread_ids)
+    # Record the delete even when no row exists yet. A late POST carrying the same unique id
+    # must not recreate a thread after this request has confirmed deletion.
+    _tombstone_chat_threads(conn, thread_ids)
+    conn.executemany(
+        "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
+        [(id,) for id in ids],
+    )
+    conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
+    _mark_chat_attachment_inventory_clean(conn)
+    return active_research_run_ids, active_chat_run_ids
+
+
 def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
     if not ids:
         return [], []
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _ensure_chat_attachment_inventory_current(conn)
-        thread_ids = set(ids)
-        active_research_run_ids = _active_research_run_ids(conn, thread_ids)
-        active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
-        _reparent_surviving_forks(conn, thread_ids)
-        # Record the delete even when no row exists yet. A late POST carrying the same unique id
-        # must not recreate a thread after this request has confirmed deletion.
-        _tombstone_chat_threads(conn, thread_ids)
-        conn.executemany(
-            "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
-            [(id,) for id in ids],
-        )
-        conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
-        _mark_chat_attachment_inventory_clean(conn)
+        active = delete_chat_threads_in(conn, ids)
         conn.commit()
-        return active_research_run_ids, active_chat_run_ids
+        return active
     except Exception:
         conn.rollback()
         raise
@@ -4591,6 +4678,8 @@ class ChatForkActiveGenerationError(RuntimeError):
 
 
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+# The frontend auto-titles only a chat still named this (runtime-provider generateTitle).
+_DEFAULT_CHAT_TITLE = "New Chat"
 
 # Roles the thread paints a row for. Mirrors threadMessageKind in
 # components/assistant-ui/thread-message-slot.ts, which is pinned from the other side by
@@ -4717,7 +4806,11 @@ def fork_chat_thread(
         # Named from the row this transaction read, under the write lock: a title taken
         # before it could be renamed by another tab, and the number could already be gone.
         base = fork_base_of(src)
-        title = _next_fork_title(conn, base)
+        # An untitled chat's fork stays untitled so its first reply still names it.
+        if base in ("", _DEFAULT_CHAT_TITLE):
+            title, base = _DEFAULT_CHAT_TITLE, None
+        else:
+            title = _next_fork_title(conn, base)
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
         # the last copied: an imported chat can end on a system message, which renders as no row
@@ -4845,6 +4938,24 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
             (thread_id, message_id),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def next_message_created_at(thread_id: str, message_id: str) -> Optional[int]:
+    """created_at of the thread's first message after `message_id`; None when it is the tip."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT MIN(created_at) FROM chat_messages
+            WHERE thread_id = ? AND created_at > (
+                SELECT created_at FROM chat_messages WHERE thread_id = ? AND id = ?
+            )
+            """,
+            (thread_id, thread_id, message_id),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
     finally:
         conn.close()
 

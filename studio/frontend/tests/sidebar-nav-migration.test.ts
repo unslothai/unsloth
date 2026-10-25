@@ -113,7 +113,7 @@ test("a customized version-5 sidebar keeps its order and only gains the rows add
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "library", "audio"],
+    [...customizedV5.map((item) => item.id), "library", "audio", "tasks"],
   );
   assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
 });
@@ -168,10 +168,7 @@ async function personalizationVersion(): Promise<number> {
 }
 
 test("a synced profile picks the layout change up too", async () => {
-  // Remote hydration replaces the local store wholesale, so a nav default that
-  // only migrates locally is overwritten by the stored layout on every login.
-  // PERSONALIZATION_VERSION has to move with the layout for that migration to
-  // run against the remote record.
+  // Remote hydration replaces the store, so PERSONALIZATION_VERSION must move with the layout.
   const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
   const migrated = migrateShippedSidebarNavDefault(
     stored,

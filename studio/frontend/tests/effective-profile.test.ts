@@ -31,10 +31,7 @@ test("account identity supplies the sidebar name and avatar unless a display nam
     },
   );
 
-  // A managed account shows the username its owner chose, verbatim. The owner's own
-  // id is the reserved literal "unsloth", which is the product name in lower case, so
-  // that ONE id displays as "Unsloth" rather than spelling the brand wrongly on every
-  // default install. sessionSub keeps the real subject either way.
+  // The owner's reserved id "unsloth" displays as "Unsloth"; other usernames show verbatim.
   for (const [username, shown] of [
     ["unsloth", "Unsloth"],
     ["alice", "alice"],

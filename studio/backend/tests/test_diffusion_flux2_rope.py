@@ -14,8 +14,14 @@ import pytest
 from core.inference import diffusion_flux2_rope as fr
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available()
@@ -46,6 +52,7 @@ def fake_kernel(monkeypatch):
     """Gate tests run without a GPU: pretend Triton built the kernel on a CUDA (non-ROCm) torch."""
     monkeypatch.setattr(fr, "_kernel", lambda: (lambda x, cos, sin: None))
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
 
 def test_stock_symbol_is_the_one_flux2_calls():
@@ -255,6 +262,7 @@ def test_a_failed_launch_disables_the_fused_path_for_the_load(monkeypatch):
     monkeypatch.setattr(fr, "_kernel", lambda: failing_launch)
     monkeypatch.setattr(fr, "_eligible", lambda *a, **k: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
     x = torch.randn(1, 6, 2, 8)
     pos = torch.randn(6, 4, dtype = torch.float64)

@@ -257,6 +257,12 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
+# No accelerator at all: zoo chose its CPU backend and skipped every GPU patch. Stop here, before
+# any CUDA/Triton work, and let __init__ load the CPU backend instead (as the MLX branch does).
+if unsloth_zoo.__dict__.get("_IS_CPU_BACKEND", False):
+    from . import _CPUBackendSelected
+    raise _CPUBackendSelected()
+
 try:
     import torch
 except ModuleNotFoundError:
@@ -329,9 +335,9 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
-        cuda_gate_capabilities,
+        cuda_bf16_capability,
         cuda_order_mismatch_names,
-        cuda_visible_capabilities,
+        distributed_launch,
         hip_visible_archs,
         xpu_supports_native_bf16,
         zoo_shares_xpu_bf16,
@@ -377,6 +383,7 @@ from .import_fixes import (
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
+    fix_inductor_reduction_readback_race,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -399,6 +406,7 @@ from .import_fixes import (
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
     patch_peft_float8_adapter_upcast,
+    patch_peft_shared_active_adapter,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -474,6 +482,7 @@ fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
+fix_inductor_reduction_readback_race()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -500,6 +509,7 @@ fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 patch_peft_float8_adapter_upcast()
+patch_peft_shared_active_adapter()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -537,6 +547,7 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
+del fix_inductor_reduction_readback_race
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
@@ -557,6 +568,7 @@ del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 del patch_peft_float8_adapter_upcast
+del patch_peft_shared_active_adapter
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply
@@ -569,24 +581,21 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
-    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_gate_capabilities()
-    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
-    if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
-        _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]
-        print(
-            f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
-            "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
-        )
-        del _old
-    del _cuda_caps
+    # Current device, as torch answers; distributed launches keep the weakest card so ranks agree.
+    _cuda_cap = cuda_bf16_capability()
+    SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
+    del _cuda_cap
 
+    # Same rule for the public probe, else a merged 16-bit save picks bf16 for an fp16 distributed run.
+    _bf16_from_weakest = distributed_launch()
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
             supported = old_is_bf16_supported(including_emulation)
-            return supported if including_emulation else (supported and SUPPORTS_BFLOAT16)
+            if including_emulation or not _bf16_from_weakest:
+                return supported
+            return supported and SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:
@@ -806,6 +815,9 @@ from .trainer import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
+from .dataprep import ebooks as _ebooks
+
+load_ebook_dataset = _ebooks.load_ebook_dataset
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,

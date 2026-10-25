@@ -289,6 +289,10 @@ export type SelectedModelInput = {
   /** Keep the current speculative-decoding choice across the model switch instead of resetting it
    *  to the standing preference. */
   keepSpeculative?: boolean;
+  /** Only take a model already serving exactly as this pick would load it; never reach /load. */
+  adoptOnly?: boolean;
+  /** For an adoptOnly pick: false once the chat that asked for it is no longer open. */
+  stillWanted?: () => boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
@@ -388,6 +392,9 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
+const CLI_LOAD_POLL_FAST_MS = 5_000;
+const CLI_LOAD_POLL_FAST_INTERVAL_MS = 500;
+const CLI_LOAD_POLL_IDLE_INTERVAL_MS = 2_000;
 
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
   const started = Date.now();
@@ -429,7 +436,15 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
     const elapsed = Date.now() - started;
     if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
     if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Runs for a minute per chat open with nothing loaded: fast first, then slow for an idle page.
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        sawLoad || elapsed < CLI_LOAD_POLL_FAST_MS
+          ? CLI_LOAD_POLL_FAST_INTERVAL_MS
+          : CLI_LOAD_POLL_IDLE_INTERVAL_MS,
+      ),
+    );
   }
 }
 
@@ -677,12 +692,13 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
   );
 }
 
-async function syncInferenceStatusToStore(options?: {
+export async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
+  quiet?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const downWhenIssued = isBackendDownForDesktopUpdate();
@@ -823,7 +839,7 @@ async function syncInferenceStatusToStore(options?: {
         if (wasResident) {
           toast.info(`${wasResident} is no longer loaded`, {
             description:
-              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+              "The server released it, as loading an image, video or audio model does, or its process stopped. Pick it again to keep chatting.",
           });
         }
         // Drop the pick too, as a server-side unload does: the name alone reads as "this is my model"
@@ -835,6 +851,7 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    if (options?.quiet) return;
     // The update screen already reports the backend it stopped.
     if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =
@@ -886,6 +903,17 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   // "chat" re-reads its speech slot and "stt" its dictation, else Generate stays enabled and 400s.
   notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
   notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
+}
+
+/** Off unloads idle kept models after the reply: wait for them to go, or the picker keeps listing them. */
+export async function resyncInferenceStatusAfterKeptModelsUnload(): Promise<void> {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const status = await getInferenceStatus().catch(() => null);
+    if (!status || (status.serving?.length ?? 0) <= 1) break;
+  }
+  await syncInferenceStatusToStore({ includeLoras: false, quiet: true });
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
 }
 
 function pickOf(info: {
@@ -1307,6 +1335,19 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      const adoptOnly =
+        typeof selection === "string" ? false : selection.adoptOnly ?? false;
+      const stillWanted =
+        (typeof selection === "string" ? undefined : selection.stillWanted) ??
+        (() => true);
+      // An automatic pick never displaces a load, running or still in preflight: that pick is newer.
+      const loadInFlight = () =>
+        Boolean(
+          activeLoadRunRef.current ||
+            loadingModelRef.current ||
+            useChatRuntimeStore.getState().loadingModelPick ||
+            useChatRuntimeStore.getState().modelLoading,
+        );
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       const initiallyLoadingSamePick =
         loadingModelRef.current?.id === modelId &&
@@ -1335,6 +1376,10 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         return;
       }
+      if (adoptOnly && (loadInFlight() || !stillWanted())) {
+        restorePreviousConfig();
+        return;
+      }
       dismissStartToastsForModelSelection();
 
       // Register the user's intent before awaiting cancellation. A superseded run's
@@ -1347,8 +1392,9 @@ export function useChatModelRuntime() {
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       // Credential prompts must complete before cancelling a pending run: a decline must not
       // strand the resident that run already unloaded while preparing its own Hub load.
+      // An adopt-only pick downloads nothing, so it never opens the token prompt.
       const mayReachHub =
-        !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
+        !adoptOnly && !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
       if (mayReachHub) {
         const preparedToken = await prepareHfTokenForUse(hfToken);
         if (!preparedToken.proceed) {
@@ -1504,6 +1550,10 @@ export function useChatModelRuntime() {
         const inFlightLoad =
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
+        if (adoptOnly && (inFlightLoad || activeRun)) {
+          restorePreviousConfig();
+          return;
+        }
         // Cancellation clears the picker before its unload settles, yet the run keeps
         // the slot and the lifecycle lease until then. Break only when neither is left:
         // a pick arriving mid-cancel would otherwise find the lease held and be dropped.
@@ -1719,6 +1769,10 @@ export function useChatModelRuntime() {
             // Same window as the confirmation below: a newer pick that could not take the
             // lease still supersedes the status this preflight was about to adopt.
             if (modelSelectionIntentEpoch !== loadIntentId) return;
+            if (adoptOnly && (loadInFlight() || !stillWanted())) {
+              restorePreviousConfig();
+              return;
+            }
             // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
             // resident status wins over the staged snapshot. The helper carries the diffusion flag.
             restorePreviousConfig();
@@ -1779,6 +1833,16 @@ export function useChatModelRuntime() {
             return;
           }
         }
+      }
+      if (adoptOnly) {
+        // Same unwind as a declined confirmation: nothing was unloaded.
+        if (modelSelectionIntentEpoch === loadIntentId) {
+          restorePreviousConfig();
+          if (pendingReplacementRollback?.residentUnloaded === false) {
+            pendingReplacementRollback = null;
+          }
+        }
+        return;
       }
 
       // Hold the lifecycle lease through confirmation and loading. A PREFLIGHT holder (parked on
@@ -2104,6 +2168,12 @@ export function useChatModelRuntime() {
           const previousMlxInt8Prefill = rollbackConfig
             ? (rollbackConfig.mlxInt8Prefill ?? false)
             : useChatRuntimeStore.getState().mlxInt8Prefill;
+          const previousMlxPleOffload = rollbackConfig
+            ? (rollbackConfig.mlxPleOffload ?? null)
+            : useChatRuntimeStore.getState().mlxPleOffload;
+          const previousMlxExpertOffload = rollbackConfig
+            ? (rollbackConfig.mlxExpertOffload ?? null)
+            : useChatRuntimeStore.getState().mlxExpertOffload;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
             // Authorization header with 401 even for a public repo, so sending the raw stored token here would
@@ -2206,6 +2276,12 @@ export function useChatModelRuntime() {
           let loadMlxInt8Prefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxInt8Prefill ?? false)
             : stateBeforeUnload.mlxInt8Prefill;
+          let loadMlxPleOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxPleOffload ?? null)
+            : stateBeforeUnload.mlxPleOffload;
+          let loadMlxExpertOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxExpertOffload ?? null)
+            : stateBeforeUnload.mlxExpertOffload;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2714,6 +2790,8 @@ export function useChatModelRuntime() {
               };
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
+              loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
+              loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2818,6 +2896,8 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
+              mlx_ple_offload: loadMlxPleOffload,
+              mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
@@ -3215,6 +3295,8 @@ export function useChatModelRuntime() {
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
+                  mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
+                  mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -3324,6 +3406,8 @@ export function useChatModelRuntime() {
                   // nParallel above.
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
+                  mlxPleOffload: previousMlxPleOffload,
+                  mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
@@ -3634,7 +3718,8 @@ export function useChatModelRuntime() {
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
-            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
+            // Bytes the server has read or paged in, not bytes resident in RAM: weights headed for VRAM pass through.
+            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB loaded`;
             const label = est.stable
               ? `${base} • ${formatRate(est.rate)}${
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
@@ -3655,7 +3740,7 @@ export function useChatModelRuntime() {
               ...modelLoadToastOptions(
                 renderLoadDescription(
                   "Starting model…",
-                  "Paging weights into memory.",
+                  "Loading model weights.",
                   pct,
                   label,
                 ),

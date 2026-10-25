@@ -358,11 +358,7 @@ def test_settled_generation_response_can_be_explicitly_edited(chat_home):
 
 
 def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
-    """The shape the edit pencil sends: the details the reply is shown with, minus the run's claim.
-
-    Passing the whole stored metadata back through is refused, because the record still says the
-    run owns the turn and detaching it is the whole point of an explicit edit.
-    """
+    """An explicit edit keeps display metadata but drops the run claim so the edited turn detaches."""
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
@@ -539,11 +535,7 @@ def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home)
 
 
 def test_a_stop_in_flight_survives_a_restart_as_a_cancellation(chat_home):
-    """Stop recorded, worker not yet settled, Studio restarts.
-
-    Reporting this as a backend failure would tell the user Studio broke when in fact they
-    stopped it, and finish_run already settles the same case as cancelled.
-    """
+    """A stop in flight across a restart settles as cancelled, not as a backend failure."""
     _create()
     runs_db.mark_running("run-1", runs_db.get_worker_token("run-1"))
     assert runs_db.request_cancel("run-1", "alice")["status"] == "cancelling"
@@ -595,10 +587,7 @@ _SYNC_USER = {
 
 
 def _edited_generated_assistant():
-    """Settle a generated assistant the way the pipeline does, then edit it by hand.
-
-    Returns the stale pre-edit copy another tab would still be holding.
-    """
+    """Settle a generated reply, edit it, and return the stale pre-edit copy another tab holds."""
     studio_db.upsert_chat_message(
         {
             "id": "assistant-1",
@@ -651,19 +640,13 @@ def _edited_generated_assistant():
 
 
 def test_a_stale_tab_sync_cannot_prune_an_edited_generated_assistant(chat_home):
-    """Editing a settled generated answer detaches it; another open tab must not delete it.
-
-    The edit drops the run row, so the id stops counting as generation-linked. A stale tab
-    still holding the pre-edit copy has that copy filtered out as tombstoned, which would
-    otherwise leave the id absent from the requested set and inside the prune.
-    """
+    """A stale tab's sync must not prune an edited generated reply, whose run row the edit dropped."""
     stale_tab_copy = _edited_generated_assistant()
 
     studio_db.sync_chat_messages("thread-1", [_SYNC_USER, stale_tab_copy], prune_missing = True)
 
     survivor = studio_db.get_chat_message("thread-1", "assistant-1")
     assert survivor is not None, "the stale tab's sync deleted the user's edited message"
-    # Kept, but still not writable by the stale copy.
     assert survivor["content"] == [{"type": "text", "text": "edited by hand"}]
 
 
@@ -791,10 +774,7 @@ def test_request_sanitization_accepts_empty_optional_routing(overrides):
     assert _sanitize_request(_model(**overrides))["stream"] is True
 
 
-# A tool-enabled turn is durable now: the run persists every decoded frame, so a call that parks on an approval
-# survives the tab closing instead of being cancelled by it. The refusal these tests used to pin still exists - it is
-# what UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores - so both halves are pinned here: admitted by default, refused
-# under the toggle, and nothing in between.
+# Tool turns are durable by default; UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores refusal.
 
 
 def test_request_sanitization_admits_a_tool_enabled_turn_by_default():
@@ -855,25 +835,13 @@ def test_event_cursor_rejects_values_outside_sqlite_integer_range():
 
 @pytest.mark.parametrize("field", ["image_base64", "audio_base64", "video_base64"])
 def test_request_sanitization_rejects_inline_media(field):
-    """Media stays on the legacy stream on the server too, not only in the composer.
-
-    Recovery rebuilds text and reasoning deltas, and the request is persisted verbatim,
-    so admitting one of these would park a base64 blob in request_json for the life of
-    the thread and hand the client a transcript it has no way to replay.
-    """
+    """Inline media is refused on the durable path, since request_json would persist the base64 blob."""
     with pytest.raises(Exception, match = "legacy streaming path"):
         _sanitize_request(_model(**{field: "iVBORw0KGgo="}))
 
 
 class TestEmbeddedImagesStayOffTheDurablePath:
-    """A durable run persists its request verbatim, so an inline base64 image written into
-    request_json is written again on every follow-up turn for the life of the thread.
-
-    The media guard was field-shaped plus nested audio and video. It had no nested IMAGE check,
-    and turn-scoping removed the thing that used to catch this case by accident: a text-only
-    follow-up no longer sets top-level image_base64, yet the thread's earlier screenshot still
-    rides along inside messages[].content. So the follow-up was admitted and the blob re-persisted.
-    """
+    """Nested inline images must be refused too, or every follow-up turn re-persists the blob."""
 
     _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
@@ -924,9 +892,6 @@ class TestEmbeddedImagesStayOffTheDurablePath:
 
         assert _messages_have_embedded_image([ChatMessage(role = "user", content = "hello")]) is False
 
-
-# The admission half of TestEmbeddedImagesStayOffTheDurablePath: the helper returning True is not
-# the claim, the route refusing the run is.
 
 _INLINE_PNG_PART = {
     "type": "image_url",

@@ -166,7 +166,7 @@ export function SearchImageThumb({
         );
       }}
       className={cn(
-        "group inline-flex shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/40 text-left no-underline transition-colors hover:border-primary/50",
+        "group inline-flex shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/40 text-left no-underline transition-colors hover:border-wash-50",
         size === "card" ? "max-w-[320px]" : "size-16",
         className,
       )}

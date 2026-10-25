@@ -19,6 +19,9 @@ on:
   schedule:
     - cron: '17 6 * * 1'
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/windows-llama-signature-audit.yml'
       - 'scripts/windows_sac_probe/**'
@@ -32,6 +35,7 @@ concurrency:
 
 jobs:
   audit:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Audit signatures
     runs-on: windows-latest
     timeout-minutes: 30
@@ -189,6 +193,7 @@ jobs:
 
   # The job above reads certificate tables.
   code-integrity:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: App Control audit (signature-only)
     runs-on: windows-latest
     timeout-minutes: 30

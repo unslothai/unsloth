@@ -141,6 +141,50 @@ def test_examples_respect_masks_and_packing():
     assert len(collect_examples(rows, 2, 2048)) == 2
 
 
+def test_examples_split_trl_packed_rows_at_seq_lengths():
+    """TRL's packed dataset keeps the boundaries in `seq_lengths` (position_ids come later, in its
+    collator): each packed document is its own drafter example and keeps its own prompt."""
+    from datasets import Dataset
+
+    pack_dataset = pytest.importorskip("trl.data_utils").pack_dataset
+
+    from core.training.drafter import _prompt_end, collect_examples
+
+    docs = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12, 13]],
+            "completion_mask": [[0, 0, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1, 1]],
+        }
+    )
+    packed = pack_dataset(docs, seq_length = 9, strategy = "bfd")
+    assert "seq_lengths" in packed.column_names and "position_ids" not in packed.column_names
+    out = collect_examples(packed, 100, 2048)
+    assert sorted(ex["input_ids"] for ex in out) == [
+        [1, 2, 3, 4],
+        [5, 6, 7, 8],
+        [9, 10, 11, 12, 13],
+    ]
+    by_first = {ex["input_ids"][0]: ex["labels"] for ex in out}
+    assert by_first == {
+        1: [-100, -100, 3, 4],
+        5: [-100, -100, 7, 8],
+        9: [-100, -100, -100, 12, 13],
+    }
+    # Regenerate finds one prompt per packed document, not one per packed row.
+    assert [_prompt_end(ex["input_ids"], ex["labels"], []) for ex in out] == [
+        len(ex["labels"]) - 2 for ex in out
+    ]
+
+    row = {"input_ids": [10, 11, 12, 13, 20, 21, 22, 23], "seq_lengths": [4, 4]}
+    assert [ex["input_ids"] for ex in collect_examples([row], 100, 2048)] == [
+        [10, 11, 12, 13],
+        [20, 21, 22, 23],
+    ]
+    # Lengths that do not describe the row are ignored rather than trusted.
+    bad = dict(row, seq_lengths = [4, 3])
+    assert len(collect_examples([bad], 100, 2048)) == 1
+
+
 # ---------------------------------------------------------------- the phase, with a fake trainer
 
 
@@ -1177,6 +1221,229 @@ def test_export_reattaches_a_full_fine_tunes_stitched_head(tmp_path, monkeypatch
     (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3"}))
     backend._attach_full_checkpoint_mtp_head(str(tmp_path))
     assert len(calls) == 1
+
+
+def test_export_reattaches_the_head_of_a_hub_full_fine_tune(tmp_path, monkeypatch):
+    """A full fine-tune loaded by Hub id: its manifest is read from the Hub with the load's token and
+    the head is attached from the snapshot the load cached, at the loaded commit."""
+    from core.export import export as export_module
+    import huggingface_hub
+
+    calls = []
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(
+        get_mtp_head = lambda model, source = None: calls.append((model, source))
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    manifest_dir = tmp_path / "manifest"
+    manifest_dir.mkdir()
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    downloads, snapshots = [], []
+
+    def fake_download(
+        repo_id,
+        filename,
+        token = None,
+        revision = None,
+        local_files_only = False,
+    ):
+        if local_files_only:
+            snapshots.append((repo_id, filename, revision, token))
+            (snapshot / filename).write_text("{}")
+            return str(snapshot / filename)
+        downloads.append((repo_id, filename, token))
+        if filename != "drafter.json":
+            raise FileNotFoundError(filename)
+        (manifest_dir / filename).write_text(json.dumps({"strategy": "mtp"}))
+        return str(manifest_dir / filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    model = types.SimpleNamespace(config = types.SimpleNamespace(_commit_hash = "abc123"))
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = model
+    backend._checkpoint_token = "hf_secret"
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert calls == [(model, str(snapshot))]
+    assert snapshots == [("org/trained-full-mtp", "config.json", "abc123", "hf_secret")]
+    assert downloads and all(token == "hf_secret" for _, _, token in downloads)
+
+    # No manifest on the Hub (an ordinary full checkpoint): nothing is attached.
+    calls.clear()
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("drafter.json")),
+    )
+    backend._attach_full_checkpoint_mtp_head("org/plain-full")
+    assert calls == []
+
+
+def _hub_full_fine_tune_backend(tmp_path, monkeypatch, local_files_only):
+    """An export backend holding a full fine-tune loaded by Hub id at commit abc123, whose manifest
+    and config are cached; records every hf_hub_download call."""
+    from core.export import export as export_module
+    import huggingface_hub
+
+    attached = []
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(
+        get_mtp_head = lambda model, source = None: attached.append(source)
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "drafter.json").write_text(json.dumps({"strategy": "mtp"}))
+    (snapshot / "config.json").write_text("{}")
+    calls = []
+
+    def fake_download(
+        repo_id,
+        filename,
+        token = None,
+        revision = None,
+        local_files_only = False,
+    ):
+        calls.append((filename, revision, local_files_only))
+        if not (snapshot / filename).is_file():
+            raise FileNotFoundError(filename)
+        return str(snapshot / filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = types.SimpleNamespace(
+        config = types.SimpleNamespace(_commit_hash = "abc123")
+    )
+    backend._checkpoint_token = None
+    backend._checkpoint_local_files_only = local_files_only
+    return backend, calls, attached, snapshot
+
+
+def test_hub_full_fine_tune_manifest_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
+    """The manifest and the head's shards come from the same commit, not the branch head."""
+    backend, calls, attached, snapshot = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert attached == [str(snapshot)]
+    assert calls and all(revision == "abc123" for _, revision, _ in calls)
+
+
+def test_offline_hub_full_fine_tune_keeps_the_manifest_probe_offline(tmp_path, monkeypatch):
+    """A cached load chosen because the Hub is unreachable must not touch the network for drafter.json."""
+    backend, calls, attached, snapshot = _hub_full_fine_tune_backend(tmp_path, monkeypatch, True)
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert attached == [str(snapshot)]
+    assert calls and all(offline for _, _, offline in calls)
+
+
+def _package_through_backend(backend, path, out):
+    out.mkdir()
+    if path == "merged":
+        backend._package_drafter_merged(str(out), None)
+    elif path == "gguf":
+        gguf = out / "model.Q8_0.gguf"
+        gguf.write_bytes(b"g")
+        backend._package_drafter_gguf(str(out), str(out), [str(gguf)])
+    else:
+        assert backend._package_drafter_lora(str(out), head_saved = True)
+    return json.loads((out / "drafter.json").read_text())
+
+
+@pytest.mark.parametrize("path", ["merged", "gguf", "lora"])
+@pytest.mark.parametrize("offline", [False, True])
+def test_drafter_packaging_reads_the_manifest_at_the_loaded_commit(
+    tmp_path, monkeypatch, path, offline
+):
+    """Merged, GGUF and LoRA packaging read a Hub id's manifest at the commit the load resolved
+    (not the branch head) and stay offline when the load did."""
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, offline)
+    backend.current_checkpoint = "org/trained-full-mtp"
+    info = _package_through_backend(backend, path, tmp_path / "out")
+    assert info["strategy"] == "mtp"
+    assert calls and all(revision == "abc123" for _, revision, _ in calls)
+    assert all(local is offline for _, _, local in calls)
+
+
+_ADAPTER_SHA = "a" * 40
+
+
+@pytest.mark.parametrize("path", ["merged", "gguf", "lora"])
+@pytest.mark.parametrize("adapter_commit", [_ADAPTER_SHA, None])
+def test_hub_adapter_packaging_never_pins_the_base_commit(
+    tmp_path, monkeypatch, path, adapter_commit
+):
+    """A Hub LoRA adapter's current_model.config is the base's, so its _commit_hash names the base
+    repo: the adapter's manifest is read at the adapter's own commit, or unpinned when unknown."""
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/trained-adapter"
+    backend.is_peft = True
+    backend._adapter_commit = ("org/trained-adapter", adapter_commit)
+    info = _package_through_backend(backend, path, tmp_path / "out")
+    assert info["strategy"] == "mtp"
+    assert calls and all(revision == adapter_commit for _, revision, _ in calls)
+
+
+def test_hub_adapter_commit_of_another_checkpoint_is_not_reused(tmp_path, monkeypatch):
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/other-adapter"
+    backend.is_peft = True
+    backend._adapter_commit = ("org/trained-adapter", _ADAPTER_SHA)
+    assert backend._loaded_commit() is None
+
+
+def test_full_fine_tune_keeps_the_base_commit(tmp_path, monkeypatch):
+    backend, _, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/trained-full-mtp"
+    backend.is_peft = False
+    backend._adapter_commit = None
+    assert backend._loaded_commit() == "abc123"
+
+
+def test_hub_adapter_commit_comes_from_the_local_cache(tmp_path, monkeypatch):
+    """The adapter's commit is the cached snapshot its adapter_config.json sits in, read offline."""
+    import huggingface_hub
+    from core.export import export as export_module
+
+    repo = tmp_path / "models--org--trained-adapter"
+    (repo / "snapshots" / _ADAPTER_SHA).mkdir(parents = True)
+    (repo / "snapshots" / _ADAPTER_SHA / "adapter_config.json").write_text("{}")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(_ADAPTER_SHA)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+    assert export_module._cached_hub_adapter_commit("org/trained-adapter") == _ADAPTER_SHA
+    assert export_module._cached_hub_adapter_commit("org/not-cached") is None
+    assert export_module._cached_hub_adapter_commit(str(tmp_path)) is None
+
+
+def test_load_records_the_adapter_commit_for_a_peft_checkpoint():
+    src = _source("core/export/export.py")
+    assert "(checkpoint_path, _cached_hub_adapter_commit(checkpoint_path))" in src
+
+
+def test_drafter_packaging_without_a_hub_load_passes_no_revision(tmp_path, monkeypatch):
+    """A local checkpoint (no resolved commit, online load) calls the helpers exactly as before."""
+    from core.export import drafter_export
+    from core.export import export as export_module
+
+    seen = []
+    for name in ("package_merged", "package_lora"):
+        monkeypatch.setattr(drafter_export, name, lambda *a, **k: seen.append(sorted(k)) or None)
+    monkeypatch.setattr(
+        drafter_export, "package_gguf", lambda *a, **k: seen.append(sorted(k)) or (None, [])
+    )
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = types.SimpleNamespace(config = types.SimpleNamespace())
+    backend.current_checkpoint = str(tmp_path)
+    backend._checkpoint_token = None
+    backend._checkpoint_local_files_only = False
+    backend._package_drafter_merged(str(tmp_path), None)
+    backend._package_drafter_gguf(str(tmp_path), str(tmp_path), [])
+    backend._package_drafter_lora(str(tmp_path), head_saved = True)
+    assert seen == [["allow_mtp", "token", "verifier"], ["token"], ["token"]]
+
+
+def test_load_records_its_offline_decision_for_the_manifest_probe():
+    src = _source("core/export/export.py")
+    assert "self._checkpoint_local_files_only = bool(local_files_only)" in src
 
 
 def test_in_place_eagle3_export_keeps_the_only_drafter_copy(tmp_path):
