@@ -37668,6 +37668,10 @@ async def produce_openai_chat_completions(
                         observe_tokens = _plain_observe_tokens,
                         counted_prompt_tokens = counted if exact else None,
                     )
+            except LlamaAdmissionRecostRefused:
+                # No room beside a victim still decoding: the generator ends the turn as a
+                # refused tool round does, rather than sending the prompt into its cells.
+                raise
             except Exception:  # accounting must never break a run in progress
                 logger.debug("fitted prompt recost failed", exc_info = True)
                 return _openai_llama_admission_enforced_max_tokens(

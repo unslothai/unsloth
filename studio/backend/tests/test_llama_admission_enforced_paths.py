@@ -499,6 +499,34 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
         assert [n.get("reason") for n in notices] == [PREEMPT_GAVE_UP_REASON]
         assert notices[0]["fits"] is True and notices[0]["dropped_messages"] == 0
 
+    def test_a_refused_plain_refit_sends_nothing_and_ends_the_turn_on_length(self, monkeypatch):
+        """The plain path re-costs its fitted prompt as a tool round does, and a refusal there
+        ends the turn the same way rather than sending the prompt into occupied cells."""
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
+        monkeypatch.setattr(backend, "count_chat_tokens", _count_by_length)
+        history = [
+            {"role": "user", "content": f"turn {index} " + "word " * 400} for index in range(10)
+        ]
+
+        def _refuse(_messages):
+            raise LlamaAdmissionRecostRefused("no room")
+
+        events = list(
+            backend.generate_chat_completion(
+                messages = history,
+                context_overflow = "truncate_oldest",
+                admission_output_allowance = _SHARE,
+                on_prompt_fitted = _refuse,
+            )
+        )
+
+        assert payloads == [], "a refused refit still sent the fitted prompt"
+        assert _finish_reasons(events) == ["length"]
+        assert not _shown(events).strip()
+        notices = [e for e in events if e.get("type") == "context_truncated"]
+        assert [n.get("reason") for n in notices] == [PREEMPT_GAVE_UP_REASON]
+
     def test_a_refused_final_attempt_keeps_the_partial_it_has(self, monkeypatch):
         """The continuation is the growth being refused, so the first answer stands."""
         payloads: list[dict] = []

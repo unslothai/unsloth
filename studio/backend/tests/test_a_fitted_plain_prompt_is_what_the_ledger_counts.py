@@ -185,3 +185,16 @@ class TestAPlainPromptIsBoundedByItsCount:
         )
         nonstream = source.index(call, stream)
         assert source.rindex("_reserve_counted_gguf_chat(", 0, nonstream) > stream
+
+
+def test_a_refused_fitted_prompt_is_not_handed_back_as_an_allowance(monkeypatch):
+    """The re-cost after the fit found no room beside a victim still decoding: the refusal must
+    reach the generator, or the prompt goes upstream into cells that victim still holds."""
+    from core.inference.llama_admission import LlamaAdmissionRecostRefused
+
+    def refuse(**_kwargs):
+        raise LlamaAdmissionRecostRefused("no room")
+
+    monkeypatch.setattr(inference, "_openai_llama_publish_round_charge", refuse)
+    with pytest.raises(LlamaAdmissionRecostRefused):
+        _refit(monkeypatch, _controller(), _LONG, _LONG[-1:])

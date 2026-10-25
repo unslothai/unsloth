@@ -42254,6 +42254,19 @@ class LlamaCppBackend:
                         _refitted_allowance = on_prompt_fitted(openai_messages)
                         if _refitted_allowance is not None:
                             admission_output_allowance = _refitted_allowance
+                    except LlamaAdmissionRecostRefused:
+                        logger.info(
+                            "Plain chat: no cache room for the fitted prompt; ending the turn "
+                            "instead of sending it"
+                        )
+                        yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
+                        yield {
+                            "type": "metadata",
+                            "usage": {},
+                            "timings": None,
+                            "finish_reason": "length",
+                        }
+                        return
                     except Exception:  # accounting must never break a run in progress
                         logger.debug("fitted prompt recost failed", exc_info = True)
                     if admission_output_allowance is not None:
