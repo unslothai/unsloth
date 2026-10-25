@@ -274,3 +274,7 @@ studio/backend/requirements/.*-filtered-*.txt
 tests/security/fixtures/malicious_wheel.whl
 tests/security/fixtures/malicious_sdist.tar.gz
 tests/security/fixtures/clean_wheel.whl
+
+# Fork DMG build: the backend wheel is built into here before `tauri build` and
+# bundled as the app resource Resources/backend/ (see tauri.macos.conf.json).
+studio/src-tauri/backend-wheel/
