@@ -641,7 +641,7 @@ def test_training_start_is_refused_while_another_holder_has_the_lease(no_lease):
     try:
         refusal = arb.lease_refusal()
         assert refusal is not None
-        source = open(training.__file__).read()
+        source = open(training.__file__, encoding = "utf-8").read()
         start = source.index("async def start_training(")
         assert "lease_refusal()" in source[start : start + 1500]
         start = source.index("async def start_diffusion_training(")
@@ -664,14 +664,14 @@ def test_unloads_and_training_teardown_respect_a_lease_taken_later(no_lease):
         # A training start that passed its first check meets the lease again where it frees the GPU.
         with pytest.raises(arb.GpuLeaseHeldError):
             training._free_gpu_for_diffusion_training()
-        source = open(training.__file__).read()
+        source = open(training.__file__, encoding = "utf-8").read()
         hook = source.index("def _free_vram_for_training(")
         assert "raise_if_leased()" in source[hook : hook + 600]
         assert arb.GpuLeaseHeldError.blocks_training is True
-        vsource = open(video.__file__).read()
+        vsource = open(video.__file__, encoding = "utf-8").read()
         start = vsource.index("async def unload_video_model(")
         assert "lease_refusal()" in vsource[start : start + 1200]
-        isource = open(inference.__file__).read()
+        isource = open(inference.__file__, encoding = "utf-8").read()
         start = isource.index("async def unload_diffusion_model(")
         assert "_refuse_while_leased()" in isource[start : start + 900]
     finally:

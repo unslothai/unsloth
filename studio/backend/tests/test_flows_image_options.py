@@ -267,13 +267,18 @@ def test_grid_labels_add_headers_only_when_given():
     assert labelled.width > plain.width and labelled.height > plain.height
 
 
-def _clip(size, frames, color) -> bytes:
+def _clip(
+    size,
+    frames,
+    color,
+    rate = 12,
+) -> bytes:
     import av
     import numpy as np
 
     out = io.BytesIO()
     with av.open(out, mode = "w", format = "mp4") as dst:
-        stream = dst.add_stream("libx264", rate = 12)
+        stream = dst.add_stream("libx264", rate = rate)
         stream.width, stream.height, stream.pix_fmt = size[0], size[1], "yuv420p"
         for _ in range(frames):
             arr = np.full((size[1], size[0], 3), color, dtype = np.uint8)
@@ -300,6 +305,29 @@ def test_join_videos_keeps_order_size_and_every_frame():
     assert abs(duration - 0.75) < 0.01
     assert frames[0].shape == frames[-1].shape == (48, 64, 3)
     assert frames[0][24, 32, 0] > 200 and frames[-1][24, 32, 2] > 200
+
+
+def test_join_videos_keeps_each_clips_length_across_frame_rates():
+    import av
+
+    from core.flows.nodes.video import concat_clips
+
+    # One second at 24 fps, then one second at 60 fps: two seconds at 24 fps, red then blue.
+    joined = concat_clips(
+        [_clip((32, 32), 24, (250, 0, 0), 24), _clip((32, 32), 60, (0, 0, 250), 60)]
+    )
+    with av.open(io.BytesIO(joined)) as src:
+        frames = [f.to_ndarray(format = "rgb24") for f in src.decode(src.streams.video[0])]
+        duration = src.duration / av.time_base
+    assert len(frames) == 48
+    assert abs(duration - 2.0) < 0.05
+    assert frames[23][16, 16, 0] > 200 and frames[24][16, 16, 2] > 200
+    # A slower clip is stretched by repeating frames, not sped up.
+    slow = concat_clips(
+        [_clip((32, 32), 24, (250, 0, 0), 24), _clip((32, 32), 12, (0, 0, 250), 12)]
+    )
+    with av.open(io.BytesIO(slow)) as src:
+        assert len(list(src.decode(src.streams.video[0]))) == 48
 
 
 def test_grid_row_labels_wrap_between_words():
