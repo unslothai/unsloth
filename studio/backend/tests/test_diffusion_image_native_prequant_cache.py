@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image native (torchao-free W8A8 / weight-only) builds in the local prequant cache: the explicit int8 + offload
-build is written on a background thread after the load and read back on the next load instead of re-quantizing."""
+"""Image native int8 builds are cached in the background and read back instead of re-quantizing."""
 
 from __future__ import annotations
 

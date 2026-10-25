@@ -9708,8 +9708,7 @@ class DiffusionBackend:
                                         ),
                                     )
                                     if native_cached is not None:
-                                        # The forced-offload native build, read back: the dense transformer shards
-                                        # are never loaded and nothing re-quantizes.
+                                        # Cached native build: skips loading dense shards and re-quantizing.
                                         pipe_kwargs["transformer"] = native_cached
                                         native_scheme = native_offload_scheme
                                         transformer_quant_engaged = native_offload_scheme
@@ -11824,8 +11823,7 @@ class DiffusionBackend:
         config_kwargs: Optional[dict] = None,
         cancel_check: Optional[Callable[[], None]] = None,
     ) -> Any:
-        """The forced-offload native ``transformer`` from the local prequant cache, or None (a miss: build it).
-        CUDA only, the single-denoiser families the save side writes. Never raises."""
+        """The forced-offload native ``transformer`` from the local prequant cache, or None. CUDA only. Never raises."""
         try:
             if fam is None or scheme is None or getattr(target, "device", None) != "cuda":
                 return None
@@ -11877,7 +11875,6 @@ class DiffusionBackend:
                 return None
             transformer = getattr(pipe, "transformer", None)
             if (getattr(transformer, "_unsloth_runtime_quant_info", None) or {}).get("native"):
-                # torchao-free layers: the native cache's own layout (codes + scales + layer facts)
                 from .diffusion_native_cache import save_deferred
                 if not defer:
                     from .diffusion_native_cache import build_spec, save

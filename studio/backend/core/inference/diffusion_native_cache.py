@@ -474,9 +474,7 @@ def build_spec(transformer: Any, family: Optional[str]) -> Optional[dict]:
 
 
 class NativePendingWrite:
-    """``save`` on a background thread once the load is published, tracked with the torchao writes so unload and
-    exit wait for it (``diffusion_prequant_cache.finish_background_writes``). It writes the live host tensors the
-    build already holds: no snapshot copy."""
+    """Background ``save``, awaited by ``finish_background_writes``; writes live host tensors (no snapshot copy)."""
 
     def __init__(
         self,
@@ -560,8 +558,7 @@ def save_deferred(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
 ) -> Any:
-    """A ``NativePendingWrite`` for a just-built native denoiser (start it once the load is published), the
-    synchronous ``save`` result when background writes are off, or None. Never raises."""
+    """A ``NativePendingWrite`` (start after publish), the sync ``save`` result, or None. Never raises."""
     try:
         if not _cache.enabled():
             return None
