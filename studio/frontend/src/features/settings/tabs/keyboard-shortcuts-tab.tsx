@@ -558,7 +558,7 @@ export function KeyboardShortcutsTab() {
           type="button"
           variant="dark"
           // Opaque disabled fill so rows never show through; dark: outranks the variant's own dark fill.
-          className="pointer-events-auto h-[calc(42px*var(--ui-space-scale,1))] px-[calc(22px*var(--ui-space-scale,1))] text-ui-13 disabled:bg-[color-mix(in_oklab,var(--foreground)_34%,var(--background))] disabled:text-background disabled:opacity-100 dark:disabled:bg-[color-mix(in_oklab,var(--foreground)_42%,var(--background))] dark:disabled:text-background"
+          className="pointer-events-auto text-ui-13 disabled:bg-[color-mix(in_oklab,var(--foreground)_34%,var(--background))] disabled:text-background disabled:opacity-100 dark:disabled:bg-[color-mix(in_oklab,var(--foreground)_42%,var(--background))] dark:disabled:text-background"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
             stopRecording();

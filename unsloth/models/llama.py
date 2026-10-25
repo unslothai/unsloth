@@ -537,7 +537,7 @@ def _fast_prepare_inputs_for_generation(
             position_ids = original_attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(original_attention_mask == 0, 1)
             position_ids = position_ids[:, -seq_length:]
-            if _decode_graphs.ENABLED:
+            if _decode_graphs.enabled():
                 # Positions from the mask stay below its length: graphed decode skips a host read.
                 position_ids._unsloth_position_bound = original_attention_mask.shape[-1]
             kwargs["position_ids"] = position_ids
@@ -697,7 +697,7 @@ def LlamaAttention_fast_forward_inference(
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
     # Graph mode (a captured decode step): no host lengths, the cache slot is on the device.
-    static = _decode_graphs.static() if _decode_graphs.ENABLED else None
+    static = _decode_graphs.static()
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
@@ -1761,7 +1761,7 @@ def _LlamaModel_fast_forward_inference(
 
         seq_len = past_key_values[0][0].shape[-2]
         kv_seq_len = seq_len + 1
-        static = _decode_graphs.static() if _decode_graphs.ENABLED else None
+        static = _decode_graphs.static()
         if static is not None:
             # Captured step: the runner builds this mask per step (_decode_step_mask), outside the graph.
             attention_mask = None
@@ -1993,7 +1993,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if past_key_values is not None and len(past_key_values) == 0:
             past_key_values = None
         if past_key_values is not None and input_ids is not None and input_ids.shape[1] == 1:
-            if _decode_graphs.ENABLED and labels is None and shift_labels is None:
+            if labels is None and shift_labels is None and _decode_graphs.enabled():
                 graphed = _decode_graphs.decode_step(
                     self, fast_forward_inference, _decode_logits, _decode_step_mask, input_ids,
                     past_key_values, position_ids, attention_mask,
@@ -3009,7 +3009,9 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    if _decode_graphs.ENABLED:
+    # Decided once per call (env / RL generation scope), so the prefill and every decode step agree.
+    graphs = _decode_graphs.enabled()
+    if graphs:
         _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
     # Mixed precision autocast.
     try:
@@ -3019,9 +3021,13 @@ def unsloth_fast_generate(self, *args, **kwargs):
         ):
             output = self._old_generate(*args, **kwargs)
     finally:
-        if _decode_graphs.ENABLED:
+        if graphs:
             _decode_graphs.end_generation()
-    if _decode_graphs.ENABLED and getattr(output, "past_key_values", None) is not None:
+    if graphs and restore_training_mode:
+        # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
+        # decode buffers for training.
+        _decode_graphs.release_for_training(self)
+    elif graphs and getattr(output, "past_key_values", None) is not None:
         # The returned cache views the persistent decode buffers: hand them over, so a later
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
