@@ -3204,6 +3204,43 @@ def _st_weighted_subfolder_paths(
         return ()
 
 
+def _root_index_weight_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Subfolders the root safetensors index maps weights into (Cosmos3 keeps every shard under transformer/), else ()."""
+    try:
+        import json as _json
+
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            model_name,
+            "model.safetensors.index.json",
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        with open(path, "r", encoding = "utf-8") as f:
+            index = _json.load(f)
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict):
+            return ()
+        folders = set()
+        for filename in weight_map.values():
+            if not isinstance(filename, str):
+                continue
+            filename = filename.strip().replace("\\", "/").strip("/")
+            if "/" in filename:
+                folders.add(filename.rsplit("/", 1)[0])
+        return tuple(sorted(folders))
+    except Exception:
+        return ()
+
+
 def _repo_has_weighted_st_subfolders(
     model_name,
     *,
@@ -3390,12 +3427,19 @@ def maybe_prefetch_hf_snapshot(
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
+    index_subfolders = ()
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         st_module_paths = _st_weighted_subfolder_paths(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        index_subfolders = _root_index_weight_subfolders(
             model_name,
             token = token,
             revision = revision,
@@ -3448,8 +3492,8 @@ def maybe_prefetch_hf_snapshot(
         # subfolder=X: the load resolves every weight under X/, so warm that subfolder plus root aux.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     elif weights_at_root:
-        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads.
-        if not st_module_paths:
+        # A bare load reads only root weights, so drop subdir weights, except ST module subfolders and a root index mapping into subfolders: then keep all of them, since Cosmos3's root model_index.json makes unsloth_zoo's download gate require every component (vae/ too).
+        if not st_module_paths and not index_subfolders:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         if snapshot_download_with_xet_fallback is not None:
@@ -9093,13 +9137,42 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
         return torch.no_grad()
-    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
-    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
-        return torch.no_grad()
-    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
-        shared_state.get("distributed_type", "")
-    ):
-        return torch.no_grad()
+    # ZeRO-3 reuses gathered persistent params (same poisoning); a known stage below 3 does not.
+    deepspeed = os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) or (
+        isinstance(shared_state, dict)
+        and "DEEPSPEED" in str(shared_state.get("distributed_type", ""))
+    )
+    if deepspeed:
+        # Inline, not a helper: rl_replacements copies only this function into the GRPO trainer.
+        stages = []
+        hf_deepspeed = sys.modules.get("transformers.integrations.deepspeed", None)
+        try:
+            if hf_deepspeed is not None and hf_deepspeed.is_deepspeed_zero3_enabled():
+                stages.append(3)
+        except Exception:
+            pass
+        plugins = shared_state.get("deepspeed_plugins") if isinstance(shared_state, dict) else None
+        if plugins is not None and not isinstance(plugins, dict):
+            plugins = {"default": plugins}
+        for plugin in (plugins or {}).values():
+            if not getattr(plugin, "selected", True):
+                continue
+            # A config file's stage lives in hf_ds_config; zero_stage defaults to 2 regardless.
+            stage = getattr(getattr(plugin, "hf_ds_config", None), "_stage", None)
+            if not isinstance(stage, int) or stage < 0:
+                stage = getattr(plugin, "zero_stage", None)
+            stages.append(stage)
+        env_stage = os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "").strip()
+        if env_stage.isdigit():
+            stages.append(int(env_stage))
+        stages = [stage for stage in stages if isinstance(stage, int) and stage >= 0]
+        if not stages or 3 in stages:
+            return torch.no_grad()
     try:
         first = next(iter(model.parameters()), None)
     except Exception:
