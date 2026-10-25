@@ -6047,9 +6047,7 @@ get_torch_index_url() {
         _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|1153|803|90c)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
-        # gfx90c runs the generic wheel's gfx900 kernels under HSA_OVERRIDE_GFX_VERSION=9.0.0, so a
-        # ROCm build already in the environment being replaced is one its owner runs that way:
-        # re-running the installer (the update path) keeps ROCm instead of demoting it to CPU.
+        # An existing ROCm torch on gfx90c is run via HSA_OVERRIDE_GFX_VERSION=9.0.0: updates keep it.
         if [ "$_amd_unsup_all" = gfx90c ]; then
             case "${_PREV_TORCH_VER:-}" in
                 *+rocm*)
@@ -6406,8 +6404,7 @@ THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-mul
 
 # The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
 # Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
-# absent because TheRock has no Polaris target, gfx90c because current torch there declares no
-# device-gfx90c extra (and TheRock rates gfx90c build-passing only).
+# absent because TheRock has no Polaris target, gfx90c because its torch has no device-gfx90c extra.
 _therock_device_extra_for_gfx() {
     case "$1" in
         gfx1010|gfx1011|gfx1012|gfx1153) echo "device-$1" ;;

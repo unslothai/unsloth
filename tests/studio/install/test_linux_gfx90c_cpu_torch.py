@@ -95,9 +95,6 @@ def _rocminfo_harness(monkeypatch, tmp_path, rocminfo: str):
     )
 
 
-# ── install.sh get_torch_index_url ──────────────────────────────────────────
-
-
 @_POSIX
 @pytest.mark.parametrize("tag", ["rocm7.2", "rocm6.4"])
 def test_install_sh_lone_gfx90c_takes_cpu_with_the_vulkan_hint(monkeypatch, tmp_path, tag):
@@ -106,9 +103,7 @@ def test_install_sh_lone_gfx90c_takes_cpu_with_the_vulkan_hint(monkeypatch, tmp_
     assert url.endswith("/cpu"), (url, err)
     assert "AMD GPU detected (gfx90c) -- Unsloth has no ROCm PyTorch wheels" in err, err
     assert "export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer" in err, err
-    # TheRock rates gfx90c build-passing only and current torch there has no device-gfx90c extra.
     assert "TheRock" not in err, err
-    # The torch 2.11 ROCm wheels carry gfx900 kernels, which run gfx90c under this override.
     assert "export HSA_OVERRIDE_GFX_VERSION=9.0.0" in err, err
 
 
@@ -127,9 +122,6 @@ def test_install_sh_gfx90c_under_a_gfx900_spoof_keeps_rocm(monkeypatch, tmp_path
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "9.0.0")
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
     assert url.endswith("/rocm7.2"), (url, err)
-
-
-# ── install_python_stack._ensure_rocm_torch ─────────────────────────────────
 
 
 @pytest.mark.parametrize("ver", [(6, 4), (7, 2)])
@@ -153,13 +145,8 @@ def test_python_gfx90c_spoofed_to_gfx900_keeps_rocm():
     assert "download.pytorch.org/whl/rocm7.2" in calls, calls
 
 
-# ── re-running install.sh keeps an existing ROCm build on gfx90c ─────────────
-
-
 @_POSIX
 def test_install_sh_rerun_keeps_an_existing_rocm_build_on_gfx90c(monkeypatch, tmp_path):
-    # The update path: install.sh recreates the venv; the old one ran a ROCm torch (with the
-    # gfx900 override at runtime), so it must not be demoted to CPU.
     _rocminfo_harness(monkeypatch, tmp_path, _ROCMINFO_GFX90C)
     monkeypatch.setenv("_PREV_TORCH_VER", "2.11.0+rocm7.2")
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
@@ -189,8 +176,6 @@ def test_install_sh_an_existing_rocm_build_does_not_keep_rocm_for_other_uncovere
     url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm7.2")
     assert url.endswith("/cpu"), (url, err)
 
-
-# ── the gfx900-override hint is gfx90c's alone ──────────────────────────────
 
 _OVERRIDE_HINT = "export HSA_OVERRIDE_GFX_VERSION=9.0.0"
 
