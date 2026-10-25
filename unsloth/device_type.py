@@ -339,6 +339,20 @@ def xpu_supports_native_bf16(device = None):
     return not any(_xpu_device_lacks_native_bf16(index) for index in indices)
 
 
+def xpu_vllm_refuses_bf16():
+    """vLLM refuses bf16 on this XPU (Arc A770); an older unsloth_zoo without the check refuses nothing."""
+    if DEVICE_TYPE != "xpu":
+        return False
+    try:
+        from unsloth_zoo.device_type import _xpu_vllm_refuses_bf16
+    except Exception:
+        return False
+    try:
+        return bool(_xpu_vllm_refuses_bf16())
+    except Exception:
+        return False
+
+
 def xpu_keeps_explicit_bf16():
     """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
     that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
