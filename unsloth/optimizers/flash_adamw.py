@@ -151,8 +151,7 @@ def _get_flash_adamw_class():
 
         # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
         # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
-        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales; a bf16
-        # variance is widened to fp32 below instead.
+        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
         # Checked per group after flashoptim fills its defaults (so positional and per-group
         # quantize both count), for groups added at construction and by add_param_group later.
         def _group_quantizes(self, group):
@@ -171,12 +170,8 @@ def _get_flash_adamw_class():
                 self.__dict__.pop("quantized_state_spec", None)
                 _refuse_unquantized_fp16()
 
-        # flashoptim keeps unquantized moments in the param dtype and its kernel stores the
-        # variance with round-to-nearest. At beta2 = 0.999 a step moves the variance by at most
-        # 0.1% of the gap to grad**2, under half a bf16 ulp unless grad**2 is several times
-        # the stored value. So a bf16 variance never decays after large gradients (steps too
-        # small) and stalls near a third of grad**2 under steady ones (steps too large). The
-        # unquantized bf16 variance is kept in fp32.
+        # A bf16 variance cannot move at beta2 = 0.999 (a step is under half an ulp), so it never
+        # decays and stalls near grad**2 / 3: the unquantized bf16 variance is kept in fp32.
         def _ensure_state_initialized(self, p, hparams):
             super()._ensure_state_initialized(p, hparams)
             _widen_variance(self.state[p].get("exp_avg_sq"))
@@ -187,8 +182,7 @@ def _get_flash_adamw_class():
             return state
 
         def load_state_dict(self, state_dict):
-            # torch.optim casts floating state to the param dtype before flashoptim sees it, so
-            # a saved fp32 variance is copied back after loading instead of rounded to bf16.
+            # torch.optim casts floating state to the param dtype: restore the fp32 variance.
             saved_ids = [i for g in state_dict.get("param_groups", []) for i in g["params"]]
             params = dict(zip(saved_ids, (p for g in self.param_groups for p in g["params"])))
             fp32_vars = {
@@ -214,8 +208,7 @@ def _get_flash_adamw_class():
                 or param.dtype == torch.float32
             ):
                 return super()._do_step(param, grad, errors, param_state, hparams)
-            # The fused kernel reads the fp32 variance exactly but writes its update back rounded
-            # to the param dtype, so the same fp32 update is computed beside it and kept.
+            # The fused kernel stores the variance rounded to the param dtype: keep an fp32 copy.
             new_var = _variance_update(var, grad, hparams["betas"][1])
             out = super()._do_step(param, grad, errors, param_state, hparams)
             param_state["exp_avg_sq"]._data = new_var
@@ -246,8 +239,7 @@ def _get_flash_adamw_class():
 
 
 def _variance_update(var, grad, beta2):
-    """fp32 `var * beta2 + grad**2 * (1 - beta2)` in one pass, the expression flashoptim's fused
-    Adam kernel evaluates before it rounds the result to the param dtype."""
+    """fp32 `var * beta2 + grad**2 * (1 - beta2)`, as flashoptim's fused kernel computes it."""
     global _VARIANCE_UPDATE_KERNEL
     import triton
 
@@ -270,8 +262,7 @@ def _variance_update(var, grad, beta2):
 
 
 def _widen_variance(state):
-    # flashoptim's _MaybeQuantizedTensor keeps unquantized data in _data with _storage_dtype;
-    # a later flashoptim without them keeps its own storage.
+    # flashoptim's private _MaybeQuantizedTensor fields; absent ones leave its storage as is.
     data = getattr(state, "_data", None)
     if data is not None and data.dtype == torch.bfloat16 and hasattr(state, "_storage_dtype"):
         state._storage_dtype = torch.float32
