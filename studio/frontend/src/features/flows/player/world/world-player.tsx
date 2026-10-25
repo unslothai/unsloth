@@ -231,7 +231,6 @@ export function WorldPlayer({
   const [view, setView] = useState<"2d" | "3d">(() =>
     spec.render === "3d" && webglAvailable() ? "3d" : "2d",
   );
-  // Switching views rebuilds the renderer; the player keeps standing where they were.
   const lastTile = useRef<{ x: number; y: number } | null>(null);
   const bootedView = useRef<"2d" | "3d" | null>(null);
   const ambientUrl = useMediaUrl(
@@ -327,7 +326,6 @@ export function WorldPlayer({
     [npcById, spec, toast, witness],
   );
 
-  // Load art, then boot Phaser or three.js (each its own chunk; three only loads for the 3D view).
   useEffect(() => {
     let live = true;
     let handle: WorldGameHandle | null = null;

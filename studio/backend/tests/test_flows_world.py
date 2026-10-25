@@ -185,7 +185,6 @@ def test_world_spec_param_authored():
 
 def test_render_and_view3d_are_kept_and_cleaned():
     plain = normalize_world(RAW, seed = 1)
-    # Old worlds are unchanged: no render hint and no 3D settings appear.
     assert "render" not in plain and "view3d" not in plain
     w = normalize_world(
         {
@@ -268,7 +267,6 @@ def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
         "id": "f",
         "name": "w",
         "nodes": [
-            # A stray 2D player first, then the player the world actually feeds.
             {
                 "id": "stray",
                 "type": "world.play",
