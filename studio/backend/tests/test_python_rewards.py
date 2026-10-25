@@ -165,6 +165,43 @@ def test_answer_raw_only_reaches_a_reward_that_takes_it(worker_factory):
     assert got == {"strict": [72.0]}
 
 
+def test_a_rendered_prompt_reaches_python_rewards_as_its_turns():
+    from datasets import Dataset
+
+    from core.training.rewards import PREFILL_COLUMN, PROMPT_TURNS_COLUMN
+
+    class Tok:
+        chat_template = "{% if enable_thinking is defined %}{% endif %}"
+
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kw):
+            return "".join(f"<{m['role']}>{m['content']}" for m in messages)
+
+    turns = [{"role": "system", "content": "S"}, {"role": "user", "content": "2+2?"}]
+    ds = Dataset.from_list([{"prompt": turns, "answer": "4"}])
+    out, rendered = rl.render_grpo_prompts(ds, Tok(), False, keep_turns = True)
+    assert rendered and isinstance(out[0]["prompt"], str)
+    assert out[0][PROMPT_TURNS_COLUMN] == turns
+    assert PROMPT_TURNS_COLUMN not in rl.render_grpo_prompts(ds, Tok(), False)[0].column_names
+
+    seen = {}
+
+    class Worker:
+        def score(self, names, prompts, completions, kwargs):
+            seen.update(prompts = prompts, completions = completions, kwargs = kwargs)
+            return {names[0]: [1.0]}
+
+    (fn,) = python_rewards.make_python_reward_funcs([{"name": "r"}], Worker())
+    fn(
+        prompts = [out[0]["prompt"]],
+        completions = ["4"],
+        answer = ["4"],
+        **{PROMPT_TURNS_COLUMN: [turns], PREFILL_COLUMN: ["It is "]},
+    )
+    assert seen["prompts"] == [turns]
+    assert seen["completions"] == [[{"role": "assistant", "content": "It is 4"}]]
+    assert seen["kwargs"] == {"answer": ["4"]}
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
