@@ -632,8 +632,7 @@ def test_h3_card_probes_never_report_an_apu_carve_out(monkeypatch):
 
 
 def test_h3_card_probes_never_report_a_partition_the_whole_board(monkeypatch):
-    # MI355X in DPX: KFD gives partition 1 the address 03:00.1, which has no amdgpu device, and partition 0 (03:00.0)
-    # would otherwise read the 288 GiB board total.
+    # MI355X DPX: partition 1 decodes to 03:00.1 (no amdgpu device); partition 0 must not read the whole board.
     _rocm_linux_host(
         monkeypatch,
         [("0000:03:00.0", "gfx950", (8.0, 288.0)), ("0000:03:00.1", "gfx950", None)],
