@@ -180,6 +180,28 @@ def test_twins_only_snapshot_loads_the_twins_at_any_dtype(tmp_path):
     assert fv.local_fp16_variant(str(snap), load_dtype = torch.bfloat16) == "fp16"
 
 
+@pytest.mark.parametrize(
+    "unet_defaults",
+    [
+        (
+            "unet/diffusion_pytorch_model-00001-of-00002.safetensors",
+            "unet/diffusion_pytorch_model-00002-of-00002.safetensors",
+        ),
+        ("unet/diffusion_pytorch_model.safetensors.index.json",),
+        ("unet/diffusion_pytorch_model.bin",),
+    ],
+)
+def test_sharded_or_bin_defaults_beside_twins_keep_a_bf16_load_on_the_defaults(
+    tmp_path, unet_defaults
+):
+    import torch
+
+    defaults = [d for d in SDXL_DEFAULTS if not d.startswith("unet/")]
+    snap = _snapshot(tmp_path, [*SDXL_CONFIGS, *defaults, *unet_defaults, *SDXL_TWINS])
+    assert fv.local_fp16_variant(str(snap), load_dtype = torch.bfloat16) is None
+    assert fv.local_fp16_variant(str(snap), load_dtype = torch.float16) == "fp16"
+
+
 def test_a_supplied_component_needs_no_twin_on_disk(tmp_path):
     files = [
         *SDXL_CONFIGS,

@@ -152,9 +152,23 @@ def _snapshot_names(snapshot: str, folders: Iterable[str]) -> list[str]:
     return names
 
 
-def _defaults_complete(names: Iterable[str], plan: Mapping[str, str]) -> bool:
-    present = set(names)
-    return all(any(f"{folder}/{stem}.safetensors" in present for stem in _STEMS) for folder in plan)
+def _is_default_weight(basename: str) -> bool:
+    if _DEFAULT_ANY_RE.match(basename):
+        return True
+    return (
+        basename.endswith(".index.json")
+        and ".fp16." not in basename
+        and bool(_WEIGHT_RE.match(basename))
+    )
+
+
+def _defaults_present(names: Iterable[str], plan: Mapping[str, str]) -> bool:
+    # Any default layout (single, sharded, .bin, an index) counts: only a folder with none reads the twins at bf16 / fp32.
+    by_folder: dict[str, list[str]] = {}
+    for name in names:
+        folder, _, base = str(name).rpartition("/")
+        by_folder.setdefault(folder, []).append(base)
+    return all(any(_is_default_weight(b) for b in by_folder.get(folder, ())) for folder in plan)
 
 
 def local_fp16_variant(
@@ -187,7 +201,7 @@ def local_fp16_variant(
     if plan is None:
         return None
     plain_fp16 = is_fp16_dtype(load_dtype) and (torch_dtype is None or is_fp16_dtype(torch_dtype))
-    if plain_fp16 or not _defaults_complete(names, plan):
+    if plain_fp16 or not _defaults_present(names, plan):
         return FP16_VARIANT
     return None
 
