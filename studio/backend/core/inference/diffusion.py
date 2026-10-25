@@ -218,6 +218,10 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    request_background_encoder_pins,
+    finish_encoder_pins_at_load,
+    start_background_pins,
+    stop_background_pins,
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
@@ -367,7 +371,16 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
+from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
+from .diffusion_fp16_variant import (
+    fp16_variant_enabled,
+    is_fp16_dtype,
+    is_fp16_twin,
+    local_fp16_variant,
+    plan_fp16_twins,
+    twin_of,
+)
 from .diffusion_flow_shift import (
     SAMPLE_SIGMAS_KEY,
     apply_comfy_flow_shift,
@@ -426,6 +439,7 @@ from .diffusion_comfy_quant import (
     comfy_int8_backend,
     comfy_torchao_quantized,
     fp8_storage_wanted,
+    fp8_widen_chosen,
     fp8_stored_layers,
     pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
@@ -4482,6 +4496,15 @@ class DiffusionBackend:
         # request's card into the next one.
         return diffusion_device_target_from_torch_device(device, effective)
 
+    def _fp16_load_target(self, fam: Optional[DiffusionFamily], ordinal: Optional[int]) -> bool:
+        """True when this pick loads at fp16 (a pre-Ampere card), so the plan may stage ``.fp16`` twins. Never raises."""
+        if not fp16_variant_enabled():
+            return False
+        try:
+            return is_fp16_dtype(getattr(self._target_for_ordinal(fam, ordinal), "dtype", None))
+        except Exception:  # noqa: BLE001 - no target: the defaults always load
+            return False
+
     def _target_for_ordinal(
         self, fam: Optional[DiffusionFamily], ordinal: Optional[int]
     ) -> DiffusionDeviceTarget:
@@ -5711,6 +5734,8 @@ class DiffusionBackend:
                 skip_transformer_weights = skip_transformer_weights,
                 skipped_files_out = skipped_transformer_files,
                 local_files_only = local_files_only,
+                fp16_twins = kind == "pipeline"
+                and self._fp16_load_target(fam, kwargs.get("gpu_ordinal")),
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
                 file_sizes_out = planned_sizes,
@@ -6639,6 +6664,7 @@ class DiffusionBackend:
         skipped_files_out: Optional[list[str]] = None,
         failures_out: Optional[list] = None,
         local_files_only: bool = False,
+        fp16_twins: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to fetch (the prefetch
         reuses this list, so the base is listed only once).
@@ -6666,6 +6692,10 @@ class DiffusionBackend:
 
         ``local_files_only`` returns the metadata-unavailable answer ``(0, [])`` instead of asking:
         the bytes belong to a download that is not permitted, and the empty list stages nothing.
+
+        ``fp16_twins`` (the load casts to fp16): a ``pipeline`` whose every listed component ships a single-file
+        ``.fp16`` twin stages the twins instead of the defaults (``diffusion_fp16_variant``), unless the defaults are
+        already cached and the twins are not. The load then reads them with ``variant="fp16"``.
         """
         if local_files_only:
             return 0, []
@@ -6731,6 +6761,8 @@ class DiffusionBackend:
                         picked = [s for s in picked if not _seeded_denoiser_shard(s.rfilename)]
                     if skipped_files_out is not None:
                         skipped_files_out[:] = [s.rfilename for s in seeded]
+                    if fp16_twins and not seeded and components is not None:
+                        picked = _swap_in_fp16_twins(metadata_repo, info, picked, hf_token)
                     return info, components, picked
 
                 # The family's own index: FLUX.3 ships only modular_model_index.json, so probing
@@ -7101,6 +7133,9 @@ class DiffusionBackend:
             skip_te_components = tuple(te_files) + replaced,
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
+            fp16_twins = kind == "pipeline"
+            and allow_device_probe
+            and self._fp16_load_target(fam, load_kwargs.get("gpu_ordinal")),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base answers model_info
         # anonymously, so the plan would otherwise be confident and the 401 land mid-download. Probing any id but the
@@ -7733,7 +7768,10 @@ class DiffusionBackend:
             # from_pretrained reads <component>/<file> only: a deeper tree (FLUX.3's variants/fp8r, variants/nvfp4
             # quantised packages) is never loaded and must not be priced.
             if load_itemsize is not None and (
-                len(rel.parts) != 2 or not _pipeline_default_variant_file(rel.as_posix())
+                len(rel.parts) != 2
+                or not (
+                    _pipeline_default_variant_file(rel.as_posix()) or is_fp16_twin(rel.as_posix())
+                )
             ):
                 continue
             try:
@@ -7742,6 +7780,14 @@ class DiffusionBackend:
                 continue
         if load_itemsize is None:
             return sizes
+        # A twin beside a default would price the same tensors twice.
+        default_dirs = {
+            rel.rsplit("/", 1)[0]
+            for rel in sizes
+            if not is_fp16_twin(rel) and _pipeline_resident_weight(rel)
+        }
+        for rel in [r for r in sizes if is_fp16_twin(r) and r.rsplit("/", 1)[0] in default_dirs]:
+            del sizes[rel]
         # A .bin only loses to a safetensors checkpoint the loader can select: unsharded, or shards with their index.
         st_dirs = {
             rel.rsplit("/", 1)[0]
@@ -9286,6 +9332,7 @@ class DiffusionBackend:
                 state_committed = False
                 load_bg_compile = None
                 state = None
+                pending_cache_write = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
                     if (
@@ -9428,6 +9475,28 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
+                                # fp16 load with a twin for every component reads the twins (bit-identical after cast).
+                                _te_replaced = te_precast_components(
+                                    fam, fetch_base, text_encoder_quant, target
+                                )
+                                _variant_snapshot = _load_snapshot_dir(
+                                    fetch_base, _base_local_dir, hub_cache_dir()
+                                )
+                                _fp16_variant_eligible = not (
+                                    pipeline_seed_scheme is not None
+                                    or _pipeline_prequant_skipped
+                                    or is_flux3_family(fam)
+                                    or fam.name in (MOSS_IMAGE_FAMILY_NAME, KREA2_FAMILY_NAME)
+                                )
+                                _fp16_variant = (
+                                    local_fp16_variant(
+                                        _variant_snapshot,
+                                        load_dtype = dtype,
+                                        supplied = _te_replaced,
+                                    )
+                                    if _fp16_variant_eligible
+                                    else None
+                                )
                                 # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
                                 self._load_prefetch = start_load_prefetch(
@@ -9436,11 +9505,10 @@ class DiffusionBackend:
                                     prequant_scheme = pipeline_seed_scheme,
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
-                                    text_encoders_replaced = te_precast_components(
-                                        fam, fetch_base, text_encoder_quant, target
-                                    ),
+                                    text_encoders_replaced = _te_replaced,
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
+                                    variant = _fp16_variant,
                                 )
                                 if fam.name == HIDREAM_FAMILY_NAME:
                                     # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
@@ -9648,6 +9716,22 @@ class DiffusionBackend:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
                                             small_host, dtype
                                         )
+                                    if _fp16_variant_eligible:
+                                        # Final kwargs: a dtype map or a supplied component (a default-only cached
+                                        # file it replaces blocked the first check) changes what twins must cover.
+                                        _fp16_variant = local_fp16_variant(
+                                            _variant_snapshot,
+                                            load_dtype = dtype,
+                                            torch_dtype = pipe_kwargs.get("torch_dtype"),
+                                            supplied = tuple(pipe_kwargs),
+                                        )
+                                    if _fp16_variant is not None:
+                                        pipe_kwargs["variant"] = _fp16_variant
+                                        logger.info(
+                                            "diffusion.fp16_variant: reading the .%s weight files (%s load)",
+                                            _fp16_variant,
+                                            str(dtype).replace("torch.", ""),
+                                        )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
                                     try:
@@ -9789,6 +9873,9 @@ class DiffusionBackend:
                                     fp8_storage = self._fp8_storage_for(
                                         single_file_path, target, loras
                                     ),
+                                    fp8_widen_chosen = self._fp8_widen_for(
+                                        single_file_path, target, loras
+                                    ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
@@ -9804,6 +9891,9 @@ class DiffusionBackend:
                                         sf_kwargs,
                                         logger,
                                         fp8_storage = self._fp8_storage_for(
+                                            single_file_path, target, loras
+                                        ),
+                                        fp8_widen_chosen = self._fp8_widen_for(
                                             single_file_path, target, loras
                                         ),
                                     )
@@ -10151,7 +10241,7 @@ class DiffusionBackend:
                                     transformer_quant_engaged = cached_scheme
                                 elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
-                                    self._save_pipeline_quant_to_cache(
+                                    pending_cache_write = self._save_pipeline_quant_to_cache(
                                         pipe,
                                         fam,
                                         denoisers,
@@ -10161,7 +10251,10 @@ class DiffusionBackend:
                                         cancel_check = lambda: self._raise_if_load_cancelled(
                                             _load_token
                                         ),
+                                        defer = True,
                                     )
+                                    if not hasattr(pending_cache_write, "start"):
+                                        pending_cache_write = None
                                     self._raise_if_load_cancelled(_load_token)
                                 else:
                                     # A clean decline can remain bf16; a partial in-place conversion is unusable.
@@ -10767,6 +10860,8 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    # streamed text encoders pin after the load returns, before or during the first encode
+                    request_background_encoder_pins(pipe)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,
@@ -10777,6 +10872,7 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)
                     _drop_measured_reserve_for_layer_split(pipe, plan)
@@ -11083,8 +11179,19 @@ class DiffusionBackend:
                     raise
                 finally:
                     self._stop_load_prefetch()
+                    if pending_cache_write is not None:
+                        try:
+                            if state_committed:
+                                pending_cache_write.start()
+                            else:
+                                pending_cache_write.discard()
+                        except Exception:  # noqa: BLE001 - a cache write never fails a load
+                            pass
+                        pending_cache_write = None
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
+                        # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.
+                        stop_background_pins(pipe)
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
                         if load_bg_compile is not None:
                             load_bg_compile.close()
@@ -11122,6 +11229,7 @@ class DiffusionBackend:
             "; ".join(plan.reasons),
             plan.estimates,
         )
+        finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
         return self.status()
 
     @staticmethod
@@ -11175,6 +11283,14 @@ class DiffusionBackend:
         """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
+        """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
+        does the host RAM refusal reserve what that rule keeps free."""
+        picks = getattr(self, "_fp8_widen_picks", None) or {}
+        return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
+            target, lora = _has_active_lora(loras)
+        )
 
     def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
@@ -11613,9 +11729,10 @@ class DiffusionBackend:
         base: Optional[str],
         source_base: Optional[str],
         cancel_check: Optional[Callable[[], None]] = None,
-    ) -> Optional[str]:
+        defer: bool = False,
+    ) -> Any:
         """Cache a load-time quantized ``transformer`` (single denoiser only, the cache keys that component; no LoRA).
-        Never raises."""
+        ``defer`` may return a ``PendingWrite`` for the caller to start once the load is published. Never raises."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             if fam is None or names != ["transformer"] or _has_active_lora(loras):
@@ -11629,6 +11746,7 @@ class DiffusionBackend:
                 source_base = source_base,
                 logger = logger,
                 cancel_check = cancel_check,
+                defer = defer,
             )
         except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
             logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
@@ -12717,21 +12835,25 @@ class DiffusionBackend:
             # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
             from .diffusion_memory import _available_system_memory_mib
 
-            store = fp8_storage_wanted(
-                target,
+            fp8_rule = dict(
                 lora = lora,
                 offload = not plan_keeps_transformer_resident(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
+            store = fp8_storage_wanted(target, **fp8_rule)
             picks = self.__dict__.setdefault("_fp8_storage_picks", {})
             picks[str(single_file_path)] = store
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = (
+                not store and fp8_widen_chosen(target, **fp8_rule)
+            )
             if store:
                 plan = _plan(
                     model_dense_mib - int(transformer_resident) + single_file_fp8_stored_mib
                 )
         elif kind == "single_file" and single_file_path:
             self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = False
         return plan
 
     @staticmethod
@@ -14955,9 +15077,18 @@ class DiffusionBackend:
 
     def _unload_locked(self) -> None:
         release_load_budget_fraction("image")
+        # Let a background prequant write finish so the next load never shares host RAM with it.
+        prequant_cache = sys.modules.get(f"{__package__}.diffusion_prequant_cache")
+        if prequant_cache is not None:
+            try:
+                prequant_cache.finish_background_writes(logger = logger)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
         state = self._state
         if state is None:
             return
+        # A pinner still copying would hold its host copies past release_pinned_host_memory().
+        stop_background_pins(getattr(state, "pipe", None))
         # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:
             try:
@@ -15583,9 +15714,60 @@ def _pipeline_selected_file(
 
 
 def _pipeline_resident_weight(rfilename: str) -> bool:
-    """Whether a selected file becomes tensor storage in the loaded pipeline."""
+    """Whether a selected file becomes tensor storage in the loaded pipeline (fp16 twins included)."""
     name = rfilename.rsplit("/", 1)[-1].lower()
-    return bool(_DEFAULT_PIPELINE_WEIGHT_RE.match(name))
+    return bool(_DEFAULT_PIPELINE_WEIGHT_RE.match(name)) or is_fp16_twin(name)
+
+
+def _swap_in_fp16_twins(repo_id: str, info: Any, picked: list[Any], hf_token: Any) -> list[Any]:
+    """``picked`` with defaults swapped for ``.fp16`` twins; unchanged when only the defaults are cached."""
+    if not fp16_variant_enabled():
+        return picked
+    try:
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+        siblings = {s.rfilename: s for s in (info.siblings or ())}
+        picked_names = [s.rfilename for s in picked]
+        folders = {
+            name.split("/", 1)[0]
+            for name in picked_names
+            if "/" in name and _pipeline_resident_weight(name)
+        }
+        if not folders:
+            return picked
+        revision = getattr(info, "sha", None) or None
+        index_path = hf_hub_download(
+            repo_id,
+            "model_index.json",
+            revision = revision,
+            cache_dir = hub_cache_dir(),
+            token = hf_token or None,
+        )
+        index = json.loads(Path(index_path).read_text(encoding = "utf-8"))
+        plan = plan_fp16_twins(siblings, index, components = folders)
+        if plan is None or set(plan) != folders:
+            return picked
+        defaults = {
+            n for n in picked_names if n.split("/", 1)[0] in plan and _pipeline_resident_weight(n)
+        }
+        if len(defaults) != len(plan) or any(
+            twin_of(n) != plan[n.split("/", 1)[0]] for n in defaults
+        ):
+            return picked
+
+        def _cached(name: str) -> bool:
+            hit = try_to_load_from_cache(
+                repo_id, name, cache_dir = hub_cache_dir(), revision = revision
+            )
+            return isinstance(hit, str)
+
+        if all(_cached(n) for n in defaults) and not all(_cached(t) for t in plan.values()):
+            return picked
+        twins = [siblings[t] for t in plan.values()]
+        return [s for s in picked if s.rfilename not in defaults] + twins
+    except Exception as exc:  # noqa: BLE001 - the defaults always load
+        logger.debug("diffusion.fp16_variant: plan kept the default files (%r)", exc)
+        return picked
 
 
 def _progress(

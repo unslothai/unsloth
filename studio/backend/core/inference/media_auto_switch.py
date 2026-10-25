@@ -141,14 +141,20 @@ def _resolve_pick(owner: str, name: str, task: str) -> Optional[MediaModelPick]:
 def _retired_copy_as_base(pick: MediaModelPick) -> MediaModelPick:
     """A downloaded retired FLUX.3 full copy as the load will read it: the pick of the base it copies, which
     ``DiffusionLoadRequest`` redirects it to. So locality is proven for the files that load fetches (the -FP8 mirror's),
-    not the copy's snapshot, and the resident match compares the id the status publishes."""
-    from core.inference.diffusion_families import retired_full_copy_base
+    not the copy's snapshot, and the resident match compares the id the status publishes. A copy complete on disk stays
+    itself, as the load route keeps it (``retired_copy_loads_from_disk``)."""
+    from core.inference.diffusion_families import (
+        retired_copy_loads_from_disk,
+        retired_full_copy_base,
+    )
 
     base = retired_full_copy_base(pick.model_id)
     if base is None:
         return pick
     single = (pick.gguf_filename or "").replace("\\", "/")
     if single and single != "model.safetensors":
+        return pick
+    if retired_copy_loads_from_disk(pick.model_path):
         return pick
     return MediaModelPick(base, base, None, "pipeline")
 
@@ -267,6 +273,7 @@ async def _start_load(
     """Run the load its own route would run, as an API load rather than a user one."""
     partition = expected_partition(pick)
     if owner == DIFFUSION:
+        from core.inference.diffusion_families import retired_copy_loads_from_disk
         from core.inference.media_locality import flux3_seeded_cache_repo, seeded_family_override
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
@@ -276,6 +283,9 @@ async def _start_load(
         model_path = pick.model_path
         family_override = None
         seeded_repo = None if pick.gguf_filename else flux3_seeded_cache_repo(pick.model_path)
+        # By id only the active cache is searched: a complete retired copy in an earlier Models folder keeps its path.
+        if seeded_repo and retired_copy_loads_from_disk(pick.model_path):
+            seeded_repo = None
         if seeded_repo:
             model_path = seeded_repo
             # The listing named the family from the snapshot's modular_model_index.json; an opaquely named repo id

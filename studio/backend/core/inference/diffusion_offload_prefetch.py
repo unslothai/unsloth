@@ -150,6 +150,13 @@ def _generic_to_copy_drops_non_blocking(cls: Any) -> bool:
     return hit
 
 
+@contextmanager
+def _normal_tensors() -> Iterator[None]:
+    import torch
+    with torch.inference_mode(False), torch.no_grad():
+        yield
+
+
 def _generic_to_device(src: Any, device: Any) -> Any:
     """torchao 0.18's common ``_to_copy`` (same constructor call, inner tensors moved with ``non_blocking=True``)."""
 
@@ -435,7 +442,8 @@ class GroupPrefetcher:
             from .diffusion_memory import _storage_nbytes
             staged = sum(sum(_storage_nbytes(cpu[t])) for t, p in zip(tensors, pinned) if not p)
             self._bound_staging(staged)
-        with torch.cuda.stream(stream):
+        # compiled blocks guard on dispatch keys: inference-mode copies would recompile every block (FLUX.1)
+        with _normal_tensors(), torch.cuda.stream(stream):
             # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
             # to these copies (the allocator orders reuse per stream)
             buffers = self._views_for(group, where) if where is not None else None
@@ -722,7 +730,8 @@ class GroupPrefetcher:
     def _alloc_slot(self, where: int) -> Any:
         import torch
 
-        raw = torch.empty(self.slot_size, dtype = torch.uint8, device = self.device)
+        with _normal_tensors():
+            raw = torch.empty(self.slot_size, dtype = torch.uint8, device = self.device)
         self.slot_raw[where] = raw
         self.slot_bytes += self.slot_size
         bump_placement_epoch()  # a whole-step graph keys its recorded copies on the ring's addresses

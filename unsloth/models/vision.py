@@ -302,6 +302,7 @@ except:
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
     xpu_keeps_explicit_bf16,
+    xpu_vllm_refuses_bf16,
     get_device_stats,
     clean_gpu_cache,
     is_hip,
@@ -3561,6 +3562,23 @@ class FastBaseModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        if (
+            dtype == torch.bfloat16
+            and DEVICE_TYPE == "xpu"
+            and fast_inference
+            and is_vLLM_available()
+            and xpu_vllm_refuses_bf16()
+        ):
+            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+                # This model needs bf16 or float32 (float16 gives NaN gradients): fail before loading.
+                raise RuntimeError(
+                    "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                    "run in float16. Load it with fast_inference = False."
+                )
+            logger.warning_once(
+                "Unsloth: vLLM does not accept bfloat16 on this Intel GPU. Will change to float16."
+            )
+            dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
         bnb_compute_dtype = dtype
@@ -4134,6 +4152,8 @@ class FastBaseModel:
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
+                # After extraction, so a discarded vision / audio tower on an older card does not count.
+                check_mixed_gpu_placement(model, dtype)
                 # Save the standalone decoder under its own names, not the composite prefix it was read from.
                 _drop_text_only_key_mapping(model, _text_key_mapping)
                 _inherit_gradient_checkpointing_support(model)
