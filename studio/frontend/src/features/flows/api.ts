@@ -112,12 +112,19 @@ export interface PlanModel {
   loaded?: boolean;
 }
 
+export interface PlanHint {
+  id: string;
+  message: string;
+}
+
 export interface FlowPlan {
   models: PlanModel[];
   gpu_ops: number;
   cached_nodes: number;
   errors: ValidationIssue[];
   warnings: ValidationIssue[];
+  /** Advice about this computer's settings (absent from older Studios). */
+  hints?: PlanHint[];
 }
 
 export const planFlow = (
@@ -192,6 +199,9 @@ export interface ImportReport {
   license?: string | null;
   content_rating?: string | null;
   author?: string | null;
+  replication?: string[];
+  live_note?: string | null;
+  /** Notebook imports: why Studio cannot run it, and where it runs instead. */
   unsupported?: string[];
   colab_url?: string | null;
 }
