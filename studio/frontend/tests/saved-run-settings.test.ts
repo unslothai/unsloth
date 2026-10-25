@@ -326,6 +326,11 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
     page,
     /const otherQuants = quantsSelectingRunSettings\(configId, name\);[\s\S]*?syncOtherQuants\(otherQuants, null\);/,
   );
+  // Syncing other quants can evict another model to fit the budget; its server override goes too.
+  assert.match(
+    page,
+    /savePerModelConfig\(configId, variant, stored, evicted\)[\s\S]{0,400}for \(const dropped of evicted\) \{\s*syncModelOverride\(dropped\.modelId, dropped\.ggufVariant, null/,
+  );
   // The pencil beside the dropdown renames a set, or names an edited Default before it exists.
   assert.match(
     page,

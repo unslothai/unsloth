@@ -3897,17 +3897,24 @@ export function ModelConfigPage({
   const syncOtherQuants = (quants: readonly string[], stored: PerModelConfig | null) => {
     const own = (target.ggufVariant ?? "").trim().toLowerCase();
     const mirrors = (target.apiLoadable ?? target.isGguf) && !nativePathToken;
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     for (const quant of quants) {
       if (quant.toLowerCase() === own) {
         continue;
       }
       const variant = quant || null;
       const saved = stored
-        ? savePerModelConfig(configId, variant, stored)
+        ? savePerModelConfig(configId, variant, stored, evicted)
         : deletePerModelConfig(configId, variant);
       if (saved && mirrors) {
         syncModelOverride(configId, variant, stored);
       }
+    }
+    // As persistConfig: a model dropped to fit the budget must not keep applying from the server.
+    for (const dropped of evicted) {
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+        keepLaunchFlags: true,
+      });
     }
   };
   const saveSharedSet = (name: string, committed: PerModelConfig): boolean => {
