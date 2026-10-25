@@ -997,10 +997,8 @@ class _FlatRef:
 
 
 class _FileSlice:
-    """A plain tensor that is a view of a mapped file (a safetensors shard the loader mmapped), held as (fd, offset,
-    size) instead of a reference: a reference keeps the whole mapping, and the shard's pages, alive for the write.
-    The bytes are read back with ``pread`` at write time from the same inode (the fd is opened at hand-off), which
-    is what the view aliased; a changed size / mtime fails the write, so nothing is published."""
+    """A view of an mmapped shard held as (fd, offset, size), not a reference that would pin the whole mapping.
+    Read back with ``pread`` from the same inode; a changed size / mtime fails the write."""
 
     __slots__ = ("fd", "offset", "nbytes", "dtype", "shape", "_numel", "_esize", "stamp")
 
@@ -1040,8 +1038,7 @@ class _FileSlice:
 
 
 def _file_regions() -> list:
-    """File-backed mappings of this process, ``[(start, end, file_offset, dev, inode, path)]`` sorted by start;
-    empty where /proc/self/maps does not exist (the snapshot then holds every tensor by reference)."""
+    """``[(start, end, file_offset, dev, inode, path)]`` sorted by start; empty without /proc/self/maps."""
     out = []
     try:
         with open("/proc/self/maps", "r", encoding = "utf-8", errors = "replace") as fh:
@@ -1150,12 +1147,8 @@ def save_runtime_quant(
 ) -> Any:
     """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
     ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
-
-    ``defer``: every check (key, lease, flatten, disk room) runs now, and the write itself is returned as a
-    ``PendingWrite`` for the caller to ``start()`` on a background thread once its load is published (or
-    ``discard()``). It owns host tensors only, so nothing the live module does later can change what it writes. Falls
-    back to the synchronous write (and returns its result) when the build is not wholly on the host, host RAM cannot
-    also hold it, another background write runs, or ``UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC=0``."""
+    ``defer`` runs every check now and returns a ``PendingWrite`` owning host tensors only; falls back to the
+    synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1305,8 +1298,6 @@ def save_runtime_quant(
         if defer:
             why = _defer_blocker(job)
             if why is None:
-                # The snapshot (resolved by the gate): quantized outputs and file slices, no module, no torchao
-                # wrapper, no state dict, no mapping of a source shard.
                 state_dict = None
                 pending = PendingWrite(job, stack.pop_all())
                 handed_off = True
@@ -1335,8 +1326,7 @@ def save_runtime_quant(
 
 
 class _WriteJob:
-    """One prepared artifact: the flat tensors, their header and where they go. ``run`` writes, hashes, renames and
-    commits the manifest, raising on any failure with no entry published (the temp file is unlinked)."""
+    """One prepared artifact; ``run`` raises on any failure with no entry published."""
 
     def __init__(
         self,
@@ -1359,7 +1349,6 @@ class _WriteJob:
         self.logger = logger
         self.release = False
         self.fds: dict = {}
-        # What the snapshot keeps alive: tensors held by reference, and whole mappings some of them pin.
         self.held_bytes = nbytes
         self.pinned_map_bytes = 0
         self.file_bytes = 0
@@ -1368,9 +1357,7 @@ class _WriteJob:
         return self.flat.values() if self.flat is not None else ()
 
     def resolve(self) -> None:
-        """Make the snapshot: every ``_FlatRef`` read now (the job holds the quantized outputs themselves, new
-        storage, not the module's wrappers), and every plain tensor that is a view of a mapped file turned into a
-        ``_FileSlice`` so the snapshot pins no mmap. Records what it still keeps alive for the RAM gate."""
+        """Materialize ``_FlatRef``s and turn mmap views into ``_FileSlice``s so the snapshot pins no mapping."""
         regions = _file_regions()
         out: dict = {}
         held = file_bytes = 0
@@ -1408,7 +1395,6 @@ class _WriteJob:
                 return None
             st = os.fstat(fd)
             if (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) != (*dev, inode):
-                # The path now names another file than the one mapped: hold the tensor instead.
                 os.close(fd)
                 return None
             entry = self.fds[path] = (fd, (st.st_size, st.st_mtime_ns))
@@ -1474,8 +1460,7 @@ _BACKGROUND: set = set()
 
 
 def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
-    """``(limit, available)`` of the tightest cgroup v2 memory limit over this process, or ``(None, None)``.
-    Available = limit - usage + the cgroup's file pages (reclaimable page cache counts in its usage)."""
+    """Tightest cgroup v2 ``(limit, available)``; available adds back reclaimable file pages."""
     try:
         with open("/proc/self/cgroup", "r", encoding = "utf-8") as fh:
             rel = next((ln.split("::", 1)[1].strip() for ln in fh if ln.startswith("0::")), None)
@@ -1509,7 +1494,6 @@ def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
 
 
 def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
-    """``(total, available)`` host RAM, narrowed by a cgroup memory limit when one applies."""
     try:
         from .diffusion_memory import _system_memory_mib
         total, avail = _system_memory_mib()
@@ -1525,9 +1509,7 @@ def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
 
 
 def _defer_blocker(job: _WriteJob) -> Optional[str]:
-    """Why ``job`` must be written now, or None. A deferred write keeps the build's host tensors alive after the
-    module moves to the device, so they must already be host tensors (nothing on a device to pin or race), and what
-    the snapshot keeps alive (``resolve``: tensors held by reference plus any mapping they pin) must fit."""
+    """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit."""
     if not async_enabled():
         return f"{ENV_ASYNC}=0"
     with _lock:
@@ -1559,10 +1541,8 @@ class _WriteCancelled(Exception):
 
 
 class PendingWrite:
-    """A prepared cache write that runs on a background thread after ``start()``. It holds the writer lease and the
-    build's host tensors (each dropped once written) and nothing else, so unloading, reloading or patching the live
-    pipeline cannot change or free its source. ``cancel()`` stops it between tensors: the temp file is unlinked and
-    no entry is published (the manifest is the commit point)."""
+    """A prepared write run on a thread by ``start()``; holds only the lease and host tensors, so the live pipeline
+    cannot change its source. The manifest is the commit point: ``cancel()`` publishes nothing."""
 
     def __init__(self, job: _WriteJob, stack: contextlib.ExitStack) -> None:
         self._job: Optional[_WriteJob] = job
@@ -1582,7 +1562,6 @@ class PendingWrite:
             raise _WriteCancelled()
 
     def start(self) -> bool:
-        """Begin the write; False if it was already started, cancelled or discarded."""
         with _lock:
             if self._thread is not None or self._job is None or self._cancel.is_set():
                 return False
@@ -1629,7 +1608,6 @@ class PendingWrite:
         self._finished.set()
 
     def discard(self) -> None:
-        """Drop a write that was never started (its load failed): releases the lease and the tensors."""
         with _lock:
             started = self._thread is not None
             self._cancel.set()
@@ -1647,7 +1625,6 @@ class PendingWrite:
 
 
 def cancel_background_writes(timeout: float = 30.0) -> bool:
-    """Cancel every pending / running background write and wait for each to stop; True when all have."""
     with _lock:
         pending = list(_BACKGROUND)
     for p in pending:
@@ -1657,7 +1634,6 @@ def cancel_background_writes(timeout: float = 30.0) -> bool:
 
 
 def wait_background_writes(timeout: Optional[float] = None) -> bool:
-    """Wait for started background writes to finish; True when none is left running."""
     with _lock:
         pending = [p for p in _BACKGROUND if p._thread is not None]
     deadline = None if timeout is None else time.monotonic() + timeout
@@ -1668,13 +1644,11 @@ def wait_background_writes(timeout: Optional[float] = None) -> bool:
     return True
 
 
-# How long an unload (or interpreter exit) lets a running write finish before cancelling it.
 FINISH_TIMEOUT_SECONDS = 600.0
 
 
 def finish_background_writes(timeout: float = FINISH_TIMEOUT_SECONDS, logger: Any = None) -> bool:
-    """Let running writes finish (bounded), then cancel what is left; True when every write completed. An unload
-    calls this so the next load never competes with a held build for host RAM, and a reload finds the entry."""
+    """Bounded wait, then cancel the rest, so the next load never shares host RAM with a held build."""
     with _lock:
         running = [p for p in _BACKGROUND if p._thread is not None and not p.done()]
     if running:

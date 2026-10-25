@@ -9135,7 +9135,6 @@ class DiffusionBackend:
                 state_committed = False
                 load_bg_compile = None
                 state = None
-                # The prequant cache write, prepared during the quantize and run once the load is published.
                 pending_cache_write = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -10938,7 +10937,6 @@ class DiffusionBackend:
                 finally:
                     self._stop_load_prefetch()
                     if pending_cache_write is not None:
-                        # Off the first image's critical path; a failed load never publishes its build.
                         try:
                             if state_committed:
                                 pending_cache_write.start()
@@ -14803,8 +14801,7 @@ class DiffusionBackend:
 
     def _unload_locked(self) -> None:
         release_load_budget_fraction("image")
-        # A background prequant cache write owns host tensors only, so the teardown below cannot touch its source; it
-        # is let finish first so the next load never shares host RAM with it and a reload of these weights hits.
+        # Let a background prequant write finish so the next load never shares host RAM with it.
         prequant_cache = sys.modules.get(f"{__package__}.diffusion_prequant_cache")
         if prequant_cache is not None:
             try:

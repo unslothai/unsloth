@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The deferred (background) prequant cache write: same bytes as the synchronous write, nothing published before it
-ends, a source the live module cannot change, cancellation on unload, fallbacks and the kill switch.
-
-Hermetic: reuses test_diffusion_prequant_cache's tiny CPU-quantized module and local base "repo".
-"""
+"""Deferred prequant cache write: same bytes as the sync write, nothing published early, fallbacks, kill switch."""
 
 from __future__ import annotations
 
@@ -47,7 +43,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv(C.ENV_ASYNC, raising = False)
     C._HEADER_MEMO.clear()
     getattr(C, "_UNREACHABLE", {}).clear()
-    # Plenty of host RAM unless a test says otherwise.
     monkeypatch.setattr(C, "_host_memory_bytes", lambda: (1 << 40, 1 << 39))
     yield root
     assert C.cancel_background_writes(timeout = 30.0)
@@ -66,7 +61,6 @@ def _leftovers(root: Path) -> list:
 
 
 def _two_builds(tmp_path, scheme_name):
-    """One base and two identical quantized builds of it (one per write under test)."""
     base, model = T._write_base(tmp_path)
     other = T.Tiny().to(torch.bfloat16)
     other.load_state_dict(model.state_dict())
@@ -74,7 +68,6 @@ def _two_builds(tmp_path, scheme_name):
 
 
 def _sync_reference(tmp_path, monkeypatch, base, model) -> str:
-    """The artifact the synchronous write produces for the same build, in its own root (same key, same bytes)."""
     monkeypatch.setenv(C.ENV_DIR, str(tmp_path / "ref_cache"))
     path = C.save_runtime_quant(model, T._fam(base), base_repo = str(base))
     assert isinstance(path, str)
@@ -161,7 +154,6 @@ def test_the_snapshot_holds_host_tensors_only_and_frees_each_once_written(
     job = None
     assert pending.start() and pending.wait(60.0)
     assert pending.result
-    # The dict shrinks as the write goes, and nothing is left alive afterwards.
     assert seen_during == sorted(seen_during, reverse = True) and seen_during[0] > seen_during[-1]
     gc.collect()
     assert all(r() is None for r in refs)
@@ -220,7 +212,6 @@ def test_cancel_mid_write_unlinks_the_temp_and_publishes_nothing(
     assert pending.result is None
     assert _leftovers(env) == []
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
-    # The lease is released: the next load can build and publish the entry.
     monkeypatch.setattr(C, "write_streaming_safetensors", real)
     assert isinstance(C.save_runtime_quant(model, fam, base_repo = str(base)), str)
 
@@ -245,7 +236,6 @@ def test_fallbacks_write_synchronously(env, tmp_path, scheme, monkeypatch):
     out = C.save_runtime_quant(model, fam, base_repo = str(base), defer = True)
     assert isinstance(out, str) and Path(out).is_file()
     monkeypatch.delenv(C.ENV_ASYNC)
-    # Host RAM that cannot also hold the build.
     job = C._WriteJob(
         "k", env / "k", {"w": torch.zeros(1 << 20, dtype = torch.int8)}, {}, {}, 1 << 20, 0.0, None
     )
@@ -255,7 +245,7 @@ def test_fallbacks_write_synchronously(env, tmp_path, scheme, monkeypatch):
     assert "unknown" in C._defer_blocker(job)
     monkeypatch.setattr(C, "_host_memory_bytes", lambda: (1 << 40, 1 << 39))
     assert C._defer_blocker(job) is None
-    # A build that is not on the host (a device tensor the write would have to pin or race).
+    # A device tensor the write would have to pin or race.
     on_meta = C._WriteJob(
         "k", env / "k", {"w": torch.empty(4, device = "meta")}, {}, {}, 4, 0.0, None
     )
@@ -313,7 +303,6 @@ def test_an_unload_lets_a_running_write_finish(env, tmp_path, scheme, monkeypatc
     assert pending.start() and entered.wait(10.0)
     assert C.finish_background_writes(timeout = 60.0)
     assert pending.result and C.lookup(fam, scheme, base_repo = str(base)) == pending.result
-    # A bounded wait cancels what is still running, publishing nothing.
     assert not C._BACKGROUND
 
 
@@ -338,8 +327,7 @@ def _mapped(path) -> bool:
 
 @pytest.mark.skipif(not Path("/proc/self/maps").exists(), reason = "needs /proc/self/maps")
 def test_a_view_of_a_mapped_shard_is_re_read_not_held(env, tmp_path):
-    """Plain tensors the loader left as views of an mmapped shard become file slices: the snapshot pins no mapping,
-    holds only the new storage, and writes the same bytes as a write from the tensors."""
+    """Mmapped-shard views become file slices: no mapping pinned, same bytes written."""
     src = tmp_path / "shard.bin"
     torch.manual_seed(0)
     payload = torch.randn(1 << 18, dtype = torch.bfloat16)
