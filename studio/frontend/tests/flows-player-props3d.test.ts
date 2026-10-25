@@ -154,7 +154,7 @@ test("a solid prop dropped where the player stands never traps them", async () =
   );
   assert.match(
     player,
-    /await saveUntilCurrent\(current, savedProps, saveScene\)/,
+    /await saves\.current\.idle\(\);[\s\S]*await saveUntilCurrent\(current, lastSaved\.current, saveScene\)/,
   );
   // Done waits for model imports still uploading, so an imported model is saved rather than added after close.
   assert.match(
@@ -185,6 +185,38 @@ test("Done keeps saving until an edit made during a save is saved too", async ()
   );
   assert.equal(await E.saveUntilCurrent(() => "same", "same", save), true);
   assert.equal(saves.length, 2, "nothing to save, no call");
+});
+
+test("saves run one at a time, so an older save never lands after a newer one", async () => {
+  const q = new E.SaveQueue();
+  const landed: string[] = [];
+  let releaseFirst: () => void = () => undefined;
+  const first = q.run(
+    () =>
+      new Promise<boolean>((r) => {
+        releaseFirst = () => {
+          landed.push("old");
+          r(true);
+        };
+      }),
+  );
+  const second = q.run(async () => {
+    landed.push("new");
+    return true;
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(landed, [], "the newer save waits for the older one");
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(landed, ["old", "new"]);
+  // A failed save does not block the next.
+  await q
+    .run(async () => {
+      throw new Error("offline");
+    })
+    .catch(() => undefined);
+  assert.equal(await q.run(async () => "after"), "after");
+  await q.idle();
 });
 
 test("new props get unique ids and land on a free tile, never on another prop", () => {

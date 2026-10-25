@@ -37,6 +37,7 @@ import { type TileKind, generateMap } from "./procgen";
 import {
   type EditorState,
   GlbError,
+  SaveQueue,
   type WorldEditor,
   inspectGlb,
   saveUntilCurrent,
@@ -445,34 +446,48 @@ export function WorldPlayer({
       toast(e instanceof Error ? e.message : String(e));
     }
   }, [api, toast]);
-  const saveScene = useCallback(async (): Promise<boolean> => {
-    if (!editor || !api.saveWorldProps) return true;
-    const props = editor.state().props;
-    setEdStatus("Saving");
-    setEdError(null);
-    try {
-      await api.saveWorldProps(flowId, props);
-      setSavedProps(JSON.stringify(props));
-      setEdState(editor.state());
-      setEdStatus("Saved");
-      return true;
-    } catch (e) {
-      setEdStatus("");
-      setEdError(`Not saved: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
-    }
-  }, [api, editor, flowId]);
+  // Saves run one at a time and each writes the props as they are when it starts, so an older save never lands
+  // after a newer one; `lastSaved` is what the server holds.
+  const saves = useRef(new SaveQueue());
+  const lastSaved = useRef(savedProps);
+  const saveScene = useCallback(
+    (): Promise<boolean> =>
+      saves.current.run(async () => {
+        if (!editor || !api.saveWorldProps) return true;
+        const props = editor.state().props;
+        setEdStatus("Saving");
+        setEdError(null);
+        try {
+          await api.saveWorldProps(flowId, props);
+          lastSaved.current = JSON.stringify(props);
+          setSavedProps(lastSaved.current);
+          setEdState(editor.state());
+          setEdStatus("Saved");
+          return true;
+        } catch (e) {
+          setEdStatus("");
+          setEdError(
+            `Not saved: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return false;
+        }
+      }),
+    [api, editor, flowId],
+  );
   // Model imports still uploading: Done waits for them, so an imported model is saved rather than lost.
   const imports = useRef(new Set<Promise<void>>());
   const closeEditor = useCallback(async () => {
     if (!editor) return;
     while (imports.current.size) await Promise.allSettled([...imports.current]);
+    // A save already running finishes first; then save until the server holds what the editor shows.
+    await saves.current.idle();
     const current = () => JSON.stringify(editor.state().props);
-    if (!(await saveUntilCurrent(current, savedProps, saveScene))) return;
+    if (!(await saveUntilCurrent(current, lastSaved.current, saveScene)))
+      return;
     editor.close();
     setEditor(null);
     setEdState(null);
-  }, [editor, saveScene, savedProps]);
+  }, [editor, saveScene]);
   const importModel = useCallback(
     async (file: File) => {
       if (!editor || !api.uploadModel) return;

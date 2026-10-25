@@ -382,3 +382,19 @@ export async function saveUntilCurrent(
   }
   return current() === saved;
 }
+
+/** Runs saves one after another, so an older save can never land after a newer one. */
+export class SaveQueue {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(job: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(job, job);
+    this.tail = next.catch(() => undefined);
+    return next;
+  }
+
+  /** Resolves once every save queued so far has finished. */
+  idle(): Promise<unknown> {
+    return this.tail;
+  }
+}
