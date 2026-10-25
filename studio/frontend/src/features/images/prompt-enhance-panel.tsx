@@ -164,7 +164,7 @@ function UpsamplerDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
@@ -335,7 +335,7 @@ export function EnhancePromptControls({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="h-7 px-2 text-xs"
+                  className="text-xs"
                   onClick={() => {
                     onUseCaption(preview.caption);
                     setPreview(null);
