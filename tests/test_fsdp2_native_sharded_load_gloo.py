@@ -21,7 +21,7 @@ import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
-from test_tp_native_oracle import ARCHS, _batch, build  # noqa: E402
+from test_tp_native_oracle import ARCHS, build  # noqa: E402
 from test_tp_native_gloo import _free_port  # noqa: E402
 
 WORLD = 2
@@ -34,9 +34,25 @@ def _load_module():
     return native, importlib.import_module("unsloth.models.fsdp2_load")
 
 
+VLM = "trl-internal-testing/tiny-Qwen2_5_VLForConditionalGeneration"
+
+
+def _auto(arch):
+    import transformers
+
+    return transformers.AutoModelForImageTextToText if arch == "qwen2_5_vl" else transformers.AutoModelForCausalLM
+
+
 def _save(arch, directory, overrides = None):
-    repo, base = ARCHS[arch]
-    model = build(repo, {**base, **(overrides or {})}, lora = False)
+    if arch == "qwen2_5_vl":
+        import transformers
+
+        config = transformers.AutoConfig.from_pretrained(VLM)
+        torch.manual_seed(0)
+        model = transformers.AutoModelForImageTextToText.from_config(config, torch_dtype = torch.float32)
+    else:
+        repo, base = ARCHS[arch]
+        model = build(repo, {**base, **(overrides or {})}, lora = False)
     model.generation_config.pad_token_id = None
     model.save_pretrained(directory, max_shard_size = "1MB", safe_serialization = True)
     return directory
@@ -95,9 +111,9 @@ def _train(native, model, ids, steps = 3):
     return losses, norms
 
 
-def _case(rank, world, tmp, ckpt, mode, fit):
+def _case(rank, world, tmp, ckpt, mode, fit, arch):
     native, loading = _load_module()
-    from transformers import AutoModelForCausalLM
+    AutoModelForCausalLM = _auto(arch)
 
     kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
     config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = "cpu")
@@ -117,7 +133,7 @@ def _case(rank, world, tmp, ckpt, mode, fit):
             start, stop = info["rows"]
             assert tuple(p.shape) == (stop - start,) + info["shape"][1:]
             expect_sliced += p.numel() * 4
-    ids = _batch(model)
+    ids = torch.randint(0, 100, (2, 7), generator = torch.Generator().manual_seed(1))
     unsharded = _raised(lambda: model(input_ids = ids))
     model = _prep(model, mode)
     native.shard_model(model, config)
@@ -220,12 +236,13 @@ def _spawn(case, world = WORLD, **kwargs):
         ("llama", {"intermediate_size": 37}, "full", False),
         ("qwen3", None, "lora", False),
         ("qwen3", None, "full", False),
+        ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
     ],
 )
 def test_sharded_loading_matches_full_load_shard_model(arch, overrides, mode, fit):
     with tempfile.TemporaryDirectory() as ckpt:
         _save(arch, ckpt, overrides)
-        results = _spawn("parity", ckpt = ckpt, mode = mode, fit = fit)
+        results = _spawn("parity", ckpt = ckpt, mode = mode, fit = fit, arch = arch)
     sliced = [r["stats"]["read_bytes_sliced"] for r in results]
     for rank, res in enumerate(results):
         assert res["models"] == 1

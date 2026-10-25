@@ -1721,6 +1721,46 @@ def _checkpoint_key(names, model, index):
     return None
 
 
+def _checkpoint_aliases(model, index):
+    """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
+    mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
+    `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
+    weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced."""
+    legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
+    renamings = converters = None
+    try:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        from transformers.core_model_loading import WeightConverter, WeightRenaming, rename_source_key
+
+        transforms = get_model_conversion_mapping(model)
+        renamings = [t for t in transforms if isinstance(t, WeightRenaming)]
+        converters = [t for t in transforms if isinstance(t, WeightConverter)]
+    except Exception:
+        pass
+    if not legacy and not renamings and not converters:
+        return {}
+    meta = dict.fromkeys(model.state_dict().keys(), True)
+    prefix = getattr(model, "base_model_prefix", None) or None
+    out = {}
+    for key in index:
+        new = key
+        for pattern, replacement in legacy.items():
+            new, n = re.subn(pattern, replacement, new)
+            if n:
+                break
+        converted = None
+        if renamings is not None:
+            try:
+                new, converted = rename_source_key(new, renamings, converters, prefix, meta)
+            except Exception:
+                converted = None
+        if converted is not None:
+            out[new] = None
+        elif new != key:
+            out.setdefault(new, key)
+    return out
+
+
 def _buffer_skeleton(model):
     """The model rebuilt with meta parameters and real buffers (RoPE tables), as from_pretrained builds them."""
     from accelerate import init_empty_weights
@@ -1762,9 +1802,29 @@ def _fill_from_checkpoint(
     Returns (reader, sharded numel, whole numel)."""
     index = _checkpoint_index(name, kwargs)
     reader = _SliceReader(index)
+    aliases = None
     sharded_numel = full_numel = 0
-    for old, where, names in _parameter_slots(model).values():
+
+    def find(names):
+        nonlocal aliases
         key = _checkpoint_key(names, model, index)
+        if key is not None:
+            return key
+        if aliases is None:
+            aliases = _checkpoint_aliases(model, index)
+        for n in names:
+            if n in aliases:
+                if aliases[n] is None:
+                    raise ValueError(
+                        f"Unsloth: {label} sharded loading cannot read '{n}': transformers builds it from several "
+                        f"checkpoint tensors (a weight conversion); load this model without sharded loading "
+                        f"({fallback})."
+                    )
+                return aliases[n]
+        return None
+
+    for old, where, names in _parameter_slots(model).values():
+        key = find(names)
         if key is None:
             raise ValueError(
                 f"Unsloth: {label} sharded loading found no checkpoint tensor for '{names[0]}'; load "
@@ -1790,8 +1850,9 @@ def _fill_from_checkpoint(
             if buf is None or not buf.is_meta:
                 continue
             key = f"{module_name}.{bname}" if module_name else bname
-            if bname not in module._non_persistent_buffers_set and key in index:
-                value = reader.full(key)
+            source = find([key]) if bname not in module._non_persistent_buffers_set else None
+            if source is not None:
+                value = reader.full(source)
             else:
                 skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
                 value = skeleton.get_buffer(key)
