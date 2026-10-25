@@ -7080,7 +7080,24 @@ export function HubModelPicker({
               />
             </span>
           ) : (
-            <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+            // Says the row holds several quants: a sole quant renders its own row above, and while
+            // the probe runs the row may still collapse to one, so no chevron yet.
+            <span
+              aria-hidden="true"
+              className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}
+            >
+              {soleQuants.pending.has(c.repo_id) ? null : (
+                <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/70">
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      expanderOpen && "rotate-180",
+                    )}
+                  />
+                </span>
+              )}
+            </span>
           )}
         </div>
         {expanderOpen && (
