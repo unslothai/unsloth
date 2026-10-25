@@ -784,7 +784,10 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         # `accelerate launch` with parallelism_config_cp_size builds it from the environment
         # (ACCELERATE_USE_PARALLELISM_CONFIG), leaving args.parallelism_config None.
         for source, parallelism_config in (
-            ("parallelism_config", getattr(getattr(self, "args", None), "parallelism_config", None)),
+            (
+                "parallelism_config",
+                getattr(getattr(self, "args", None), "parallelism_config", None),
+            ),
             (
                 "the accelerate config (parallelism_config_cp_size)",
                 getattr(getattr(self, "accelerator", None), "parallelism_config", None),
