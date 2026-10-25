@@ -170,7 +170,7 @@ function FenceShell({
 }) {
   return (
     <div
-      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      className="my-4 flex w-full flex-col gap-2 rounded-lg border border-border bg-sidebar p-2"
       data-language={language ?? undefined}
       data-streamdown="code-block"
       data-unsloth-fence-deferred={plain ? undefined : "true"}
@@ -1808,7 +1808,7 @@ export const FenceBody = memo(function FenceBody({
 
   return (
     <div
-      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      className="my-4 flex w-full flex-col gap-2 rounded-lg border border-border bg-sidebar p-2"
       data-incomplete={isIncomplete || undefined}
       data-language={language ?? undefined}
       data-streamdown="code-block"

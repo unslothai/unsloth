@@ -129,7 +129,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   const fileLabel = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   const snippet = finding.snippet ?? [];
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border">
+    <div className="min-w-0 overflow-hidden rounded-xl border">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-2">
         <Badge
           variant="outline"
@@ -300,7 +300,7 @@ export function RemoteCodeConsentDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           {blocked ? null : (
-            <AlertDialogAction onClick={() => resolve(true)}>
+            <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
               Enable and continue
             </AlertDialogAction>
           )}

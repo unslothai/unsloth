@@ -215,6 +215,23 @@ def _should_auto_padding_free(config) -> bool:
     return getattr(config, "padding_free", None) is None
 
 
+def _auto_padding_choice(
+    original_init, model, config, train_dataset, processing_class, args, kwargs
+):
+    """(use_padding_free, reason) for an unset `padding_free` (unsloth/utils/padding_choice.py)."""
+    try:
+        from unsloth.utils.padding_choice import decide_auto_padding_free
+        try:
+            bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs).arguments
+        except Exception:
+            bound = kwargs
+        return decide_auto_padding_free(
+            model, config, train_dataset, processing_class, bound.get("formatting_func")
+        )
+    except Exception as exc:
+        return True, f"padding choice skipped ({type(exc).__name__})"
+
+
 def _disable_sample_packing(config):
     if config is None:
         return
@@ -1987,9 +2004,21 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if padding_free_requested:
                 configure_padding_free(config_arg)
             elif _should_auto_padding_free(config_arg):
-                configure_padding_free(config_arg)
-                auto_padding_free_active = True
-                logger.info("Unsloth: Padding-free batching auto-enabled for SFTTrainer instance.")
+                use_padding_free, choice_reason = _auto_padding_choice(
+                    original_init, model, config_arg, train_dataset, processing_class, args, kwargs
+                )
+                if use_padding_free:
+                    configure_padding_free(config_arg)
+                    auto_padding_free_active = True
+                    logger.info(
+                        "Unsloth: Padding-free batching auto-enabled for SFTTrainer instance."
+                    )
+                else:
+                    # Left unset (None), exactly as UNSLOTH_DISABLE_AUTO_PADDING_FREE=1 leaves it.
+                    print(
+                        f"Unsloth: Padded batches + per-block compile chosen over padding-free "
+                        f"({choice_reason}). Set UNSLOTH_PADDING_CHOICE=padding_free to override."
+                    )
 
         try:
             original_init(self, *args, **kwargs)
