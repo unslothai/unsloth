@@ -123,6 +123,9 @@ class DiffusionFamily:
     # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
     # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
     unified_edit: bool = False
+    # A reference family trained to edit (FLUX.3 Klein): Edit runs the same reference call, sized from Image 1, without
+    # unified_edit's localized modes or alpha.
+    reference_edit: bool = False
     # Qwen-Image-Layered: RGBA layers per input (each an output image); 0 = not layered.
     layer_count: int = 0
     # The pipeline's ``resolution`` area bucket (640 or 1024).
@@ -604,6 +607,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/flux-3-image-klein-base",
         aliases = ("flux-3-image-klein-base", "flux3-image-klein-base", "flux3-klein-base"),
         reference = True,
+        # BFL's card and ComfyUI templates edit through this call (i2i, mi2i).
+        reference_edit = True,
         max_condition_images = 10,
         # Two DiT patch grids (VAE /8, patch 2): sizes snap to 16 like FLUX.2.
         dimension_multiple = 16,
@@ -657,6 +662,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/flux-3-image-klein",
         aliases = ("flux-3-image-klein", "flux3-image-klein", "flux3-klein"),
         reference = True,
+        # BFL's card and ComfyUI templates edit through this call (i2i, mi2i).
+        reference_edit = True,
         max_condition_images = 10,
         dimension_multiple = 16,
         condition_pixel_weight = 0.11,
