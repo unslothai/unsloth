@@ -465,7 +465,7 @@ export function shoot(
 export function enemiesAct(
   w: ActionWorld,
   c: Combat,
-  player: { x: number; y: number; z: number },
+  player: { x: number; y: number; z: number; h?: number },
   hostiles: readonly Target[],
   safe: (x: number, y: number) => boolean,
 ): string[] {
@@ -491,7 +491,8 @@ export function enemiesAct(
       eyeZ,
       dx,
       dy,
-      player.z + 1 - eyeZ,
+      // Aim inside the body as it stands now, so crouching behind cover hides the player.
+      player.z + 0.7 * (player.h ?? STAND_H) - eyeZ,
       d,
     );
     if (wall < d) continue;

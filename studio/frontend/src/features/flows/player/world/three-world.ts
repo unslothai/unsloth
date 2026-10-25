@@ -35,6 +35,7 @@ import {
   RADIUS,
   STAND_H,
   advance,
+  bodyHeight,
   buildActionWorld,
   circleHitsBox,
   combatOf,
@@ -1099,7 +1100,7 @@ export function createWorld3d(
     const fired = enemiesAct(
       aw,
       combat,
-      { x: body.x, y: body.y, z: body.z },
+      { x: body.x, y: body.y, z: body.z, h: bodyHeight(body) },
       targets().filter((t) => t.hostile),
       safe,
     );

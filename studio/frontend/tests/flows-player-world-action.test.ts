@@ -395,3 +395,13 @@ test("safe places hold for the player's shots as well as the hostiles'", () => {
   assert.match(src, /if \(firePressed && safe\(body\.x, body\.y\)\) \{\s*firePressed = false;/);
   assert.match(src, /targets\(\)\.filter\(\(t\) => !safe\(t\.x, t\.y\)\)/);
 });
+
+test("crouching behind cover hides the player from hostile fire", () => {
+  // A crate about 0.95 tall between a hostile and the player.
+  const w = world([{ ...crate(8, 5.5), scale: 1.86 }]);
+  const me = { x: 9.5, y: 5.5, z: 0 };
+  const grim = { id: "grim", x: 5.5, y: 5.5, z: 0, hostile: true };
+  const none = () => false;
+  assert.deepEqual(A.enemiesAct(w, A.newCombat(), { ...me, h: A.STAND_H }, [grim], none), ["grim"]);
+  assert.deepEqual(A.enemiesAct(w, A.newCombat(), { ...me, h: A.CROUCH_H }, [grim], none), []);
+});
