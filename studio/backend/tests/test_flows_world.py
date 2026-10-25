@@ -146,11 +146,27 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         validate_npc_reply({"text": "Bye", "action": "stop_following"}, s)["action"]
         == "stop_following"
     )
-    assert validate_npc_reply({"text": "See you there", "action": "go_to", "place": "pond"}, s) == {
+    asked = _state(player_message = "Meet me at the pond later?")
+    assert validate_npc_reply(
+        {"text": "See you there", "action": "go_to", "place": "pond"}, asked
+    ) == {
         "text": "See you there",
         "action": "go_to",
         "place": "pond",
     }
+    # An NPC only heads to a place the player named, and the player's words decide following.
+    assert "action" not in validate_npc_reply(
+        {"text": "Off I go", "action": "go_to", "place": "pond"}, s
+    )
+    for msg, want in (
+        ("Could you follow me? I want to show you something.", "follow_player"),
+        ("Come with me to the pond", "follow_player"),
+        ("Thanks, you can go home now. Stop following me.", "stop_following"),
+    ):
+        out = validate_npc_reply(
+            {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message = msg)
+        )
+        assert out.get("action") == want and "place" not in out, msg
     # Unknown actions and places are dropped like unknown items; the reply text survives.
     for bad in (
         {"action": "burn_down_the_mill"},

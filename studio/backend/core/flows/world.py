@@ -347,6 +347,10 @@ def world_schema(npcs: int, items: int) -> dict:
 
 # The only things an NPC can do from a conversation; the world player carries them out.
 REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
+FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag along)\b")
+FOLLOW_STOP = re.compile(
+    r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
+)
 
 NPC_REPLY_SCHEMA = {
     "type": "object",
@@ -496,7 +500,23 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
         out["set"] = sets
     action = str(raw.get("action") or "").strip()
     place = str(raw.get("place") or "").strip()
-    if action == "go_to" and place in {p["id"] for p in world_places(world)}:
+    asked = str(state.get("player_message") or "").lower()
+    # Small chat models mix these up ("follow me" becomes the NPC leading somewhere), so the player's own words
+    # decide following, and an NPC only heads to a place the player named.
+    named = {
+        p["id"]
+        for p in world_places(world)
+        if p["id"].replace("_", " ") in asked
+        or any(
+            len(w) > 3 and w in asked
+            for w in re.findall(r"[a-z]+", str(p.get("name") or "").lower())
+        )
+    }
+    if FOLLOW_STOP.search(asked):
+        out["action"] = "stop_following"
+    elif FOLLOW_ASK.search(asked):
+        out["action"] = "follow_player"
+    elif action == "go_to" and place in named:
         out["action"], out["place"] = action, place
     elif action in ("follow_player", "stop_following"):
         out["action"] = action
