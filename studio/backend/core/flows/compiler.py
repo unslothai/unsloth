@@ -244,6 +244,9 @@ def compile_flow(doc: dict) -> Plan:
                 break
             seen.add(cursor)
             cursor = owner.get(cursor)
+    if any(e["message"] == "For Each groups are nested in a loop" for e in errors):
+        # Every check below walks owners upward and would never end.
+        raise CompileError(errors)
     bodies = {fid: [n for n in nodes if owner.get(n) == fid] for fid in members}
 
     def inside(nid: str, fid: str) -> bool:

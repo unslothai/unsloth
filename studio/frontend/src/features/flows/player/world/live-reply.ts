@@ -8,10 +8,7 @@ export interface LiveReply {
   text: string;
 }
 
-/**
- * Add a streamed piece of an NPC's reply. A piece from a request made before the last save load
- * (`generation` behind `current`) belongs to the old game and is dropped.
- */
+/** A piece whose `generation` is behind `current` predates the last save load and is dropped. */
 export function appendReplyDelta(
   live: LiveReply | null,
   npcId: string,

@@ -19,8 +19,12 @@ const FETCHING_TAG =
   /<(?=\/?(?:img|image|picture|source|video|audio|track|input|iframe|frame|embed|object|link|style|svg|use|meta|base|body|table|thead|tbody|tr|td|th)\b)/gi;
 
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
-const STYLE_LINE = /^[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
+// A statement may follow `;`; a stateDiagram classDef runs to end of line, so cut from the keyword on.
+const STYLE_START = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b/gi;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
+const STYLE_FETCHES = new RegExp(STYLE_FETCH.source, "gi");
+// These lexers take a style statement mid-line after a space and allow brackets in ids: every keyword counts.
+const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requirementDiagram)\b/im;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
@@ -103,6 +107,29 @@ function withoutRemoteIcon(json: string): string | null {
   return ` ${JSON.stringify(rest)}`;
 }
 
+/** Outside `midLine` diagrams a statement starts a line or follows `;`; one inside a quoted or bracketed label is text. */
+function withoutFetchingStyle(line: string, midLine: boolean): string {
+  let lastFetch = -1;
+  for (const found of line.matchAll(STYLE_FETCHES)) lastFetch = found.index;
+  if (lastFetch < 0) return line;
+  let depth = 0;
+  let quoted = false;
+  let at = 0;
+  for (const match of line.matchAll(STYLE_START)) {
+    const start = match.index + match[1].length;
+    if (start > lastFetch) break;
+    if (midLine) return line.slice(0, start);
+    for (; at < start; at++) {
+      const ch = line[at];
+      if (ch === '"') quoted = !quoted;
+      else if (!quoted && "[({".includes(ch)) depth++;
+      else if (!quoted && ")]}".includes(ch)) depth = Math.max(0, depth - 1);
+    }
+    if (start === 0 || (match[1] === ";" && !quoted && depth === 0)) return line.slice(0, start);
+  }
+  return line;
+}
+
 /** The diagram source with every image or style that would load from elsewhere taken out. */
 export function stripRemoteDiagramImages(source: string): string {
   let out = "";
@@ -117,6 +144,8 @@ export function stripRemoteDiagramImages(source: string): string {
   }
   out += source.slice(at);
   if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
+  // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
+  const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
     .replace(FRONT_MATTER, (block) => (STYLE_FETCH.test(block) ? "" : block))
@@ -128,7 +157,7 @@ export function stripRemoteDiagramImages(source: string): string {
       });
       return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
     })
-    .replace(STYLE_LINE, (line) => (STYLE_FETCH.test(line) ? "" : line))
+    .replace(/^.*$/gm, (line) => withoutFetchingStyle(line, midLine))
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
       const replaced = withoutRemoteIcon(json);
       return replaced === null ? whole : `${lead}${head}${replaced}`;

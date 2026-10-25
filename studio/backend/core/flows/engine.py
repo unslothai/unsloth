@@ -559,7 +559,7 @@ class NodeContextImpl:
                     gpu_arbiter._lease_holder.reset(token)
 
         if self._rs.cancelled:
-            # The run was cancelled while the job was being started: stop the job now.
+            # Cancelled while the job was starting.
             task = asyncio.get_running_loop().create_task(_run_cancel_hook(fn))
             _LATE_HOOKS.add(task)
             task.add_done_callback(_LATE_HOOKS.discard)
@@ -1010,6 +1010,11 @@ class FlowEngine:
         try:
             await self._scope_loop(rs, pending, running, env, iteration)
         except asyncio.CancelledError:
+            # A player leaving an /invoke cancels this task directly: stop the external jobs while their hooks are
+            # still registered, as Stop and the time limit do.
+            if not rs.cancel_event.is_set():
+                rs.cancel_event.set()
+                await self._fire_cancel_hooks(rs)
             # Node tasks are not children of this one: cancel and await them, or they outlive the run.
             for task in running:
                 task.cancel()

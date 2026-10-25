@@ -217,3 +217,102 @@ def test_families_gate_textual_inversion():
     from core.inference.diffusion_families import _FAMILIES
     assert {f.name for f in _FAMILIES if f.textual_inversion} == {"sdxl"}
     assert next(f for f in _FAMILIES if f.name == "sdxl").textual_inversion == de.KIND_SDXL
+
+
+class _AddedTokenizer:
+    eos_token_id = 49407
+
+    def __init__(self):
+        self.added = {}
+
+    def add_tokens(self, names):
+        for name in names:
+            self.added.setdefault(name, 49408 + len(self.added))
+
+    def convert_tokens_to_ids(self, name):
+        return self.added[name]
+
+
+def _random_sdxl_encoders(eos_token_id):
+    transformers = pytest.importorskip("transformers")
+    from types import SimpleNamespace
+
+    def config(width):
+        return transformers.CLIPTextConfig(
+            vocab_size = 49408,
+            hidden_size = width,
+            intermediate_size = width * 2,
+            num_hidden_layers = 1,
+            num_attention_heads = 2,
+            max_position_embeddings = 8,
+            projection_dim = width,
+            bos_token_id = 49406,
+            eos_token_id = eos_token_id,
+            pad_token_id = 1,
+        )
+
+    torch.manual_seed(0)
+    return SimpleNamespace(
+        tokenizer = _AddedTokenizer(),
+        tokenizer_2 = _AddedTokenizer(),
+        text_encoder = transformers.CLIPTextModel(config(8)).eval(),
+        text_encoder_2 = transformers.CLIPTextModelWithProjection(config(12)).eval(),
+    )
+
+
+def _pool_owner(encoder):
+    return getattr(encoder, "text_model", encoder)
+
+
+def _pooled(pipe, ids):
+    ids = torch.tensor(ids)
+    with torch.no_grad():
+        return pipe.text_encoder(ids).pooler_output, pipe.text_encoder_2(ids).text_embeds
+
+
+def test_sdxl_legacy_config_pools_at_eos_not_added_token(monkeypatch):
+    pipe = _random_sdxl_encoders(eos_token_id = 2)
+    fixture = {"clip_l": torch.randn(3, 8), "clip_g": torch.randn(3, 12)}
+    monkeypatch.setattr(de, "_read_tensors", lambda path: fixture)
+    plain = [[49406, 4, 5, 49407, 49407, 49407], [49406, 4, 5, 49407, 0, 0]]
+    base = _pooled(pipe, plain)
+
+    applied = de.apply(
+        pipe,
+        de.KIND_SDXL,
+        {"prompt": "EasyNegXL x"},
+        entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)],
+    )
+    assert applied.used == ["EasyNegXL"]
+    assert all(torch.equal(a, b) for a, b in zip(_pooled(pipe, plain), base))
+
+    ids = [[49406, 49408, 49409, 49410, 5, 49407, 49407, 49407]]
+    other_suffix = [[49406, 49408, 49409, 49410, 6, 49407, 49407, 49407]]
+    with torch.no_grad():
+        t = torch.tensor(ids)
+        hidden_1 = pipe.text_encoder(t).last_hidden_state
+        hidden_2 = pipe.text_encoder_2(t).last_hidden_state
+        expect_2 = pipe.text_encoder_2.text_projection(hidden_2[:, 5])
+    pooled_1, pooled_2 = _pooled(pipe, ids)
+    assert torch.equal(pooled_1, hidden_1[:, 5])
+    assert torch.equal(pooled_2, expect_2)
+    assert not torch.equal(pooled_2, _pooled(pipe, other_suffix)[1])
+
+    applied.restore()
+    assert _pool_owner(pipe.text_encoder).eos_token_id == 2
+    assert _pool_owner(pipe.text_encoder_2).eos_token_id == 2
+    assert all(torch.equal(a, b) for a, b in zip(_pooled(pipe, plain), base))
+
+
+def test_current_clip_config_pooling_left_alone(monkeypatch):
+    pipe = _random_sdxl_encoders(eos_token_id = 49407)
+    fixture = {"clip_l": torch.randn(2, 8), "clip_g": torch.randn(2, 12)}
+    monkeypatch.setattr(de, "_read_tensors", lambda path: fixture)
+    applied = de.apply(
+        pipe,
+        de.KIND_SDXL,
+        {"prompt": "EasyNegXL"},
+        entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)],
+    )
+    assert _pool_owner(pipe.text_encoder_2).eos_token_id == 49407
+    applied.restore()

@@ -19,11 +19,7 @@ export const NOTE_PREFIX = NOTE_KEY;
 
 type Positions = Record<string, { x: number; y: number }>;
 
-/**
- * Builds React Flow arrays from the normalized graph, reusing the previous object for every
- * element whose source record, selection and drag position are unchanged. React Flow then
- * re-renders only the elements that actually changed (memo'd node components compare props).
- */
+/** Reuses the previous object for every unchanged element, so memo'd React Flow nodes skip re-rendering. */
 export class RfDeriver {
   private nodeCache = new Map<
     string,

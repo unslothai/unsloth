@@ -390,6 +390,31 @@ async def test_invoke_runs_entrypoint_with_supplied_inputs():
 
 
 @run_async
+async def test_cancelled_invoke_fires_the_entrypoints_stop_hooks():
+    # A player who leaves mid-call must stop the external job (image, audio, chat) the entry point started.
+    started = asyncio.Event()
+    hooked = []
+
+    async def scene_art(ctx):
+        async def hook():
+            hooked.append(ctx.node_id)
+
+        ctx.on_cancel(hook)
+        started.set()
+        await asyncio.sleep(30)
+        return {"scene": {}}
+
+    eng = _engine({**BASE, "story.next_scene": scene_art})
+    parsed, _ = parse_document(doc([node("n", "story.next_scene")]))
+    task = asyncio.create_task(eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "n"))
+    await asyncio.wait_for(started.wait(), 20)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert hooked == ["n"]
+
+
+@run_async
 async def test_run_is_invisible_to_another_account():
     from utils.account_context import AccountContext, arun_as
 

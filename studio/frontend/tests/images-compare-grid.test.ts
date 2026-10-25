@@ -10,6 +10,7 @@ import {
   buildCellRequest,
   cellCoords,
   executionOrder,
+  gridNegativePrompt,
   MAX_COMPARE_CELLS,
   planCompare,
   type CompareContext,
@@ -915,6 +916,7 @@ test("sampler x schedule table: every cell must take its effective schedule, the
 test("compare wiring: the request's ControlNet predicate gates CFG rescale; a failed save is reported", () => {
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /\n\s+controlnetEngaged,\n\s+\}\),/);
+  assert.match(page, /hiresEngagesNegative: hiresEngagesNegative\(hires, hiresCapability, workflow, negativeMinGuidance\),/);
   assert.doesNotMatch(page, /controlnetEngaged: Boolean\(controlnetCapable && controlnetId && controlImage\)/);
   // A strength-0 ControlNet is not engaged, so the axis stays (the axes only read the flag).
   const sdControls = { clip_skip: null, cfg_rescale: { min: 0, max: 1 }, variation_seed: false } as never;
@@ -943,4 +945,40 @@ test("LoRA ids with commas or quotes round-trip through the grid's LoRAs field",
 test("an invalid typed Variation seed is refused for a compare run at any form strength", () => {
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /const checkVariation = varying \|\| \(compareOnce\.current !== null && Boolean\(sdCaps\?\.variation_seed\)\);\n\s+if \(checkVariation && runChoice\.variationSeed\.trim\(\) && parseVariationSeed\(runChoice\.variationSeed\) === null\) \{\n\s+toast\.error/);
+});
+
+test("Hires CFG keeps the negative prompt on a CFG cell whose base guidance leaves it off, as Generate does", () => {
+  const hires = { scale: 1.5, denoise: 0.5, steps: null, upscaler: "latent", guidance: 7 };
+  const g = plan([{ axisId: "guidance", text: "1, 7" }]);
+  const seeds = { base: 1, keepRandom: false, seedFieldEmpty: false };
+  const ctx = sdxl({ hiresEngagesNegative: true });
+  assert.equal(buildCellRequest(g, 0, base({ hires }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 1, base({ hires }), ctx, seeds).negative_prompt, "blurry");
+  assert.equal(buildCellRequest(g, 0, base(), sdxl(), seeds).negative_prompt, undefined);
+  // A negative-only S/R term at base CFG 1 is read by the refine pass, so not refused.
+  const sr = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
+  assert.equal(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], sr).ok, false);
+  assert.ok(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], { ...sr, hiresEngagesNegative: true }).ok);
+  const off = plan([{ axisId: "steps", text: "10, 20" }], { ...sr, negativePrompt: "blurry" });
+  assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry" }), undefined);
+  assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", hiresEngagesNegative: true }), "blurry");
+});
+
+test("grid metadata records the Hires fix every cell ran, in A1111 names, and drops it when cells differ", () => {
+  const steps = plan([{ axisId: "steps", text: "10, 20" }]);
+  const form = { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" };
+  const hires = { scale: 1.5, denoise: 0.5, steps: 12, upscaler: "latent", guidance: 7 };
+  const fields = Object.fromEntries(gridRecipeFields(steps, [base({ hires }), base({ hires: { ...hires } })], form));
+  assert.equal(fields.Size, "1024x1024");
+  assert.equal(fields["Denoising strength"], 0.5);
+  assert.equal(fields["Hires upscale"], 1.5);
+  assert.equal(fields["Hires steps"], 12);
+  assert.equal(fields["Hires upscaler"], "Latent (nearest-exact)");
+  assert.equal(fields["Hires CFG Scale"], 7);
+  const parsed = parseA1111Parameters(gridParameters(steps, sdxl(), [base({ hires })], { ...form, keepRandomSeeds: false }));
+  assert.equal(parsed?.hires_scale, 1.5);
+  assert.equal(parsed?.hires_guidance, 7);
+  const mixed = Object.fromEntries(gridRecipeFields(steps, [base({ hires }), base()], form));
+  assert.equal("Hires upscale" in mixed, false);
+  assert.equal("Hires upscale" in Object.fromEntries(gridRecipeFields(steps, [base()], form)), false);
 });

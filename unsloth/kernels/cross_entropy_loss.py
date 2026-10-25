@@ -128,11 +128,14 @@ def _chunked_evict_policy(device):
     return _chunked_evict_at(device.type, index)
 
 
-# (BLOCK_SIZE, num_warps, max vocab) for the chunked forward, measured faster on T4 / A100.
+# (BLOCK_SIZE, num_warps, max vocab) for the chunked forward, measured faster on T4 / A100 / B200.
 # A100 at Gemma 262144 was mixed across torch versions, so larger vocabs keep the default.
+# B200: 8192-wide chunks at 4 warps run 1.5-1.9x faster than one 65536-wide chunk at 32 warps
+# (128256 / 151936 / 262144 vocabs, bf16), since each program then needs a fraction of the registers.
 _CHUNKED_FORWARD_CONFIGS = {
     (7, 5): (16384, 8, None),
     (8, 0): (16384, 8, 163840),
+    (10, 0): (8192, 4, None),
 }
 
 
@@ -218,6 +221,8 @@ def _chunked_cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
+    # All -inf chunk (masked vocab range): shift by 0 so logsumexp is -inf, not NaN.
+    c = tl.where(c == -float("inf"), 0.0, c)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if chunk_idx == 0:
@@ -419,8 +424,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 )
             # logsumexp(chunked_logsumexp) - x, with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
-            losses += logsumexp
-            losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
+            losses = (losses + logsumexp).masked_fill(labels == -100, 0)  # mask padding out
 
         ctx.save_for_backward(logits, logsumexp, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
