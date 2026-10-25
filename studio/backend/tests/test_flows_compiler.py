@@ -242,3 +242,26 @@ def test_model_needs_merges_requirements_and_node_models():
         ("image", "org/img"),
         ("chat", "unsloth/Qwen3-4B-GGUF"),
     }
+
+
+def test_for_each_groups_owning_each_other_are_refused_without_hanging():
+    import threading
+
+    # Two For Each nodes, each in the other's group: an imported document can say so.
+    nodes = [
+        node("items", "input.list", items = ["a"]),
+        node("a", "logic.for_each", group = "b"),
+        node("b", "logic.for_each", group = "a"),
+        node("t", "text.template", group = "a"),
+    ]
+    edges = [
+        edge("items", "items", "a", "items"),
+        edge("a", "item", "t", "values"),
+        edge("items", "items", "b", "items"),
+    ]
+    found: list = []
+    worker = threading.Thread(target = lambda: found.append(_issues(doc(nodes, edges))), daemon = True)
+    worker.start()
+    worker.join(10)
+    assert found, "compiling an ownership cycle hung"
+    assert any("nested in a loop" in i["message"] for i in found[0])

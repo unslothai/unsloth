@@ -249,31 +249,26 @@ export function paintChibi(id: string, size: number): HTMLCanvasElement {
   const u = size / 16;
   ctx.lineWidth = Math.max(1, u * 0.45);
   ctx.strokeStyle = "rgba(30,20,30,0.85)";
-  // body
   ctx.fillStyle = `hsl(${hue} 60% 55%)`;
   ctx.beginPath();
   ctx.roundRect(w / 2 - 3.6 * u, 8.6 * u, 7.2 * u, 6.2 * u, 2.4 * u);
   ctx.fill();
   ctx.stroke();
-  // feet
   ctx.fillStyle = `hsl(${hue} 35% 30%)`;
   for (const dx of [-1.8, 1.8]) {
     ctx.beginPath();
     ctx.ellipse(w / 2 + dx * u, 15 * u, 1.5 * u, 0.9 * u, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-  // head
   ctx.fillStyle = skin;
   ctx.beginPath();
   ctx.arc(w / 2, 5.6 * u, 4.6 * u, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  // hair
   ctx.fillStyle = hair;
   ctx.beginPath();
   ctx.arc(w / 2, 4.8 * u, 4.7 * u, Math.PI * 1.02, Math.PI * 1.98);
   ctx.fill();
-  // eyes and blush
   ctx.fillStyle = "#1f1724";
   for (const dx of [-1.6, 1.6]) {
     ctx.beginPath();

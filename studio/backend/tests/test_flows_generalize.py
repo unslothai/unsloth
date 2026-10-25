@@ -437,7 +437,7 @@ async def test_a_connected_value_replaces_the_param_and_is_clamped(monkeypatch):
     )
     rs = await _run(eng, d)
     assert rs.outputs == {"r": 30} and seen == [10]
-    # Unconnected, the field is used as before.
+    # Unconnected, the field value is used.
     d["edges"] = [e for e in d["edges"] if e["target_port"] != "param:factor"]
     d["id"] = "f2"
     rs = await _run(eng, d)

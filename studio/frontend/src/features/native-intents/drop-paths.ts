@@ -11,14 +11,10 @@ import {
   isServerDocumentAttachmentName,
   isToolOnlyAttachmentName,
 } from "../chat/open-document-accept.ts";
-import {
-  TEXT_ATTACHMENT_BASENAMES,
-  TEXT_ATTACHMENT_EXTENSIONS,
-} from "../chat/text-attachment-accept.ts";
+import { isTextAttachmentName } from "../chat/text-attachment-accept.ts";
 import { MAX_AUDIO_FILES } from "../../lib/audio-utils.ts";
 
 const DOC_EXTS = [".pdf", ".html", ".htm", ".docx", ".xlsx", ".xlsm", ".pptx"];
-const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) => ext.toLowerCase());
 
 export function isComposerAttachmentName(path: string): boolean {
   return (
@@ -27,18 +23,8 @@ export function isComposerAttachmentName(path: string): boolean {
     isRtfAttachmentName(path) ||
     isServerDocumentAttachmentName(path) ||
     isToolOnlyAttachmentName(path) ||
-    isTextDropName(path)
+    isTextAttachmentName(path)
   );
-}
-
-function isTextDropName(path: string): boolean {
-  const name = nativeFileName(path).toLowerCase();
-  if ((TEXT_ATTACHMENT_BASENAMES as readonly string[]).includes(name)) {
-    return true;
-  }
-  // Other dotfiles, ".env" among them, have no extension and remain unsupported.
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
 export const CHAT_IMAGE_DROP_ACCEPT = CHAT_IMAGE_EXTENSIONS;
