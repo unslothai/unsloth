@@ -204,7 +204,6 @@ def test_worker_load_quantizes_only_when_asked(monkeypatch):
 
 def test_te_quant_tristate(monkeypatch):
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
-    # Unset keeps the bf16 encoder (int8 is opt-in: its LPIPS sits above the compile floor); int8 picks it.
     assert v25.ltx25_te_quant_scheme(None) is None
     assert v25.ltx25_te_quant_scheme("auto") is None
     assert v25.ltx25_te_quant_scheme("") is None
@@ -214,7 +213,6 @@ def test_te_quant_tristate(monkeypatch):
     for scheme in ("fp8", "fp8_dynamic"):
         with pytest.raises(ValueError, match = "int8 .* or bf16"):
             v25.ltx25_te_quant_scheme(scheme)
-    # The opt-in turns only the unset request int8; an explicit Off still wins.
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert v25.ltx25_te_quant_scheme(None) == "int8"
     assert v25.ltx25_te_quant_scheme("auto") == "int8"
@@ -236,7 +234,6 @@ def test_budget_prices_the_int8_encoder(monkeypatch):
     assert scale == pytest.approx(v25.LTX25_TE_INT8_GB / bf16_gb)
     assert scale < 0.6
     assert te_prequant_budget_scale(fam, te_quant_mode = "none", **kw) == 1.0
-    # Unset loads the bf16 encoder, so it is budgeted dense unless the opt-in makes it int8.
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == 1.0
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == scale

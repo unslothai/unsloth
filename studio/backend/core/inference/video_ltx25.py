@@ -85,10 +85,8 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# The int8 ConvRot encoder (what ComfyUI's LTX-2.5 templates load: Lightricks' gemma4-12b-with-proj-ltx-2.5-comfy-
-# int8-convrot) is opt-in: against the bf16 encoder it measured LPIPS 0.270 mean / 0.484 max (0.310 earlier), above
-# the 0.256 compile floor, so an unset text_encoder_quant keeps bf16. "int8" picks it per load; UNSLOTH_LTX25_TE_INT8=1
-# makes an unset request int8 ("0" or unset keeps bf16). "none" / "off" always pin bf16.
+# int8 ConvRot (ComfyUI's LTX-2.5 encoder) is opt-in: its LPIPS vs bf16 sits above the compile floor. Unset keeps
+# bf16 unless UNSLOTH_LTX25_TE_INT8=1.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).

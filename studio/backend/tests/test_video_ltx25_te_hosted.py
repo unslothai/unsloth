@@ -80,10 +80,12 @@ def test_int8_request_resolves_to_the_hosted_file(monkeypatch):
         v25.LTX25_TE_HOSTED_REPO,
         v25.LTX25_TE_HOSTED_FILE,
     )
-    # The opt-in makes an unset request int8, and then it takes the hosted file too.
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     for mode in (None, "auto"):
-        assert v25.ltx25_te_prequant_sources(mode, BASE)["text_encoder"].filename == v25.LTX25_TE_HOSTED_FILE
+        assert (
+            v25.ltx25_te_prequant_sources(mode, BASE)["text_encoder"].filename
+            == v25.LTX25_TE_HOSTED_FILE
+        )
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
     # none / off pin the bf16 encoder: no hosted file, the dense shards stay in the plan.
     assert v25.ltx25_te_prequant_sources("none", BASE) == {}
@@ -110,7 +112,6 @@ def test_the_video_planner_stages_the_hosted_file(monkeypatch):
     fam = detect_video_family(BASE)
     sources = VideoBackend._te_prequant_sources(fam, "int8", base = BASE)
     assert sources["text_encoder"].filename == v25.LTX25_TE_HOSTED_FILE
-    # Unset stages nothing: no Hub fetch of the hosted file, the dense encoder is pulled as before.
     assert VideoBackend._te_prequant_sources(fam, None, base = BASE) == {}
     assert VideoBackend._te_prequant_sources(fam, "none", base = BASE) == {}
 
