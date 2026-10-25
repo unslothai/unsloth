@@ -67,18 +67,16 @@ test("a downloaded snapshot of a retired copy loads from disk, not through its b
   assert.equal(redirectRetiredImagePick(rootTransformer), rootTransformer);
 });
 
-test("a remembered retired copy is recalled as its base, so it matches the status the load reports", () => {
+test("a remembered retired copy is recalled as itself: the backend decides whether it loads from disk", () => {
   rememberImageModel({ repoId: "unsloth/flux-3-image-klein", kind: "pipeline" });
   const recalled = readImageModel();
-  assert.deepEqual(recalled, { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
-  assert.equal(
-    matchesRememberedModel(recalled!, {
-      loaded: true,
-      repo_id: "black-forest-labs/flux-3-image-klein",
-      model_kind: "pipeline",
-    }),
-    true,
-  );
+  assert.deepEqual(recalled, { repoId: "unsloth/flux-3-image-klein", kind: "pipeline" });
+  // Loaded through the base (not complete on disk), the finished load is remembered as that base.
+  const base = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein", model_kind: "pipeline" };
+  assert.deepEqual(retiredSnapshotAsLoaded(recalled!, base), { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
+  // Loaded from disk, it stays the copy.
+  const own = { loaded: true, repo_id: "unsloth/flux-3-image-klein", model_kind: "pipeline" };
+  assert.equal(retiredSnapshotAsLoaded(recalled!, own), recalled);
 });
 
 test("a model remembered as the copy's snapshot path is recalled as that snapshot", () => {
@@ -99,8 +97,8 @@ test("a retired copy's snapshot is planned before it loads, since only the backe
   assert.equal(isRetiredCopySnapshot({ repoId: snapshot, displayRepoId: "unsloth/flux-3-image-klein" }), true);
   assert.equal(isRetiredCopySnapshot({ repoId: snapshot }), true);
   assert.equal(isRetiredCopySnapshot({ repoId: "/models/klein", displayRepoId: "unsloth/flux-3-image-klein-base" }), true);
-  // The copy's id is redirected to the base outright; other repos and their snapshots are not this case.
-  assert.equal(isRetiredCopySnapshot({ repoId: "unsloth/flux-3-image-klein" }), false);
+  // The copy's id too (an On Device row names the cached repo by id); other repos and their snapshots are not this case.
+  assert.equal(isRetiredCopySnapshot({ repoId: "unsloth/flux-3-image-klein" }), true);
   assert.equal(
     isRetiredCopySnapshot({ repoId: "/hf/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/abc" }),
     false,
@@ -115,6 +113,8 @@ test("a retired copy's snapshot is planned before it loads, since only the backe
   assert.match(body, /retiredSnapshot\s*\? diffusionStagingEntries\(plan\.entries, repoId, \{ filename: opts\.filename \}\)/);
   // The source check that sends a local pick straight to the load comes after the retired-snapshot override.
   assert.ok(body.indexOf("if (retiredSnapshot) source") < body.indexOf('if (source !== "hub" && !downloadOnly)'));
+  // No pick is redirected before the backend sees it: a complete copy would otherwise be sent as the base's id.
+  assert.doesNotMatch(page, /redirectRetiredImagePick\(/);
 });
 
 test("a retired copy's snapshot that loaded through its base is remembered as that base", () => {

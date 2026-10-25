@@ -32,12 +32,17 @@ function retiredSnapshotRepo(path: string): string {
   return match ? `unsloth/${match[1].toLowerCase()}` : "";
 }
 
-/** A downloaded retired-copy snapshot: only the backend knows if it is complete, so it is planned like a Hub pick. */
+/** A retired copy pick (its id, or a snapshot of it): only the backend knows if it is complete on disk, so it is
+ * planned like a Hub pick and the backend redirects it to the base it copies when it is not. */
 export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: string }): boolean {
-  if (RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()]) return false;
-  return Boolean(
-    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] || retiredSnapshotRepo(pick.repoId),
-  );
+  return Boolean(retiredCopyOf(pick));
+}
+
+function retiredCopyOf(pick: { repoId: string; displayRepoId?: string }): string {
+  const id = pick.repoId.trim().toLowerCase();
+  const display = (pick.displayRepoId ?? "").trim().toLowerCase();
+  if (RETIRED_FULL_COPIES[id]) return id;
+  return RETIRED_FULL_COPIES[display] ? display : retiredSnapshotRepo(pick.repoId);
 }
 
 /** A retired snapshot that loaded through its base, as that base (else the pick), so Reapply and recall match the status. */
@@ -49,8 +54,7 @@ export function retiredSnapshotAsLoaded<T extends RememberedImageModel & { displ
   // A complete snapshot's root model.safetensors pick loads as the snapshot's own pipeline.
   const { filename: _filename, baseRepo: _base, ...asPipeline } = { ...pick, kind: "pipeline" as const };
   if (matchesRememberedModel(asPipeline as T, status)) return asPipeline as T;
-  const display = (pick.displayRepoId ?? "").trim().toLowerCase();
-  const copy = RETIRED_FULL_COPIES[display] ? display : retiredSnapshotRepo(pick.repoId);
+  const copy = retiredCopyOf(pick);
   // A redirect loads another checkpoint, whose base the backend infers (handleLoad drops it the same way).
   const { baseRepo: _baseRepo, ...rest } = pick;
   const asBase = redirectRetiredImagePick({ ...rest, repoId: copy } as T);
@@ -97,7 +101,7 @@ export function readImageModel(): RememberedImageModel | null {
           (f: unknown): f is string => typeof f === "string" && f.length > 0,
         )
       : [];
-    return redirectRetiredImagePick({
+    return {
       repoId: value.repoId,
       kind: value.kind,
       ...(typeof value.filename === "string"
@@ -108,7 +112,7 @@ export function readImageModel(): RememberedImageModel | null {
       ...(typeof value.vaeFile === "string" && value.vaeFile
         ? { vaeFile: value.vaeFile }
         : {}),
-    } as RememberedImageModel);
+    } as RememberedImageModel;
   } catch {
     return null;
   }

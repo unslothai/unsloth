@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { isRetiredCopySnapshot, readImageModel, redirectRetiredImagePick, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -3938,18 +3938,7 @@ export function ImagesPage({
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
       const fieldFiles = componentFileFields(opts.kind, picked.text_encoder_file, picked.vae_file);
-      // A retired FLUX.3 full copy (named, or a downloaded snapshot of one) loads the base it copies, as the backend
-      // redirects it, so the load, Reapply and the remembered model all name the id the status will report.
-      const redirected = redirectRetiredImagePick({
-        repoId,
-        ...opts,
-        textEncoderFiles: componentFiles.text_encoder_file,
-        vaeFile: componentFiles.vae_file,
-      });
-      // A redirect loads another checkpoint, whose base the backend infers.
-      const baseRepo = redirected.repoId === repoId ? opts.baseRepo : undefined;
-      repoId = redirected.repoId;
-      opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId, baseRepo };
+      opts = { kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId, baseRepo: opts.baseRepo };
       lastLoad.current = {
         repoId,
         kind: opts.kind,
@@ -4378,23 +4367,8 @@ export function ImagesPage({
           : a;
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       let advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
-      // A retired FLUX.3 full copy is planned, staged and loaded as the base it copies, so the staged
-      // checkpoint is the one the load opens (the backend redirects the same picks).
-      const component = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
-      const redirected = redirectRetiredImagePick({
-        repoId,
-        ...opts,
-        textEncoderFiles: component.text_encoder_file,
-        vaeFile: component.vae_file,
-      });
-      if (redirected.repoId !== repoId) {
-        repoId = redirected.repoId;
-        opts = { kind: redirected.kind, filename: redirected.filename, displayRepoId: redirected.displayRepoId };
-        advanced = downloadSnapshot ?? withPicked(currentLoadAdvanced(repoId, familyOverrideRequired));
-        // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
-        source = "hub";
-      }
-      // Only the backend knows if a retired snapshot is complete: plan it by path so an incomplete one stages the base.
+      // A retired FLUX.3 copy loads from disk when complete, else the backend redirects it to its base: plan it so an
+      // incomplete one stages the base's files first.
       const retiredSnapshot = isRetiredCopySnapshot({ repoId, displayRepoId: opts.displayRepoId });
       if (retiredSnapshot) source = "hub";
       // The retry's override rides the same snapshot, so its plan and its load both carry it.
