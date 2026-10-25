@@ -53,7 +53,12 @@ def _mark_blocks(model):
         if _is_block(module) and cls not in restore:
             original = cls.forward
 
-            def forward(self, *args, _original = original, **kwargs):
+            def forward(
+                self,
+                *args,
+                _original = original,
+                **kwargs,
+            ):
                 return _original(self, *args, **kwargs)
 
             forward._unsloth_block_compiled = True
@@ -62,7 +67,12 @@ def _mark_blocks(model):
     return restore
 
 
-def _run(native, layout, graphs, blocks = True):
+def _run(
+    native,
+    layout,
+    graphs,
+    blocks = True,
+):
     os.environ["UNSLOTH_BLOCK_CUDAGRAPHS"] = "1" if graphs else "0"
     rank = int(os.environ["RANK"])
     torch.manual_seed(0)

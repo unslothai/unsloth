@@ -1022,7 +1022,9 @@ def _compiled_block_modules(model):
     """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
     inside = set()
     for module in model.modules():
-        if id(module) in inside or not getattr(type(module).forward, "_unsloth_block_compiled", False):
+        if id(module) in inside or not getattr(
+            type(module).forward, "_unsloth_block_compiled", False
+        ):
             continue
         if module.__dict__.get("_unsloth_block_mode", 1) == 0:
             continue
