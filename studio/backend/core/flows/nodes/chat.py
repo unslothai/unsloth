@@ -14,6 +14,7 @@ from core.flows.nodes._common import (
     _message_text,
     _register_chat_cancel,
     as_text,
+    chat_model_name,
     ensure_model,
     render,
     strip_think,
@@ -52,7 +53,7 @@ def agent_body(ctx: NodeContext, prompt: Any, system: str, history: list[dict]) 
     if kb:
         tools.append("search_knowledge_base")
     body: dict[str, Any] = {
-        "model": "default",
+        "model": chat_model_name(ctx),
         "messages": messages,
         "stream": False,
         "cancel_id": f"flow-{uuid.uuid4().hex[:24]}",
