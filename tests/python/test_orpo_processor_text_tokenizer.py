@@ -13,10 +13,17 @@ def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
     src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     ns = {"re": re}
+    helpers = {
+        n.name: n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("_")
+    }
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id.startswith("_"):
+                    # A constant built by a helper (_KTO_LOGPS_RE = _fused_pass_logps_re(...)) needs it first.
+                    for ref in ast.walk(node.value):
+                        if isinstance(ref, ast.Name) and ref.id in helpers and ref.id not in ns:
+                            exec(ast.get_source_segment(src, helpers[ref.id]), ns)
                     exec(ast.get_source_segment(src, node), ns)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
