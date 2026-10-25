@@ -21,3 +21,29 @@ export function appendReplyDelta(
   }
   return { ...live, text: live.text + delta };
 }
+
+/** No chat model can answer (none loaded, not downloaded, none picked); any other load failure stays an error. */
+export function isNoChatModelError(message: string): boolean {
+  if (/could not load/i.test(message)) {
+    return /not downloaded|connect|offline|outgoing traffic|cannot find the requested files|not found|\b404\b/i.test(
+      message,
+    );
+  }
+  return /no (chat )?model is loaded|not downloaded|needs? a chat model|no model (is )?(picked|selected)/i.test(
+    message,
+  );
+}
+
+const OFFLINE_LINES = [
+  "Mm. Not much to say right now.",
+  "Ask me again later, traveller.",
+  "Lovely day for a walk, isn't it?",
+];
+
+export function offlineLine(greeting: string | undefined, npcTurnsSoFar: number): string {
+  if (npcTurnsSoFar === 0 && greeting?.trim()) return greeting.trim();
+  return OFFLINE_LINES[npcTurnsSoFar % OFFLINE_LINES.length];
+}
+
+export const OFFLINE_NOTE =
+  "Talking needs a chat model: load one in Chat, or pick one on the NPC Reply block.";
