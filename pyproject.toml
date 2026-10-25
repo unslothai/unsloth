@@ -1,7 +1,7 @@
 [build-system]
 requires = [
     # setuptools 83+ needs Python 3.10, and we still support 3.9 source installs.
-    "setuptools==84.0.0; python_version >= '3.10'",
+    "setuptools==84.1.0; python_version >= '3.10'",
     "setuptools==82.0.1; python_version < '3.10'",
     "setuptools-scm==9.2.2",
 ]
@@ -34,6 +34,7 @@ dependencies = [
     "rich",
     "pydantic",
     "pyyaml",
+    "json5>=0.9.25",
     "nest-asyncio",
     "huggingface-hub>=0.34.0",
     # Every CLI command imports studio.backend.*, which reaches structlog at
@@ -42,6 +43,9 @@ dependencies = [
     # unsloth_cli/__init__.py reaches click via commands/start.py, so every
     # command needs it. typer supplied it until 0.27 dropped the dependency.
     "click>=8.0",
+    # CA trust store floor: 2026.10.19 removes the distrusted emSign ECC Root CA - G3, and an
+    # existing older certifi is upgraded in place by pip install unsloth.
+    "certifi>=2026.10.19",
 ]
 
 [project.scripts]
@@ -174,12 +178,12 @@ studio = [
     "jinja2>=3.1.0",
     "structlog>=24.1.0",
     "diceware==1.0.1",
+    "json5>=0.9.25",
     "ddgs==9.14.4 ; python_version >= '3.10'",
     "ddgs==9.8.0 ; python_version < '3.10'",
     "cryptography>=42.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
     # Windows on ARM: 46.0.7 publishes no win_arm64 wheel and the sdist needs Rust.
     "cryptography>=42.0.0,<=46.0.3; sys_platform == 'win32' and platform_machine == 'ARM64'",
-    "boto3>=1.34.0",
     "httpx>=0.27.0",
     "fastmcp>=3.0.2",
     "gguf==0.19.0 ; python_version >= '3.10'",
@@ -196,6 +200,9 @@ studio = [
     "python-docx==1.2.0",
     "markdown-it-py>=3.0",
 ]
+
+# Optional AWS S3 dataset loading; kept out of the default Studio installation.
+s3 = ["boto3>=1.34.0"]
 
 triton = [
     # Not raised past 3.0.0 on purpose. torch pins triton exactly, and the oldest
@@ -230,7 +237,7 @@ huggingfacenotorch = [
     #
     # 2026.9.9 is the first zoo carrying the ceilings below and the Gemma3 token_type_ids fix
     # (unsloth-zoo#1505) that transformers >= 5.15 needs.
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.8",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -298,7 +305,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.8",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -970,7 +977,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.6",
+    "unsloth_zoo>=2026.10.8",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

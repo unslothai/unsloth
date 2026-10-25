@@ -81,7 +81,8 @@ test("every capability starts ticked, and the last tick can't be removed", () =>
 
 test("the first pick from the default keeps just that capability", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /capabilities\.length === 0 && isolateFirstCapability\s*\? \[option\.value\]/);
+  assert.match(popover, /capabilities\.length === 0 && isolateFirst\s*\? \[option\.value\]/);
+  assert.match(popover, /isolateFirst=\{isolateFirstCapability\}/);
   // Armed once, until the first change from the defaults; the resets arm it again.
   const page = readSrc("features/hub/hub-page.tsx");
   assert.match(page, /setFirstPickArmed\(false\);\s*setCapabilityFilters\(next\);/);

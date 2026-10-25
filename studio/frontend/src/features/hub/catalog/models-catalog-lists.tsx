@@ -29,6 +29,7 @@ import type {
 import {
   compareInventoryItemsByRecent,
   type InventoryItem,
+  inventoryItemFormatRank,
   inventoryItemSize,
   inventoryItemTitle,
 } from "./inventory-sort";
@@ -70,7 +71,7 @@ export function InventoryWarningRow({
   onRetry: () => void;
 }) {
   return (
-    <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12p5 text-muted-foreground">
+    <div className="mx-5 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12p5 text-muted-foreground">
       <div className="flex items-center justify-between gap-3">
         <span>
           Some on-device sources couldn't be scanned. Showing available{" "}
@@ -351,12 +352,16 @@ export function DownloadedList({
       .sort(
         (a, b) =>
           pinRank(a.item) - pinRank(b.item) ||
-          (sort === "name"
-            ? inventoryItemTitle(a.item).localeCompare(
-                inventoryItemTitle(b.item),
-              ) || a.index - b.index
-            : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
-              a.index - b.index),
+          (sort === "size"
+            ? inventoryItemSize(b.item) - inventoryItemSize(a.item)
+            : sort === "format"
+              ? inventoryItemFormatRank(a.item) -
+                inventoryItemFormatRank(b.item)
+              : 0) ||
+          inventoryItemTitle(a.item).localeCompare(
+            inventoryItemTitle(b.item),
+          ) ||
+          a.index - b.index,
       )
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);

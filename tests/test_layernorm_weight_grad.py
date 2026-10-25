@@ -114,13 +114,17 @@ def test_layernorm_only_weight_trainable():
     _close(dw, _exact(layer, inputs, grad)[2], torch.bfloat16)
 
 
-def test_layernorm_compiled_matches_eager_bytes():
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_layernorm_compiled_matches_eager_bytes(dtype):
     from unsloth.kernels.layernorm import fast_layernorm
 
+    # Inductor raises SkipFrame for bf16 graphs without native bf16 (T4, sm_75), so fullgraph fails.
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation = False):
+        pytest.skip("Inductor does not compile bf16 without native bf16 support")
     torch.manual_seed(6)
-    inputs = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
-    grad = torch.randn(3000, 1000, device = "cuda", dtype = torch.bfloat16)
-    layer = _layer(1000, torch.bfloat16)
+    inputs = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
+    grad = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
+    layer = _layer(1000, dtype)
     eager = _fast(layer, inputs, grad)
     layer.zero_grad(set_to_none = True)
     compiled = torch.compile(lambda x: fast_layernorm(layer, x), fullgraph = True)
@@ -129,6 +133,38 @@ def test_layernorm_compiled_matches_eager_bytes():
     y.backward(grad.clone())
     for a, b in zip(eager, (y.detach(), x.grad, layer.weight.grad, layer.bias.grad)):
         assert torch.equal(a, b)
+
+
+# One trainable of the two: the unused gradient slot must not alias the used one under compile.
+@pytest.mark.parametrize(
+    "bias, train_w, train_b",
+    [(True, False, True), (True, True, False), (False, True, False)],
+    ids = ["only_bias", "only_weight", "no_bias"],
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_layernorm_compiled_single_trainable_matches_eager(dtype, bias, train_w, train_b):
+    from unsloth.kernels.layernorm import fast_layernorm
+
+    torch.manual_seed(7)
+    inputs = torch.randn(2, 300, 1000, device = "cuda", dtype = dtype)
+    grad = torch.randn(2, 300, 1000, device = "cuda", dtype = dtype)
+    layer = _layer(1000, dtype, bias = bias)
+    layer.weight.requires_grad_(train_w)
+    if bias:
+        layer.bias.requires_grad_(train_b)
+    eager = _fast(layer, inputs, grad)
+    layer.zero_grad(set_to_none = True)
+    torch._dynamo.reset()
+    compiled = torch.compile(lambda x: fast_layernorm(layer, x), fullgraph = True)
+    x = inputs.clone().requires_grad_()
+    y = compiled(x)
+    y.backward(grad.clone())
+    got = (y.detach(), x.grad, layer.weight.grad, None if layer.bias is None else layer.bias.grad)
+    torch._dynamo.reset()
+    for a, b in zip(eager, got):
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert torch.equal(a, b)
 
 
 def test_layernorm_dw_is_deterministic():

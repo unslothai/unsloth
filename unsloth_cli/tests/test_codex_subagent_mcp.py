@@ -147,8 +147,13 @@ def test_local_child_uses_explicit_unsloth_profile(
         pid = 1234
         returncode = 0
 
-        def communicate(self, timeout):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             captured["timeout"] = timeout
+            captured["input"] = input
             return (
                 json.dumps(
                     {
@@ -182,9 +187,10 @@ def test_local_child_uses_explicit_unsloth_profile(
         "--json",
         "--skip-git-repo-check",
     ]
-    assert command[-1].endswith("Task: reply exactly LOCAL_OK")
+    assert command[-1] == "-"
+    assert captured["input"].endswith("Task: reply exactly LOCAL_OK")
     assert captured["cwd"] == os.getcwd()
-    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["stdin"] is subprocess.PIPE
     assert captured["stdout"] is subprocess.PIPE
     assert captured["stderr"] is subprocess.PIPE
     if os.name == "nt":
@@ -276,7 +282,11 @@ def test_failed_child_reports_its_last_error_not_its_banner(monkeypatch, tmp_pat
         pid = 1234
         returncode = 1
 
-        def communicate(self, timeout):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             events = [
                 {"type": "turn.started"},
                 {"type": "turn.failed", "error": {"message": reason}},
@@ -305,7 +315,11 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
         pid = 1234
         returncode = None
 
-        def communicate(self, timeout):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
             cancel_event.set()
             raise subprocess.TimeoutExpired("codex", timeout)
 
@@ -344,7 +358,12 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
         pid = 1234
         returncode = 0
 
-        def communicate(self, timeout):
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
+            captured["input"] = input
             return (
                 json.dumps(
                     {
@@ -369,7 +388,48 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
     executable, arguments, environment = captured["resolver"]
     assert executable == r"C:\\nodejs\\codex.cmd"
     assert arguments[0] == "--oss"
-    assert any("multi\nline\ntask" in argument for argument in arguments)
+    assert arguments[-1] == "-"
     assert environment is not None and bridge._CODEX_ENV_KEY in environment
     assert captured["command"][0] == "C:\\nodejs\\node.exe"
-    assert any("multi\nline\ntask" in part for part in captured["command"])
+    assert captured["input"].endswith("Task: multi\nline\ntask")
+
+
+def test_prompt_reaches_the_child_over_stdin_once_even_after_a_poll_timeout(monkeypatch, tmp_path):
+    # A non-npm codex.cmd runs argv through cmd.exe, so the task must not be in it.
+    config = _write_config(tmp_path)
+    monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/codex")
+    task = 'summarize the README" & echo INJECTED-BY-TASK & "'
+    captured = {"inputs": []}
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
+            captured["inputs"].append(input)
+            if len(captured["inputs"]) == 1:
+                raise subprocess.TimeoutExpired("codex", timeout)
+            event = {"type": "item.completed", "item": {"type": "agent_message", "text": "OK"}}
+            return json.dumps(event), ""
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured["stdin"] = kwargs.get("stdin")
+        return Process()
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent(task) == "OK"
+    assert not any(task in part for part in captured["command"])
+    assert captured["command"][-1] == "-"
+    assert captured["stdin"] is subprocess.PIPE
+    first, retry = captured["inputs"]
+    assert first.endswith(f"Task: {task}") and first.startswith(bridge._SUBAGENT_INSTRUCTIONS)
+    assert retry is None

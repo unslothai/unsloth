@@ -193,6 +193,12 @@ def test_a_streamed_upload_is_refused():
         "/api/inference/../../api/auth/api-keys",
         "/v1/videos/%2e%2e/%2e%2e/api/auth/api-keys",
         "/api/inference",
+        "/api/hub/active-downloads",
+        "/api/hub/gguf-download-progress",
+        "/api/hub/token/validate",
+        "/api/hub/transport-status",
+        "/api/hub/cached-gguf",
+        "/api/hub/download/../token",
     ],
 )
 def test_a_path_outside_the_allowlist_raises(path):
@@ -208,6 +214,10 @@ def test_a_path_outside_the_allowlist_raises(path):
         "/api/inference/status",
         "/api/hub/gguf-variants",
         "/api/settings/embedding-model",
+        "/api/hub/download",
+        "/api/hub/download-status",
+        "/api/hub/download-progress",
+        "/api/hub/download/cancel",
     ],
 )
 def test_allowlisted_paths_pass_the_check(path):

@@ -9,6 +9,7 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
+URL_PILL = REPO / "studio/frontend/src/features/settings/components/url-pill.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
 SETTINGS = REPO / "studio/frontend/src/features/settings"
 
@@ -29,14 +30,16 @@ def test_dialog_content_can_shrink_inside_the_dialog_grid():
 
 def test_api_monitor_entries_and_expanded_text_can_shrink():
     source = API_MONITOR_PAGE.read_text(encoding = "utf-8")
-    # Flex parents need min-w-0, or a long model id widens the layout past the viewport.
-    assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
+    # Flex parents need min-w-0, or a long model id widens the layout past the viewport. Entry rows
+    # are rounded cards since #14455, so only the row's own sizing tokens are pinned.
+    assert '"flex w-full min-w-0 flex-col gap-1 ' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped; read as tokens.
+    # The rounding is now conditional (pill for one line), so whitespace-pre-wrap marks the box.
     text_boxes = [
         set(literal.split())
         for literal in re.findall(r'"([^"\n]*)"', source)
-        if {"whitespace-pre-wrap", "rounded-lg"} <= set(literal.split())
+        if "whitespace-pre-wrap" in set(literal.split())
     ]
     assert text_boxes, "no wrapped, rounded text box in the API monitor"
     for tokens in text_boxes:
@@ -54,7 +57,9 @@ def test_remote_access_card_can_shrink():
     source = REMOTE_ACCESS.read_text(encoding = "utf-8")
     assert '<div className="flex min-w-0 items-start gap-3">' in source
     assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
-    assert "block w-full break-all rounded-md" in source
+    # The URL box itself is the shared pill, which wraps rather than overflowing.
+    assert "<UrlPill url={url} />" in source
+    assert "block w-full break-all border" in URL_PILL.read_text(encoding = "utf-8")
     assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
 
 

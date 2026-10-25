@@ -102,7 +102,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
+        "btn-fill rounded-full cursor-pointer border-transparent outline-none hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
@@ -153,7 +153,7 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
       <HoverCardContent
         side="top"
         align="start"
-        className="!bg-black !text-white !w-72 !p-3 !rounded-2xl !shadow-md !ring-0 !duration-0"
+        className="!bg-(--tooltip-bg) !text-(--tooltip-fg) !w-72 !p-3 !rounded-2xl !shadow-(--tooltip-shadow) !ring-0 !duration-0"
         style={{ animation: "none" }}
       >
         <div className="flex gap-2.5">
@@ -167,9 +167,9 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
             </p>
-            <p className="text-xs text-white/60 truncate">{domain}</p>
+            <p className="text-xs text-(--tooltip-muted) truncate">{domain}</p>
             {source.description && (
-              <p className="text-xs text-white/70 leading-relaxed line-clamp-3">
+              <p className="text-xs text-(--tooltip-muted) leading-relaxed line-clamp-3">
                 {source.description}
               </p>
             )}
@@ -302,7 +302,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -314,7 +314,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer text-muted-foreground hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

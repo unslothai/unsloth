@@ -156,7 +156,8 @@ class MaskedDiffusionProfile(DiffusionProfile):
     # Dream is adapted from an AR model: position i's logits predict token i + 1 (Dream src/trainer).
     shift_logits: bool = False
     # "answer_length": LLaDA GUIDELINES.md SFT, each example / its answer length, mean over the batch.
-    # "masked_tokens": Dream / Nemotron, summed then divided by the number of masked tokens.
+    # "masked_tokens": Dream, summed then divided by the number of masked tokens.
+    # "global_masked_tokens": Nemotron, using the whole accumulation window's masked-token count.
     loss_normalization: str = "answer_length"
     # LLaDA and Dream train on EOS-filled, attended padding so the model learns where answers stop.
     pad_with_eos: bool = True
@@ -237,24 +238,14 @@ class MaskedDiffusionProfile(DiffusionProfile):
                 eos_id = eos_id[0]
         return mask_id, eos_id
 
-    def compute_loss(
-        self,
-        model,
-        inputs,
-        args,
-        num_items_in_batch = None,
-    ):
+    def prepare_batch(self, model, inputs, args):
+        """Draw noise once, so the Trainer can count masked tokens before any backward pass."""
         input_ids = inputs["input_ids"]
         attention_mask = inputs.get("attention_mask")
         batch, length = input_ids.shape
         device = input_ids.device
-        mask_id, eos_id = self._token_ids(model, args)
+        _, eos_id = self._token_ids(model, args)
         eps = float(self.option(args, "diffusion_eps"))
-        weighting = self.option(args, "diffusion_time_weighting")
-        if weighting not in ("inverse_t", "none", None):
-            raise ValueError(
-                f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
-            )
 
         maskable = response_mask(inputs)
         forward_mask = attention_mask
@@ -270,6 +261,27 @@ class MaskedDiffusionProfile(DiffusionProfile):
         t = torch.rand(batch, device = device)
         p_mask = ((1 - eps) * t + eps)[:, None].expand(batch, length)
         masked = (torch.rand((batch, length), device = device) < p_mask) & maskable
+        return input_ids, forward_mask, maskable, masked, p_mask
+
+    def compute_loss(
+        self,
+        model,
+        inputs,
+        args,
+        num_items_in_batch = None,
+    ):
+        weighting = self.option(args, "diffusion_time_weighting")
+        if weighting not in ("inverse_t", "none", None):
+            raise ValueError(
+                f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
+            )
+        prepared = inputs.get("_diffusion_masked_batch")
+        if prepared is None:
+            prepared = self.prepare_batch(model, inputs, args)
+        input_ids, forward_mask, maskable, masked, p_mask = prepared
+        batch = input_ids.shape[0]
+        device = input_ids.device
+        mask_id, _ = self._token_ids(model, args)
         noisy = torch.where(masked, mask_id, input_ids)
 
         model_inputs = {"input_ids": noisy}
@@ -298,7 +310,10 @@ class MaskedDiffusionProfile(DiffusionProfile):
         if self.loss_normalization == "answer_length":
             loss = weighted
         else:
-            loss = weighted / count.clamp_min(1)
+            denominator = count
+            if self.loss_normalization == "global_masked_tokens" and num_items_in_batch is not None:
+                denominator = torch.as_tensor(num_items_in_batch, device = device)
+            loss = weighted / denominator.clamp_min(1)
 
         metrics = {
             "masked_fraction": (count / maskable.sum().clamp_min(1)).detach(),
@@ -357,7 +372,7 @@ register_diffusion_profile(
         lora_target_modules = list(_ATTENTION_AND_MLP),
         # Keep `diffusion_head` 16-bit like every other head, so the loss can take hidden states.
         quant_skip_modules = ["lm_head", "embed_tokens", "diffusion_head"],
-        loss_normalization = "masked_tokens",
+        loss_normalization = "global_masked_tokens",
         auto_class = "AutoModel",
         compile_backbone = True,
     )

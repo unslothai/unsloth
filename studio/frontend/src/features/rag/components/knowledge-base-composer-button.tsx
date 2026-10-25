@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
-  ChevronDownIcon,
   XIcon,
 } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -119,7 +119,7 @@ export function KnowledgeBaseComposerButton({
           <button
             type="button"
             className="composer-pill-btn"
-            data-pill-label="RAG"
+            data-pill-label="Files"
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
@@ -149,8 +149,8 @@ export function KnowledgeBaseComposerButton({
               />
               <XIcon className="composer-pill-x" />
             </span>
-            <span>RAG</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+            <span>Files</span>
+            <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent

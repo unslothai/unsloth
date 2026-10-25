@@ -14,6 +14,9 @@ name: Windows Unsloth API CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # What the test boots: the backend, the Windows installer chain and the CLI.
       # studio/frontend/** stays because install.ps1 builds the bundle and the dist cache
@@ -88,6 +91,7 @@ permissions:
 
 jobs:
   api-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unsloth API & Auth Tests
     runs-on: windows-latest
     timeout-minutes: 30
@@ -109,7 +113,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -338,7 +342,7 @@ jobs:
 
       - name: Upload API smoke logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows-studio-api-smoke-log
           path: |

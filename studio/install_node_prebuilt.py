@@ -51,7 +51,7 @@ _STUDIO_DIR = str(Path(__file__).resolve().parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
-from prebuilt_core import DownloadProgress  # noqa: E402
+from prebuilt_core import DownloadProgress, make_staging_dir  # noqa: E402
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -1195,9 +1195,7 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
 
             staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
             staging_root.mkdir(parents = True, exist_ok = True)
-            staging = Path(
-                tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root)
-            )
+            staging = make_staging_dir(staging_root, f"{install_dir.name}.staging-")
             try:
                 archive_path = staging / asset
                 log(f"downloading {node_download_url(version, asset)}")

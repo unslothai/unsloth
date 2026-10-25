@@ -31,6 +31,7 @@ import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
+  CollapseIcon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
@@ -64,8 +65,6 @@ import {
   hasPreStreamRunReservation,
   subscribePreStreamRunReservations,
 } from "../utils/pre-stream-run-reservation";
-import { deriveContextUsageBar } from "../lib/context-usage-bar-state";
-import { UsageRing } from "./context-usage-bar";
 import {
   type ConversationExportFormat,
   chatExportOptions,
@@ -143,7 +142,7 @@ function TemporaryChatButton({
           className={cn(
             "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             temporary
-              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              ? "bg-wash-10 text-foreground hover:bg-wash-15"
               : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
           )}
           aria-label={label}
@@ -178,16 +177,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const busy = useChatRuntimeStore((state) =>
     state.modelLoading || Boolean(state.runningByThreadId[menu.item.id]),
   ) || preStreamRunActive || liveRunActive;
-  const usedPercent = useChatRuntimeStore((state) => {
-    const usage =
-      state.activeThreadId === menu.item.id
-        ? state.contextUsage
-        : state.contextUsageByThreadId[menu.item.id];
-    return deriveContextUsageBar({
-      used: usage?.contextTokens ?? usage?.totalTokens ?? null,
-      total: state.loadedContextLength,
-    })?.percent ?? null;
-  });
   const compact = () => {
     const runtime = useChatRuntimeStore.getState();
     if (
@@ -286,11 +275,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <DropdownMenuSeparator className="mx-3" />
       <Item
-        glyph={
-          <span className="flex [--track:color-mix(in_srgb,currentColor_30%,transparent)]">
-            <UsageRing percent={usedPercent} stroke="stroke-current" />
-          </span>
-        }
+        icon={CollapseIcon}
         onSelect={compact}
         disabled={menu.item.type !== "single" || busy}
       >

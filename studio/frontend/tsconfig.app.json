@@ -31,6 +31,7 @@
   "include": [
     "src",
     "smoke-ansi-main.tsx",
+    "smoke-project-folders-main.tsx",
     "smoke-composer-icons-main.tsx",
     "smoke-tooltip-switch-main.tsx",
     "smoke-titlebar-blur-main.tsx",

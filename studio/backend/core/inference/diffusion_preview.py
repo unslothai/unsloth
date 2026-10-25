@@ -62,6 +62,17 @@ def preview_wanted(requested: Optional[bool]) -> bool:
     return True if requested is None else bool(requested)
 
 
+def preview_available(family: Optional[str], device: Any) -> bool:
+    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map, and CUDA (no event to poll elsewhere)."""
+    if not env_enabled() or factors_for(family) is None:
+        return False
+    try:
+        import torch
+        return torch.device(device).type == "cuda" and torch.cuda.is_available()
+    except Exception:  # noqa: BLE001 - a status read must never fail on this
+        return False
+
+
 @functools.lru_cache(maxsize = 64)
 def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
     """Cached so a family keeps one object, and its device copy is uploaded once per process."""
@@ -86,6 +97,9 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
     """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
     size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
+        if latents.ndim == 4 and latents.shape[1] == spec.channels:
+            # The same packed channels kept spatial (MOSS-Image runs FLUX.2 latents as [B, 128, h, w]).
+            return latents[0].permute(1, 2, 0)
         gh, gw = int(height) // spec.down, int(width) // spec.down
         if latents.ndim != 3 or latents.shape[-1] != spec.channels or gh <= 0 or gw <= 0:
             return None
@@ -244,6 +258,7 @@ class LatentPreviewer:
         # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
+        # Pinned even on an integrated GPU: a few MB, and an unpinned copy would make the denoise thread wait each snapshot.
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
         self._slots = [
             {

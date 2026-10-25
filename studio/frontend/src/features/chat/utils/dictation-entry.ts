@@ -43,7 +43,7 @@ export function currentDictationEntryMode(): DictationEntryMode {
 
 export function insecureDictationGuidance(mode: DictationEntryMode): string {
   return mode === "recording-file"
-    ? "Press Dictate to choose a recording on this connection, or open this Studio server through HTTPS to dictate live."
+    ? "Press Dictate to choose a recording on this connection, or open this Unsloth server through HTTPS to dictate live."
     : "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.";
 }
 

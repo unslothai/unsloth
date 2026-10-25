@@ -47,11 +47,23 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className={cn("relative flex min-h-12 w-full items-stretch gap-3", className)}>
-      <div className="flex h-full shrink-0 items-center self-center">
+    <div
+      className={cn(
+        "relative grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)] content-center items-start gap-x-3",
+        className,
+      )}
+    >
+      {/* With a title the spinner sits on its line (1.25em = leading-tight), so a description
+          below it or a wrapped title leaves the spinner level with the first line. */}
+      <div
+        className={cn(
+          "flex shrink-0 items-center",
+          title ? "h-[1.25em]" : "self-center",
+        )}
+      >
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
+      <div className="flex min-w-0 flex-col">
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">

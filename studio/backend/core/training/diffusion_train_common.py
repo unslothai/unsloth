@@ -38,7 +38,7 @@ from core.inference.diffusion_families import (
 from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
 from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
-from utils.paths.path_utils import drop_appledouble_metadata
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
@@ -194,10 +194,12 @@ def _component_only_repos() -> dict[str, tuple[str, str, str]]:
                     components.setdefault(repo, (fam.name, "transformer", str(fam.base_repo)))
                 else:
                     bases.add(repo)
-        for _scheme, component, repo in getattr(fam, "te_prequant_repos", ()):
+        for row in getattr(fam, "te_prequant_repos", ()):
             components.setdefault(
-                str(repo).strip().lower(), (fam.name, str(component), str(fam.base_repo))
+                str(row[2]).strip().lower(), (fam.name, str(row[1]), str(fam.base_repo))
             )
+        for row in getattr(fam, "te_prequant_variant_repos", ()):
+            components.setdefault(str(row[3]).strip().lower(), (fam.name, str(row[2]), str(row[0])))
     return {repo: hit for repo, hit in components.items() if repo not in bases}
 
 
@@ -2093,7 +2095,57 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
         )
     # An existing LOCAL base is loaded as a full pipeline, which needs an index; reject a non-pipeline local dir
     # before /diffusion/start frees the GPU models.
-    _assert_local_base_is_pipeline(base_model, allow_modular = allow_modular)
+    try:
+        _assert_local_base_is_pipeline(base_model, allow_modular = allow_modular)
+    except ValueError as e:
+        shape = _single_file_shape(base_model)
+        if shape is None:
+            raise
+        # Echo only the caller's own path: this runs before the cached-path authorization, so naming a file found
+        # inside the folder would disclose it.
+        what = "is a single-file checkpoint" if shape == "file" else "holds single-file checkpoints"
+        raise ValueError(
+            f"'{base_model}' {what}, which cannot be a training base yet: training loads the base "
+            f"as a diffusers pipeline folder (one subfolder per component). Pick a base from the "
+            f"list instead."
+        ) from e
+
+
+_SINGLE_FILE_SUFFIXES = (".safetensors", ".ckpt", ".gguf")
+# LoRA weights, not a base: a trained Studio / diffusers LoRA folder holds pytorch_lora_weights.safetensors.
+_LORA_WEIGHT_NAMES = ("pytorch_lora_weights.safetensors", "adapter_model.safetensors")
+_NOT_A_CHECKPOINT_FOLDER = (
+    "model_index.json",
+    "modular_model_index.json",
+    "config.json",
+    "adapter_config.json",
+)
+
+
+def _single_file_shape(base_model: str) -> Optional[str]:
+    """ "file" / "folder" when a local base is, or holds (an A1111 / ComfyUI models folder), a single-file
+    checkpoint, else None. Wording only, never a verdict."""
+    try:
+        path = Path(str(base_model or "").strip()).expanduser()
+        if path.is_file():
+            return "file" if _is_checkpoint_name(path) else None
+        if not path.is_dir() or any((path / m).exists() for m in _NOT_A_CHECKPOINT_FOLDER):
+            return None
+        with os.scandir(path) as entries:
+            if any(_is_checkpoint_name(Path(e.path)) and e.is_file() for e in entries):
+                return "folder"
+    except OSError:
+        pass
+    return None
+
+
+def _is_checkpoint_name(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        name.endswith(_SINGLE_FILE_SUFFIXES)
+        and name not in _LORA_WEIGHT_NAMES
+        and not is_appledouble_metadata(path)
+    )
 
 
 # One writer and one reader for BOTH trainers, so an SDXL and a DiT run resume from the same bundle shape.

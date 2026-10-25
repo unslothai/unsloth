@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The restored external pick is browser-local, but chat settings are
-// installation-wide. Seeding the key before the store module loads is the whole
-// point: the store reads it once while building its initial params.
+// The store reads the restored external pick once at module load, so seed it first.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -26,8 +24,6 @@ const { useChatRuntimeStore } = await import(
 );
 
 test("a restored external checkpoint does not claim the shared global snapshot", async () => {
-  // Another browser wrote this global for some other model. Nothing adopted a
-  // resident model here, so the stale local pick must not migrate it.
   settingsHttp.settings = {
     activePreset: "Default",
     activePresetSource: "builtin-default",
