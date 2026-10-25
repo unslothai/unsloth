@@ -475,7 +475,7 @@ export function LanAccessSection() {
                 }}
               >
                 <SelectTrigger
-                  className="w-32"
+                  className="w-32 data-[size=default]:h-control"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -495,7 +495,7 @@ export function LanAccessSection() {
                   aria-label="Custom LAN port"
                   aria-invalid={portInvalid}
                   aria-describedby={portErrorVisible ? portErrorId : undefined}
-                  className="w-24"
+                  className="h-control w-24"
                   onChange={(event) => {
                     setPortDraft(event.target.value);
                     setPortError(null);
@@ -552,7 +552,7 @@ export function LanAccessSection() {
                   }}
                 >
                   <SelectTrigger
-                    className="w-32"
+                    className="w-32 data-[size=default]:h-control"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />

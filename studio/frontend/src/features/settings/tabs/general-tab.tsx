@@ -573,7 +573,7 @@ export function GeneralTab() {
                 }}
                 onBlur={commitToken}
                 className={cn(
-                  "w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
@@ -761,7 +761,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB

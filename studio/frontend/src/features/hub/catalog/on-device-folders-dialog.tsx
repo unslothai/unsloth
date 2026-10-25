@@ -333,7 +333,7 @@ export function OnDeviceFoldersDialog({
                     (downloadCacheLoaded ? "Unavailable" : "Loading...")
                   }
                   title={downloadCache?.cacheHome}
-                  className="field-soft min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
+                  className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
                 />
                 <div className="flex shrink-0 items-center gap-2">
                   <Button
@@ -492,7 +492,7 @@ export function OnDeviceFoldersDialog({
                     placeholder="Paste a folder path"
                     spellCheck={false}
                     autoComplete="off"
-                    className="field-soft min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
+                    className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
                   />
                   <div className="flex shrink-0 items-center gap-2">
                     <Button

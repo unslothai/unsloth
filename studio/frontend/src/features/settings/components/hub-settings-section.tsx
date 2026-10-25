@@ -191,7 +191,7 @@ export function HubSettingsSection() {
                     saveEndpoint();
                   }
                 }}
-                className="w-60"
+                className="h-control w-60"
               />
               <Button
                 variant="outline"

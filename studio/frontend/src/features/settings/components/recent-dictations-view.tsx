@@ -280,7 +280,7 @@ export function RecentDictationsView({
       ) : (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
-            <InputGroup className="flex-1">
+            <InputGroup className="h-control flex-1">
               <InputGroupAddon align="inline-start">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -301,7 +301,7 @@ export function RecentDictationsView({
               onValueChange={(value) => setSortOrder(value as SortOrder)}
             >
               <SelectTrigger
-                className="w-36 shrink-0"
+                className="w-36 shrink-0 data-[size=default]:h-control"
                 aria-label={t("settings.voice.recents.sortLabel")}
               >
                 <SelectValue />

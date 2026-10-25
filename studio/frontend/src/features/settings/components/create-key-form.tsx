@@ -56,7 +56,7 @@ export function CreateKeyForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
-          className="min-w-[calc(200px*var(--ui-space-scale,1))] flex-1 text-sm"
+          className="h-control min-w-[calc(200px*var(--ui-space-scale,1))] flex-1 text-sm"
           aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
         <div className="hub-tab-toggle inline-flex h-control items-center rounded-full">
