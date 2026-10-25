@@ -5297,6 +5297,41 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
     return False
 
 
+def _explicit_device_ordinals_needed(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """Leading child ordinals the user's device flags name (highest ordinal + 1, tensor-split
+    length), 0 when no flag names one; None when a value cannot be read or the pick is CPU only.
+    argv wins over LLAMA_ARG_*."""
+    try:
+        device = _last_flag_value(extra_args, frozenset({"--device", "-dev"}))
+        main_gpu = _last_flag_value(extra_args, frozenset({"--main-gpu", "-mg"}))
+        split = _last_flag_value(extra_args, _TENSOR_SPLIT_FLAGS)
+    except ValueError:
+        return None
+    device = device or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip() or None
+    main_gpu = main_gpu or str(os.environ.get("LLAMA_ARG_MAIN_GPU", "")).strip() or None
+    split = split or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip() or None
+    need = 0
+    for token in (device or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        # CPU only ("none", like "cpu"): the child uses no GPU, so no GPU subset may be priced lighter.
+        if token.lower() == "none":
+            return None
+        match = re.fullmatch(r"[A-Za-z]+(\d+)", token)
+        if match is None:
+            return None
+        need = max(need, int(match.group(1)) + 1)
+    if main_gpu is not None:
+        try:
+            need = max(need, int(main_gpu) + 1)
+        except ValueError:
+            return None
+    if split is not None:
+        need = max(need, len([part for part in re.split(r"[,/]", split) if part.strip()]))
+    return need
+
+
 def _diffusion_manual_ngl(gpu_memory_mode: str, gpu_layers: int) -> Optional[int]:
     """The --ngl the diffusion runner would launch with, or None for its default.
 
@@ -18266,6 +18301,8 @@ class LlamaCppBackend:
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
+        prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
         shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
@@ -18276,6 +18313,9 @@ class LlamaCppBackend:
         ``integrated``: unified-memory GPUs; discrete GPUs win when they alone hold the model.
         ``discrete_size_bytes`` prices that discrete attempt (default ``model_size_bytes``):
         bytes that live in host RAM only on unified memory are not charged to a dGPU.
+        ``prefer_discrete`` False (an explicit device pick) skips the discrete tier but still
+        prices a dGPU-only candidate at ``discrete_size_bytes`` when it keeps the leading
+        ordinals, so a user's device ordinals still name the same cards.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -18302,7 +18342,7 @@ class LlamaCppBackend:
         min_gpus = max(1, min(min_gpus, len(gpus)))
         # Discrete first (#7624): an APU's "free" is system RAM. Falls through if it can't meet min_gpus.
         discrete = LlamaCppBackend._discrete_tier(gpus, integrated, shared)
-        if discrete is not None and min_gpus <= len(discrete):
+        if prefer_discrete and discrete is not None and min_gpus <= len(discrete):
             picked, use_fit = LlamaCppBackend._select_gpus(
                 model_size_bytes if discrete_size_bytes is None else discrete_size_bytes,
                 discrete,
@@ -18317,6 +18357,21 @@ class LlamaCppBackend:
         if usable_fraction is None:
             usable_fraction = _active_vram_fraction()
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
+        # Host-only bytes (checkpoints, a CPU-pinned projector) never land on a dGPU-only subset.
+        # Only on a subset the caller vetted (``discount_prefixes``): one that keeps the user's
+        # device ordinals naming the same cards. Anything else pays the full price.
+        _discount = (
+            not prefer_discrete
+            and integrated
+            and discount_prefixes
+            and discrete_size_bytes is not None
+            and discrete_size_bytes < model_size_bytes
+        )
+
+        def _size_mib(ids: list) -> float:
+            if _discount and integrated.isdisjoint(ids) and frozenset(ids) in discount_prefixes:
+                return discrete_size_bytes / (1024 * 1024)
+            return model_size_mib
 
         # Per-GPU usable budget: free minus the reserve when total is known, else
         # the legacy free*frac (also covers a total-0 two-column probe).
@@ -18357,11 +18412,17 @@ class LlamaCppBackend:
                     return [idx], False
 
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
-        if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
+        if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= _size_mib([ranked[0][0]]):
             for idx, free_mib in ranked:
-                if idx not in shared and _usable(idx, free_mib) >= model_size_mib:
+                if idx not in shared and _usable(idx, free_mib) >= _size_mib([idx]):
                     return [idx], False
             return [ranked[0][0]], False
+        # A discounted dGPU can hold its lighter size alone even when the top-ranked APU cannot
+        # hold the full one: try each card at its own price before spreading.
+        if min_gpus <= 1 and _discount:
+            fits = [idx for idx, free_mib in ranked if _usable(idx, free_mib) >= _size_mib([idx])]
+            if fits:
+                return [next((idx for idx in fits if idx not in shared), fits[0])], False
 
         # Try N GPUs (most-free first); each past the first adds per-device overhead.
         # Require at least min_gpus devices before accepting a fit.
@@ -18372,7 +18433,7 @@ class LlamaCppBackend:
             cumulative += _usable(idx, free_mib)
             if (
                 len(selected) >= min_gpus
-                and cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib
+                and cumulative >= _size_mib(selected) + (len(selected) - 1) * overhead_mib
             ):
                 return sorted(selected), False
 
@@ -18396,6 +18457,8 @@ class LlamaCppBackend:
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
+        prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
         shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
@@ -18412,8 +18475,21 @@ class LlamaCppBackend:
 
         ``integrated``: as in ``_select_gpus``, but the discrete tier must pass the whole
         split-aware check (priced at ``discrete_size_bytes`` when given); otherwise the
-        full pool is priced exactly as without it."""
-        discrete = LlamaCppBackend._discrete_tier(gpus, integrated, shared)
+        full pool is priced exactly as without it. ``prefer_discrete`` False skips the tier
+        and hands the accounting to ``_select_gpus``."""
+        # Only an explicit pick passes the accounting on; the tier above already ran otherwise.
+        _acct = (
+            {
+                "integrated": integrated,
+                "prefer_discrete": False,
+                "discount_prefixes": discount_prefixes,
+            }
+            if not prefer_discrete and integrated and discrete_size_bytes is not None
+            else {}
+        )
+        discrete = (
+            LlamaCppBackend._discrete_tier(gpus, integrated, shared) if prefer_discrete else None
+        )
         if discrete is not None:
             if max(1, min(min_gpus, len(gpus))) <= len(discrete):
                 picked, needs_fit = LlamaCppBackend._select_gpus_split_aware(
@@ -18436,6 +18512,7 @@ class LlamaCppBackend:
             min_gpus = min_gpus,
             shared = shared,
             shared_gpu_ids = shared_gpu_ids,
+            **({**_acct, "discrete_size_bytes": discrete_size_bytes} if _acct else {}),
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -18447,6 +18524,11 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
             shared_gpu_ids = shared_gpu_ids,
+            **(
+                {**_acct, "discrete_size_bytes": discrete_size_bytes + split_extra_bytes}
+                if _acct
+                else {}
+            ),
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -18459,6 +18541,7 @@ class LlamaCppBackend:
             min_gpus = 1,
             shared = shared,
             shared_gpu_ids = shared_gpu_ids,
+            **({**_acct, "discrete_size_bytes": discrete_size_bytes} if _acct else {}),
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -19728,6 +19811,8 @@ class LlamaCppBackend:
         exact: bool = False,
         integrated: frozenset = frozenset(),
         discrete_host_only_bytes: int = 0,
+        prefer_discrete: bool = True,
+        discount_prefixes: frozenset = frozenset(),
         shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
@@ -19747,6 +19832,7 @@ class LlamaCppBackend:
         ``integrated``: the discrete-tier attempt is priced without the checkpoints and
         without ``discrete_host_only_bytes`` (e.g. a CPU-pinned projector on a shared pool);
         ``gpus`` already narrowed to discrete cards of a mixed pool are priced that way outright.
+        ``prefer_discrete`` False (explicit device pick) skips the tier, keeping that pricing.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -19808,6 +19894,8 @@ class LlamaCppBackend:
                 ),
                 integrated = integrated,
                 discrete_size_bytes = discrete_total,
+                prefer_discrete = prefer_discrete,
+                discount_prefixes = discount_prefixes,
                 shared_gpu_ids = shared_gpu_ids,
             )
             if not use_fit:
@@ -27456,6 +27544,8 @@ class LlamaCppBackend:
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
                 _tier_gpus = frozenset()
+                # dGPU subsets an explicit pick may price without host-only bytes.
+                _discount_prefixes = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -27682,6 +27772,28 @@ class LlamaCppBackend:
                             or self._visibility_mask_is_unmappable()
                         ):
                             _tier_gpus = frozenset()
+                        # Under that pick, host-only bytes may skip only a dGPU subset whose pinned
+                        # mask (emitted in ascending ids) keeps every ordinal the flags name on the
+                        # same card: a leading run of the inherited order, already ascending.
+                        if (
+                            _integrated_gpus
+                            and not _tier_gpus
+                            and not self._visibility_mask_is_unmappable()
+                        ):
+                            _need = _explicit_device_ordinals_needed(extra_args)
+                            if _need is not None:
+                                _ids = {idx for idx, _free in gpus}
+                                _mask = self._resolve_visible_physical_ids()
+                                _order = (
+                                    [i for i in _mask if i in _ids]
+                                    if _mask is not None
+                                    else sorted(_ids)
+                                )
+                                _discount_prefixes = frozenset(
+                                    frozenset(_order[:k])
+                                    for k in range(max(1, _need), len(_order) + 1)
+                                    if _order[:k] == sorted(_order[:k])
+                                )
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -27719,13 +27831,33 @@ class LlamaCppBackend:
                             return 0
                         return _placement_ctx_checkpoints
 
-                    def _tiered_subsets(ranked: list, floor: int) -> list:
+                    def _tiered_subsets(
+                        ranked: list,
+                        floor: int,
+                        score_of = None,
+                    ) -> list:
                         # (count, prefix) in _select_gpus order: unshared discrete first.
                         tier = LlamaCppBackend._discrete_tier(ranked, _tier_gpus, _shared_gpus)
-                        tiers = (
-                            (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
+                        base = [(n, ranked[:n]) for n in range(floor, len(ranked) + 1)]
+                        if tier is None or floor > len(tier):
+                            return base
+                        first = [(n, tier[:n]) for n in range(floor, len(tier) + 1)]
+                        if score_of is None:
+                            return first + base
+                        # Auto: the discrete tier wins only where it gives up nothing the base walk
+                        # (the pick before #14372) got. ``score_of`` is None for no fit, else a tuple
+                        # (context, drafter kept, ...) the tier must match in every term.
+                        base_score = next(
+                            (sc for n, sub in base for sc in (score_of(n, sub),) if sc), None
                         )
-                        return [(n, t[:n]) for t in tiers for n in range(floor, len(t) + 1)]
+                        if base_score is None:
+                            return first + base
+                        kept = []
+                        for n, sub in first:
+                            sc = score_of(n, sub)
+                            if sc and all(t >= b for t, b in zip(sc, base_score)):
+                                kept.append((n, sub))
+                        return kept + base
 
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
@@ -28763,78 +28895,182 @@ class LlamaCppBackend:
                         # drafter-ranked subset; a discrete-tier subset pays no checkpoints.
                         _target_placements: list[tuple[int, int, float, int]] = []
                         _drafter_order = _probe_orders[-1]
+
+                        def _probe_target_ctx(_n: int, _subset) -> Optional[int]:
+                            # The target-only context the placement loop gives ``_subset``, or None.
+                            _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
+                            _base_wo = _probe_base(False, _n)
+                            _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
+                            # Explicit context is honored verbatim, so that is what the
+                            # drafter has to fit alongside; Auto gets its own best cap.
+                            _ctx_wo = (
+                                effective_ctx
+                                if explicit_ctx
+                                else self._fit_context_to_vram(
+                                    effective_ctx,
+                                    _budget_wo,
+                                    _base_wo,
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = n_parallel,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _effective_ubatch,
+                                    flash_attn = planned_flash_attn,
+                                    mtp_engaged = False,
+                                    mtp_overhead_fn = None,
+                                    compute_ctx_bytes_fn = _cc_n,
+                                    budget_frac = 1.0,
+                                    pooled = True,
+                                    total_mib = None,
+                                    ctx_checkpoints = _subset_ckpts(_subset),
+                                )
+                            )
+                            if _ctx_wo <= 0:
+                                return None
+                            _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                            _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                            if _foot_wo > _budget_wo:
+                                return None
+                            # The pooled figure hides the compute buffer every device
+                            # replicates, so the weakest card may not hold the context
+                            # the pool priced and the placement loop caps to what it
+                            # does. Charging the drafter at the uncapped context
+                            # condemns it at a context this load never reaches. Same
+                            # reserve and cap the auto-context loop below applies, so
+                            # the two cannot disagree. Auto only: an explicit context
+                            # is honored verbatim and overflows to --fit.
+                            _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                            _probe_reserve_at = lambda c, _k = _n: (
+                                (_pipeline_overhead_bytes if _k > 1 else 0) + _cc_bytes(c, _k) // _k
+                            )
+                            if not self._every_gpu_holds_reserve(
+                                _usable_wo, _probe_reserve_at(_ctx_wo)
+                            ):
+                                if explicit_ctx:
+                                    # Nothing to cap: this subset cannot hold it, and
+                                    # _select_gpus_split_aware will go to --fit too.
+                                    # Calling it a fit would drop the drafter and then
+                                    # report a pin that never happened.
+                                    return None
+                                _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                    _ctx_wo, _usable_wo, _probe_reserve_at
+                                )
+                                if _ctx_wo <= 0:
+                                    return None
+                                # Every pooled term shrinks with the context, so this
+                                # cannot newly fail; re-price rather than lean on it.
+                                _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                if _foot_wo > _budget_wo:
+                                    return None
+                            return _ctx_wo
+
+                        _slots_reducible = (
+                            n_parallel > 1
+                            and intent.n_parallel_from_default
+                            and _extra_args_n_parallel(extra_args, env = {}) is None
+                        )
+
+                        def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                            ub = _ubatch_for_slots(s)
+                            return (
+                                _probe_base(True, n, s)
+                                + self._estimate_kv_cache_bytes(
+                                    ctx,
+                                    cache_type_kv,
+                                    n_parallel = s,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = ub,
+                                    flash_attn = planned_flash_attn,
+                                )
+                                + _cc_bytes(ctx, n, s)
+                                + _mtp_bytes(ctx, s, ub)
+                            ) / (1024 * 1024)
+
+                        def _ctx_with_drafter(
+                            n: int, ctx: int, budget: float, s: int, ckpts: int
+                        ) -> int:
+                            if explicit_ctx:
+                                return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
+                            ub = _ubatch_for_slots(s)
+                            fitted = self._fit_context_to_vram(
+                                ctx,
+                                budget,
+                                _probe_base(True, n, s),
+                                cache_type_kv,
+                                swa_full = swa_full,
+                                n_parallel = s,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = ub,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = True,
+                                mtp_overhead_fn = (
+                                    functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
+                                    if mtp_overhead_fn is not None
+                                    else None
+                                ),
+                                compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
+                                budget_frac = 1.0,
+                                pooled = True,
+                                total_mib = None,
+                                ctx_checkpoints = ckpts,
+                            )
+                            return (
+                                fitted
+                                if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
+                                else 0
+                            )
+
+                        def _probe_slots(_n: int, _subset, _ctx: int) -> int:
+                            # Most slots the slot search below can keep the drafter at here (ctx
+                            # kept, less the trim at one slot), 0 if none or slots are pinned.
+                            if not _slots_reducible:
+                                return 0
+                            _budget = _pool_budget_mib(_subset, _probe_frac(True))
+                            _ckpts = _subset_ckpts(_subset)
+                            for _s in range(n_parallel - 1, 0, -1):
+                                _keep = 1 - (
+                                    _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
+                                )
+                                _c = _ctx_with_drafter(_n, _ctx, _budget, _s, _ckpts)
+                                if _c > 0 and _c >= _ctx * _keep:
+                                    return _s
+                            return 0
+
+                        def _probe_score(_n: int, _subset):
+                            # (target context, drafter fits beside it at that context, slots it
+                            # keeps); explicit context is the same everywhere.
+                            _ctx = _probe_target_ctx(_n, _subset)
+                            if _ctx is None:
+                                return None
+                            _need = (
+                                _probe_base(True, _n)
+                                + _kv_bytes(_ctx)
+                                + _cc_bytes(_ctx, _n)
+                                + _mtp_bytes(_ctx)
+                            ) / (1024 * 1024)
+                            if _need <= _pool_budget_mib(_subset, _probe_frac(True)):
+                                return (_ctx, 1, n_parallel)
+                            # No drafter at the requested slots: the placement keeping more
+                            # slots for it wins, so the tier cannot cost the base walk slots.
+                            return (_ctx, 0, _probe_slots(_n, _subset, _ctx))
+
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
                             _probe_min_gpus = _probe_floor(_probe_ranked, False)
                             # The placement loop's subsets in its order: discrete first.
-                            for _n, _subset in _tiered_subsets(_probe_ranked, _probe_min_gpus):
+                            for _n, _subset in _tiered_subsets(
+                                _probe_ranked,
+                                _probe_min_gpus,
+                                score_of = _probe_score,
+                            ):
+                                _ctx_wo = _probe_target_ctx(_n, _subset)
+                                if _ctx_wo is None:
+                                    continue
                                 _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
-                                _base_wo = _probe_base(False, _n)
-                                _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
-                                # Explicit context is honored verbatim, so that is what the
-                                # drafter has to fit alongside; Auto gets its own best cap.
-                                _ctx_wo = (
-                                    effective_ctx
-                                    if explicit_ctx
-                                    else self._fit_context_to_vram(
-                                        effective_ctx,
-                                        _budget_wo,
-                                        _base_wo,
-                                        cache_type_kv,
-                                        swa_full = swa_full,
-                                        n_parallel = n_parallel,
-                                        kv_unified = planned_kv_unified,
-                                        n_ubatch = _effective_ubatch,
-                                        flash_attn = planned_flash_attn,
-                                        mtp_engaged = False,
-                                        mtp_overhead_fn = None,
-                                        compute_ctx_bytes_fn = _cc_n,
-                                        budget_frac = 1.0,
-                                        pooled = True,
-                                        total_mib = None,
-                                        ctx_checkpoints = _subset_ckpts(_subset),
-                                    )
-                                )
-                                if _ctx_wo <= 0:
-                                    continue
                                 _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
-                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
-                                if _foot_wo > _budget_wo:
-                                    continue
-                                # The pooled figure hides the compute buffer every device
-                                # replicates, so the weakest card may not hold the context
-                                # the pool priced and the placement loop caps to what it
-                                # does. Charging the drafter at the uncapped context
-                                # condemns it at a context this load never reaches. Same
-                                # reserve and cap the auto-context loop below applies, so
-                                # the two cannot disagree. Auto only: an explicit context
-                                # is honored verbatim and overflows to --fit.
-                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
-                                _probe_reserve_at = lambda c, _k = _n: (
-                                    (_pipeline_overhead_bytes if _k > 1 else 0)
-                                    + _cc_bytes(c, _k) // _k
-                                )
-                                if not self._every_gpu_holds_reserve(
-                                    _usable_wo, _probe_reserve_at(_ctx_wo)
-                                ):
-                                    if explicit_ctx:
-                                        # Nothing to cap: this subset cannot hold it, and
-                                        # _select_gpus_split_aware will go to --fit too.
-                                        # Calling it a fit would drop the drafter and then
-                                        # report a pin that never happened.
-                                        continue
-                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
-                                        _ctx_wo, _usable_wo, _probe_reserve_at
-                                    )
-                                    if _ctx_wo <= 0:
-                                        continue
-                                    # Every pooled term shrinks with the context, so this
-                                    # cannot newly fail; re-price rather than lean on it.
-                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
-                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
-                                    if _foot_wo > _budget_wo:
-                                        continue
                                 _foot_w = (
                                     _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
                                 ) / (1024 * 1024)
@@ -28912,65 +29148,7 @@ class LlamaCppBackend:
                         # Fewer slots before no drafter. The walk takes the first subset holding the
                         # drafter, so it must keep its target-only ctx (less the trim at one slot).
                         # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
-                        if (
-                            _target_fits_somewhere
-                            and not _both_fit_somewhere
-                            and n_parallel > 1
-                            and intent.n_parallel_from_default
-                            and _extra_args_n_parallel(extra_args, env = {}) is None
-                        ):
-
-                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
-                                ub = _ubatch_for_slots(s)
-                                return (
-                                    _probe_base(True, n, s)
-                                    + self._estimate_kv_cache_bytes(
-                                        ctx,
-                                        cache_type_kv,
-                                        n_parallel = s,
-                                        swa_full = swa_full,
-                                        kv_unified = planned_kv_unified,
-                                        n_ubatch = ub,
-                                        flash_attn = planned_flash_attn,
-                                    )
-                                    + _cc_bytes(ctx, n, s)
-                                    + _mtp_bytes(ctx, s, ub)
-                                ) / (1024 * 1024)
-
-                            def _ctx_with_drafter(
-                                n: int, ctx: int, budget: float, s: int, ckpts: int
-                            ) -> int:
-                                if explicit_ctx:
-                                    return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
-                                ub = _ubatch_for_slots(s)
-                                fitted = self._fit_context_to_vram(
-                                    ctx,
-                                    budget,
-                                    _probe_base(True, n, s),
-                                    cache_type_kv,
-                                    swa_full = swa_full,
-                                    n_parallel = s,
-                                    kv_unified = planned_kv_unified,
-                                    n_ubatch = ub,
-                                    flash_attn = planned_flash_attn,
-                                    mtp_engaged = True,
-                                    mtp_overhead_fn = (
-                                        functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
-                                        if mtp_overhead_fn is not None
-                                        else None
-                                    ),
-                                    compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
-                                    budget_frac = 1.0,
-                                    pooled = True,
-                                    total_mib = None,
-                                    ctx_checkpoints = ckpts,
-                                )
-                                return (
-                                    fitted
-                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
-                                    else 0
-                                )
-
+                        if _target_fits_somewhere and not _both_fit_somewhere and _slots_reducible:
                             _mtp_slots = _mtp_slots_ctx = 0
                             for _s in range(n_parallel - 1, 0, -1):
                                 _keep = 1 - (
@@ -29269,7 +29447,9 @@ class LlamaCppBackend:
                                         or 1,
                                     ),
                                 )
-                            for n_gpus, subset in _tiered_subsets(ranked_for_cap, _cap_floor):
+
+                            def _cap_fit(n_gpus: int, subset) -> Optional[int]:
+                                # The context Auto would cap ``subset`` to for the UI ceiling, or None.
                                 # Per-GPU-consistent pool budget (fixes mixed
                                 # known/unknown totals); pass it as an absolute
                                 # budget so the fit and the check below agree.
@@ -29301,7 +29481,7 @@ class LlamaCppBackend:
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
                                 if footprint_mib > pool_budget:
-                                    continue
+                                    return None
                                 if (
                                     n_gpus > 1
                                     and _integrated_gpus
@@ -29319,7 +29499,18 @@ class LlamaCppBackend:
                                         capped = self._cap_ctx_to_per_device_reserve(
                                             capped, _usable_mib, _reserve_at
                                         )
-                                best_cap = max(best_cap, capped)
+                                return capped
+
+                            def _cap_score(n_gpus: int, subset):
+                                capped = _cap_fit(n_gpus, subset)
+                                return None if capped is None else (capped,)
+
+                            for n_gpus, subset in _tiered_subsets(
+                                ranked_for_cap, _cap_floor, score_of = _cap_score
+                            ):
+                                capped = _cap_fit(n_gpus, subset)
+                                if capped is not None:
+                                    best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
@@ -29362,7 +29553,9 @@ class LlamaCppBackend:
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                                 shared = _shared_gpus,
-                                integrated = _tier_gpus,
+                                integrated = _integrated_gpus,
+                                prefer_discrete = bool(_tier_gpus),
+                                discount_prefixes = _discount_prefixes,
                                 discrete_size_bytes = requested_total - _discrete_host_only(),
                                 shared_gpu_ids = _shared_gpu_ids,
                             )
@@ -29423,7 +29616,9 @@ class LlamaCppBackend:
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
                                             shared = _shared_gpus,
-                                            integrated = _tier_gpus,
+                                            integrated = _integrated_gpus,
+                                            prefer_discrete = bool(_tier_gpus),
+                                            discount_prefixes = _discount_prefixes,
                                             discrete_size_bytes = model_size_fit
                                             + _q8_kv
                                             + _mtp_bytes(effective_ctx)
@@ -29489,7 +29684,6 @@ class LlamaCppBackend:
                                 if _unshared is not None:
                                     ranked.remove(_unshared)
                                     ranked.insert(0, _unshared)
-                            _subsets = _tiered_subsets(ranked, _auto_min_gpus)
 
                             def _subset_ms(n_gpus: int, subset) -> int:
                                 # A CPU-pinned projector is charged for a shared pool; a
@@ -29558,6 +29752,15 @@ class LlamaCppBackend:
                                         return None
                                 return capped
 
+                            def _auto_score(
+                                n_gpus: int,
+                                subset,
+                                ctx = effective_ctx,
+                            ):
+                                capped = _auto_fit(n_gpus, subset, ctx)
+                                return None if capped is None else (capped,)
+
+                            _subsets = _tiered_subsets(ranked, _auto_min_gpus, score_of = _auto_score)
                             for n_gpus, subset in _subsets:
                                 capped = _auto_fit(n_gpus, subset, effective_ctx)
                                 if capped is None:
@@ -29634,7 +29837,9 @@ class LlamaCppBackend:
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
                             shared = _shared_gpus,
-                            integrated = _tier_gpus,
+                            integrated = _integrated_gpus,
+                            prefer_discrete = bool(_tier_gpus),
+                            discount_prefixes = _discount_prefixes,
                             discrete_size_bytes = _fs_total - _discrete_host_only(),
                             shared_gpu_ids = _shared_gpu_ids,
                         )
@@ -30054,8 +30259,10 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
-                            # Picks a subset, so an explicit device pick keeps the base pick.
-                            integrated = _tier_gpus,
+                            # An explicit device pick skips the discrete tier; host-only accounting still applies.
+                            integrated = _integrated_gpus,
+                            prefer_discrete = bool(_tier_gpus),
+                            discount_prefixes = _discount_prefixes,
                             discrete_host_only_bytes = _discrete_host_only(),
                             shared_gpu_ids = _shared_gpu_ids,
                         )
@@ -30093,7 +30300,9 @@ class LlamaCppBackend:
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _placement_ctx_checkpoints,
-                                    integrated = _tier_gpus,
+                                    integrated = _integrated_gpus,
+                                    prefer_discrete = bool(_tier_gpus),
+                                    discount_prefixes = _discount_prefixes,
                                     discrete_host_only_bytes = _discrete_host_only(),
                                     shared_gpu_ids = _shared_gpu_ids,
                                 )
