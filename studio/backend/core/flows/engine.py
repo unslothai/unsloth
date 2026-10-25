@@ -1182,6 +1182,8 @@ class FlowEngine:
             and not forced
             and not rs.options.get("bake")
             and not rs.options.get("ignore_baked")
+            # A baked value was made without this call's flow params (a chat turn); recompute, as the cache would.
+            and not rs.options.get("params")
         ):
             self._finish(rs, nid, env, dict(baked), "cached", iteration, message = "Baked")
             return
