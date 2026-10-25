@@ -277,10 +277,12 @@ export function WorldPlayer({
           }
         }
         if (!next.talks[npc.id]?.length)
-          next = addTurn(next, npc.id, {
-            role: "npc",
-            text: npc.greeting || "Hello!",
-          });
+          next = addTurn(
+            next,
+            npc.id,
+            { role: "npc", text: npc.greeting || "Hello!" },
+            summarising,
+          );
         return next;
       });
       game.current?.faceNpc(npc.id);
@@ -729,7 +731,9 @@ export function WorldPlayer({
     );
     setWs(before);
     if (!replyEntry) {
-      setWs((s) => addTurn(s, npcId, { role: "npc", text: "..." }));
+      setWs((s) =>
+        addTurn(s, npcId, { role: "npc", text: "..." }, summarising),
+      );
       toast(
         "Add an NPC Reply (live) node to the flow so villagers can answer.",
       );
@@ -811,10 +815,13 @@ export function WorldPlayer({
       if (generation !== loads.current) return;
       setLive(null);
       setWs((s) =>
-        addTurn(s, npcId, {
-          role: "npc",
-          text: "(They seem lost in thought. Try again.)",
-        }),
+        // A failed reply keeps the unsummarised turns too, so nothing waiting for a summary is lost.
+        addTurn(
+          s,
+          npcId,
+          { role: "npc", text: "(They seem lost in thought. Try again.)" },
+          summarising,
+        ),
       );
       toast(e instanceof Error ? e.message : String(e));
     } finally {

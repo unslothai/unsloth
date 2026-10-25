@@ -123,3 +123,29 @@ test("the client sends as many turns as the backend reads", () => {
   );
   assert.equal(Number(/^MAX_HISTORY = (\d+)$/m.exec(py)?.[1]), W.MAX_HISTORY);
 });
+
+test("every turn the world player adds keeps unsummarised turns when summaries are on", () => {
+  const src = readFileSync(
+    new URL(
+      "../src/features/flows/player/world/world-player.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const calls = src.split("addTurn(").slice(1);
+  assert.ok(calls.length >= 4);
+  for (const rest of calls) {
+    let depth = 1;
+    let i = 0;
+    while (depth > 0 && i < rest.length) {
+      if (rest[i] === "(") depth++;
+      else if (rest[i] === ")") depth--;
+      i++;
+    }
+    assert.match(
+      rest.slice(0, i),
+      /summarising/,
+      `addTurn(${rest.slice(0, 60)}`,
+    );
+  }
+});
