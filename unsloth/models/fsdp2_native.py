@@ -3165,13 +3165,45 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
-    # The Trainer scales each rank's loss by world size, so float16 activation grads are world times
-    # one GPU's and overflow at its scale. Divide init_scale by the DP size unless the user set it.
-    world = _data_parallel_size(getattr(trainer, "model", None))
+    # The Trainer scales each rank's loss by the number of processes, so float16 activation grads are
+    # that many times one GPU's and overflow at its scale. Divide init_scale by it unless the user set it.
+    world = _loss_scale_ranks(trainer)
     if world > 1 and "init_scale" not in kwargs:
         kwargs["init_scale"] = 2.0**16 / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
+
+
+def _loss_scale_ranks(trainer):
+    """How many times one GPU's per-token loss gradient a rank's backward carries: the Trainer multiplies
+    each rank's loss by accelerator.num_processes (its token mean over the world), divided by the tensor
+    parallel size (tp peers share a batch whose tokens the gathered count repeats). That is the world, not
+    the FSDP2 mesh: on two disjoint 2-rank sub-meshes of 4 ranks it is 4. Context parallel peers share a
+    batch but CP divides the gathered count by cp, so CP = 2, DP = 1 is the world (2) too."""
+    accelerator = getattr(trainer, "accelerator", None)
+    model = getattr(trainer, "model", None)
+    ranks = getattr(accelerator, "num_processes", None)
+    if not isinstance(ranks, int) or ranks < 1:
+        ranks = None
+        try:
+            import torch.distributed as dist
+            if dist.is_available() and dist.is_initialized():
+                ranks = int(dist.get_world_size())
+        except Exception:
+            pass
+        if ranks is None:
+            return _data_parallel_size(model)
+    pc = getattr(accelerator, "parallelism_config", None)
+    tp = int(getattr(pc, "tp_size", 1) or 1) if pc is not None else 1
+    tp_native = sys.modules.get(f"{__package__}.tp_native") if __package__ else None
+    if tp == 1 and tp_native is not None and model is not None:
+        try:
+            if tp_native.is_tensor_parallel(model):
+                tp_mesh = tp_native._tp_meshes(model)[0]
+                tp = int(tp_mesh.size()) if tp_mesh is not None else 1
+        except Exception:
+            tp = 1
+    return max(1, ranks // max(1, tp))
 
 
 def _data_parallel_size(model):
