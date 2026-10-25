@@ -167,6 +167,7 @@ from core.inference.llama_preemption import (
     read_slot_occupancy,
     reclaim_idle_slots,
     register_preemption_participant,
+    _slot_incarnation,
     set_reload_hook,
     set_routed_backend,
 )
@@ -3178,6 +3179,15 @@ def _openai_llama_slot_reclaim_lock(llama_backend):
         if lock is None:
             lock = _SLOT_RECLAIM_LOCKS[key] = threading.RLock()
         return lock
+
+
+def _openai_llama_slot_reading(llama_backend, target) -> Optional[tuple]:
+    """``(is_processing, id_task)`` for ``target``'s slot in a fresh ``GET /slots``, None when the
+    read fails or does not list it. An idle slot reports the task it last ran."""
+    slot_base, slot_id = target
+    return _slot_incarnation(
+        fetch_llama_slots(slot_base, headers = _llama_slot_headers(llama_backend)), slot_id
+    )
 
 
 def _openai_llama_publish_round_charge(
@@ -36726,24 +36736,18 @@ async def produce_openai_chat_completions(
                 _reclaim_task = None
                 _reclaim_stop = asyncio.Event()
 
-                def _erase_and_record(target) -> bool:
+                def _erase_and_record(target, seen_task) -> bool:
                     with _openai_llama_slot_reclaim_lock(llama_backend):
                         # The idle-slot reclaimer got there first: the cells and the commitment
                         # are already gone, and the slot may now hold the chat it admitted.
                         if _openai_llama_self_erased(llama_backend, completion_id):
                             return False
-                        # Another request is decoding in the slot: llama-server would defer
-                        # the erase onto that chat's cache.
-                        _slot_base, _slot_id = target
-                        _slots_now = fetch_llama_slots(
-                            _slot_base, headers = _llama_slot_headers(llama_backend)
-                        )
-                        if any(
-                            isinstance(s, dict)
-                            and s.get("id") == _slot_id
-                            and s.get("is_processing")
-                            for s in _slots_now or ()
-                        ):
+                        # Only a slot read idle on the task this round left in it, as the
+                        # reclaimer rechecks its own: llama-server defers an erase aimed at a
+                        # processing slot onto that chat's cache, a slot on another task holds
+                        # another chat's, and a failed read proves neither.
+                        _now = _openai_llama_slot_reading(llama_backend, target)
+                        if _now is None or _now[0] or _now[1] != seen_task:
                             return False
                         if not llama_backend.release_idle_chat_slot(*target):
                             return False
@@ -36759,6 +36763,18 @@ async def produce_openai_chat_completions(
                     only before the erase is sent; past that the cells are going regardless.
                     """
                     try:
+                        with _gguf_decode_lock:
+                            watched = _gguf_decode["slot"]
+                            erased = _gguf_decode["erased"]
+                        # The slot as the round left it: idle, on this chat's task. Read now,
+                        # before a reclaim can hand it on, so the erase can tell it apart.
+                        seen = None
+                        if watched is not None and not erased:
+                            seen = await asyncio.to_thread(
+                                _openai_llama_slot_reading, llama_backend, watched
+                            )
+                            if seen is None or seen[0]:
+                                return
                         while not lease.reclaim_would_admit():
                             try:
                                 await asyncio.wait_for(
@@ -36773,7 +36789,11 @@ async def produce_openai_chat_completions(
                         if target is None or _reclaim_stop.is_set():
                             return
                         parked_now = _openai_llama_parked_self(llama_backend, completion_id)
-                        if not erased and not await asyncio.to_thread(_erase_and_record, target):
+                        if not erased and (
+                            seen is None
+                            or target != watched
+                            or not await asyncio.to_thread(_erase_and_record, target, seen[1])
+                        ):
                             return
                         lease.release_parked_cache()
                         # The cells went: the next round prefills the whole prompt, not its

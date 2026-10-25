@@ -83,7 +83,11 @@ def _lift(namespace: dict):
 
 def _worker(monkeypatch, controller, backend, slots):
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
-    monkeypatch.setattr(inference, "fetch_llama_slots", lambda base, headers = None: slots)
+    monkeypatch.setattr(
+        inference,
+        "fetch_llama_slots",
+        lambda base, headers = None: slots() if callable(slots) else slots,
+    )
     namespace = dict(vars(inference))
     namespace.update(
         llama_backend = backend,
@@ -145,6 +149,49 @@ def test_an_idle_slot_still_holding_the_chat_is_erased(monkeypatch):
     assert lease.released == 1
     assert namespace["_gguf_decode"]["erased"] is True
     assert controller.participant("chat").cells_reclaimed is True
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [None, [], [{"id": SLOT + 1, "is_processing": False, "id_task": 3}]],
+    ids = ["unreadable", "empty", "slot-missing"],
+)
+def test_no_erase_without_a_reading_of_the_slot_idle(monkeypatch, reading):
+    """The reclaimer skips a slot its recheck cannot see idle; so must the approval erase, or a
+    failed `/slots` read sends it to a slot that may now be decoding another chat."""
+    controller = _controller()
+    backend = _Backend()
+    lease = _ApprovalLease()
+    worker, namespace = _worker(monkeypatch, controller, backend, reading)
+
+    asyncio.run(worker(lease))
+
+    assert backend.erased == [], "the erase went out with no reading of the slot idle"
+    assert lease.released == 0
+    assert namespace["_gguf_decode"]["erased"] is False
+
+
+def test_a_slot_handed_to_another_chat_is_not_erased(monkeypatch):
+    """A partial reclaim freed the slot without marking this holder, and the chat it admitted
+    there finished: the slot is idle again, but on another task, holding that chat's cache."""
+    controller = _controller()
+    backend = _Backend()
+    state = {"slots": [{"id": SLOT, "is_processing": False, "id_task": 3}]}
+
+    class _Lease(_ApprovalLease):
+        def reclaim_would_admit(self) -> bool:
+            # Meanwhile the slot ran another chat's task to completion.
+            state["slots"] = [{"id": SLOT, "is_processing": False, "id_task": 9}]
+            return True
+
+    lease = _Lease()
+    worker, namespace = _worker(monkeypatch, controller, backend, lambda: state["slots"])
+
+    asyncio.run(worker(lease))
+
+    assert backend.erased == [], "the erase took the cache of the chat the slot went to"
+    assert lease.released == 0
+    assert namespace["_gguf_decode"]["erased"] is False
 
 
 def test_the_erase_waits_for_a_reclaim_in_flight(monkeypatch):
