@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unset text-encoder request on a LOCAL pipeline folder keeps the folder's own encoder.
-
-The hosted pre-quantized encoders are built from the upstream weights. A local folder named like the upstream repo
-(``/models/Qwen-Image``) matches it by name only, and may hold a fine-tuned encoder, so an automatic default must not
-swap the hosted file in. An explicit scheme and Hub ids are unchanged.
-"""
+"""An unset text-encoder request on a local folder named like the upstream repo keeps the folder's own encoder."""
 
 from __future__ import annotations
 
@@ -44,10 +39,8 @@ def test_unset_request_on_local_folder_takes_no_hosted_encoder(family, tmp_path)
     local = tmp_path / folder
     local.mkdir()
     mode = _auto_mode(fam)
-    # The Hub id still takes the hosted file automatically.
     hub = tpq.te_prequant_sources_for_base(fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16)
     assert component in hub
-    # The local folder of the same name does not.
     assert (
         tpq.te_prequant_sources_for_base(fam, str(local), te_quant_mode = mode, target = CUDA_BF16)
         == {}
@@ -80,8 +73,6 @@ def test_explicit_request_on_local_folder_is_unchanged(family, tmp_path):
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_unset_request_on_local_folder_injects_nothing(family, tmp_path, monkeypatch):
-    """The load path: with the hosted file available, the automatic default must not hand the pipeline a hosted
-    encoder in place of the folder's own."""
     folder, component = FAMILIES[family]
     fam = detect_family("", override = family)
     local = tmp_path / folder
@@ -122,7 +113,6 @@ def test_unset_request_on_local_folder_injects_nothing(family, tmp_path, monkeyp
 def test_non_local_ids_still_resolve(tmp_path):
     fam = detect_family("", override = "qwen-image")
     mode = _auto_mode(fam)
-    # A Hub id that is not a folder on disk keeps the automatic hosted file.
     assert tpq.te_prequant_sources_for_base(
         fam, "Qwen/Qwen-Image", te_quant_mode = mode, target = CUDA_BF16
     )

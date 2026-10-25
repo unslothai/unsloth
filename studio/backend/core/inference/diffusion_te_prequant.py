@@ -1008,9 +1008,7 @@ def te_prequant_sources_for_base(
     A variant base whose encoder is a different model (``te_prequant_variant_repos``) resolves
     against that variant's rows and files only, never the family base's.
 
-    An automatic pick (unset request) never swaps a hosted encoder into a load from a local folder: the folder name
-    matching the upstream repo says nothing about the weights inside it, which may be a fine-tune. That load keeps
-    the folder's own encoder, as it did before the family had an automatic default. An explicit scheme is unchanged.
+    An automatic pick on a local folder keeps the folder's own encoder: a name match says nothing about its weights.
     """
     auto_local = _auto_pick(te_quant_mode) and _is_local_base(base)
     fam = te_variant_family_view(fam, base)
