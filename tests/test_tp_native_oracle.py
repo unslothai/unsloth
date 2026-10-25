@@ -729,7 +729,9 @@ def test_trainer_dataloader_workers_are_seeded_by_dp_rank():
     accelerator.__dict__[tp._TP_DATA] = (1, 0)  # dp 1: every tp rank is dp rank 0
     try:
         init_fn = functools.partial(seed_worker, num_workers = 2, rank = 3)
-        loader = torch.utils.data.DataLoader(list(range(8)), batch_size = 2, num_workers = 2, worker_init_fn = init_fn)
+        loader = torch.utils.data.DataLoader(
+            list(range(8)), batch_size = 2, num_workers = 2, worker_init_fn = init_fn
+        )
         prepared = accelerator.prepare_data_loader(loader)
     finally:
         accelerator.__dict__.pop(tp._TP_DATA, None)
