@@ -2207,7 +2207,13 @@ def clear_gpu_cache():
         if torch.cuda.is_available() and any(
             torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
         ):
-            torch.cuda.synchronize()
+            # An unload beside another backend's render: a device sync must not land inside its graph recording.
+            sync = torch.cuda.synchronize
+            try:
+                from core.inference.diffusion_cuda_graph import synchronize_outside_capture as sync
+            except Exception:  # noqa: BLE001 - no Studio diffusion backend here: a plain sync
+                pass
+            sync()
         # Both are no-ops without an allocator and neither creates a context.
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()

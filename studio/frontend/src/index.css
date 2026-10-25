@@ -193,6 +193,11 @@
 		font-family: var(--font-heading) !important;
 		font-weight: 500 !important;
 	}
+	/* Every red button, hand-rolled ones included, takes the button shade of red. */
+	button,
+	[role="button"] {
+		--destructive: var(--destructive-button);
+	}
 }
 
 
@@ -265,13 +270,13 @@
 	--background: #fefefd;
 	--foreground-base: #0f1114;
 	--card-base: oklch(1 0 0);
-	--card-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--card-foreground-base: oklch(0.1281 0 0);
 	--popover-base: oklch(1 0 0);
-	--popover-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--popover-foreground-base: oklch(0.1281 0 0);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary-base: oklch(0.9596 0.0275 167.8295);
-	--secondary-foreground-base: oklch(0.2868 0.0649 159.9823);
+	--secondary-base: #f2f2f2;
+	--secondary-foreground-base: #262626;
 	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Trace ink: muted, pulled toward the page so the answer stands apart. */
@@ -281,10 +286,12 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Red buttons: this as text, at 10% as the fill. */
+	--destructive-button: #ce4035;
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
-	--border-base: oklch(0.9208 0.0101 164.8536);
-	--input-base: oklch(0.9208 0.0101 164.8536);
+	--border-base: oklch(0.9208 0 0);
+	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
 	/* Focus and selection indicators: the element's own border, darker.
 	   Derived from the live border/foreground tokens so every palette and
@@ -300,7 +307,7 @@
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
-	--sidebar-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--sidebar-foreground-base: oklch(0.1281 0 0);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent-base: #ececec;
@@ -394,6 +401,10 @@
 	   References resolve at use, so .dark's --primary flows through. */
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
+
+	/* Black-button fill; the ink outside the stock light palettes. */
+	--action-base: #1a1c1f;
+	--action: var(--action-base);
 
 	/* Status color for meaning-carrying marks (verified badges, token
 	   indicators). Pinned to the brand green in every palette and mode so
@@ -508,6 +519,7 @@
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #fcfcfc;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	--destructive-button: #ed716a;
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
@@ -585,6 +597,7 @@
 	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #3a3a3a;
+	--action-base: var(--foreground);
 }
 
 /* ---------------------------------------------------------------------------
@@ -756,6 +769,7 @@
 :root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
+	--action-base: var(--foreground);
 	--card-base: var(--th-surface);
 	--card-foreground-base: var(--th-fg);
 	--popover-base: var(--th-surface);
@@ -2118,6 +2132,7 @@ html[data-chat-font] .aui-root {
 	--color-primary-foreground: var(--primary-foreground);
 	--color-primary: var(--primary);
 	--color-control-accent: var(--control-accent);
+	--color-action: var(--action);
 	--color-control-accent-foreground: var(--control-accent-foreground);
 	--color-popover-foreground: var(--popover-foreground);
 	--color-popover: var(--popover);
@@ -2227,6 +2242,20 @@ html[data-chat-font] .aui-root {
 			background-position: 0% 0%;
 		}
 	}
+}
+
+/* bg-wash-N: N% ink, scaled by the contrast setting. */
+@utility bg-wash-* {
+	background-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-wash-gain, 1))), transparent);
+}
+@utility border-wash-* {
+	border-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
+}
+@utility ring-wash-* {
+	--tw-ring-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
+}
+@utility outline-wash-* {
+	outline-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-edge-gain, 1))), transparent);
 }
 
 @layer base {
@@ -3098,6 +3127,11 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
+	/* Audio, Images and Video: 20px textareas and drop zones. */
+	[data-media-rail-root] {
+		--radius-xl: 20px;
+	}
+
 	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
 	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
 	.unsloth-model-selector-menu {
@@ -3255,7 +3289,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3322,7 +3356,7 @@ html[data-chat-font] .aui-root {
 	}
 	/* A pill keeps its hover fill while its menu is open. */
 	.composer-pill-btn[data-state="open"] {
-		@apply bg-primary/10 dark:bg-accent;
+		@apply bg-accent;
 	}
 	/* Dark composer controls: softer hover and open state. */
 	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
@@ -3358,7 +3392,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
+		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-wash-10 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -3805,7 +3839,7 @@ html[data-chat-font] .aui-root {
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem * var(--ui-space-scale, 1));
@@ -4982,10 +5016,13 @@ html[data-chat-font] .aui-root {
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
-	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+}
+/* Only while loading: the finished toast keeps this class through the shared toast id. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {
+	align-items: center !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -5166,7 +5203,7 @@ html[data-chat-font] .aui-root {
 	position: fixed;
 	z-index: 60;
 	height: 0;
-	border-top: 1.5px solid var(--primary);
+	border-top: 1.5px solid var(--foreground);
 	border-radius: 1px;
 	opacity: 0;
 	pointer-events: none;
@@ -5272,12 +5309,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
 }
 
-/* Video tabs: the clip sits on a soft brand-tinted band. */
 .browser-video-band {
 	background:
-		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--primary) 30%, transparent), transparent 70%),
-		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--primary) 24%, transparent), transparent 70%),
-		color-mix(in oklab, var(--primary) 9%, var(--background));
+		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--foreground) 12%, transparent), transparent 70%),
+		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--foreground) 9%, transparent), transparent 70%),
+		color-mix(in oklab, var(--foreground) 4%, var(--background));
 }
 
 /* Whole screen pixels at any zoom (--device-px, set in public/theme-boot.js): a
@@ -5815,7 +5851,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	width: 7px;
 	height: 7px;
 	border-radius: 9999px;
-	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	background: var(--muted-foreground);
 	opacity: 0.12;
 	transform: translate3d(0, 4px, 0) scale(0.72);
 	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
@@ -6088,17 +6124,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 	.dark .elevated-card.elevated-card-dark-border {
 		border-color: color-mix(in srgb, var(--border) 70%, transparent);
-	}
-
-	.page-title-halo {
-		text-shadow:
-			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
-			0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
-			0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
-	}
-
-	.dark .page-title-halo {
-		text-shadow: none;
 	}
 
 	.train-section-chip {
@@ -6434,11 +6459,11 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	box-shadow: var(--composer-shadow);
 }
 .unsloth-files-panel[data-dragging="true"] {
-	border-color: var(--primary);
+	border-color: var(--foreground);
 }
 .dark .unsloth-files-panel[data-dragging="true"] {
 	box-shadow:
-		0 0 0 1.5px var(--primary),
+		0 0 0 1.5px var(--foreground),
 		var(--composer-shadow);
 }
 .unsloth-files-panel-count {

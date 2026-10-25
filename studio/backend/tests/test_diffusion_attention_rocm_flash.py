@@ -1877,7 +1877,7 @@ def test_memory_guard_budgets_quadratic_when_flash_can_hand_calls_to_native(
     _guarded_flash(monkeypatch)
     _apply_env(monkeypatch)
     monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target, *_: True)
     import core.inference.diffusion_qwenimage21_math as qm
 
     monkeypatch.setattr(qm, "bounded_math_attention", lambda pipe: False)

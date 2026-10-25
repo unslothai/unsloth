@@ -71,6 +71,9 @@ def test_public_image_urls_go_through_the_guarded_fetch(monkeypatch):
 
 
 def test_network_share_paths_are_not_probed(monkeypatch):
+    from utils.datasets import remote_images
+
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     import os
 
     def no_touch(*args, **kwargs):
@@ -84,3 +87,36 @@ def test_network_share_paths_are_not_probed(monkeypatch):
     }
 
     detect_vlm_dataset_structure([row])
+
+
+def test_the_opt_in_still_probes_so_a_working_column_wins(monkeypatch):
+    import urllib.request
+    from types import SimpleNamespace
+
+    from auth import policy
+
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
+
+    class _Ok:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout = None):
+        assert " " not in request.full_url
+        if "good" in request.full_url:
+            return _Ok()
+        raise OSError("HTTP 404")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    row = {
+        "image": "http://192.168.1.5/bad.png",
+        "image_filename": "http://192.168.1.5/my images/good.png",
+        "caption": "a cat",
+    }
+    assert detect_vlm_dataset_structure([row])["image_column"] == "image_filename"

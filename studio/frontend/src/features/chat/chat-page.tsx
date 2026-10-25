@@ -2562,6 +2562,7 @@ function ProjectLanding({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={() => {
                 const target = confirmingDelete;
                 const deleteFiles = deleteFilesOnDelete;
@@ -2622,7 +2623,7 @@ function ProjectLanding({
           />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void commitProjectDelete()}>
+            <AlertDialogAction variant="destructive" onClick={() => void commitProjectDelete()}>
               {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -4835,14 +4836,9 @@ export function ChatPage({
                   onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
-                  <>
-                    <span className="shrink-0" aria-hidden={true}>
-                      /
-                    </span>
-                    <span className="min-w-0 truncate">
-                      {currentChatTitle ?? "New chat"}
-                    </span>
-                  </>
+                  <span className="min-w-0 truncate">
+                    {currentChatTitle ?? "New chat"}
+                  </span>
                 ) : null}
               </nav>
             )}

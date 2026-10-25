@@ -595,7 +595,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                 : t("settings.data.library.unarchiveAll")}
             </Button>
             <Button
-              variant="ghost"
+              variant="destructive"
               size="sm"
               disabled={busy || (rows.length === 0 && !hasMore)}
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"

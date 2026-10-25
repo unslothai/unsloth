@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import {
   AlertDialog,
@@ -68,7 +69,7 @@ import {
   resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon, ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
@@ -229,6 +230,7 @@ import {
 } from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
+import { LoadedPlacementRow } from "./loaded-placement-row";
 import type { ModelPickTarget } from "./model-selector/types";
 import type { ModelConfigFocus } from "../model-config/model-config-handoff";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
@@ -236,9 +238,6 @@ import {
   NumericValueInput,
   type NumericValueInputHandle,
 } from "./numeric-value-input";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -3947,7 +3946,8 @@ export function ModelConfigPage({
               className="nav-icon-btn -ml-1.5 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
               aria-label="Back to model list"
             >
-              <ChevronLeftIcon
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
                 className="size-4"
                 strokeWidth={1.75}
               />
@@ -4024,6 +4024,12 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
+        {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
+          // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
+          <LoadedPlacementRow
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+          />
+        ) : null}
         {target.isGguf && !audioRuntimeGguf && (
           <>
             <GgufContextLengthSetting
@@ -4186,6 +4192,7 @@ export function ModelConfigPage({
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
+            variant="dark"
             type="button"
             size="sm"
             className={FOOTER_BUTTON_CLASS}
@@ -4297,7 +4304,6 @@ export function ModelConfigPage({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);

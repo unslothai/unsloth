@@ -282,16 +282,192 @@ def test_liveness_covers_the_image_persist_tail():
     assert routes_inference.generation_in_flight() is False
 
 
+_PERSIST_COUNTER = "_diffusion_persist_active"
+# The two image routes' run bodies: the Unsloth /images/generate and the OpenAI-compatible /images/generations.
+_PERSIST_ROUTES = {"_generate_diffusion_image_run", "_generate_openai_images"}
+
+
+def _persist_marker_violations(source: str) -> list[str]:
+    """Each image route raises the persist marker, and every raise is dropped on every exit.
+
+    A raise is balanced when the statement after it is a ``try`` whose ``finally`` drops it, or (a hold handed to a
+    later persist) when it sits under ``if C:`` and its ``try`` drops it in an ``except BaseException`` that re-raises,
+    and a later ``try`` in the same block drops ``2 if C else 1`` in its ``finally``, with nothing that can return or
+    await in between."""
+    import ast
+
+    def is_counter(node, op):
+        return (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == _PERSIST_COUNTER
+            and isinstance(node.op, op)
+        )
+
+    def is_one(value):
+        return isinstance(value, ast.Constant) and value.value == 1
+
+    def two_if(value):
+        """The condition C of ``2 if C else 1``, else None."""
+        if (
+            isinstance(value, ast.IfExp)
+            and isinstance(value.body, ast.Constant)
+            and value.body.value == 2
+            and is_one(value.orelse)
+        ):
+            return ast.dump(value.test)
+        return None
+
+    def finally_drop(node):
+        drops = [s for s in node.finalbody if is_counter(s, ast.Sub)]
+        return drops[0] if len(drops) == 1 else None
+
+    def reraising_drop(node):
+        for handler in node.handlers:
+            catches_all = handler.type is None or (
+                isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+            )
+            body = handler.body
+            if (
+                catches_all
+                and body
+                and is_counter(body[0], ast.Sub)
+                and is_one(body[0].value)
+                and isinstance(body[-1], ast.Raise)
+                and body[-1].exc is None
+            ):
+                return body[0]
+        return None
+
+    tree = ast.parse(source)
+    problems: list[str] = []
+    mutators: set[str] = set()
+    for func in tree.body:
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        name = func.name
+        parents = {}
+        for node in ast.walk(func):
+            for field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for index, child in enumerate(value):
+                        if isinstance(child, ast.AST):
+                            parents[id(child)] = (node, value, index)
+        raises = [n for n in ast.walk(func) if is_counter(n, ast.Add)]
+        drops = [n for n in ast.walk(func) if is_counter(n, ast.Sub)]
+        if not raises and not drops:
+            continue
+        mutators.add(name)
+        accounted: set[int] = set()
+        handoffs: dict[str, tuple] = {}
+        releases: dict[str, tuple] = {}
+        for stmt in raises:
+            owner, body, index = parents[id(stmt)]
+            follow = body[index + 1] if index + 1 < len(body) else None
+            if not is_one(stmt.value) or not isinstance(follow, ast.Try):
+                problems.append(
+                    f"{name}:{stmt.lineno}: the raise is not followed by the try that drops it"
+                )
+                continue
+            drop = finally_drop(follow)
+            if drop is not None and is_one(drop.value):
+                accounted.add(id(drop))
+                continue
+            if drop is not None and two_if(drop.value) is not None:
+                accounted.add(id(drop))
+                releases[two_if(drop.value)] = (stmt, body, index)
+                continue
+            handed = reraising_drop(follow)
+            if (
+                drop is None
+                and handed is not None
+                and isinstance(owner, ast.If)
+                and body is owner.body
+            ):
+                accounted.add(id(handed))
+                handoffs[ast.dump(owner.test)] = (stmt, owner)
+                continue
+            problems.append(
+                f"{name}:{stmt.lineno}: a raise is not dropped on every exit of its try"
+            )
+        for drop in drops:
+            if id(drop) not in accounted:
+                problems.append(f"{name}:{drop.lineno}: a drop with no matching raise")
+        for cond, (stmt, guard) in handoffs.items():
+            if cond not in releases:
+                problems.append(f"{name}:{stmt.lineno}: a handed-off hold no later persist drops")
+                continue
+            _, release_body, release_index = releases.pop(cond)
+            _, guard_body, guard_index = parents[id(guard)]
+            if guard_body is not release_body or guard_index >= release_index:
+                problems.append(
+                    f"{name}:{stmt.lineno}: the hold's release is not later in its block"
+                )
+                continue
+            for between in guard_body[guard_index + 1 : release_index]:
+                if isinstance(between, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue  # defined here, run inside the release's try
+                for node in ast.walk(between):
+                    if isinstance(node, (ast.Return, ast.Raise, ast.Await, ast.Yield)):
+                        problems.append(
+                            f"{name}:{node.lineno}: an exit between a held marker and its release"
+                        )
+        for cond, (stmt, _, _) in releases.items():
+            problems.append(f"{name}:{stmt.lineno}: a persist drops a hold nothing raised")
+    for route in sorted(_PERSIST_ROUTES - mutators):
+        problems.append(f"{route}: persists gallery records without publishing the marker")
+    for other in sorted(mutators - _PERSIST_ROUTES):
+        problems.append(f"{other}: moves the persist marker outside the image routes")
+    return problems
+
+
 def test_both_image_routes_publish_the_persist_marker():
     """The Unsloth route and the OpenAI-compatible one write the gallery on separate paths.
     Only the first used to count, so an OpenAI client's persist was invisible to both
-    generate-progress and liveness."""
+    generate-progress and liveness. Each must raise the marker, and drop every raise on every exit
+    (the Detailer's hold included), or liveness reads idle mid-request or busy forever."""
     import inspect
     import importlib
 
     source = inspect.getsource(importlib.import_module("routes.inference"))
-    assert source.count("_diffusion_persist_active += 1") == 2, (
-        "an image route persists gallery records without publishing the marker, so liveness "
-        "reports idle while that request is still in flight"
+    assert _persist_marker_violations(source) == [], (
+        "an image route persists gallery records without a balanced marker, so liveness "
+        "misreports that request"
     )
-    assert source.count("_diffusion_persist_active -= 1") == 2
+
+
+def test_the_persist_marker_check_catches_each_imbalance():
+    """The check above fails on each way the marker can go wrong, so its pass means something."""
+    import inspect
+    import importlib
+
+    source = inspect.getsource(importlib.import_module("routes.inference"))
+    detailer_drop = "_diffusion_persist_active -= 2 if detailer is not None else 1"
+    handoff_drop = "        except BaseException:\n            _diffusion_persist_active -= 1\n            raise\n"
+    openai_raise = '    global _diffusion_persist_active\n    _diffusion_persist_active += 1\n    try:\n        with account_access.media_generation("diffusion"):\n            data ='
+    assert source.count(detailer_drop) == 1
+    assert source.count(handoff_drop) == 1
+    assert source.count(openai_raise) == 1
+    mutants = {
+        "the persist no longer drops the Detailer's hold": source.replace(
+            detailer_drop, "_diffusion_persist_active -= 1"
+        ),
+        "a failed Detailer pass leaks its hold": source.replace(
+            handoff_drop, "        except BaseException:\n            raise\n"
+        ),
+        "the OpenAI route stops publishing": source.replace(
+            openai_raise,
+            openai_raise.replace("    _diffusion_persist_active += 1\n", "    pass\n"),
+        ),
+        "the OpenAI route never drops its marker": source.replace(
+            "    finally:\n        _diffusion_persist_active -= 1\n\n    return ImageGen",
+            "    finally:\n        pass\n\n    return ImageGen",
+        ),
+        "a return between the hold and its release": source.replace(
+            "    created_at = time.time()\n    per_image_seeds",
+            "    if not result:\n        return None\n    created_at = time.time()\n    per_image_seeds",
+        ),
+    }
+    for why, mutant in mutants.items():
+        assert mutant != source, why
+        assert _persist_marker_violations(mutant), why

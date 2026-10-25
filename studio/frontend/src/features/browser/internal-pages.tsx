@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,9 +22,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowRight01Icon,
-  ArrowUp01Icon,
   Cancel01Icon,
   Delete02Icon,
   FilterMailIcon,
@@ -337,7 +335,7 @@ function DayCard({ label, children }: { label: string; children: ReactNode }) {
       >
         <h2 className="text-ui-14 font-medium text-foreground">{label}</h2>
         <HugeiconsIcon
-          icon={open ? ArrowUp01Icon : ArrowDown01Icon}
+          icon={open ? ChevronUpStandardIcon : ChevronDownStandardIcon}
           strokeWidth={2}
           className="size-4 text-muted-foreground"
         />
@@ -358,11 +356,11 @@ function PageCrumbs({ current }: { current: string }) {
       <button type="button" className={crumb} onClick={() => openSettings()}>
         {t("settings.dialog.title")}
       </button>
-      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
       <button type="button" className={crumb} onClick={() => openSettings("browser")}>
         {t("browser.settingsTitle")}
       </button>
-      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
       <span className="text-foreground" aria-current="page">
         {current}
       </span>

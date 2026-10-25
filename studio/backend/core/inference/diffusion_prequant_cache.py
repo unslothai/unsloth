@@ -35,6 +35,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from . import hub_reachability as _reach
+
 ENV_MODE = "UNSLOTH_DIFFUSION_PREQUANT_CACHE"
 ENV_DIR = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR"
 ENV_MAX_GB = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB"
@@ -585,6 +587,10 @@ _REMOTE_TTL_SECONDS = 300.0
 _REMOTE_TIMEOUT_SECONDS = 5.0
 _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
+# Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
+_UNREACHABLE = _reach._UNREACHABLE
+_connection_failed = _reach.connection_failed
+_endpoint = _reach.endpoint
 
 
 def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
@@ -637,6 +643,9 @@ def _remote_etag(
         hit = _REMOTE_MEMO.get(memo)
     if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_SECONDS:
         return hit[1]
+    endpoint = _endpoint()
+    if _reach.hub_unreachable(endpoint):
+        return None  # the Hub did not answer moments ago: unanswerable, without another timeout
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.utils import EntryNotFoundError
@@ -656,9 +665,12 @@ def _remote_etag(
         value = str(etag) if etag else None  # already normalized (no quotes, no W/ prefix)
     except EntryNotFoundError:
         value = _GONE
-    except Exception:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+    except Exception as exc:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+        _reach.note_hub_failure(exc, endpoint)
         return None
+    _reach.note_hub_success(endpoint)
     with _lock:
+        _UNREACHABLE.pop(endpoint, None)
         _REMOTE_MEMO[memo] = (time.monotonic(), value)
     return value
 

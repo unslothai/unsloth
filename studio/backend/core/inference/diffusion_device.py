@@ -140,62 +140,39 @@ def install_frame_pad_fix(
     return patched
 
 
-# Fraction of the device's recommended working set above which a decode starts synchronising.
-DECODE_SYNC_FRACTION = 0.85
-
-
-def install_decoder_sync(
+def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
     *,
     logger: Any = None,
 ) -> bool:
-    """Cap the memory a video VAE decode holds on Metal, by synchronising once it is running out.
+    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
 
-    Wan's VAE decodes one latent frame per call in a loop that never forces a commit, and Metal
-    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until
-    the OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive
-    commit bounds it.
-
-    Fires per decoder call and only above the threshold, so a decode with room to spare pays only
-    the memory read; synchronising costs the pipelining, not the decode.
-
-    ``torch.mps.recommended_max_memory()`` arrived in torch 2.5 while install.sh keeps an existing
-    venv's torch as far back as 2.4, so an unreadable budget falls back to synchronising every
-    call (measured to hold the same decode at 4.90 GiB for no wall-clock cost) rather than
-    failing the load or dropping the bound. Every probe is best-effort for the same reason.
+    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
+    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
     """
     if target.device != "mps":
         return False
-    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
-    if not callable(getattr(decoder, "register_forward_hook", None)):
+    vae = getattr(pipe, "vae", None)
+    modules = [
+        module
+        for module in (getattr(vae, "decoder", None), getattr(vae, "encoder", None))
+        if callable(getattr(module, "register_forward_hook", None))
+    ]
+    if not modules:
         return False
     import torch
 
-    budget: Optional[float] = None
-    try:
-        budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
-    except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
-        if logger is not None:
-            logger.info(
-                "video.decoder_sync: no memory reading (%s); synchronising every decode", exc
-            )
-
     def _sync(_module, _args, _output) -> None:
-        if budget is not None:
-            try:
-                if torch.mps.driver_allocated_memory() < budget:
-                    return
-            except Exception:  # noqa: BLE001 -- an unreadable gauge syncs, the safe side
-                pass
         try:
             torch.mps.synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
-    decoder.register_forward_hook(_sync)
-    if logger is not None and budget is not None:
-        logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
+    for module in modules:
+        module.register_forward_hook(_sync)
+    if logger is not None:
+        logger.info("diffusion.vae_sync: VAE synchronises after every decoder / encoder call")
     return True
 
 
@@ -368,15 +345,31 @@ def resolve_selected_cuda_ordinal(
     return rank_cuda_ordinals(ordinals)[0]
 
 
+def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
+    """What a card offers a primary pick."""
+    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
+
+    if _user_budget_reserve_mib(1 << 20) <= 0:
+        return int(free_mib)
+    memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free_mib), total_mib)
+    return int(_safe_device_budget_mib(memory) or 0)
+
+
 def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
     """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
 
     def _free_vram(ordinal: int) -> int:
         try:
             import torch
-            return int(torch.cuda.mem_get_info(ordinal)[0])
+
+            free, total = torch.cuda.mem_get_info(ordinal)
+            from .diffusion_memory import _user_budget_reserve_mib
+
+            if _user_budget_reserve_mib(1 << 20) <= 0:
+                return int(free)
+            return _ranking_room_mib(int(free) >> 20, int(total) >> 20) << 20
         except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
-            return -1
+            return -(1 << 62)
 
     return sorted(ordinals, key = lambda ordinal: (-_free_vram(ordinal), ordinal))
 
@@ -469,6 +462,11 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     floor = caps.get(visible[0])
     if floor is None:
         return None
+    try:
+        from .diffusion_memory import _user_budget_reserve_mib
+        budgeted = _user_budget_reserve_mib(1 << 20) > 0
+    except Exception:  # noqa: BLE001 -- unreadable setting: the default ranking
+        budgeted = False
     free_by_ordinal: dict[int, float] = {}
     for device in devices:
         index, total, used = (
@@ -480,7 +478,15 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             continue
         if caps.get(index, (0, 0)) < floor:
             continue
-        free_by_ordinal[visible.index(index)] = max(float(total) - float(used), 0.0) * 1024**3
+        free_bytes = max(float(total) - float(used), 0.0) * 1024**3
+        if budgeted:
+            try:
+                free_bytes = float(
+                    _ranking_room_mib(int(free_bytes) >> 20, int(float(total) * 1024)) << 20
+                )
+            except Exception:  # noqa: BLE001 -- never raises: keep the raw reading
+                pass
+        free_by_ordinal[visible.index(index)] = free_bytes
     if not free_by_ordinal:
         return None
     best = max(free_by_ordinal.values())

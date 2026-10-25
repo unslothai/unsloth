@@ -47,15 +47,13 @@ import {
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
+import { QrCode01Icon, Wifi01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
-import { LineBox } from "@/components/ui/line-box";
+import { UrlPill } from "./url-pill";
 
 type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
@@ -98,44 +96,6 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
   );
 }
 
-function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const text = copied ? "Copied" : label;
-  const copyTimer = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (copyTimer.current !== null) {
-        window.clearTimeout(copyTimer.current);
-      }
-    };
-  }, []);
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="gap-1.5"
-      aria-label={`${text} ${url}`}
-      onClick={async () => {
-        if (!(await copyToClipboard(url))) {
-          return;
-        }
-        setCopied(true);
-        if (copyTimer.current !== null) {
-          window.clearTimeout(copyTimer.current);
-        }
-        copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
-      }}
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        className="size-3.5"
-      />
-      {text}
-    </Button>
-  );
-}
-
 function LanUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
@@ -147,7 +107,7 @@ function LanUrlQrButton({ url }: { url: string }) {
           className="gap-1.5"
           aria-label={`Show QR code for ${url}`}
         >
-          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          <HugeiconsIcon icon={QrCode01Icon} className="size-3.5" />
           QR
         </Button>
       </DialogTrigger>
@@ -191,15 +151,6 @@ function StatusMessage({
   );
 }
 
-function LanUrlActions({ url, copyLabel }: { url: string; copyLabel: string }) {
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <LanUrlQrButton url={url} />
-      <CopyLanUrlButton url={url} label={copyLabel} />
-    </div>
-  );
-}
-
 function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   if (!status || status.urls.length === 0) {
     return null;
@@ -218,17 +169,13 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
         <span className="text-sm font-medium text-foreground">
           {single ? "Network address" : "Network addresses"}
         </span>
-        {single ? (
-          <LanUrlActions url={status.urls[0]} copyLabel="Copy URL" />
-        ) : null}
+        {single ? <LanUrlQrButton url={status.urls[0]} /> : null}
       </div>
       {status.urls.map((url) => (
         <div key={url} className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <LineBox as="code" className="block w-full min-w-0 break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-              {url}
-            </LineBox>
-            {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+            <UrlPill url={url} className="w-full" />
+            {single ? null : <LanUrlQrButton url={url} />}
           </div>
           {stale.has(url) ? (
             <span className="text-xs text-destructive leading-snug">
@@ -473,7 +420,7 @@ export function LanAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices on your Wi-Fi or wired
+              Use Unsloth and its APIs from devices on your Wi-Fi or wired
               network.
             </p>
           </div>
@@ -481,8 +428,8 @@ export function LanAccessSection() {
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          className="shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -500,7 +447,7 @@ export function LanAccessSection() {
         {status?.portConfigurationSupported ? (
           <SettingsRow
             label="Port"
-            description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
+            description="Automatic tries 8888, then 8889–8908. Custom uses only that port. Stop LAN access to change it."
             // Always mounted, even when empty: a live region has to exist before its
             // text changes for the change to be announced.
             below={
@@ -529,7 +476,7 @@ export function LanAccessSection() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-28"
+                  className="w-32"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -576,7 +523,7 @@ export function LanAccessSection() {
           <>
             <SettingsRow
               label="Addresses"
-              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it, and save before starting."
+              description="Automatic uses every address this machine has, public ones included. Choose limits it to the ones you tick, like a Tailscale address. Stop LAN access to change it; save before starting."
               below={
                 <span
                   id={addressErrorId}
@@ -607,7 +554,7 @@ export function LanAccessSection() {
                 >
                   <SelectTrigger
                     size="sm"
-                    className="w-28"
+                    className="w-32"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />
@@ -693,7 +640,7 @@ export function LanAccessSection() {
         </SettingsRow>
         <SettingsRow
           label="Start automatically"
-          description="Put Unsloth on the network each time it starts. Stopping LAN access now won’t turn this off."
+          description="Put Unsloth on the network each time it starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}

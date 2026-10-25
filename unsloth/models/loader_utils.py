@@ -3445,10 +3445,59 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     return True
 
 
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -4479,6 +4528,45 @@ def _get_fp8_mode_and_check_settings(
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
+def _is_tensor_subclass_weight(t):
+    """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
+    if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return True
+    try:
+        from torch.distributed.tensor import DTensor
+        if isinstance(t, DTensor):
+            return False
+    except Exception:
+        pass
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        return is_traceable_wrapper_subclass(t)
+    except Exception:
+        return False
+
+
+def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
+    """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
+    quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
+    reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
+    frozen, trainable = [], []
+    for name, p in model.named_parameters():
+        if _is_tensor_subclass_weight(p):
+            (trainable if p.requires_grad else frozen).append(name)
+    if trainable and refuse_trainable:
+        raise NotImplementedError(
+            f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "
+            f"{trainable[0]} ({len(trainable)} such weights are trainable); it cannot be broadcast or have "
+            "its gradient all-reduced. Train LoRA on the frozen FP8 base (get_peft_model), or load in 16-bit."
+        )
+    return frozen
+
+
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
@@ -4487,6 +4575,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
                     ignored.append(fqn)
+    try:
+        for fqn in _frozen_tensor_subclass_names_for_ddp(model):
+            if fqn not in ignored:
+                ignored.append(fqn)
+    except Exception:
+        pass
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel

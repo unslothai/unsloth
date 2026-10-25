@@ -358,6 +358,15 @@ _ModelMixin, _ConfigMixin = _model_bases()
 from diffusers.configuration_utils import register_to_config  # noqa: E402
 
 
+def _float64_device(device):
+    """Where the float64 timestep sinusoid is built: MPS and Arc XPUs have no float64, so there it is the CPU."""
+    if device.type in ("cuda", "cpu"):
+        return device
+    if device.type == "xpu" and getattr(torch.xpu.get_device_properties(device), "has_fp64", False):
+        return device
+    return torch.device("cpu")
+
+
 class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
     """MOSS-Image DiT: a text refiner, then 42 single-stream joint blocks over [image ; text] sharing one AdaLN.
 
@@ -425,9 +434,11 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         times = times.expand(batch)
         # Training computes the sinusoid in float64 and feeds float32 into its MLP.
         half = self.config.freq_dim // 2
-        freq = 10000 ** (-torch.arange(half, device = times.device, dtype = torch.float64) / half)
-        phase = times.double()[:, None] * freq
-        embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
+        where = _float64_device(times.device)
+        freq = 10000 ** (-torch.arange(half, device = where, dtype = torch.float64) / half)
+        # Moved first, then cast: an MPS copy straight into a float64 CPU tensor fails or writes nothing.
+        phase = times.to(where).double()[:, None] * freq
+        embedding = torch.cat((phase.cos(), phase.sin()), -1).float().to(times.device)
         time = self.time_embedding(embedding.to(_compute_dtype(self.time_embedding[0]))).float()
         mod = self.shared_block_modulation(
             time.to(_compute_dtype(self.shared_block_modulation))
