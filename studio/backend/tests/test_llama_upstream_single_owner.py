@@ -93,12 +93,14 @@ def _reply(request: httpx.Request) -> httpx.Response:
 @pytest.fixture
 def llama(monkeypatch):
     active_generations.reset_for_tests()
-    state = SimpleNamespace(crash = httpx.ConnectError, calls = [], backend = _Backend())
+    state = SimpleNamespace(crash = httpx.ConnectError, calls = [], backend = _Backend(), reply_delay = 0)
 
-    def handler(request):
+    async def handler(request):
         state.calls.append((str(request.url), request.headers.get("authorization")))
         if str(request.url).startswith(_DEAD):
             raise state.crash("llama-server is gone", request = request)
+        if state.reply_delay:
+            await asyncio.sleep(state.reply_delay)
         return _reply(request)
 
     transport = httpx.MockTransport(handler)
@@ -110,6 +112,9 @@ def llama(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: state.backend)
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+    # Settings I/O must not consume the recovery tests' deadlines before dispatch.
+    monkeypatch.setattr(inf_mod, "configured_first_token_timeout_s", lambda: 600.0)
+    monkeypatch.setattr("utils.inference.inference_config._saved_sampling", lambda _model: {})
 
     async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
@@ -315,8 +320,12 @@ _STREAM_ROUTES = [_ROUTES[i] for i in (0, 3, 4, 6)]
 
 
 @pytest.mark.parametrize("call,path", _STREAM_ROUTES)
-def test_streams_emit_keepalives_before_a_slow_reload_finishes(llama, monkeypatch, call, path):
+@pytest.mark.parametrize("reply_delay", [0, 0.1], ids = ["immediate-retry", "slow-retry"])
+def test_streams_emit_keepalives_before_a_slow_reload_finishes(
+    llama, monkeypatch, call, path, reply_delay
+):
     backend = llama.backend = _BlockedRespawnBackend()
+    llama.reply_delay = reply_delay
     monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.02)
     saw_keepalive = threading.Event()
 
@@ -325,7 +334,11 @@ def test_streams_emit_keepalives_before_a_slow_reload_finishes(llama, monkeypatc
         async for chunk in response.body_iterator:
             chunk = chunk.decode() if isinstance(chunk, bytes) else chunk
             chunks.append(chunk)
-            if backend.started.is_set() and chunk == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE:
+            if (
+                not saw_keepalive.is_set()
+                and backend.started.is_set()
+                and chunk == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+            ):
                 assert not backend.finished.is_set()
                 saw_keepalive.set()
         return "".join(chunks)
