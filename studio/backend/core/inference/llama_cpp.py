@@ -12033,7 +12033,6 @@ class LlamaCppBackend:
         )
         selected = None
         override = self._effective_device_ids(extra_args, env)
-        _src_env = os.environ if env is None else env
         one_device = not tensor and _split_mode_confines_to_one_device(extra_args, env)
         if one_device:
             main = self._effective_main_gpu(extra_args, env)
@@ -12045,17 +12044,14 @@ class LlamaCppBackend:
             # Split mode none keeps only the main device; an unused RPC entry is not a model device.
             override = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
             override = override[main : main + 1]
-        if (
-            any(str(d).strip().lower().startswith("rpc") for d in override)
-            if override is not None
-            else bool(
-                (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
-                or str(_src_env.get("LLAMA_ARG_RPC", "")).strip()
-            )
-        ):
-            return True
         if override is not None:
-            gpu_names = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
+            # An RPC device reports mmap support (ggml-rpc.cpp device_get_props, b11734-mix and
+            # b11870 alike), so it never turns auto off; only the local devices are looked up.
+            gpu_names = [
+                d
+                for d in override
+                if d.lower() not in _CPU_DEVICE_VALUES and not d.strip().lower().startswith("rpc")
+            ]
             ordinals = [self._device_ordinal(d) for d in gpu_names]
             if all(o is not None for o in ordinals):
                 selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())

@@ -643,34 +643,26 @@ _ONE = _RPC_LIST + ["--split-mode", "none"]
 
 
 @pytest.mark.parametrize(
-    "extra_args, env, off",
+    "extra_args, env",
     [
-        (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0,RPC0"], {}, True),
-        (["--rpc", "10.0.0.2:50052"], {}, True),
-        ([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}, True),
-        (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0"], {}, False),
-        ([], {}, False),
-        # Split mode none keeps only the main device, so an unused RPC entry is not a model device.
-        (_ONE + ["--main-gpu", "0"], {}, False),
-        (_ONE + ["--main-gpu", "1"], {}, True),
-        (_ONE + ["--main-gpu", "-1"], {}, False),
-        (_RPC_LIST, {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "0"}, False),
-        # --main-gpu -1 clears the default list too, its RPC devices included.
-        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "-1"], {}, False),
-        (
-            [],
-            {
-                "LLAMA_ARG_RPC": "10.0.0.2:50052",
-                "LLAMA_ARG_SPLIT_MODE": "none",
-                "LLAMA_ARG_MAIN_GPU": "-1",
-            },
-            False,
-        ),
-        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "0"], {}, True),
+        (_RPC_LIST, {}),
+        (["--rpc", "10.0.0.2:50052"], {}),
+        ([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}),
+        (["--rpc", "10.0.0.2:50052", "--device", "RPC0"], {}),
+        (["--rpc", "10.0.0.2:50052", "--device", "Vulkan0"], {}),
+        ([], {}),
+        (_ONE + ["--main-gpu", "0"], {}),
+        (_ONE + ["--main-gpu", "1"], {}),
+        (_ONE + ["--main-gpu", "-1"], {}),
+        (_RPC_LIST, {"LLAMA_ARG_SPLIT_MODE": "none", "LLAMA_ARG_MAIN_GPU": "0"}),
+        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "-1"], {}),
+        (["--rpc", "10.0.0.2:50052", "--split-mode", "none", "--main-gpu", "0"], {}),
     ],
 )
-def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):
-    """RPC devices have no mmap, so upstream's auto reads the table resident with one in the model devices (ggml-org/llama.cpp#29932)."""
+def test_an_rpc_model_device_keeps_lazy_auto_on(extra_args, env):
+    """RPC devices report mmap support (ggml-rpc.cpp device_get_props in the shipped
+    b11734-mix-c208e5f and upstream b11870), and llama.cpp turns auto off only for a
+    device without it, so RPC alone never reads the table resident."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend()
@@ -683,7 +675,21 @@ def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):
         extra_args = extra_args,
         env = env,
     )
-    assert got is off
+    assert got is False
+
+
+def test_an_integrated_gpu_beside_an_rpc_device_still_turns_lazy_auto_off():
+    from core.inference.llama_cpp import LlamaCppBackend
+    got = LlamaCppBackend()._lazy_auto_resolves_off(
+        gpu_indices = [0, 1],
+        detected_gpus = [(0, 24_000), (1, 8_000)],
+        shared_gpu_ids = {1},
+        is_vulkan_backend = True,
+        probe_integrated_cuda = False,
+        extra_args = ["--rpc", "10.0.0.2:50052", "--device", "Vulkan1,RPC0"],
+        env = {},
+    )
+    assert got is True
 
 
 def test_a_streamed_table_stays_on_the_host_under_a_device_override():
