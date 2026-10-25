@@ -529,8 +529,7 @@ def test_loader_forwards_use_safetensors_to_the_probe(tmp_path, monkeypatch):
 
 
 def _single_beside_stale_index(tmp_path, single, stale, index, keep_shard):
-    # A non-sharded save into a folder that held a sharded one: transformers deletes the old shards but
-    # keeps the old index, and loads model.safetensors over it (both 4.57.x and 5.x).
+    # Non-sharded save over a sharded one: old index kept, transformers loads model.safetensors.
     d = tmp_path / "ckpt"
     d.mkdir()
     save_file(_tensors(single, False), str(d / "model.safetensors"))
@@ -547,10 +546,7 @@ def _single_beside_stale_index(tmp_path, single, stale, index, keep_shard):
 
 
 def _transformers_resolved_checkpoint_files(path):
-    # The private resolver's signature differs across the supported range (4.57.x takes subfolder,
-    # from_tf, from_flax and the download arguments positionally; 5.x takes download_kwargs), so bind
-    # every parameter by name and skip on a required one this test does not know (the probe is
-    # asserted first, so only this cross-check is skipped).
+    # Private signature differs 4.57.x vs 5.x: bind by name; callers assert the probe before this.
     import inspect
 
     from transformers.modeling_utils import _get_resolved_checkpoint_files

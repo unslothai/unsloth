@@ -4370,8 +4370,7 @@ def gpt_oss_checkpoint_has_fused_experts(
         # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
         if "unsloth-bnb-4bit" in str(model_name).lower():
             return False
-        # The single .bin outranks any pytorch_model.bin.index.json (transformers' order), so adding
-        # an index cannot help: only re-saving or replacing that file does.
+        # A lone .bin outranks its index (transformers' order): advising an index cannot help.
         unreadable = str(exc)
         fix = (
             "Re-save it with `safe_serialization = True` (safetensors), or re-save "
