@@ -7,7 +7,7 @@
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
-import type { WorldSpec } from "../../types";
+import type { WorldItem, WorldNpc, WorldSpec } from "../../types";
 import type {
   Area,
   Interactable,
@@ -569,9 +569,7 @@ export function createWorld3d(
   };
 
   const npcs: Npc[] = [];
-  for (const n of spec.npcs) {
-    const at = map.npcs[n.id];
-    if (!at) continue;
+  const spawnNpc = (n: WorldNpc, at: Point) => {
     const g = new three.Group();
     const img = art.sprites[n.id];
     if (img) {
@@ -631,11 +629,13 @@ export function createWorld3d(
       wander: n.wander !== false,
       speech: null,
     });
+  };
+  for (const n of spec.npcs) {
+    const at = map.npcs[n.id];
+    if (at) spawnNpc(n, at);
   }
   const items = new Map<string, Item>();
-  for (const it of spec.items) {
-    const at = map.items[it.id];
-    if (!at || picked.includes(it.id)) continue;
+  const spawnItem = (it: WorldItem, at: Point) => {
     const img = art.sprites[it.id];
     const c = img ? fitImage(img, 128, 128) : paintItem(it.id, 128);
     const s = new three.Sprite(
@@ -660,7 +660,13 @@ export function createWorld3d(
       base: b,
       gone: 0,
     });
+  };
+  for (const it of spec.items) {
+    const at = map.items[it.id];
+    if (at && !picked.includes(it.id)) spawnItem(it, at);
   }
+  // Signs nothing walks into or picks up (a home a villager built).
+  const markers = new Map<string, three.Sprite>();
   const prompt = tagSprite("E", 0.14);
   prompt.visible = false;
   scene.add(prompt);
@@ -1140,6 +1146,23 @@ export function createWorld3d(
         return ed;
       });
       return opening;
+    },
+    addNpc(npc: WorldNpc, at: Point) {
+      if (!npcs.some((n) => n.id === npc.id)) spawnNpc(npc, at);
+    },
+    addItem(item: WorldItem, at: Point) {
+      if (!items.has(item.id)) spawnItem(item, at);
+    },
+    addMarker(id: string, at: Point, icon: string, label: string) {
+      if (markers.has(id)) return;
+      const sign = tagSprite(`${icon} ${label}`, 0.22);
+      sign.position.set(
+        at.x + 0.5,
+        heightAt(terrain, at.x + 0.5, at.y + 0.5) + 0.2,
+        at.y + 0.5,
+      );
+      scene.add(sign);
+      markers.set(id, sign);
     },
     removeItem(id: string) {
       const it = items.get(id);
