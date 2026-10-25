@@ -221,7 +221,12 @@ def play_world_3d(page: Page) -> None:
     page.wait_for_timeout(900)
     assert page.evaluate("window.__flowsPlayerSmoke.world.playerTile()") == here
     calls = page.evaluate("window.__flowsPlayerSmoke.calls")
-    assert [c["entry"] for c in calls] == ["reply", "reply"], calls
+    # Finishing the quest also asks the NPC Reply node for the next quest, in the background.
+    assert all(c["inputs"]["state"].get("task") in (None, "director") for c in calls), calls
+    assert [c["entry"] for c in calls if not c["inputs"]["state"].get("task")] == [
+        "reply",
+        "reply",
+    ], calls
 
     for t in ("dawn", "day", "night"):
         page.goto(f"{BASE}?flow=world&render=3d&time={t}")
