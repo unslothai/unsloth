@@ -4,6 +4,11 @@
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { PlusSignIcon } from "@hugeicons/core-free-icons";
@@ -20,7 +25,10 @@ const EXPIRY_PRESETS = [
 ];
 
 /** The next "New Token N" after every N in use, so an unnamed token never repeats a name. */
-export function nextDefaultTokenNumber(names: readonly string[], pattern: RegExp): number {
+export function nextDefaultTokenNumber(
+  names: readonly string[],
+  pattern: RegExp,
+): number {
   let highest = 0;
   for (const existing of names) {
     const match = pattern.exec(existing.trim());
@@ -78,7 +86,7 @@ export function CreateKeyForm({
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={defaultName}
+          placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
           className="h-control min-w-[calc(200px*var(--ui-space-scale,1))] flex-1 text-sm"
           aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
@@ -86,35 +94,51 @@ export function CreateKeyForm({
           {EXPIRY_PRESETS.map((p) => {
             const active = expiry === p.value;
             return (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() => setExpiry(p.value)}
-                aria-pressed={active}
-                className={cn(
-                  "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  active
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {active && <SegmentedPill group={`${pillId}-expiry`} />}
-                {p.value === null ? t("settings.apiKeys.never") : p.label}
-              </button>
+              <Tooltip key={p.label}>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={() => setExpiry(p.value)}
+                    aria-pressed={active}
+                    className={cn(
+                      "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      active
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {active && <SegmentedPill group={`${pillId}-expiry`} />}
+                    {p.value === null ? t("settings.apiKeys.never") : p.label}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={6}>
+                  {p.value === null
+                    ? t("settings.apiKeys.neverExpiresHint")
+                    : t("settings.apiKeys.expiresInDaysHint", {
+                        n: String(p.value),
+                      })}
+                </TooltipContent>
+              </Tooltip>
             );
           })}
         </div>
-        <Button
-          type="submit"
-          size="sm"
-          disabled={loading}
-          className="bg-foreground text-background hover:opacity-85"
-        >
-          {!loading && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
-          {loading
-            ? t("settings.apiKeys.creating")
-            : t("settings.apiKeys.createToken")}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button type="submit" variant="dark" size="sm" disabled={loading}>
+              {!loading && (
+                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
+              )}
+              {loading
+                ? t("settings.apiKeys.creating")
+                : t("settings.apiKeys.createToken")}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            {t("settings.apiKeys.createTokenHint", {
+              name: name.trim() || defaultName,
+            })}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </form>
   );

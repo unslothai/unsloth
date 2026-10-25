@@ -16,9 +16,9 @@ test("a served row reloads its checkpoint, not the public alias a kept slot is l
 });
 
 test("the Context fact finds requests logged as <id>:<quant>, and shows chat's pinnable chip", () => {
-  assert.match(page, /modelIdsMatch\(monitorSelection\(entry\.model\)\.id, id\) &&/);
+  assert.match(page, /modelIdsMatch\(monitorSelection\(entry\.model\)\.id, id\),/);
   assert.doesNotMatch(page, /modelIdsMatch\(entry\.model, id\)/);
-  assert.match(page, /<ContextUsageChip\s+pinOnClick=\{true\}/);
+  assert.match(page, /<ContextUsageChip\s+ringFirst=\{true\}\s+pinOnClick=\{true\}/);
 });
 
 test("an MLX precision folder reloads as a model with its folder, not as a GGUF quant", () => {

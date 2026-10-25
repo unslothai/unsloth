@@ -16,7 +16,7 @@ const helperSource = form.slice(
 const nextDefaultTokenNumber = new Function(
   `${helperSource
     .replace("export function", "function")
-    .replace(/\(names: readonly string\[\], pattern: RegExp\): number/, "(names, pattern)")}
+    .replace(/\(\s*names: readonly string\[\],\s*pattern: RegExp,?\s*\): number/, "(names, pattern)")}
   return nextDefaultTokenNumber;`,
 )() as (names: readonly string[], pattern: RegExp) => number;
 
@@ -33,7 +33,7 @@ test("an unnamed token takes the number after every New Token N in use", () => {
 
 test("an empty name submits the default, and the button is never disabled for it", () => {
   assert.match(form, /createApiKey\(name\.trim\(\) \|\| defaultName, expiry\)/);
-  assert.match(form, /placeholder=\{defaultName\}/);
+  assert.match(form, /placeholder=\{t\("settings.apiKeys.tokenNamePlaceholder"\)\}/);
   assert.match(form, /disabled=\{loading\}/);
-  assert.match(form, /className="bg-foreground text-background hover:opacity-85"/);
+  assert.match(form, /variant="dark"/);
 });

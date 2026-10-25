@@ -44,6 +44,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ApiIcon,
+  ArrowDataTransferVerticalIcon,
   Cancel01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
@@ -61,7 +62,7 @@ import {
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
   type KeyboardEvent,
@@ -383,19 +384,33 @@ function CopyButton({
   );
 }
 
+// Stacked rows indent the facts under the name, past the status dot.
+const FACT_CELL =
+  "order-2 min-w-0 @max-3xl/served:pl-3.5 @max-3xl/served:empty:hidden @3xl/served:order-none";
+
+// The icon stands in for the label, which stays for screen readers and the hover title.
 function Fact({
   label,
+  icon,
   children,
   className,
 }: {
   label: string;
+  icon?: IconSvgElement;
   children: ReactNode;
   className?: string;
 }): ReactElement {
   return (
-    <div className={cn("flex min-w-0 items-center gap-2", className)}>
-      <dt className="shrink-0 text-ui-12 text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 items-center gap-1 text-ui-12 text-foreground">
+    <div className={cn("flex min-w-0 items-center", className)} title={label}>
+      <dt className="sr-only">{label}</dt>
+      <dd className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-ui-12 text-foreground">
+        {icon ? (
+          <HugeiconsIcon
+            icon={icon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+        ) : null}
         {children}
       </dd>
     </div>
@@ -1295,7 +1310,7 @@ export function ApiMonitorPage(): ReactElement {
       : served.length === 1
         ? `Eject ${served[0].name} and free its memory`
         : "No model is loaded";
-  const contextFact = (model: ServedModel): ReactElement | null => {
+  const rowFacts = (model: ServedModel): ReactElement => {
     const id = monitorSelection(model.name).id;
     // Only requests since this model's latest load: an earlier load may have had another window.
     let loadedAt = 0;
@@ -1308,40 +1323,77 @@ export function ApiMonitorPage(): ReactElement {
         loadedAt = Math.max(loadedAt, entry.started_at);
       }
     }
-    let last: ApiMonitorEntry | null = null;
-    for (const entry of entries) {
-      if (
+    const requests = entries.filter(
+      (entry) =>
         !isLifecycleEntry(entry) &&
-        entry.total_tokens != null &&
-        entry.context_length &&
         entry.started_at >= loadedAt &&
         // Requests may be logged as "<id>:<quant>".
-        modelIdsMatch(monitorSelection(entry.model).id, id) &&
+        modelIdsMatch(monitorSelection(entry.model).id, id),
+    );
+    let last: ApiMonitorEntry | null = null;
+    for (const entry of requests) {
+      if (
+        entry.total_tokens != null &&
+        entry.context_length &&
         (last == null || entry.started_at > last.started_at)
       ) {
         last = entry;
       }
     }
+    const rowStats = computeStats(requests);
     const used = last?.total_tokens ?? (model.active ? 0 : null);
     const windowSize =
       last?.context_length ?? (model.active ? data?.context_length : null);
-    if (used == null || !windowSize) {
-      return null;
-    }
     return (
-      <Fact label="Context" className="gap-0">
-        {/* Flush on the label: its 8px padding is the label gap. */}
-        <ContextUsageChip
-          pinOnClick={true}
-          hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
-          padX={2}
-          className="-my-1 h-6 [&>button]:rounded-full"
-          used={used}
-          total={windowSize}
-          promptTokens={last?.prompt_tokens ?? undefined}
-          completionTokens={last?.completion_tokens ?? undefined}
-        />
-      </Fact>
+      <>
+        <dl className={FACT_CELL}>
+          {used != null && windowSize ? (
+            <Fact label="Context">
+              {/* -ml-2: the ring, not the hover pill's padding, lines up with the icons below. */}
+              <ContextUsageChip
+                ringFirst={true}
+                pinOnClick={true}
+                hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
+                padX={2}
+                className="-my-1 -ml-2 h-6 min-w-(--full) [--icon-size:--spacing(3.5)] [&>button]:rounded-full"
+                used={used}
+                total={windowSize}
+                promptTokens={last?.prompt_tokens ?? undefined}
+                completionTokens={last?.completion_tokens ?? undefined}
+              />
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          {rowStats.tokensPerSecond != null ? (
+            <Fact label="Speed" icon={FlashIcon}>
+              <span className="tabular-nums">
+                {rowStats.tokensPerSecond.toFixed(1)} tok/s
+              </span>
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          {rowStats.avgDurationMs != null ? (
+            <Fact label="Total time, average per request" icon={Timer01Icon}>
+              <span className="tabular-nums">
+                {formatDuration(rowStats.avgDurationMs)}
+              </span>
+            </Fact>
+          ) : null}
+        </dl>
+        <dl className={FACT_CELL}>
+          <Fact label="Requests" icon={ArrowDataTransferVerticalIcon}>
+            <span className="tabular-nums">{formatCount(rowStats.total)}</span>
+            {rowStats.errors > 0 ? (
+              <span className="tabular-nums text-red-600 dark:text-red-400">
+                · {formatCount(rowStats.errors)}{" "}
+                {rowStats.errors === 1 ? "error" : "errors"}
+              </span>
+            ) : null}
+          </Fact>
+        </dl>
+      </>
     );
   };
   return (
@@ -1378,9 +1430,9 @@ export function ApiMonitorPage(): ReactElement {
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
-      <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
+      <main className="@container/page mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
         <GuidedTour {...tour.tourProps} />
-        <header className="flex flex-wrap items-end justify-between gap-4">
+        <header className="flex items-start justify-between gap-4 @2xl/page:items-end">
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="font-heading text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -1531,31 +1583,31 @@ export function ApiMonitorPage(): ReactElement {
                 No models loaded
               </p>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className="@container/served flex flex-col gap-2">
                 <p className="text-ui-12 text-muted-foreground">
                   {served.length === 1
                     ? "1 model answering requests"
                     : `${served.length} models answering requests`}
                 </p>
-                <div className="grid grid-cols-[minmax(0,max-content)_auto_1fr] items-center gap-x-6 gap-y-1.5">
+                <div className="flex flex-col gap-3 @3xl/served:grid @3xl/served:grid-cols-[minmax(0,max-content)_auto_auto_auto_auto_1fr] @3xl/served:items-center @3xl/served:gap-x-6 @3xl/served:gap-y-1.5">
                   {served.map((model) => (
                     // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
                     <div
                       key={model.checkpoint}
-                      className="group/row col-span-full grid grid-cols-subgrid items-center"
+                      className="group/row flex flex-wrap items-center gap-x-3 gap-y-1 @md/served:gap-x-4 @3xl/served:col-span-full @3xl/served:grid @3xl/served:grid-cols-subgrid @3xl/served:gap-x-6"
                     >
-                      <span className="flex min-w-0 items-center gap-1 text-ui-12">
+                      <span className="order-1 flex min-w-0 flex-1 items-center gap-1 text-ui-12 @max-3xl/served:basis-full @max-3xl/served:items-start @3xl/served:order-none">
                         <span
-                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500 @max-3xl/served:mt-1.5"
                           aria-hidden={true}
                         />
-                        <span className="ml-1 truncate font-mono text-foreground">
+                        <span className="ml-1 min-w-0 truncate font-mono text-foreground @max-3xl/served:whitespace-normal @max-3xl/served:[overflow-wrap:anywhere]">
                           {model.name}
                         </span>
                         {exampleButton(model)}
                       </span>
-                      <dl className="min-w-0">{contextFact(model)}</dl>
-                      <span className="flex items-center gap-0.5 justify-self-end">
+                      {rowFacts(model)}
+                      <span className="order-3 ml-auto flex shrink-0 items-center gap-0.5 justify-self-end @3xl/served:order-none @3xl/served:ml-0">
                         {settingsButton(model)}
                         {reloadButton(model)}
                         {ejectButton(model)}
@@ -1575,7 +1627,7 @@ export function ApiMonitorPage(): ReactElement {
 
         <section
           aria-label="Traffic summary"
-          className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:bg-background"
+          className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 @xl/page:grid-cols-3 @5xl/page:grid-cols-6 dark:bg-background"
         >
           <Stat
             label="In flight"

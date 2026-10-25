@@ -144,8 +144,10 @@ export const ContextUsageBar: FC<
     hoverClassName?: string;
     /** Side padding of the face, in --spacing units; the widths below count it. */
     padX?: number;
+    /** The ring leads the count, as an icon would. */
+    ringFirst?: boolean;
   }
-> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ...input }) => {
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, ...input }) => {
   const pin = useClickPin(pinOnClick);
   const state = deriveContextUsageBar(input);
   if (!state) return null;
@@ -217,8 +219,9 @@ export const ContextUsageBar: FC<
               style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
               <span className={cn("flex h-full w-(--full) items-center gap-2", hover)} style={padStyle}>
+                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
                 <Face face={face} />
-                {showRing ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
             </span>
           </button>

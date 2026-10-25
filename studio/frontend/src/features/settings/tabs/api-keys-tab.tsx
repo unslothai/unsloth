@@ -11,16 +11,26 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useIsAccountOwner } from "@/features/auth";
+import { cn } from "@/lib/utils";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
+import {
+  type ApiKey,
+  createApiKey,
+  fetchApiKeys,
+  revokeApiKey,
+} from "../api/api-keys";
 import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
 } from "../api/keyless-api-access";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
-import { ApiKeyRow } from "../components/api-key-row";
+import {
+  ApiKeyRow,
+  ApiKeyTableHeader,
+  TOKEN_TABLE,
+} from "../components/api-key-row";
 import { AudioApiExamples } from "../components/audio-api-examples";
 import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
@@ -35,6 +45,14 @@ import { MonitorLink } from "../components/monitor-link";
 import { UsageExamples, useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
 
+/** The token's original lifetime in whole days, so a regenerated token keeps its period. */
+function expiryDays(key: ApiKey): number | null {
+  if (!key.expires_at) return null;
+  const ms =
+    new Date(key.expires_at).getTime() - new Date(key.created_at).getTime();
+  return Math.max(1, Math.round(ms / 86400000));
+}
+
 export function ApiKeysTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -44,6 +62,8 @@ export function ApiKeysTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
+  // Regenerate reuses the revoke confirmation: both cut off apps using the old token.
+  const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   // Owner-only routes, as the Remote & LAN tab is.
@@ -100,13 +120,29 @@ export function ApiKeysTab() {
     setRevoking(true);
     setActionError(null);
     try {
+      if (regenerate) {
+        // Created before the old one is revoked, so a failed create loses nothing.
+        const created = await createApiKey(
+          revokeTarget.name,
+          expiryDays(revokeTarget),
+        );
+        setRevealed(created.key);
+      }
       await revokeApiKey(revokeTarget.id);
       await load();
       setRevokeTarget(null);
     } catch (cause) {
       setActionError(
-        apiKeyActionMessage(translate("settings.apiKeys.revokeError"), cause),
+        apiKeyActionMessage(
+          translate(
+            regenerate
+              ? "settings.apiKeys.regenerateError"
+              : "settings.apiKeys.revokeError",
+          ),
+          cause,
+        ),
       );
+      void load();
       setRevokeTarget(null);
     } finally {
       setRevoking(false);
@@ -192,9 +228,21 @@ export function ApiKeysTab() {
           </p>
         ) : (
           <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            <div className="overlay-scrollbar-gutter">
+            <div className={cn("overlay-scrollbar-gutter", TOKEN_TABLE)}>
+              <ApiKeyTableHeader />
               {keys.map((k) => (
-                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+                <ApiKeyRow
+                  key={k.id}
+                  apiKey={k}
+                  onRevoke={(key) => {
+                    setRegenerate(false);
+                    setRevokeTarget(key);
+                  }}
+                  onRegenerate={(key) => {
+                    setRegenerate(true);
+                    setRevokeTarget(key);
+                  }}
+                />
               ))}
             </div>
           </div>
@@ -210,13 +258,19 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      <MonitorLink />
-
       {/* Installation-wide controls: owner-only routes. */}
       {isOwner ? (
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
+          <McpAccessSection apiKey={revealed} />
+        </>
+      ) : null}
+
+      <MonitorLink />
+
+      {isOwner ? (
+        <>
           <ModelMemorySection variant="api" />
 
           <ModelAutoSwitchSection />
@@ -241,8 +295,6 @@ export function ApiKeysTab() {
 
       {isOwner ? <DecisionApiSection /> : null}
 
-      {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
-
       <Dialog
         open={revokeTarget !== null}
         onOpenChange={(o) => !o && setRevokeTarget(null)}
@@ -250,12 +302,19 @@ export function ApiKeysTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.apiKeys.revokeTitle", {
-                name: revokeTarget?.name ?? "",
-              })}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateTitle"
+                  : "settings.apiKeys.revokeTitle",
+                { name: revokeTarget?.name ?? "" },
+              )}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.apiKeys.revokeDescription")}
+              {t(
+                regenerate
+                  ? "settings.apiKeys.regenerateDescription"
+                  : "settings.apiKeys.revokeDescription",
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -265,13 +324,19 @@ export function ApiKeysTab() {
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
-              variant="destructive"
+              variant={regenerate ? "dark" : "destructive"}
             >
-              {revoking
-                ? t("settings.apiKeys.revoking")
-                : t("settings.apiKeys.revokeAction", {
-                    name: revokeTarget?.name ?? "",
-                  })}
+              {regenerate
+                ? t(
+                    revoking
+                      ? "settings.apiKeys.regenerating"
+                      : "settings.apiKeys.regenerateAction",
+                  )
+                : revoking
+                  ? t("settings.apiKeys.revoking")
+                  : t("settings.apiKeys.revokeAction", {
+                      name: revokeTarget?.name ?? "",
+                    })}
             </Button>
           </DialogFooter>
         </DialogContent>
