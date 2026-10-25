@@ -2215,6 +2215,15 @@ def _slot_worker(monkeypatch):
     )
 
 
+def _stuck_gguf_slot(monkeypatch):
+    # unload_model raised and _kill_process dropped the handle: the server may still be on a GPU.
+    from core.inference import model_slots
+    stuck = types.SimpleNamespace(
+        llama = types.SimpleNamespace(is_active = False), orchestrator = _orchestrator()
+    )
+    monkeypatch.setattr(model_slots, "stuck", [stuck])
+
+
 def _st_embedder(device):
     def setup(monkeypatch):
         import core.rag.embeddings as embeddings
@@ -2307,6 +2316,7 @@ def _worker(module, attr, **state):
         pytest.param(_primary(_managed_engine = object()), False, id = "managed-engine"),
         pytest.param(_primary(alive = True), False, id = "primary-worker-alive"),
         pytest.param(_slot_worker, False, id = "kept-slot-worker-alive"),
+        pytest.param(_stuck_gguf_slot, False, id = "stuck-gguf-slot"),
         pytest.param(_st_embedder("cuda:0"), False, id = "st-embedder-gpu"),
         pytest.param(_st_embedder("cpu"), True, id = "st-embedder-cpu"),
         pytest.param(_gguf_embedder(True), False, id = "gguf-embedder-gpu"),

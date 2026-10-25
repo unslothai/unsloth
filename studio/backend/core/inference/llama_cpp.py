@@ -37375,6 +37375,12 @@ class LlamaCppBackend:
         outside = _gpus_held_outside_llama()
         if outside is None:
             return None
+        # A slot whose teardown failed is out of routing, but its server may still be on a GPU.
+        model_slots = _resident_source("core.inference.model_slots")
+        if model_slots is not None and any(
+            getattr(slot, "llama", None) is not self for slot in list(model_slots.stuck)
+        ):
+            return None
         held = set(self._vram_reserved_by_others_mib()) | outside
         for backend in [*_serving_backends_snapshot(), *_owned_backends_snapshot()]:
             if backend is not self and getattr(backend, "is_active", False):
