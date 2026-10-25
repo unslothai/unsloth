@@ -1451,15 +1451,23 @@ def round_needs_order(calls: Any) -> bool:
     file, so a write between the two by a sibling (another edit, a python or terminal call, a
     render) is overwritten while both report success, and which files a sandbox call touches cannot
     be read off its arguments. A browser call: its reply timeout starts when it queues its action,
-    and an overlapped call's events wait behind the earlier calls', so it could expire unseen."""
+    and an overlapped call's events wait behind the earlier calls', so it could expire unseen. An
+    MCP call: what a server's tool changes cannot be read off its name, and an HTTP session does not
+    serialise its calls, so two edits of one document overlapped could each read the old copy and
+    one update would be lost while both report success."""
     from core.inference.browser_agent import is_browser_tool
+    from core.inference.mcp_client import MCP_TOOL_PREFIX
 
     calls = list(calls or [])
     if len(calls) < 2:
         return False
     for item in calls:
         name = str(((item or {}).get("function") or {}).get("name") or "").strip()
-        if name in _WORKDIR_WRITING_TOOLS or is_browser_tool(name):
+        if (
+            name in _WORKDIR_WRITING_TOOLS
+            or is_browser_tool(name)
+            or name.startswith(MCP_TOOL_PREFIX)
+        ):
             return True
     return False
 
