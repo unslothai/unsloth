@@ -157,7 +157,14 @@ def test_the_description_counts_each_rung_against_its_own_blocks():
     assert OP._rung_description(experts[:10], layout) == "the FFN of 10 of 58 blocks"
 
 
-def _launch_drafter_dropping_plan(tmp_path, monkeypatch, *, planned_starts):
+def _launch_drafter_dropping_plan(
+    tmp_path,
+    monkeypatch,
+    *,
+    planned_starts,
+    extra_args = None,
+    caps = None,
+):
     """An MTP load the plan placed by dropping the drafter (rung 2). The planned launch comes up
     only when ``planned_starts``; otherwise it crashes at startup and the plan is revoked.
     Returns every launched argv and the backend."""
@@ -184,6 +191,7 @@ def _launch_drafter_dropping_plan(tmp_path, monkeypatch, *, planned_starts):
         "supports_cache_ram": True,
         "mtp_token": "draft-mtp",
         "spec_draft_n_max_flag": "--spec-draft-n-max",
+        **(caps or {}),
     }
     backend._available_system_memory_mib = lambda: 64 * 1024
     plan = OP.Plan(
@@ -231,6 +239,7 @@ def _launch_drafter_dropping_plan(tmp_path, monkeypatch, *, planned_starts):
                 model_identifier = "test",
                 speculative_type = "auto",
                 n_parallel = 1,
+                extra_args = extra_args,
             )
         )
     return cmds, backend
@@ -246,6 +255,49 @@ def test_a_revoked_plan_gives_back_the_drafter_it_dropped(tmp_path, monkeypatch)
     assert "draft-mtp" in retry, retry
     assert retry.count("--spec-type") == 1, retry
     assert backend._spec_fallback_reason != "drafter_planner"
+
+
+def test_the_restored_drafter_keeps_its_place_ahead_of_the_extras(tmp_path, monkeypatch):
+    """The drafterless block was empty, and appending the restored one at the end put it after
+    the pass-through extras, so Studio's draft depth beat the user's (last-wins)."""
+    cmds, _backend = _launch_drafter_dropping_plan(
+        tmp_path, monkeypatch, planned_starts = False, extra_args = ["--spec-draft-n-max", "5"]
+    )
+    retry = cmds[-1]
+    assert "draft-mtp" in retry, retry
+    depths = [retry[i + 1] for i, tok in enumerate(retry) if tok == "--spec-draft-n-max"]
+    assert depths and depths[-1] == "5", retry
+    assert retry.index("--spec-type") < retry.index("--api-key-file"), retry
+
+
+def test_a_restored_drafter_on_a_build_without_flash_attention_gets_no_quantized_v(
+    tmp_path, monkeypatch
+):
+    """The restored block carries the draft cache dtype; with flash attention unavailable a
+    quantized draft V aborts the child, so it is reset like the launch's own."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    real = LlamaCppBackend._build_speculative_flags
+
+    def build(self, **kw):
+        if kw.get("drafter_no_vram"):
+            return real(self, **kw)
+        return [
+            "--model-draft",
+            "/d.gguf",
+            "--cache-type-k-draft",
+            "q8_0",
+            "--cache-type-v-draft",
+            "q8_0",
+        ]
+
+    monkeypatch.setattr(LlamaCppBackend, "_build_speculative_flags", build)
+    cmds, _backend = _launch_drafter_dropping_plan(
+        tmp_path, monkeypatch, planned_starts = False, caps = {"supports_flash_attn": False}
+    )
+    retry = cmds[-1]
+    assert "--model-draft" in retry, retry
+    assert retry[retry.index("--cache-type-v-draft") + 1] not in {"q8_0", "q4_0"}, retry
 
 
 def test_a_plan_that_comes_up_keeps_the_drafter_dropped(tmp_path, monkeypatch):
@@ -282,3 +334,36 @@ def test_torch_ordinals_are_not_priced_against_nvidia_smi_rows(tmp_path, monkeyp
         tmp_path, monkeypatch, _spilling_plan(), order = "FASTEST_FIRST", pci = pci
     )
     assert inputs["link_gib_s"] == (pytest.approx(_ROW0) if probed else None), inputs["link_gib_s"]
+
+
+def test_an_every_block_spill_short_on_one_card_selects_that_cards_rows():
+    """r35: every routed expert moved and one card still short; its own shared-FFN rows cover it,
+    so the head stays (untied) and the load places at all (tied)."""
+    untied = _plan(_moe(), [4500, 8000])
+    assert untied.changed and not untied.spilled_lm_head, untied.reason
+    tied = _plan(_moe(lm_head_mib = 0), [4000, 8000])
+    assert tied.changed and tied.n_ctx == 32768, tied.reason
+
+
+def test_the_partial_spill_refusal_names_what_it_moved():
+    plan = _plan(_dense(), [5375, 5807])
+    assert (
+        not plan.changed and "a partial spill (the FFN of 31 of 32 blocks)" in plan.reason
+    ), plan.reason
+
+
+def test_both_no_flash_retries_mark_flash_attention_off_before_revoking():
+    """The revocation resets a restored drafter's quantized V cache only when it knows flash
+    attention is off, so both retries set that first."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    revoke = '_fa_cmd = _revoke_spill_plan(_fa_cmd, "noflash")'
+    assert src.count(revoke) == 2
+    at = 0
+    for _ in range(2):
+        at = src.index(revoke, at + 1)
+        before = src[:at].rstrip().splitlines()[-1].strip()
+        assert before == "_flash_attn_known_off = True", before
