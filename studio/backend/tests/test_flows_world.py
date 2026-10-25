@@ -8,6 +8,7 @@ from core.flows.registry import FlowNodeError
 from core.flows.schema import WorldSpec
 from core.flows.world import (
     BIOME_TILES,
+    apply_play_view,
     WorldError,
     normalize_world,
     npc_prompt,
@@ -191,6 +192,119 @@ def test_world_spec_param_authored():
     assert w["title"] == "Mossy Hollow" and any("NPC Reply" in x for x in warnings)
 
 
+def test_render_and_view3d_are_kept_and_cleaned():
+    plain = normalize_world(RAW, seed = 1)
+    assert "render" not in plain and "view3d" not in plain
+    w = normalize_world(
+        {
+            **RAW,
+            "render": "3d",
+            "view3d": {
+                "time_of_day": "dusk",
+                "sky": " #AABBCC ",
+                "fog": 7,
+                "camera_height": 0.01,
+                "walk_speed": "fast",
+                "terrain": 1.5,
+                "colour": "red",
+            },
+        },
+        seed = 1,
+    )
+    assert w["render"] == "3d"
+    assert w["view3d"] == {
+        "time_of_day": "dusk",
+        "sky": "#aabbcc",
+        "fog": 1.0,
+        "camera_height": 0.3,
+        "terrain": 1.5,
+    }
+    WorldSpec.model_validate(w)
+    bad = normalize_world(
+        {**RAW, "render": "4d", "view3d": {"time_of_day": "noon", "sky": "blue"}}, seed = 1
+    )
+    assert "render" not in bad and "view3d" not in bad
+
+
+def test_world_player_node_view_needs_no_rerun():
+    def doc(params: dict) -> dict:
+        return {
+            "id": "f",
+            "name": "w",
+            "nodes": [
+                {
+                    "id": "s",
+                    "type": "world.spec",
+                    "params": {"world": {**RAW, "render": "2d"}},
+                    "pos": [0, 0],
+                },
+                {"id": "play", "type": "world.play", "params": params, "pos": [1, 0]},
+                {"id": "amb", "type": "input.audio", "params": {}, "pos": [0, 1]},
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "s",
+                    "source_port": "world",
+                    "target": "play",
+                    "target_port": "world",
+                    "kind": "data",
+                },
+                {
+                    "id": "e2",
+                    "source": "amb",
+                    "source_port": "audio",
+                    "target": "play",
+                    "target_port": "ambient",
+                    "kind": "data",
+                },
+            ],
+        }
+
+    sound = {"kind": "audio", "url": "/x.mp3"}
+    w, _ = resolve_world_report(doc({}), {"amb": {"audio": sound}})
+    assert w["render"] == "2d" and w["view3d"] == {"ambient": sound}
+    w, _ = resolve_world_report(doc({"view": "auto", "time_of_day": "auto"}), {})
+    assert w["render"] == "2d" and "view3d" not in w
+    w, _ = resolve_world_report(doc({"view": "3d", "time_of_day": "night"}), {})
+    assert w["render"] == "3d" and w["view3d"] == {"time_of_day": "night"}
+
+
+def test_the_world_player_fed_by_the_chosen_world_sets_the_view():
+    raw = {**RAW, "render": "2d"}
+    d = {
+        "id": "f",
+        "name": "w",
+        "nodes": [
+            {
+                "id": "stray",
+                "type": "world.play",
+                "params": {"view": "2d", "time_of_day": "dawn"},
+                "pos": [0, 2],
+            },
+            {"id": "s", "type": "world.spec", "params": {"world": raw}, "pos": [0, 0]},
+            {
+                "id": "play",
+                "type": "world.play",
+                "params": {"view": "3d", "time_of_day": "night"},
+                "pos": [1, 0],
+            },
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "source": "s",
+                "source_port": "world",
+                "target": "play",
+                "target_port": "world",
+                "kind": "data",
+            },
+        ],
+    }
+    w, _ = resolve_world_report(d, {})
+    assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
+
+
 def test_generator_and_art_handlers():
     ctx = FakeCtx(
         "world.generator",
@@ -231,3 +345,15 @@ def test_npc_node():
         world_nodes.world_npc(FakeCtx("world.npc", params = {"name": "Old Tom", "persona": "p"}))
     )["npc"]
     assert out["id"] == "old_tom"
+
+
+def test_the_source_player_wins_over_an_earlier_unrelated_one():
+    doc = {
+        "nodes": [
+            {"id": "other", "type": "world.play", "params": {"view": "2d"}},
+            {"id": "mine", "type": "world.play", "params": {"view": "3d", "time_of_day": "night"}},
+        ],
+        "edges": [],
+    }
+    w = apply_play_view({}, doc, source = "mine")
+    assert w["render"] == "3d" and w["view3d"]["time_of_day"] == "night"
