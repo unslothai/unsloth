@@ -462,8 +462,11 @@ export function WorldPlayer({
       return false;
     }
   }, [api, editor, flowId]);
+  // Model imports still uploading: Done waits for them, so an imported model is saved rather than lost.
+  const imports = useRef(new Set<Promise<void>>());
   const closeEditor = useCallback(async () => {
     if (!editor) return;
+    while (imports.current.size) await Promise.allSettled([...imports.current]);
     const current = () => JSON.stringify(editor.state().props);
     if (!(await saveUntilCurrent(current, savedProps, saveScene))) return;
     editor.close();
@@ -473,22 +476,27 @@ export function WorldPlayer({
   const importModel = useCallback(
     async (file: File) => {
       if (!editor || !api.uploadModel) return;
+      const upload = api.uploadModel;
       setEdError(null);
-      try {
-        const data = await file.arrayBuffer();
-        inspectGlb(data);
-        setEdStatus("Uploading model");
-        const asset = await api.uploadModel(file, file.name);
-        await editor.addModel(asset, data, file.name.replace(/\.glb$/i, ""));
-        setEdStatus("");
-      } catch (e) {
-        setEdStatus("");
-        setEdError(
-          e instanceof GlbError
-            ? e.message
-            : `Could not import the model: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
+      const run = (async () => {
+        try {
+          const data = await file.arrayBuffer();
+          inspectGlb(data);
+          setEdStatus("Uploading model");
+          const asset = await upload(file, file.name);
+          await editor.addModel(asset, data, file.name.replace(/\.glb$/i, ""));
+          setEdStatus("");
+        } catch (e) {
+          setEdStatus("");
+          setEdError(
+            e instanceof GlbError
+              ? e.message
+              : `Could not import the model: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      })();
+      imports.current.add(run);
+      await run.finally(() => imports.current.delete(run));
     },
     [api, editor],
   );

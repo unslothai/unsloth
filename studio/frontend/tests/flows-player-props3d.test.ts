@@ -147,6 +147,12 @@ test("a solid prop dropped where the player stands never traps them", async () =
     player,
     /await saveUntilCurrent\(current, savedProps, saveScene\)/,
   );
+  // Done waits for model imports still uploading, so an imported model is saved rather than added after close.
+  assert.match(
+    player,
+    /while \(imports\.current\.size\)\s*await Promise\.allSettled\(\[\.\.\.imports\.current\]\);/,
+  );
+  assert.match(player, /imports\.current\.add\(run\);/);
 });
 
 test("Done keeps saving until an edit made during a save is saved too", async () => {
