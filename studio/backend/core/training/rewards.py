@@ -274,6 +274,9 @@ def validate_rule(rule: dict) -> dict:
                 ),
                 key = lambda b: b["within"],
             )
+            # The error a band is compared with is never negative, so the band would never match.
+            if out["bands"][0]["within"] < 0:
+                raise RewardError("bands.within can't be negative.")
             out["else"] = _number(rule.get("else", 0.0), "else")
     elif kind == "json_schema":
         out["extract"] = _validate_extract(rule.get("extract"))
