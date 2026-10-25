@@ -273,6 +273,11 @@ export class WriteAhead {
     this.current = null;
   }
 
+  /** Open again after a close: React replays effect cleanup and setup on mount in development. */
+  open(): void {
+    this.closed = false;
+  }
+
   close(): void {
     this.closed = true;
     this.reset();

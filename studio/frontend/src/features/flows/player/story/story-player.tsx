@@ -414,7 +414,10 @@ export function StoryPlayer({
       ),
     [api, flowId, nextEntry],
   );
-  useEffect(() => () => writeAhead.close(), [writeAhead]);
+  useEffect(() => {
+    writeAhead.open();
+    return () => writeAhead.close();
+  }, [writeAhead]);
   // Load the writer's chat model on the title screen, so the first generated scene does not wait for it.
   useEffect(() => {
     if (nextEntry && api.warm)
@@ -493,6 +496,11 @@ export function StoryPlayer({
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-planned when the scene, playthrough or a write changes
   useEffect(() => {
     if (!started || !nextEntry) return;
+    // An ending or an error drops every branch still queued or being written.
+    if (state.status === "ended" || state.status === "error") {
+      writeAhead.plan([]);
+      return;
+    }
     if (state.status !== "reading" && state.status !== "choosing") return;
     writeAhead.plan(
       planWriteAhead(manifest, stateRef.current, aheadDepth, (k) =>

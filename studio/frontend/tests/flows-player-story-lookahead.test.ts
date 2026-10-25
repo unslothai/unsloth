@@ -246,6 +246,29 @@ test("load and restart cancel everything written ahead", async () => {
   assert.equal(notified, 1);
 });
 
+test("a writer closed by an effect cleanup works again once reopened", async () => {
+  const { calls, write } = fakeWriter();
+  const wa = new L.WriteAhead(write);
+  // React replays cleanup then setup on mount in development.
+  wa.close();
+  wa.open();
+  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  await tick();
+  assert.equal(calls.length, 1);
+});
+
+test("an ending drops every branch still queued or being written", async () => {
+  const { calls, write } = fakeWriter();
+  const wa = new L.WriteAhead(write);
+  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  const running = calls[0];
+  wa.plan([]);
+  assert.ok(running.signal.aborted);
+  running.reject(new Error("stopped"));
+  await tick();
+  assert.equal(calls.length, 1, "nothing queued is started after the ending");
+});
+
 test("depth 2 writes below written scenes, capped", () => {
   const start = R.initialState(m);
   const one = L.planWriteAhead(m, start, 1, () => writtenScene("x"));
@@ -301,5 +324,10 @@ test("the story player routes scenes through the write-ahead and the two lanes",
   assert.match(
     src,
     /useEffect\(\(\) => \{\s*writeAhead\.reset\(\);\s*\}, \[writeAhead, state\.rev\]\)/,
+  );
+  assert.match(src, /writeAhead\.open\(\);\s*return \(\) => writeAhead\.close\(\);/);
+  assert.match(
+    src,
+    /state\.status === "ended" \|\| state\.status === "error"\) \{\s*writeAhead\.plan\(\[\]\);/,
   );
 });
