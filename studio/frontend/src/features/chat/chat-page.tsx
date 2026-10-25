@@ -376,23 +376,35 @@ function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): v
 }
 
 /** Lets this chat host the browser panel: links, Browser use, Request edits and Attach.
- *  Project landing never mounts SingleContent, so it has to call this itself (#15046). */
-function useBrowserChatHost(active: boolean): void {
+ *  Project landing never mounts SingleContent, so it has to call this itself (#15046).
+ *  `overlay`: the browser covers this chat as a modal, so handing work to the composer closes it first. */
+function useBrowserChatHost(active: boolean, overlay = false): void {
   const isMobile = useIsMobile();
   const aui = useAui();
   useEffect(() => {
     if (!active || isMobile) return;
     setBrowserPanelAvailable(true);
     setInAppLinkHandler(openUrlInBrowser);
+    const focusComposer = () => document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
     useBrowserStore.setState({
-      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
+      requestEdits: (prompt) => {
+        useChatArtifactsStore.getState().stageFixPrompt(prompt);
+        if (overlay) useBrowserStore.getState().closePanel();
+      },
+      // Marks are sent with a reply the overlay would hide, so it stages a prompt like compare does.
+      sendAnnotations: overlay ? null : (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
       attachToChat: (file) =>
         aui
           .composer()
           .addAttachment(file)
           .then(() => {
-            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
+            if (overlay) {
+              useBrowserStore.getState().closePanel();
+              // After the closing overlay hands focus back to its opener.
+              window.setTimeout(focusComposer, 0);
+            } else {
+              focusComposer();
+            }
             return true;
           })
           .catch(() => false),
@@ -402,7 +414,7 @@ function useBrowserChatHost(active: boolean): void {
       setInAppLinkHandler(null);
       useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
     };
-  }, [active, isMobile, aui]);
+  }, [active, overlay, isMobile, aui]);
 }
 
 // Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
@@ -1875,7 +1887,7 @@ function ProjectLanding({
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
   // The browser shows over a project, so its Request edits lands in this composer.
-  useBrowserChatHost(active);
+  useBrowserChatHost(active, true);
   useStagedFixPrompt(
     useChatArtifactsStore((state) => state.pendingFixPrompt),
     active,

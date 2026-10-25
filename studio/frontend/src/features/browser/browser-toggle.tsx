@@ -66,7 +66,7 @@ export function BrowserToggleButton({
       event.preventDefault();
       openTab(true);
     },
-    { enabled: active && !open },
+    { enabled: active && !(hideWhenOpen && open) },
   );
   const clearTimer = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
