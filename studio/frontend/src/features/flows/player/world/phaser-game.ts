@@ -16,6 +16,7 @@ import {
   findPath,
   isSolid,
 } from "./procgen";
+import type { WorldEditor } from "./props3d";
 import {
   canvas,
   coverImage,
@@ -41,6 +42,7 @@ export interface WorldBridge {
 export interface WorldArt {
   tiles: Partial<Record<TileKind, HTMLImageElement>>;
   sprites: Record<string, HTMLImageElement>;
+  models?: Record<string, ArrayBuffer>;
 }
 
 export interface WorldGameHandle {
@@ -57,6 +59,7 @@ export interface WorldGameHandle {
   setNpcBusy(id: string, busy: boolean): void;
   setNpcStatus(id: string, icon: string): void;
   say(id: string, text: string, ms?: number): void;
+  openEditor?(): Promise<WorldEditor>;
 }
 
 export interface Area {
@@ -65,6 +68,19 @@ export interface Area {
   w: number;
   h: number;
 }
+
+const PROP_MARKS: Record<string, number> = {
+  house: 0xe9d7b5,
+  tree: 0x3f8a3a,
+  lamp: 0xf2c84b,
+  fence: 0x9a6b42,
+  well: 0x8d8a83,
+  crate: 0xb5834a,
+  rock: 0x8d8a83,
+  bench: 0x9a6b42,
+  stall: 0xd9534f,
+  model: 0x8f7ae6,
+};
 
 const VARIANTS = 4;
 const WALK_TILES_PER_S = 4.4;
@@ -166,6 +182,38 @@ export function createWorldGame(
       });
       layer.setCollision(solid);
       layer.setDepth(-10);
+      if (map.blocked) {
+        map.blocked.forEach((b, i) => {
+          if (b)
+            layer
+              .getTileAt(i % map.width, Math.floor(i / map.width))
+              ?.setCollision(true);
+        });
+      }
+      for (const p of map.props ?? []) {
+        const cx = Math.floor(p.x) * T + T / 2;
+        const cy = Math.floor(p.y) * T + T / 2;
+        const mark = this.add.graphics();
+        mark.fillStyle(0x1b1b28, 0.35);
+        mark.fillEllipse(cx, cy + T * 0.28, T * 0.7, T * 0.22);
+        mark.fillStyle(PROP_MARKS[p.kind] ?? 0xc8b48a, 1);
+        mark.lineStyle(Math.max(1, T / 24), 0x1b1b28, 0.6);
+        mark.fillRoundedRect(
+          cx - T * 0.28,
+          cy - T * 0.36,
+          T * 0.56,
+          T * 0.56,
+          T * 0.12,
+        );
+        mark.strokeRoundedRect(
+          cx - T * 0.28,
+          cy - T * 0.36,
+          T * 0.56,
+          T * 0.56,
+          T * 0.12,
+        );
+        mark.setDepth(cy);
+      }
       this.physics.world.setBounds(0, 0, map.width * T, map.height * T);
 
       const spawn =
