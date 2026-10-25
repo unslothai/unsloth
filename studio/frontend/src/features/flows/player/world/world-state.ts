@@ -99,6 +99,8 @@ export function applyAction(
   place: unknown,
 ): WorldState {
   if (!REPLY_ACTIONS.includes(action as ReplyAction)) return s;
+  // A villager who stays put takes no movement action.
+  if (spec.npcs.find((n) => n.id === npcId)?.wander === false) return s;
   const following = (s.following ?? []).filter((id) => id !== npcId);
   const { [npcId]: _, ...errands } = s.errands ?? {};
   if (action === "follow_player")

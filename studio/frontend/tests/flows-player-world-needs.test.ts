@@ -280,6 +280,29 @@ test("follow me: a reply makes the NPC walk to the player through the handle, st
   assert.deepEqual(nowhere.errands, ws.errands);
 });
 
+test("a villager who stays put takes no movement action", () => {
+  const s = spec();
+  s.npcs[1] = { ...s.npcs[1], wander: false };
+  const ws = W.applyReply(s, W.initialWorldState(s), "tom", {
+    text: "Sure.",
+    action: "follow_player",
+  }).state;
+  assert.deepEqual(ws.following ?? [], []);
+});
+
+test("needs keep dropping while a villager follows or runs an errand", async () => {
+  const mind = { needs: { energy: 80, hunger: 80, social: 80, fun: 80 } };
+  const after = A.steeredNeeds(mind as never, 60) as Record<string, number>;
+  assert.ok(after.hunger < 80 && after.energy < 80);
+  assert.equal(A.steeredNeeds({} as never, 60), null);
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /if \(steered\.current\.has\(n\.id\)\) \{[\s\S]{0,200}steeredNeeds\(mind, sim\.minutes_per_second\)/);
+});
+
 test("errands end with the game clock in simulated worlds", () => {
   const s = spec({});
   const g = fakeHandle();
