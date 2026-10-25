@@ -821,14 +821,9 @@ def _flex_tuned_bwd_fits(args, kwargs, options = None, caller_prefixes = ("bwd_"
         return False
 
 
-# sm86 / sm89 cards (A10, RTX 3090 / 4090, A6000, L4, L40S) take Inductor's A100 flex tables, whose
-# default tiles at 128 < head_dim <= 256 need more shared memory per block than their 101376 bytes.
-# Measured on an L4 at Gemma 3 4B shapes: torch 2.10 forward FlexConfig(32, 64, 3 stages) 151552,
-# backward (64, 64, 64, 64, 2 stages) 135680; torch 2.14 retries a smaller forward tile itself, but
-# its backward still needs 114688. The compile fails, so _flex_preferred_fits sends Gemma 3 to eager. These tiles fit (forward 73728 bytes) and were the fastest that
-# compiled on the L4: fwd+bwd 21.2 ms causal B2 x 4096, 10.9 ms with the 1024 sliding window
-# (SDPA: 13.7 ms causal, 70.6 ms with that window as a mask). Passed with "fwd_" / "bwd_" keys,
-# which the templates read from torch 2.10 on.
+# sm86 / sm89 (A10, RTX 3090 / 4090, A6000, L4, L40S; 101376 B shared memory): Inductor's default
+# flex tiles at 128 < head_dim <= 256 need 114688-151552 B and fail to compile, so Gemma 3 went to
+# eager. These fit and were the fastest that compiled on an L4. "fwd_" / "bwd_" keys need torch 2.10+.
 _FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
     "fwd_BLOCK_M": 64,
     "fwd_BLOCK_N": 64,
@@ -848,11 +843,8 @@ _FLEX_SMALL_SMEM_ENV_VAR = "UNSLOTH_FLEX_SMALL_SMEM_TILES"
 
 
 def _flex_small_smem_device_ok():
-    """True when every visible CUDA device is an sm8x card too small for the default head_dim 256
-    flex tiles but large enough for _FLEX_SMALL_SMEM_KERNEL_OPTIONS, with torch >= 2.10.
-
-    Read at model load / wrap time, never inside a compiled region.
-    UNSLOTH_FLEX_SMALL_SMEM_TILES=0 turns it off (Gemma 3 then goes to eager as before)."""
+    """Every visible device is sm8x with too little shared memory for the default head_dim 256 tiles
+    but enough for ours, torch >= 2.10. Read at wrap time. UNSLOTH_FLEX_SMALL_SMEM_TILES=0 disables."""
     if os.environ.get(_FLEX_SMALL_SMEM_ENV_VAR, "").strip() == "0":
         return False
     try:
