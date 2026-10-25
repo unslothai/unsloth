@@ -3102,7 +3102,6 @@ class SttDeviceResponse(BaseModel):
 
 def _stt_device_state() -> tuple[str, bool]:
     from core.inference.audio_device import audio_device_default, audio_device_env_locked
-
     try:
         return audio_device_default(), audio_device_env_locked()
     except Exception:  # noqa: BLE001 - probe must never block reading settings
@@ -4144,9 +4143,7 @@ def update_stt_device_setting(
             status_code = 409, detail = "The STT device is set by UNSLOTH_AUDIO_DEVICE."
         )
     set_stt_device(payload.device)
-    logger.info(
-        "settings.stt_device_updated subject=%s device=%s", current_subject, payload.device
-    )
+    logger.info("settings.stt_device_updated subject=%s device=%s", current_subject, payload.device)
     device, locked = _stt_device_state()
     return SttDeviceResponse(device = device, locked = locked)  # type: ignore[arg-type]
 

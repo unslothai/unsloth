@@ -27583,9 +27583,11 @@ async def stt_load(
         # device-less /v1/audio/transcriptions cold load keeps the same placement (#15280).
         if payload.device is not None:
             try:
-                from core.inference.audio_device import audio_device_env_locked, normalize_audio_device
+                from core.inference.audio_device import (
+                    audio_device_env_locked,
+                    normalize_audio_device,
+                )
                 from utils.stt_device_settings import set_stt_device
-
                 if not audio_device_env_locked():
                     set_stt_device(normalize_audio_device(payload.device))
             except Exception:  # noqa: BLE001 - preference sync must not fail the load

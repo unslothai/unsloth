@@ -92,7 +92,6 @@ def audio_device_default() -> str:
         return normalize_audio_device(env)
     try:
         from utils.stt_device_settings import get_stored_stt_device
-
         return get_stored_stt_device()
     except Exception:  # noqa: BLE001 - store unavailable: detect as before
         return "auto"

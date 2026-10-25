@@ -36,7 +36,6 @@ def get_stored_stt_device() -> str:
     token = bind_account(OWNER)
     try:
         from storage.studio_db import get_app_setting
-
         value = get_app_setting(STT_DEVICE_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - store unavailable: hardware default
         value = None
