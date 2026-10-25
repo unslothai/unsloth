@@ -27,8 +27,6 @@ def _png(
 
 
 class FakeCtx:
-    """Records the image route body; gallery media resolve to the PNG bytes in `files`."""
-
     def __init__(
         self,
         files = None,
@@ -189,8 +187,8 @@ def test_pad_geometry_and_mask():
     image_png, mask_png = image_nodes.pad_canvas(_png((64, 48)), 10, 0, 20, 5, 0)
     im, mask = Image.open(io.BytesIO(image_png)), Image.open(io.BytesIO(mask_png))
     assert im.size == mask.size == (94, 53)
-    assert mask.getpixel((0, 0)) == 255  # new border is painted
-    assert mask.getpixel((10, 0)) == 0 and mask.getpixel((73, 47)) == 0  # the original is kept
+    assert mask.getpixel((0, 0)) == 255
+    assert mask.getpixel((10, 0)) == 0 and mask.getpixel((73, 47)) == 0
     assert mask.getpixel((74, 10)) == 255 and mask.getpixel((40, 52)) == 255
     assert im.getpixel((40, 20))[:3] == (200, 30, 30)
 
@@ -198,17 +196,16 @@ def test_pad_geometry_and_mask():
 def test_pad_feather_repaints_the_old_edge():
     _, mask_png = image_nodes.pad_canvas(_png((64, 48)), 10, 10, 10, 10, 4)
     mask = Image.open(io.BytesIO(mask_png))
-    assert mask.getpixel((11, 11)) == 255  # inside the old edge band
-    assert mask.getpixel((42, 34)) == 0  # the middle stays
+    assert mask.getpixel((11, 11)) == 255
+    assert mask.getpixel((42, 34)) == 0
 
 
 def test_pad_feather_leaves_sides_that_did_not_grow():
-    # Only the left and right grew: the top and bottom rows of the original must stay untouched.
     _, mask_png = image_nodes.pad_canvas(_png((64, 48)), 20, 0, 20, 0, 6)
     mask = Image.open(io.BytesIO(mask_png))
     assert mask.size == (104, 48)
     assert mask.getpixel((52, 0)) == 0 and mask.getpixel((52, 47)) == 0
-    assert mask.getpixel((22, 24)) == 255  # the left seam band is repainted
+    assert mask.getpixel((22, 24)) == 255
     assert mask.getpixel((52, 24)) == 0
 
 
@@ -242,7 +239,7 @@ def test_segment_node_grow_and_invert():
     result = asyncio.run(image_nodes.segment(ctx))
     mask = Image.open(io.BytesIO(saved["png"]))
     assert result["mask"]["ref"] == "sha256:x"
-    assert mask.getpixel((11, 5)) == 0  # grown by 2 px, then inverted
+    assert mask.getpixel((11, 5)) == 0
     assert mask.getpixel((13, 5)) == 255
 
 
@@ -300,7 +297,6 @@ def test_join_videos_keeps_order_size_and_every_frame():
         frames = [f.to_ndarray(format = "rgb24") for f in decoded]
         duration = src.duration / av.time_base
     assert len(frames) == 9
-    # Nine frames at 12 fps play for 0.75 s, one after another, not all at time 0.
     assert [round(f.time * 12) for f in decoded] == list(range(9))
     assert abs(duration - 0.75) < 0.01
     assert frames[0].shape == frames[-1].shape == (48, 64, 3)
@@ -312,7 +308,6 @@ def test_join_videos_keeps_each_clips_length_across_frame_rates():
 
     from core.flows.nodes.video import concat_clips
 
-    # One second at 24 fps, then one second at 60 fps: two seconds at 24 fps, red then blue.
     joined = concat_clips(
         [_clip((32, 32), 24, (250, 0, 0), 24), _clip((32, 32), 60, (0, 0, 250), 60)]
     )
@@ -322,7 +317,6 @@ def test_join_videos_keeps_each_clips_length_across_frame_rates():
     assert len(frames) == 48
     assert abs(duration - 2.0) < 0.05
     assert frames[23][16, 16, 0] > 200 and frames[24][16, 16, 2] > 200
-    # A slower clip is stretched by repeating frames, not sped up.
     slow = concat_clips(
         [_clip((32, 32), 24, (250, 0, 0), 24), _clip((32, 32), 12, (0, 0, 250), 12)]
     )
@@ -377,7 +371,6 @@ def test_video_rejects_references_with_a_last_frame_before_calling_the_route():
 
 
 def _phone_jpeg(size = (60, 40)) -> bytes:
-    # Stored landscape, EXIF orientation 6: shown (and processed by Studio's routes) as portrait.
     exif = Image.Exif()
     exif[0x0112] = 6
     out = io.BytesIO()
@@ -411,7 +404,6 @@ def test_find_mask_downloads_the_segmenter_on_first_use(monkeypatch):
             if path.endswith("/segment/status"):
                 body = {"supported": True, "downloaded": state["downloaded"]}
                 if state["downloading"]:
-                    # The second poll sees the finished download.
                     state.update(downloaded = True, downloading = False)
                     body["download"] = {"downloading": True, "bytes_done": 5, "bytes_total": 10}
                 return body
@@ -541,13 +533,11 @@ FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev"}
 
 def test_controlnet_loads_the_picked_model_unquantized(monkeypatch):
     loads = _media_loads(monkeypatch)
-    # Resident at an auto-picked int8: ControlNet cannot run on it, so it is reloaded in bf16.
     status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": False}
     ctx = _StatusCtx(status, files = {"c": _png((16, 16))})
     asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
     assert len(loads) == 1 and loads[0]["knobs"] == {"transformer_quant": "off"}
     assert loads[0]["model"] == FLUX1["repo"] and loads[0]["kind"] == "image"
-    # Not loaded at all: the first load is already the unquantized one.
     ctx = _StatusCtx({"loaded": False}, files = {"c": _png((16, 16))})
     asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
     assert len(loads) == 2 and loads[1]["knobs"] == {"transformer_quant": "off"}
@@ -558,7 +548,6 @@ def test_controlnet_keeps_a_model_that_already_runs_it(monkeypatch):
     status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": True}
     ctx = _StatusCtx(status, files = {"c": _png((16, 16))})
     asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
-    # Without a control image nothing is checked or reloaded either.
     asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox"))
     assert loads == []
 
@@ -575,13 +564,11 @@ def test_controlnet_at_zero_strength_or_with_an_init_image_never_reloads(monkeyp
     loads = _media_loads(monkeypatch)
     status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": False}
     ctx = _StatusCtx(status, files = {"c": _png((16, 16)), "src": _png((16, 16))})
-    # Strength 0 is ControlNet off: no bf16 reload, and the request carries no control.
     asyncio.run(
         _common.generate_image(
             ctx, model = FLUX1, prompt = "a fox", control = {**_control(), "strength": 0.0}
         )
     )
-    # An Init image with ControlNet is refused before anything loads.
     with pytest.raises(FlowNodeError, match = "plain text-to-image"):
         asyncio.run(
             _common.generate_image(
@@ -605,10 +592,8 @@ def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
         "baked_loras": [],
     }
     ctx = _StatusCtx(status)
-    # A plain render keeps the build as it is.
     asyncio.run(_common.generate_image(ctx, model = KREA, prompt = "a lighthouse"))
     assert loads == []
-    # Studio refuses new adapters on an int8 build at generate time, so the node reloads with them baked in, once.
     asyncio.run(
         _common.generate_image(
             ctx, model = KREA, prompt = "a lighthouse", options = {"loras": WATERCOLOR}
@@ -621,7 +606,6 @@ def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
     )
     assert len(loads) == 1
     assert loads[0]["model"] == KREA["repo"] and loads[0]["knobs"] == {"loras": WATERCOLOR}
-    # Another set needs another bake.
     other = [{"id": "krea/Krea-2-LoRA-ink", "weight": 0.8}]
     asyncio.run(
         _common.generate_image(ctx, model = KREA, prompt = "a lighthouse", options = {"loras": other})
@@ -664,7 +648,6 @@ def test_video_stop_cancels_only_its_own_render():
         if path == "/v1/videos":
             return {"id": "vid1"}
         if method == "GET":
-            # The first poll: Stop is pressed while it renders.
             await hooks[0]()
             return {"status": "completed"}
         return {}

@@ -152,7 +152,6 @@ def _stat(values: list[float], stat: str) -> Optional[float]:
 
 
 def _fresh(name: str, taken: set[str]) -> str:
-    """``name``, or ``name_2``... when a source column already uses it, so a generated column never replaces one."""
     out, i = name, 2
     while out in taken:
         out, i = f"{name}_{i}", i + 1
@@ -316,7 +315,7 @@ def compare(
     unit = by_id[metric].get("unit")
     columns = [by_id[k] for k in key]
     columns += [
-        {**by_id[metric], "type": "number"},
+        {**{k: v for k, v in by_id[metric].items() if k != "role"}, "type": "number"},
         {
             "id": ids["baseline"],
             "label": "baseline",
@@ -358,7 +357,6 @@ def chart(
     numeric_x = by_id[x].get("type") == "number"
 
     def x_of(row: dict) -> Any:
-        # Numbers stored as text ("1024") are the same coordinate as 1024 and plot on a numeric axis.
         v = row.get(x)
         return _number(v) if numeric_x and _number(v) is not None else v
 
@@ -392,7 +390,6 @@ def chart(
         if error:
             entry["error"] = [_number(points[v].get(error)) if v in points else None for v in xs]
         series.append(entry)
-    # One axis unit only when every plotted column shares it; mixed units are not labelled as one.
     units = {by_id[m].get("unit") for m in y}
     unit = units.pop() if len(units) == 1 else None
     return {

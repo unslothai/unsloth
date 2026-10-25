@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The /api/flows routes over a bare app: CRUD and conflicts, validation, runs with SSE replay, sessions, import,
-assets and examples, and account isolation."""
-
 import asyncio
 import hashlib
 import json
@@ -54,7 +51,6 @@ def client(monkeypatch):
     app.include_router(flows_routes.router, prefix = "/api/flows")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     # One event loop for the whole test: without the context manager every request gets its own portal,
-    # and a run task started by one request is stranded when that portal closes.
     with TestClient(app) as test_client:
         yield test_client
 
@@ -94,7 +90,6 @@ def test_crud_conflict_and_tombstone(client):
     assert client.delete("/api/flows/flow1").status_code == 204
     assert client.get("/api/flows/flow1").status_code == 404
     assert client.put("/api/flows/flow1", json = {"doc": renamed}).status_code == 410
-    # Creating with a deleted id gets a fresh one.
     assert client.post("/api/flows", json = {"doc": _simple()}).json()["id"] != "flow1"
 
 
@@ -203,7 +198,6 @@ def test_documents_upload_and_come_back_as_plain_text(client):
     # An uploaded page is never rendered on Studio's origin.
     assert served.headers["content-type"].startswith("text/plain")
     assert served.headers["x-content-type-options"] == "nosniff"
-    # Text with no named type is still refused.
     assert client.post("/api/flows/assets", content = b"plain words").status_code == 415
 
 
@@ -218,7 +212,6 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     assert client.get(f"/api/flows/assets/sha256:{'0' * 64}").status_code == 404
     script = b"#!/bin/sh"
     assert client.post("/api/flows/assets", content = script).status_code == 415
-    # JSON is only for packages: a refused upload leaves nothing behind in the asset store.
     blob = b'{"not": "media"}'
     assert client.post("/api/flows/assets?mime=application/json", content = blob).status_code == 415
     assert (
@@ -308,7 +301,6 @@ def test_deleting_a_flow_stops_its_run(client):
     engine_mod.ENGINE.handlers["input.text"] = slow
     client.post("/api/flows", json = {"doc": _simple()})
     run_id = client.post("/api/flows/flow1/runs", json = {}).json()["run_id"]
-    # Another account deleting its own flow with the same id leaves this run alone.
     assert client.delete("/api/flows/flow1", headers = {"x-test-account": "bob"}).status_code == 204
     assert client.get(f"/api/flows/runs/{run_id}").json()["run"]["status"] in ("queued", "running")
     assert client.delete("/api/flows/flow1").status_code == 204
@@ -336,7 +328,6 @@ def test_reconnecting_to_a_run_a_restart_interrupted_ends(client):
     engine_mod.ENGINE.runs.clear()
     token = bind_account(OWNER)
     try:
-        # A crash leaves the row running (update_run never reopens a finished run, so set it directly).
         conn = flows_db.get_connection()
         conn.execute("UPDATE flow_runs SET status = 'running' WHERE id = ?", (run_id,))
         conn.commit()
@@ -344,7 +335,6 @@ def test_reconnecting_to_a_run_a_restart_interrupted_ends(client):
         assert flows_db.reconcile_orphaned_runs() == 1
     finally:
         reset_account(token)
-    # The browser resumes from the last event it saw; the stream must end with a terminal snapshot.
     events = _events(
         client.post(f"/api/flows/runs/{run_id}/events", params = {"after": snap["last_seq"]}).text
     )
@@ -362,14 +352,12 @@ def test_many_side_runs_keep_the_older_outputs(client):
     for _ in range(22):
         run_id = client.post("/api/flows/flow1/runs", json = {"target_nodes": ["b"]}).json()["run_id"]
         _wait_terminal(client, run_id)
-    # After a restart only the stored history is left.
     engine_mod.ENGINE.runs.clear()
     latest = client.get("/api/flows/flow1/latest-outputs").json()["nodes"]
     assert latest["a"]["outputs"] == {"text": "story"}
 
 
 def test_an_m4a_upload_is_audio_not_video(client):
-    # A phone voice memo: an MP4 box file whose brand says audio. A plain MP4 stays video.
     m4a = b"\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00M4A isommp42" + b"\x00" * 64
     media = client.post("/api/flows/assets?name=memo.m4a", content = m4a).json()["media"]
     assert media["kind"] == "audio" and media["mime"] == "audio/mp4"
@@ -387,7 +375,6 @@ def test_an_aac_file_with_a_generic_mp4_brand_is_audio(client):
     from .test_flows_media_utils import _clip
 
     audio = _m4a_bytes()
-    # PyAV's generic mp4 muxer writes an isom brand, not M4A: the track handlers say it is sound only.
     assert audio[8:12] != b"M4A "
     assert (
         client.post("/api/flows/assets?name=a.m4a", content = audio).json()["media"]["kind"]

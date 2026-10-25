@@ -23,7 +23,6 @@ export function QuickAdd() {
     if (!quickAdd.from) return catalog.nodes.map((spec) => ({ spec }));
     const matches = compatibleSpecs(catalog.nodes, quickAdd.from);
     const exactType = quickAdd.from.port?.type;
-    // Exact type matches before nodes that take `any`.
     return matches.sort((a, b) => {
       const score = (m: { spec: NodeSpec; port: string }) => {
         const ports =

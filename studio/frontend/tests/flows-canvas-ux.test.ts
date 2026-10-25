@@ -31,7 +31,6 @@ test("a dropped file becomes the matching input block", () => {
     inputForFile("data.json", "application/json")?.type,
     "input.text",
   );
-  // A flow file is imported from the gallery, not turned into a block.
   assert.equal(inputForFile("story.unslothflow", "application/zip"), null);
   assert.equal(inputForFile("tool.exe", "application/octet-stream"), null);
 });
@@ -48,7 +47,6 @@ test("the toolbar shows for one selected block in an editable flow", () => {
   assert.equal(toolbarNodeId(["n1"], isBlock, true), null);
   assert.equal(toolbarNodeId(["n1", "n2"], isBlock, false), null);
   assert.equal(toolbarNodeId([], isBlock, false), null);
-  // A frame or note is selected by its key, which is not a block.
   assert.equal(toolbarNodeId(["group:g1"], isBlock, false), null);
 });
 
@@ -116,7 +114,6 @@ test("PDF and Word drops become Document blocks, and the uploaded kind picks the
   assert.equal(inputForFile("report.pdf", "application/pdf")?.type, "input.file");
   assert.equal(inputForFile("notes.docx", "")?.type, "input.file");
   assert.equal(inputForFile("notes.md", "")?.type, "input.text");
-  // A recording the browser called video/webm that the server read as audio gets an Audio block.
   assert.equal(inputForAssetKind("audio"), "input.audio");
   assert.equal(inputForAssetKind("document"), "input.file");
   assert.equal(inputForAssetKind("file"), null);

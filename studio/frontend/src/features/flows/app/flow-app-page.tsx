@@ -129,7 +129,6 @@ function FieldInput({
             className="text-sm"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              // Cleared at once, so picking the same file again (a retry) fires another change.
               e.target.value = "";
               if (!file) return;
               setUploading(true);
@@ -171,7 +170,6 @@ function FieldInput({
   }
 }
 
-/** Any flow as a simple app: a form from its inputs, a Run button, and its outputs. Nothing here edits the flow. */
 export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const navigate = useNavigate();
   const [doc, setDoc] = useState<FlowDocument | null>(null);
@@ -188,7 +186,6 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   useEffect(() => {
     let alive = true;
     generation.current += 1;
-    // Another flow in the same page: nothing of the last one may show or run under this id.
     setDoc(null);
     setFailed(null);
     setValues({});
