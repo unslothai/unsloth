@@ -177,34 +177,6 @@ pub(crate) fn expected_backend_version() -> &'static str {
     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
 }
 
-// A build that ships its own backend wheel in the bundle (the fork's self-contained DMG)
-// can always reach its floor: the bundled installer installs that wheel, not PyPI's. The
-// feed-ceiling marker then lies — it describes what PyPI had, and this build does not
-// install from PyPI — so the caller skips it and repairs with the bundled wheel instead.
-// Official builds carry no such resource, so nothing changes for them. Resolved from the
-// executable (…/Unsloth.app/Contents/MacOS/) so the preflight chain needs no AppHandle.
-pub(crate) fn bundles_backend_wheel() -> bool {
-    let Some(exe) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()))
-    else {
-        return false;
-    };
-    // …/Contents/MacOS -> …/Contents/Resources
-    let resources = exe.parent().map(|p| p.join("Resources"));
-    let Some(resources) = resources else {
-        return false;
-    };
-    let Ok(entries) = std::fs::read_dir(resources.join("backend")) else {
-        return false;
-    };
-    entries
-        .filter_map(Result::ok)
-        .any(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("unsloth-") && name.ends_with(".whl")
-        })
-}
-
 pub(super) fn backend_version_outdated_reason(
     version: Option<&str>,
     expected: &str,

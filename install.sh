@@ -8233,24 +8233,6 @@ tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 
 # A piped or standalone install.sh has no sibling requirements tree. Bootstrap only the Unsloth wheel so its canonical Darwin override becomes available before the first with-dependencies resolution, avoiding backtracking mlx-vlm and then repairing it in a later phase. No-torch has no such resolve; repository, local and caller-configured installs already have an override and skip this.
-# A fork desktop bundle ships its own backend wheel next to this script (the app's
-# Contents/Resources/backend/). That wheel is the backend this build was made with, so it
-# outranks PyPI wherever unsloth is resolved below. Without it, the desktop floor
-# (unsloth>=UNSLOTH_DESKTOP_BACKEND_VERSION) cannot resolve from the index when the fork is
-# ahead of PyPI, and _relax_unsloth_floors_to_index would install the official backend over
-# this one.
-_unsloth_bundled_wheel=""
-case "$0" in
-    */*) _unsloth_bundle_dir=${0%/*} ;;
-    *) _unsloth_bundle_dir=. ;;
-esac
-for _unsloth_wheel_candidate in "$_unsloth_bundle_dir"/backend/unsloth-*.whl; do
-    if [ -f "$_unsloth_wheel_candidate" ]; then
-        _unsloth_bundled_wheel=$_unsloth_wheel_candidate
-        break
-    fi
-done
-unset _unsloth_bundle_dir _unsloth_wheel_candidate
 _bootstrap_packaged_mlx_override() {
     [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || return 0
     [ "$SKIP_TORCH" = false ] || return 0
@@ -8260,7 +8242,7 @@ _bootstrap_packaged_mlx_override() {
     substep "preparing Apple Silicon model support..."
     run_install_cmd_retry "prepare Apple Silicon dependencies" \
         uv pip install --python "$_VENV_PY" --no-deps \
-        --upgrade-package "$PACKAGE_NAME" -- "${_unsloth_bundled_wheel:-$PACKAGE_NAME}"
+        --upgrade-package "$PACKAGE_NAME" -- "$PACKAGE_NAME"
 
     _PACKAGED_MLX_OVERRIDES=$("$_VENV_PY" -I -c "
 import importlib.resources
@@ -8368,10 +8350,6 @@ if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.8}"
 _unsloth_zoo_install_spec="unsloth-zoo>=2026.10.8"
-if [ -n "$_unsloth_bundled_wheel" ]; then
-    _unsloth_release_install_spec="$_unsloth_bundled_wheel"
-    _unsloth_desktop_install_spec="$_unsloth_bundled_wheel"
-fi
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.
@@ -8691,19 +8669,9 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$PACKAGE_NAME" = "unsloth" ] && [ -n "$_unsloth_desktop_install_spec" ]; then
             _unsloth_install_pkg="$_unsloth_desktop_install_spec"
         fi
-        # A bundled fork wheel carries unsloth-zoo only under extras, so the pass that
-        # follows (told the core packages are already in) would find no zoo and abort.
-        # Name the zoo floor alongside, as the migrated and no-torch branches do.
-        if [ "$_unsloth_install_pkg" = "$_unsloth_bundled_wheel" ]; then
-            run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-                ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-                --upgrade-package unsloth --upgrade-package unsloth-zoo -- \
-                "$_unsloth_install_pkg" "$_unsloth_zoo_install_spec"
-        else
-            run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-                ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-                --upgrade-package unsloth -- "$_unsloth_install_pkg"
-        fi
+        run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
+            --upgrade-package unsloth -- "$_unsloth_install_pkg"
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     _UNSLOTH_TORCH_OVERRIDES=""

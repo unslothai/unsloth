@@ -1,8 +1,7 @@
 use super::types::ManagedProbe;
 use super::version::{
-    bundles_backend_wheel, compare_versions, expected_backend_version,
-    managed_backend_version_stale_reason, parse_version, DESKTOP_MANAGEABILITY_VERSION,
-    DESKTOP_PROTOCOL_VERSION,
+    compare_versions, expected_backend_version, managed_backend_version_stale_reason,
+    parse_version, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -1243,7 +1242,6 @@ fn managed_capability_stale_reason(bin: &Path, capability: &DesktopCapability) -
     let version = capability.version.as_deref();
     if reason == "desktop_backend_version_outdated"
         && feed_ceiling_holds(bin, version, expected_backend_version())
-        && !bundles_backend_wheel()
     {
         info!("Managed preflight: backend {version:?} is the newest the package index has; not repairing");
         return None;

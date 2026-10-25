@@ -6,8 +6,7 @@
       "icons/icon.icns"
     ],
     "resources": {
-      "../../install.sh": "install.sh",
-      "backend-wheel": "backend"
+      "../../install.sh": "install.sh"
     },
     "macOS": {
       "entitlements": "./Entitlements.plist",
