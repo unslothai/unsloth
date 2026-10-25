@@ -119,6 +119,7 @@ def choose_split_mode(
     widen_fits_one_gpu: Optional[bool] = None,
     fits_on: Optional[Callable[[tuple], bool]] = None,
     platform_reason: Optional[str] = None,
+    single_gpu_index: Optional[int] = None,
 ) -> SplitDecision:
     """Decide the split mode for an Auto GPU placement.
 
@@ -185,6 +186,13 @@ def choose_split_mode(
             "none" if fits_one_gpu else "layer", not fits_one_gpu, f"layer split: {why_not}"
         )
     indices = tuple(g.index for g in pair)
+    if fits_one_gpu and single_gpu_index is not None and single_gpu_index not in indices:
+        # A widen keeps the card the one-GPU placement picked: a matching pair elsewhere can be smaller.
+        return SplitDecision(
+            "none",
+            False,
+            f"the model fits GPU {single_gpu_index}, outside the matching idle GPUs {list(indices)}; one GPU",
+        )
     if fits_on is not None and not fits_on(indices):
         if fits_one_gpu:
             return SplitDecision("none", False, "the model does not fit the GPU pair; one GPU")

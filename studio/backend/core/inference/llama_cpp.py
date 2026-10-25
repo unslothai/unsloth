@@ -28246,6 +28246,7 @@ class LlamaCppBackend:
                                     is_moe = self.n_moe_layers > 0,
                                     gpus = _split_gpus,
                                     fits_one_gpu = _fits_one,
+                                    single_gpu_index = _single_pick[0] if _fits_one else None,
                                     binary_supports_tensor = _binary_supports_tensor_split(
                                         server_caps
                                     ),

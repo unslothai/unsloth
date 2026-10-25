@@ -440,6 +440,40 @@ def test_wired_gpu_pick_owns_the_device_flags_it_strips(tmp_path, monkeypatch, e
     assert "--device" not in launched["cmd"] and "LLAMA_ARG_DEVICE" not in launched["env"]
 
 
+def test_wired_widen_never_trades_the_bigger_gpu_for_a_smaller_pair(tmp_path, monkeypatch):
+    # A100 + 2x T4: the model fits the idle A100 alone, so it is not moved onto the T4 pair.
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 81_920, 81_920), (1, 15_360, 15_360), (2, 15_360, 15_360)],
+        model_gib = 6,
+        names = {0: "NVIDIA A100-SXM4-80GB", 1: T4, 2: T4},
+    )
+    _native_ctx(backend, 131072)
+    _per_token_kv(backend, 512 * 1024)
+    launched = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 0)
+    assert _split_flag(launched["cmd"]) != "tensor"
+    assert launched["env"].get("CUDA_VISIBLE_DEVICES") == "0"
+    assert backend.max_context_length == 131072
+
+
+def test_widen_keeps_the_single_gpu_pick():
+    three = [
+        sp.GpuInfo(
+            index = 0, name = "NVIDIA A100-SXM4-80GB", total_mib = 81_920, free_mib = 81_920, util_pct = 0.0
+        ),
+        sp.GpuInfo(index = 1, name = T4, total_mib = 15_360, free_mib = 15_360, util_pct = 0.0),
+        sp.GpuInfo(index = 2, name = T4, total_mib = 15_360, free_mib = 15_360, util_pct = 0.0),
+    ]
+    d = _decide(gpus = three, fits_one_gpu = True, single_gpu_index = 0)
+    assert (d.mode, d.auto) == ("none", False) and "0" in d.reason
+    # The pick inside the pair still widens, and a caller naming no pick keeps today's rule.
+    d = _decide(gpus = three, fits_one_gpu = True, single_gpu_index = 1)
+    assert (d.mode, d.auto, tuple(d.gpu_indices)) == ("tensor", True, (1, 2))
+    d = _decide(gpus = three, fits_one_gpu = True)
+    assert (d.mode, d.auto) == ("tensor", True)
+
+
 def test_wired_kill_switch(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
