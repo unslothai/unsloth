@@ -16,7 +16,9 @@ pytest.importorskip("triton")
 import unsloth  # noqa: F401
 from unsloth.kernels import rope_embedding as RE
 
-N_HEADS, N_KV, HEAD_DIM = 8, 2, 64
+# Batch never 1 or equal to a head count, seq never head_dim: torch's own 0/1 and duck-size
+# specializations would recompile on any kernel.
+N_HEADS, N_KV, HEAD_DIM = 8, 4, 64
 
 
 def _qk(batch, seq):
@@ -49,7 +51,7 @@ def test_compiled_rope_keeps_one_graph_across_batch_and_seq(with_indices):
     torch._dynamo.reset()
     counters.clear()
     compiled = torch.compile(rope, dynamic = True, fullgraph = True)
-    for batch, seq in [(2, 37), (3, 64), (1, 129), (4, 8), (5, 300)]:
+    for batch, seq in [(3, 37), (5, 96), (6, 129), (7, 13), (3, 300)]:
         idx = torch.randint(0, 4096, (batch, seq), device = "cuda") if with_indices else None
         qkv, Q, K = _qk(batch, seq)
         compiled(Q, K, idx).backward()
