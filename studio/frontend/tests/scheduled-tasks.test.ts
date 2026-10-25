@@ -675,4 +675,7 @@ test("a task left unnamed is named after its instructions' first line", () => {
   const title = titleFromPrompt(long);
   assert.ok(title.endsWith("…") && title.length <= 61, title);
   assert.ok(long.startsWith(title.slice(0, -1)), "cut at a word, from the start");
+  const emoji = titleFromPrompt(`Describe ${"\u{1F600}".repeat(70)}`);
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(emoji), "no lone surrogate");
+  assert.equal(Array.from(emoji).length, 61);
 });

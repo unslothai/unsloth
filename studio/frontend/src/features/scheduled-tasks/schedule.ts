@@ -318,8 +318,10 @@ const AUTO_TITLE_LENGTH = 60;
 /** A blank name falls back to the instructions' first line, cut at a word near 60 characters. */
 export function titleFromPrompt(prompt: string): string {
   const line = prompt.trim().split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "";
-  if (line.length <= AUTO_TITLE_LENGTH) return line;
-  const cut = line.slice(0, AUTO_TITLE_LENGTH);
+  // By code point: cutting by code unit can split an emoji into a lone surrogate, which the server refuses.
+  const chars = Array.from(line);
+  if (chars.length <= AUTO_TITLE_LENGTH) return line;
+  const cut = chars.slice(0, AUTO_TITLE_LENGTH).join("");
   const space = cut.lastIndexOf(" ");
   return `${(space > AUTO_TITLE_LENGTH / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
