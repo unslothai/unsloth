@@ -5459,14 +5459,8 @@ def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
 def _reasoning_preserve_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Mapping[str, str]
 ) -> Optional[bool]:
-    """The user's --reasoning-preserve / --no-reasoning-preserve choice, else None.
-
-    llama.cpp writes that flag to ``preserve_reasoning``, then applies
-    --chat-template-kwargs over it, so a launch-time ``preserve_thinking`` entry
-    always wins and the flag alone never reaches a Qwen-style template. Read it
-    here so the launch kwarg follows it instead. Last flag wins, as in llama.cpp's
-    parser; the extras beat the inherited LLAMA_ARG_REASONING_PRESERVE.
-    """
+    """The user's --[no-]reasoning-preserve choice, else None: last flag wins, as in
+    llama.cpp's parser, and the extras beat the inherited LLAMA_ARG_REASONING_PRESERVE."""
     choice: Optional[bool] = None
     for raw in extra_args or ():
         flag = _flag_name(str(raw))
@@ -5485,12 +5479,8 @@ def _reasoning_preserve_from_args_or_env(
 
 
 def _template_preserves_thinking_by_default(template: str, context: Mapping) -> bool:
-    """Whether ``template`` replays an earlier turn's reasoning with preserve_thinking omitted.
-
-    Qwen3.8's own template keeps it (``preserve_thinking is undefined or ...``) while
-    ``preserve_thinking|default(false)`` drops it, so an override is rendered, not
-    matched by family. False when Python's Jinja cannot render it.
-    """
+    """Whether ``template`` replays an earlier turn's reasoning with preserve_thinking
+    omitted (Qwen3.8's own does, ``|default(false)`` does not); False if unrenderable."""
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     def _raise(message):
@@ -32146,11 +32136,9 @@ class LlamaCppBackend:
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
                     # frontend receives the same resolved value via load/status.
-                    # The Qwen3.8 on default follows Qwen's shipped template, so a
-                    # chat_template_override takes the default its own text renders,
-                    # and an explicit --[no-]reasoning-preserve beats both: this kwarg
-                    # is applied after that flag, so it would otherwise silently undo
-                    # it (#15115).
+                    # An override takes the default its own text renders, and an explicit
+                    # --[no-]reasoning-preserve beats both: llama.cpp applies this kwarg
+                    # after that flag, so it would otherwise undo it (#15115).
                     if self._supports_preserve_thinking:
                         if chat_template_override:
                             self._preserve_thinking_default = (
