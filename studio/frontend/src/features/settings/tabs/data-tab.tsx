@@ -156,7 +156,7 @@ function LibraryDataSection() {
           onClick={() => openDialog("library", { scrollTarget: "library-storage" })}
         >
           {t("settings.library.manageStorage")}
-          <HugeiconsIcon icon={ChevronRightStandardIcon} className="ml-1 size-3.5" />
+          <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
         </Button>
       </SettingsRow>
       {storage.status === "ready" && (count > 0 || storage.totalBytes > 0) && (
