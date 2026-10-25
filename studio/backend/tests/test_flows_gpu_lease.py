@@ -371,3 +371,19 @@ def test_a_cancelled_exclusive_waiter_lets_queued_chat_calls_in():
         await asyncio.gather(bg, *reps, return_exceptions = True)
 
     asyncio.run(go())
+
+
+def test_chat_slots_follow_the_loaded_llama_server(monkeypatch):
+    import routes.inference as inference
+    from core.flows.engine import chat_slots
+
+    class Backend:
+        is_loaded = True
+        effective_parallel_slots = 4
+
+    backend = Backend()
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
+    assert chat_slots() == 4
+    # A Transformers model (no llama-server running) serves one request at a time, whatever queues linger.
+    backend.is_loaded = False
+    assert chat_slots() == 1

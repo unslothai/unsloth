@@ -608,12 +608,15 @@ class NeedsExclusiveGpu(Exception):
 
 
 def chat_slots() -> int:
-    """How many requests the loaded chat model serves at once: llama-server's parallel slots, else 1."""
+    """How many requests the loaded chat model serves at once: the running llama-server's slots, else 1 (a
+    Transformers model generates one request at a time)."""
     try:
-        from core.inference import llama_admission
-        with llama_admission._QUEUES_LOCK:
-            queues = list(llama_admission._QUEUES.values())
-        return max([int(q._capacity) for q in queues] or [1])
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        if not backend.is_loaded:
+            return 1
+        return max(1, int(backend.effective_parallel_slots))
     except Exception:
         return 1
 
