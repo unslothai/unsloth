@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests that Unsloth Studio defaults to 127.0.0.1 (loopback) not 0.0.0.0.
-
-Uses AST parsing to inspect source-level defaults without requiring the
-full studio venv (run.py has heavy dependencies like structlog/uvicorn).
-"""
+"""Checks run.py defaults the host to loopback 127.0.0.1, not 0.0.0.0, read by AST without the venv."""
 
 import ast
 from pathlib import Path
@@ -14,17 +10,13 @@ _RUN_PY = Path(__file__).resolve().parent.parent / "run.py"
 
 
 def _parse_function_param_defaults(source: str, func_name: str) -> dict:
-    """Return {param_name: default_value} for a named function in *source*.
-
-    Only handles ast.Constant defaults (strings, ints, bools).
-    """
+    """Handles only ast.Constant defaults, i.e. literal strings, ints and bools."""
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
             result = {}
             all_args = node.args.args
             defaults = node.args.defaults
-            # Defaults are right-aligned against the args list
             offset = len(all_args) - len(defaults)
             for i, default in enumerate(defaults):
                 arg_name = all_args[offset + i].arg
@@ -35,11 +27,7 @@ def _parse_function_param_defaults(source: str, func_name: str) -> dict:
 
 
 def _parse_argparse_add_argument_default(source: str, option_name: str):
-    """Return the 'default' kwarg for add_argument(option_name, ...) in *source*.
-
-    Walks the whole module so the call may live in __main__ or a helper;
-    only handles ast.Constant defaults.
-    """
+    """Walks the whole module so the add_argument call may sit in __main__ or a helper; literals only."""
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -59,11 +47,7 @@ def _parse_argparse_add_argument_default(source: str, option_name: str):
 
 
 def test_run_server_default_host_is_loopback():
-    """run_server() 'host' default must be 127.0.0.1, not 0.0.0.0.
-
-    0.0.0.0 exposes the service on all interfaces; loopback is the
-    least-permissive default. Users needing network access pass -H 0.0.0.0.
-    """
+    """run_server must default host to loopback: 0.0.0.0 exposes the service on every interface."""
     source = _RUN_PY.read_text(encoding = "utf-8")
     defaults = _parse_function_param_defaults(source, "run_server")
     assert "host" in defaults, "run_server() must have a 'host' parameter with a default"
@@ -76,11 +60,7 @@ def test_run_server_default_host_is_loopback():
 
 
 def test_argparse_default_host_is_loopback():
-    """argparse --host add_argument default must be 127.0.0.1.
-
-    When run.py is invoked directly (python run.py), the argparse default
-    must match the function default so direct execution is equally safe.
-    """
+    """The argparse --host default must match the function default, since direct python run.py uses it."""
     source = _RUN_PY.read_text(encoding = "utf-8")
     host_default = _parse_argparse_add_argument_default(source, "--host")
     assert host_default is not None, "Could not find add_argument('--host', ...) in run.py"

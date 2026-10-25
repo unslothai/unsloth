@@ -41,6 +41,7 @@ import {
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
+import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
@@ -277,6 +278,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/chat",
   "/projects",
   "/library",
+  // Tasks only need a chat model, which a chat-only host runs.
+  "/tasks",
   "/hub",
   "/login",
   "/signup",
@@ -364,8 +367,9 @@ function RootLayout() {
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const videoDisabled =
-    videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
+    videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -823,8 +827,9 @@ function RootLayout() {
           </SidebarInset>
         </SidebarProvider>
       )}
-      {/* This side-effect-only mount stays last so it cannot shift existing React useId paths. */}
+      {/* These side-effect-only mounts stay last so they cannot shift existing React useId paths. */}
       {!isAuthFlowRoute && <HubSourceNoticeMount />}
+      {!isAuthFlowRoute && <ScheduledTaskRunNotifier />}
     </>
   );
 

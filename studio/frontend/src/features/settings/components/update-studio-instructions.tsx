@@ -28,6 +28,9 @@ const DOCS_UPDATING_URL =
 const DOCS_MAC_URL = "https://unsloth.ai/docs/get-started/install/mac";
 const DOCS_WINDOWS_URL =
   "https://unsloth.ai/docs/get-started/install/windows-installation";
+const DOCS_LINUX_URL = "https://unsloth.ai/docs/get-started/install/linux";
+const DOCS_DOCKER_URL = "https://unsloth.ai/docs/get-started/install/docker";
+const DOCS_AMD_URL = "https://unsloth.ai/docs/get-started/install/amd";
 
 export type UpdateShell = "windows" | "unix";
 export type UpdateInstallSource =
@@ -87,7 +90,7 @@ function CopyableCommand({
   };
 
   return (
-    <div className="flex min-w-0 items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+    <div className="flex min-w-0 items-stretch overflow-hidden rounded-full border border-border bg-muted/40">
       <input
         type="text"
         readOnly={true}
@@ -168,6 +171,18 @@ function UpdateDocsLinks(): ReactElement {
       <DocsLink
         href={DOCS_WINDOWS_URL}
         label={t("settings.about.update.docsWindows")}
+      />
+      <DocsLink
+        href={DOCS_LINUX_URL}
+        label={t("settings.about.update.docsLinux")}
+      />
+      <DocsLink
+        href={DOCS_DOCKER_URL}
+        label={t("settings.about.update.docsDocker")}
+      />
+      <DocsLink
+        href={DOCS_AMD_URL}
+        label={t("settings.about.update.docsAmd")}
       />
     </p>
   );

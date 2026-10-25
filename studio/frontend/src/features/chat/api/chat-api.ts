@@ -393,6 +393,8 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** Awaited once the load is going out, after the token prompt and abort check. */
+    beforeRequest?: () => Promise<void>;
     /** What is taking the slot. Chat ignores its own loads when reconciling, so an Audio load
      *  announced as "chat" left chat naming a model it had evicted. */
     runtime?: ModelRuntime;
@@ -406,6 +408,7 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  await options?.beforeRequest?.();
   options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
   // otherwise had nothing to show until its next 5s poll.
@@ -469,11 +472,11 @@ export async function countChatInputTokens(payload: {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: serializedPayload,
   });
   return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
@@ -903,41 +906,6 @@ export async function deleteFineTunedModel(args: {
   await parseJsonOrThrow<unknown>(response);
 }
 
-export interface ScanFolderInfo {
-  id: number;
-  path: string;
-  created_at: string;
-  /** Sub-folders are scanned too. Absent on older backends. */
-  recursive?: boolean;
-  /** Result of the last scan. Absent on older backends, which means "ok". */
-  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
-}
-
-export async function listScanFolders(): Promise<ScanFolderInfo[]> {
-  const response = await authFetch("/api/models/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
-}
-
-export async function addScanFolder(
-  path: string,
-  recursive?: boolean,
-): Promise<ScanFolderInfo> {
-  const response = await authFetch("/api/models/scan-folders", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, recursive }),
-  });
-  return parseJsonOrThrow<ScanFolderInfo>(response);
-}
-
-export async function removeScanFolder(id: number): Promise<void> {
-  const response = await authFetch(`/api/models/scan-folders/${id}`, {
-    method: "DELETE",
-  });
-  await parseJsonOrThrow<unknown>(response);
-}
-
 export async function listChatThreads(
   args: {
     modelType?: ModelType;
@@ -970,6 +938,7 @@ export interface SidebarRowRecord {
   modifiedAt?: number | null;
   modelIds?: string[] | null;
   isFork?: boolean | null;
+  isScheduled?: boolean | null;
   /** Compare rows: each pane's own title, by `threadIds` position. */
   threadTitles?: string[] | null;
   projectId?: string | null;
@@ -1378,11 +1347,12 @@ export async function getChatAgentsMd(
 
 export async function saveChatProject(
   project: ProjectRecord,
+  nativePathLease?: string,
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(project),
+    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
@@ -2068,7 +2038,8 @@ export async function* streamChatCompletions(
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
             parsed.type === "tool_args" ||
-            parsed.type === "tool_model_note")
+            parsed.type === "tool_model_note" ||
+            parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
@@ -2091,6 +2062,11 @@ export async function* streamChatCompletions(
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        if ("type" in parsed && parsed.type === "generation_progress") {
+          yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }

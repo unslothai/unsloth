@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for _torch_step_label: which backend it names, and what answering costs.
-
-rocminfo and amd-smi ship with the HIP SDK, not with AMD's bundled-runtime wheels, so a
-working Windows ROCm host printed "torch check (cpu)". Answering with `import torch`
-instead cost up to the probe's 90s timeout before _progress() emitted anything.
-"""
+"""Step label must not import torch: answering that way cost up to the 90s probe timeout."""
 
 from __future__ import annotations
 
@@ -55,10 +50,7 @@ def _prepare(
     known_backend = "",
     warm_probe = None,
 ):
-    """One matrix cell, stubbed only at names both trees have, so this file discriminates.
-
-    Returns the recorded _probe_torch_runtime calls; empty means the label cost nothing.
-    """
+    """Returns recorded _probe_torch_runtime calls; an empty list means the label cost nothing."""
     mod = _load_module(monkeypatch)
     plat = _PLATFORMS[platform_name]
     hw = _HARDWARE[hardware_name]
@@ -99,12 +91,12 @@ def _prepare(
     return mod, probe_calls
 
 
-# UNSLOTH_TORCH_BACKEND unset. Only Windows consults torch's own build, which is what
-# keeps Linux, WSL and macOS on their pre-existing answers.
+# UNSLOTH_TORCH_BACKEND unset. Only Windows consults torch's own build; other OSes
+# keep their answers.
 _MATRIX = {
     ("windows", "nvidia"): "cuda",
     ("windows", "amd_tooling"): "rocm",
-    ("windows", "amd_bundled"): "rocm",  # the regression this PR fixes
+    ("windows", "amd_bundled"): "rocm",
     ("windows", "xpu"): "cpu",
     ("windows", "cpu"): "cpu",
     ("windows", "no_torch"): "cpu",
@@ -233,7 +225,7 @@ def test_the_label_reuses_a_warm_probe_instead_of_the_disk(monkeypatch):
     mod, probe_calls = _prepare(
         monkeypatch,
         platform_name = "windows",
-        hardware_name = "cpu",  # disk says CPU
+        hardware_name = "cpu",
         warm_probe = warm,
     )
     disk_reads = []
@@ -245,7 +237,7 @@ def test_the_label_reuses_a_warm_probe_instead_of_the_disk(monkeypatch):
     )
     assert mod._torch_step_label("check") == "torch check (rocm)"
     assert probe_calls == []  # a warm memo is reused, never re-probed
-    assert disk_reads == []  # and the disk is not consulted behind it
+    assert disk_reads == []
 
 
 def test_a_warm_negative_probe_is_believed(monkeypatch):
@@ -287,8 +279,6 @@ def test_non_windows_never_touches_the_torch_build(monkeypatch, platform_name):
     monkeypatch.setattr(
         mod, "_installed_torch_version_label", lambda: touched.append("label") or ""
     )
-    # Not whether the helper is called off Windows (free either way), but that nothing
-    # happens behind it.
     assert mod._torch_step_label("check") == "torch check (cpu)"
     assert touched == []
     assert probe_calls == []
@@ -309,11 +299,7 @@ def _fake_torch_on_path(
     *,
     as_directory = False,
 ):
-    """Put a stand-in torch package where find_spec will see it.
-
-    find_spec returns sys.modules[name].__spec__ for an already-imported module, so on a
-    runner that has torch, prepending sys.path alone leaves the fixture ignored.
-    """
+    """A sys.path prepend is ignored once torch is imported, since find_spec reads sys.modules."""
     torch_dir = tmp_path / "torch"
     torch_dir.mkdir(exist_ok = True)
     (torch_dir / "__init__.py").write_text("", encoding = "utf-8")
@@ -366,7 +352,7 @@ cuda = None
         (_VERSION_PY_ROCM_UNANNOTATED, "6.3.42131"),
         (_VERSION_PY_CUDA, ""),  # hip = None must not read as a HIP string
         ("", ""),
-        ('hip = "6.9.0"\n', "6.9.0"),  # double-quoted
+        ('hip = "6.9.0"\n', "6.9.0"),
         ("__version__ = '2.9.1'\n", ""),
         ("# hip = '1.0'\n", ""),  # not at the start of a line after ^ anchoring
     ],

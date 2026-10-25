@@ -14,6 +14,7 @@ import contextlib
 import os
 import signal
 from loggers import get_logger
+from core.inference.inference_gate import holds_inference
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import multiprocessing as mp
 import queue
@@ -275,6 +276,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -873,6 +875,16 @@ class InferenceOrchestrator:
             with self._dispatcher_lifecycle_lock:
                 self._worker_reserved_for = None
 
+    def _shutdown_before_respawn(self) -> None:
+        """Tear the current worker down before a retry spawns its replacement. A worker that
+        survives terminate/kill keeps its handle (see the model-switch guard in load_model), and a
+        second worker must not be spawned over it."""
+        if self._shutdown_subprocess(timeout = 5) is False:
+            raise RuntimeError(
+                "The inference worker did not exit and still holds GPU memory; "
+                "not starting a new one over it. Retry shortly."
+            )
+
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         with self._subprocess_shutdown_lock:
             managed = getattr(self, "_managed_engine", None)
@@ -1460,6 +1472,7 @@ class InferenceOrchestrator:
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
+        n_probs: int = 0,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1514,6 +1527,8 @@ class InferenceOrchestrator:
             cmd["penalty_window"] = penalty_window
         if grammar is not None:
             cmd["grammar"] = grammar
+        if n_probs:
+            cmd["n_probs"] = int(n_probs)
         return cmd
 
     def _consume_token_stream(
@@ -1729,6 +1744,7 @@ class InferenceOrchestrator:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
 
+    @holds_inference
     def _generate_dispatched(
         self,
         messages: list = None,
@@ -1765,6 +1781,7 @@ class InferenceOrchestrator:
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
+        n_probs: int = 0,
     ) -> Generator[Any, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1825,6 +1842,7 @@ class InferenceOrchestrator:
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
             grammar = grammar,
+            n_probs = n_probs,
         )
 
         mailbox = _WorkerMailbox(self._proc)
@@ -2052,6 +2070,7 @@ class InferenceOrchestrator:
     load_generation: int = 0
 
     @_invalidates_gpu_memory("inference load")
+    @holds_inference
     def load_model(
         self,
         config,
@@ -2067,6 +2086,7 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         spec_draft_model: Optional[str] = None,
@@ -2144,6 +2164,7 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
                 "spec_draft_model": spec_draft_model,
@@ -2251,7 +2272,11 @@ class InferenceOrchestrator:
                 os.environ.get("HF_HUB_DISABLE_XET") == "1"
             )
 
-            for attempt in range(2):
+            # One spawn, plus at most one Xet-off retry after a stalled download and one respawn
+            # to bind SSM kernels the worker just installed: each is used once, in either order.
+            xet_retry_used = False
+            ssm_restart_used = False
+            for attempt in range(3):
                 if model_name not in self.loading_models or (
                     load_cancel_event is not None and load_cancel_event.is_set()
                 ):
@@ -2265,7 +2290,7 @@ class InferenceOrchestrator:
                     return False
                 logger.info(
                     "Spawning fresh inference subprocess for '%s' "
-                    "(transformers %s.x, attempt %d/2%s)",
+                    "(transformers %s.x, attempt %d/3%s)",
                     model_name,
                     needed_major,
                     attempt + 1,
@@ -2312,18 +2337,23 @@ class InferenceOrchestrator:
                     return False
                 except DownloadStallError:
                     # First stall with Xet on -> retry with Xet disabled
-                    if attempt == 0 and not disable_xet:
+                    if not xet_retry_used and not disable_xet:
+                        xet_retry_used = True
                         logger.warning(
                             "Download stalled for '%s' -- retrying with HF_HUB_DISABLE_XET=1",
                             model_name,
                         )
-                        self._shutdown_subprocess(timeout = 5)
+                        self._shutdown_before_respawn()
                         disable_xet = True
                         continue
                     self._shutdown_subprocess(timeout = 5)
+                    if disable_xet:
+                        raise RuntimeError(
+                            f"Download stalled for '{model_name}' even with "
+                            f"HF_HUB_DISABLE_XET=1 -- check your network connection"
+                        )
                     raise RuntimeError(
-                        f"Download stalled for '{model_name}' even with "
-                        f"HF_HUB_DISABLE_XET=1 -- check your network connection"
+                        f"Download stalled for '{model_name}' -- check your network connection"
                     )
 
                 if resp.get("success"):
@@ -2395,6 +2425,19 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
+                    if (
+                        resp.get("error_kind") == "ssm_runtime_restart_required"
+                        and not ssm_restart_used
+                    ):
+                        # The worker installed an SSM kernel after its transformers had already
+                        # imported the model's modeling module; a fresh worker binds it.
+                        ssm_restart_used = True
+                        logger.info(
+                            "Respawning the inference worker for '%s' to pick up new SSM kernels",
+                            model_name,
+                        )
+                        self._shutdown_before_respawn()
+                        continue
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.active_model_name = None
@@ -2457,6 +2500,30 @@ class InferenceOrchestrator:
                 self._shutdown_subprocess()
                 return getattr(self, "_managed_engine", None) is None
             return False
+
+    def reap_dead_worker(self) -> bool:
+        proc = self._proc
+        if proc is None or proc.is_alive():
+            return False
+        with self._subprocess_shutdown_lock:
+            if (
+                self._proc is not proc
+                or self._managed_engine is not None
+                or not self.active_model_name
+                or self.loading_models
+                or self._replies_in_flight()
+            ):
+                return False
+            logger.warning(
+                "Inference worker for '%s' exited (exitcode=%s); clearing the loaded model",
+                self.active_model_name,
+                proc.exitcode,
+            )
+            self._retire_stderr_capture()
+            self._shutdown_subprocess_locked(2)
+            self.active_model_name = None
+            self.models.clear()
+            return True
 
     def _load_managed_engine(
         self,
@@ -2611,6 +2678,7 @@ class InferenceOrchestrator:
     # Dictation models run in the STT sidecars (whisper-server, llama-server, and the Transformers spawn child), not
     # the chat worker. Their lifecycle goes through here all the same, so one object knows everything that is resident
     # and Voice settings and Model Hub cannot report different things about one model.
+    @holds_inference
     def load_stt_model(
         self,
         model: Optional[str],
@@ -2977,6 +3045,7 @@ class InferenceOrchestrator:
                     reply_returns = calls_tools,
                 ),
                 count_tokens = _count,
+                cancel_check = lambda: bool(cancel_event is not None and cancel_event.is_set()),
             )
             fitted = recall["conversation"]
             truncation = {**truncation, **recall["counts"]}
@@ -3528,6 +3597,7 @@ class InferenceOrchestrator:
             if callable(close):
                 close()
 
+    @holds_inference
     def _generate_inner(
         self,
         messages: list = None,
@@ -3563,6 +3633,7 @@ class InferenceOrchestrator:
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
+        n_probs: int = 0,
     ) -> Generator[Any, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -3570,7 +3641,7 @@ class InferenceOrchestrator:
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             kwargs = dict(locals())
-            for key in ("self", "managed", "kwargs", "diffusion_frames"):
+            for key in ("self", "managed", "kwargs", "diffusion_frames", "n_probs"):
                 kwargs.pop(key, None)
             from .engine_transport import EngineHTTPError
 
@@ -3629,6 +3700,7 @@ class InferenceOrchestrator:
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
+                n_probs = n_probs,
             )
             return
 
@@ -3674,6 +3746,7 @@ class InferenceOrchestrator:
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
+                n_probs = n_probs,
             )
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3827,6 +3900,7 @@ class InferenceOrchestrator:
         )
         return outputs
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,
@@ -4078,6 +4152,7 @@ class InferenceOrchestrator:
                     self._release_worker(cancel_event)
                     release_mailbox()
 
+    @holds_inference
     def generate_whisper_response(
         self,
         audio_array,
@@ -4098,6 +4173,7 @@ class InferenceOrchestrator:
             extra_audio_arrays = extra_audio_arrays,
         )
 
+    @holds_inference
     def generate_audio_input_response(
         self,
         messages,

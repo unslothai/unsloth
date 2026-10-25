@@ -41,6 +41,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
+    "krea-2": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
@@ -70,6 +71,7 @@ class SdCppModelFiles:
     llm: Optional[str] = None
     llm_vision: Optional[str] = None
     qwen2vl: Optional[str] = None
+    tokenizer: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -139,6 +141,78 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
+# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
+# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
+_UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
+
+
+def quant_cublas_min_batch(cuda_cc: tuple[int, int]) -> Optional[int]:
+    """Rows from which ``cuda_cc`` takes the BF16 cuBLAS route, or None to keep MMQ."""
+    major, minor = int(cuda_cc[0]), int(cuda_cc[1])
+    if (major, minor) == (8, 0) or major in (9, 10):
+        return 1024
+    if major == 12:
+        return 4096
+    return None
+
+
+def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]:
+    """Quantized tensor types in the GGUF at ``path``, or None if unreadable. Reads only the mmapped tensor table."""
+    if not path or not str(path).lower().endswith(".gguf"):
+        return None
+    try:
+        from gguf import GGUFReader
+        reader = GGUFReader(str(path), "r")
+        return frozenset(t.tensor_type.name for t in reader.tensors) - _UNQUANTIZED_GGUF_TYPES
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default (MMQ)
+        return None
+
+
+def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
+    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
+    types = gguf_quantized_weight_types(files.diffusion_model)
+    if types is None:
+        return None
+    for path in (
+        files.vae,
+        files.audio_vae,
+        files.clip_l,
+        files.clip_g,
+        files.t5xxl,
+        files.llm,
+        files.llm_vision,
+        files.qwen2vl,
+    ):
+        if not path or not str(path).lower().endswith(".gguf"):
+            continue
+        extra = gguf_quantized_weight_types(path)
+        if extra is None:
+            return None
+        types |= extra
+    return types
+
+
+def quant_cublas_env(
+    cuda_ccs: Sequence[tuple[int, int]],
+    environ: Optional[dict] = None,
+    weight_types: Optional[frozenset[str]] = None,
+) -> dict[str, str]:
+    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    import os
+
+    environ = os.environ if environ is None else environ
+    if QUANT_CUBLAS_ENV in environ or not cuda_ccs:
+        return {}
+    if not weight_types or not weight_types <= QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    rows = {quant_cublas_min_batch(cc) for cc in cuda_ccs}
+    if len(rows) != 1 or None in rows:
+        return {}
+    return {QUANT_CUBLAS_ENV: str(rows.pop())}
+
+
 # Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
@@ -150,18 +224,64 @@ def native_speed_flags(
     speed_mode: Optional[str],
     backend_args: Optional[Sequence[str]] = None,
     accelerator: Optional[str] = None,
+    binary: Optional[str] = None,
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
+    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent as ``--conv-direct off``,
+    since an omitted flag means auto there (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if not conv_direct_wanted(backend_args or (), accelerator):
+        args = backend_args or ()
+        if not conv_direct_wanted(args, accelerator):
+            user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
+            if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
+                return ["--diffusion-fa", "--conv-direct", "off"]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+# Flags that already decide direct conv; a user-supplied one wins over the policy.
+_CONV_DIRECT_FLAGS = ("--conv-direct", "--diffusion-conv-direct", "--vae-conv-direct")
+_VALUED_SPEED_FLAGS = ("--conv-direct",)
+
+
+def speed_flags_without(speed: Sequence[str], offload: Sequence[str]) -> list[str]:
+    """``speed`` minus flags already in ``offload``, keeping a valued flag and its value together."""
+    out: list[str] = []
+    i = 0
+    while i < len(speed):
+        flag = speed[i]
+        width = 2 if flag in _VALUED_SPEED_FLAGS and i + 1 < len(speed) else 1
+        if flag not in offload:
+            out += list(speed[i : i + width])
+        i += width
+    return out
+
+
+def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
+    """True when ``binary --help`` lists ``--conv-direct``. Fails closed (older builds reject the unknown flag)."""
+    import os
+
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _conv_direct_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _conv_direct_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])--conv-direct\b", text) is not None
 
 
 # Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
@@ -371,6 +491,160 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
+# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
+# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
+# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
+GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
+GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
+GRAPH_CUT_RETRY_SCALE = 0.75
+GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
+
+
+def explicit_vram_budget_enabled(env: Optional[dict] = None) -> bool:
+    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading."""
+    import os
+
+    environ = os.environ if env is None else env
+    return str(environ.get(GRAPH_CUT_EXPLICIT_BUDGET_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def graph_cut_budget_gib(
+    free_bytes: Optional[int],
+    *,
+    reserve_bytes: int = GRAPH_CUT_BUDGET_RESERVE_BYTES,
+    scale: float = 1.0,
+) -> Optional[float]:
+    """``--max-vram`` GiB for ``free_bytes`` free, or None (keep "-1"). Rounded DOWN so it never exceeds the plan."""
+    if free_bytes is None:
+        return None
+    budget = (int(free_bytes) - int(reserve_bytes)) * float(scale)
+    if budget < GRAPH_CUT_MIN_BUDGET_BYTES:
+        return None
+    return int(budget / float(1 << 30) * 100) / 100.0
+
+
+def _format_gib(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def max_vram_value(flags: Sequence[str]) -> Optional[str]:
+    items = list(flags)
+    for i, flag in enumerate(items):
+        if flag == "--max-vram":
+            return items[i + 1] if i + 1 < len(items) else None
+    return None
+
+
+def max_vram_is_auto(value: Optional[str]) -> bool:
+    if value is None or "=" in value or "," in value:
+        return False
+    try:
+        return float(value) < 0
+    except ValueError:
+        return False
+
+
+def max_vram_is_placeholder(value: Optional[str]) -> bool:
+    """Only the committed ``-1``; a computed UMA reserve (``-17.05``) is sd.cpp's to apply, not a placeholder."""
+    if not max_vram_is_auto(value):
+        return False
+    return float(value) == float(GRAPH_CUT_VRAM_FLAGS[1])  # type: ignore[arg-type]
+
+
+def with_max_vram_budget(
+    flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
+) -> list[str]:
+    """Replace only the ``-1`` placeholder (dict -> ``cuda0=6.25,cuda1=12.50``), never a user or UMA-fit value."""
+    out = list(flags)
+    if not budget:
+        return out
+    for i, flag in enumerate(out):
+        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_placeholder(out[i + 1]):
+            continue
+        if isinstance(budget, dict):
+            out[i + 1] = ",".join(f"{name}={_format_gib(gib)}" for name, gib in budget.items())
+        else:
+            out[i + 1] = _format_gib(float(budget))
+    return out
+
+
+def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, float]]":
+    value = max_vram_value(flags)
+    if value is None or max_vram_is_auto(value):
+        return None
+    try:
+        if "=" in value:
+            out: dict[str, float] = {}
+            for part in value.split(","):
+                name, _, gib = part.partition("=")
+                out[name.strip()] = float(gib)
+            return out
+        gib = float(value)
+    except ValueError:
+        return None
+    return gib if gib > 0 else None
+
+
+def scaled_vram_budget(
+    budget: "float | dict[str, float]", scale: float
+) -> "Optional[float | dict[str, float]]":
+    """``budget * scale`` per device, or None once any device falls below ``GRAPH_CUT_MIN_BUDGET_BYTES``."""
+    floor_gib = GRAPH_CUT_MIN_BUDGET_BYTES / float(1 << 30)
+
+    def one(gib: float) -> Optional[float]:
+        value = int(float(gib) * float(scale) * 100) / 100.0
+        return value if value >= floor_gib else None
+
+    if isinstance(budget, dict):
+        out = {name: one(gib) for name, gib in budget.items()}
+        if not out or any(v is None for v in out.values()):
+            return None
+        return out  # type: ignore[return-value]
+    return one(float(budget))
+
+
+# Not the model manager's "cannot make enough memory available": completed renders print it too.
+_DEVICE_OOM_MARKERS: tuple[str, ...] = (
+    "erroroutofdevicememory",
+    "out_of_device_memory",
+    "cudaerrormemoryallocation",
+    "hiperroroutofmemory",
+    "failed to allocate cuda",
+    "failed to allocate rocm",
+    "failed to allocate vulkan",
+    "failed to allocate metal",
+    "failed during workspace capacity check",
+    "failed during workspace allocation",
+    "failed during allocated capacity check",
+)
+# Bare "out of memory" counts only beside a device API name; host OOM is not cured by a smaller VRAM budget.
+_DEVICE_OOM_CONTEXT: tuple[str, ...] = ("cuda", "hip", "rocm", "vulkan", "metal", "ggml_backend")
+_HOST_OOM_MARKERS: tuple[str, ...] = (
+    "host malloc",
+    "host memory",
+    "out_of_host_memory",
+    "bad_alloc",
+    "cannot allocate memory",
+)
+
+
+def is_device_oom_text(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    for line in str(text).lower().splitlines():
+        if any(marker in line for marker in _HOST_OOM_MARKERS):
+            continue
+        if any(marker in line for marker in _DEVICE_OOM_MARKERS):
+            return True
+        if "out of memory" in line and any(word in line for word in _DEVICE_OOM_CONTEXT):
+            return True
+    return False
+
 
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
@@ -514,6 +788,7 @@ def build_sd_cpp_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]
@@ -583,6 +858,7 @@ def build_sd_cpp_video_command(
     *,
     output_path: str,
     offload: Optional[list[str]] = None,
+    threads: Optional[int] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -612,6 +888,8 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
+    if files.tokenizer:
+        cmd += ["--tokenizer", files.tokenizer]
     # Reject incompatible partitions before loading the model.
     if (params.init_img or params.end_img) and (
         params.ref_images or params.ref_videos or params.ref_audios
@@ -657,6 +935,8 @@ def build_sd_cpp_video_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]
+    if threads is not None:
+        cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
         cmd += offload
@@ -748,6 +1028,7 @@ def build_sd_cpp_server_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]
@@ -772,9 +1053,9 @@ def build_sd_cpp_server_command(
     # De-dup speed flags against offload (may already include --diffusion-fa).
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += [
-        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
-    ]
+    cmd += speed_flags_without(
+        native_speed_flags(native_speed, backend_args, accelerator, binary), offload
+    )
     cmd += placement
     cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
@@ -802,6 +1083,7 @@ def build_img_gen_request(
     ref_images: Optional[list[str]] = None,
     qwen_image_layers: Optional[int] = None,
     custom_sigmas: Optional[list[float]] = None,
+    hires: Optional[dict] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -852,6 +1134,8 @@ def build_img_gen_request(
         req["ref_images"] = list(ref_images)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
+    if hires:
+        req["hires"] = dict(hires)
     return req
 
 

@@ -8,10 +8,16 @@ removes that and nothing else, and a folder that moved or was replaced is never 
 """
 
 import os
+import base64
+import hashlib
+import hmac
+import json
 import platform
 import shutil
+import sqlite3
 import stat
 import uuid
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,6 +82,203 @@ def env(tmp_path, monkeypatch, projects_home, repo_parent):
 def _identity(path):
     st = os.stat(path)
     return (st.st_dev, st.st_ino)
+
+
+def test_create_with_working_folder_saves_identity_and_survives_reload(env):
+    project = {"id": "p2", "name": "Existing repo", "createdAt": 1, "updatedAt": 1}
+    saved = studio_db.upsert_chat_project(
+        project, working_folder = (str(env.repo), _identity(env.repo))
+    )
+    assert saved["workingFolder"] == str(env.repo)
+    assert studio_db.available_project_working_folder(studio_db.get_chat_project("p2")) == str(
+        env.repo
+    )
+    assert env.tools._get_workdir("project-p2") == str(env.repo)
+    assert (env.repo / "main.py").read_text() == "print('hi')\n"
+    studio_db.delete_chat_project("p2")
+    assert (env.repo / "main.py").is_file()
+
+
+def test_create_cannot_change_an_existing_projects_folder(env):
+    with pytest.raises(studio_db.ProjectWorkingFolderConflictError):
+        studio_db.upsert_chat_project(
+            {**env.project, "name": "Unexpected rename"},
+            working_folder = (str(env.repo), _identity(env.repo)),
+        )
+    saved = studio_db.get_chat_project("p1")
+    assert saved["workingFolder"] is None
+    assert saved["name"] == "Repo"
+
+
+def test_failed_folder_save_rolls_back_project_creation(env):
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("""CREATE TRIGGER reject_workspace BEFORE UPDATE OF working_folder
+            ON chat_projects BEGIN SELECT RAISE(ABORT, 'workspace unavailable'); END""")
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError, match = "workspace unavailable"):
+        studio_db.upsert_chat_project(
+            {"id": "p2", "name": "Repo", "createdAt": 1, "updatedAt": 1},
+            working_folder = (str(env.repo), _identity(env.repo)),
+        )
+    assert studio_db.get_chat_project("p2") is None
+
+
+def test_create_route_requires_a_verified_lease(env, monkeypatch):
+    from routes import chat_history
+    from utils import native_path_leases
+
+    seen = []
+
+    def verify(lease, **checks):
+        seen.append((lease, checks))
+        return _grant(env.repo)
+
+    monkeypatch.setattr(native_path_leases, "verify_native_path_lease", verify)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked-folder"
+    )
+    saved = chat_history.save_project(body, current_subject = "u")
+    assert saved.workingFolder == str(env.repo)
+    assert seen[0][0] == "picked-folder"
+    assert seen[0][1]["expected_path_type"] == "directory"
+    assert seen[0][1]["operation"] == "link-documents"
+
+
+def test_create_route_rejects_invalid_folder_before_creating_project(env, monkeypatch):
+    from routes import chat_history
+
+    def refuse(lease):
+        raise HTTPException(status_code = 400, detail = "Folder selection expired")
+
+    monkeypatch.setattr(chat_history, "_resolve_project_working_folder", refuse)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "expired"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "u")
+    assert caught.value.status_code == 400
+    assert studio_db.get_chat_project("p2") is None
+
+
+def test_create_failure_after_spending_the_grant_is_an_http_error(env, monkeypatch):
+    from routes import chat_history
+
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_working_folder",
+        lambda lease: (str(env.repo), _identity(env.repo)),
+    )
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(chat_history, "upsert_chat_project", locked)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "u")
+    assert caught.value.status_code == 500
+    plain = chat_history.ChatProjectCreate(id = "p3", name = "Repo", createdAt = 1, updatedAt = 1)
+    with pytest.raises(sqlite3.OperationalError):
+        chat_history.save_project(plain, current_subject = "u")
+
+
+def test_resolution_failure_after_spending_the_grant_is_an_http_error(env, monkeypatch):
+    from routes import chat_history
+
+    def vanished(lease):
+        raise FileNotFoundError("the folder was removed after its grant was verified")
+
+    monkeypatch.setattr(chat_history, "_resolve_project_working_folder", vanished)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "u")
+    assert caught.value.status_code == 500
+    assert studio_db.get_chat_project("p2") is None
+
+
+def test_create_with_local_folder_requires_owner(env, monkeypatch):
+    from routes import chat_history
+
+    monkeypatch.setattr(chat_history, "is_owner_context", lambda: False)
+    body = chat_history.ChatProjectCreate(
+        id = "p2", name = "Repo", createdAt = 1, updatedAt = 1, nativePathLease = "picked"
+    )
+    with pytest.raises(HTTPException) as caught:
+        chat_history.save_project(body, current_subject = "managed-account")
+    assert caught.value.status_code == 403
+    assert studio_db.get_chat_project("p2") is None
+
+
+def test_http_create_consumes_real_signed_grant_and_tools_write_to_selected_folder(
+    env, monkeypatch
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routes import chat_history
+    from utils import native_path_leases as leases
+
+    secret = b"workspace-test-key-material-32!!!"
+
+    def b64(value):
+        return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+    monkeypatch.setenv(leases.LEASE_SECRET_ENV, b64(secret))
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None)
+    monkeypatch.setattr(leases, "_USED_NONCES", {})
+    now = int(time.time() * 1000)
+    device, inode = _identity(env.repo)
+    payload = {
+        "version": 1,
+        "operation": "link-documents",
+        "canonical_path": str(env.repo),
+        "path_kind": "document-folder",
+        "path_type": "directory",
+        "source_kind": "dialog",
+        "token_id_hash": hashlib.sha256(b"test-picker").hexdigest(),
+        "issued_at_ms": now,
+        "expires_at_ms": now + 120_000,
+        "nonce": os.urandom(16).hex(),
+        "display_label": "repo",
+        "size_bytes": None,
+        "modified_ms": None,
+        "device_id": format(device, "x"),
+        "file_id": format(inode, "x"),
+    }
+    encoded = b64(json.dumps(payload).encode())
+    lease = encoded + "." + b64(hmac.new(secret, encoded.encode(), hashlib.sha256).digest())
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[chat_history.get_current_subject] = lambda: "owner-test"
+    body = {"id": "p2", "name": "Repo", "createdAt": 1, "updatedAt": 1, "nativePathLease": lease}
+    with TestClient(app) as client:
+        response = client.post("/api/chat/projects", json = body)
+        assert response.status_code == 200, response.text
+        assert response.json()["workingFolder"] == str(env.repo)
+        assert "nativePathLease" not in response.json()
+        assert client.post("/api/chat/projects", json = {**body, "id": "p3"}).status_code == 400
+        assert studio_db.get_chat_project("p3") is None
+        assert (
+            client.post(
+                "/api/chat/projects",
+                json = {**body, "id": "p4", "nativePathLease": "forged.signature"},
+            ).status_code
+            == 400
+        )
+        assert studio_db.get_chat_project("p4") is None
+    result = env.tools._python_exec(
+        "from pathlib import Path\nPath('written.txt').write_text('saved')\nprint('done')",
+        session_id = "project-p2",
+    )
+    assert "done" in result, result
+    assert (env.repo / "written.txt").read_text() == "saved"
+    assert not (Path(response.json()["sandboxPath"]) / "written.txt").exists()
 
 
 def _use_repo(env):

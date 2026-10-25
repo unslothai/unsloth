@@ -396,6 +396,9 @@ function loadFallbackNotice(
     degraded: parts.length > 0,
   };
 }
+// Defined beside chat-adapter.ts's imports, outside the sliced region: toasts and resyncs the models a
+// load unloaded to make room, which no scenario here asserts on.
+function reportEvicted(_loadResp: any) {}
 // From ../lib/partial-offload: the auto-load success toast reports a layer split through them.
 // Real semantics are tested in studio/frontend/tests/partial-offload.test.ts.
 function offloadCountsFrom(response: any) {

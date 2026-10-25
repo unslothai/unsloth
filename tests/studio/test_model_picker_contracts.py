@@ -1221,9 +1221,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
         in page
     )
+    assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
     assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
@@ -1422,9 +1423,22 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    footer = before.rsplit("<div", 2)[1]
-    assert "flex-wrap" not in footer, footer[:200]
-    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+    # Opening tags of the divs enclosing Remember, nearest first. The footer column is the one
+    # under the rule. A wrapper just outside it (the picker's sticky pin) may vary by variant, but
+    # only in placement: it must not make the footer wrap either.
+    attr = r"""(?:[^>"'{]|"[^"]*"|'[^']*'|\{(?:[^{}]|\{[^{}]*\})*\})*"""
+    stack = []
+    for match in re.finditer(r"<div\b(" + attr + r")>|</div>", before):
+        if match.group(0) == "</div>":
+            stack.pop()
+        elif not match.group(1).rstrip().endswith("/"):
+            stack.append(match.group(1))
+    tags = stack[::-1]
+    footer = next((i for i, tag in enumerate(tags) if "border-t" in tag), None)
+    assert footer is not None, tags[:4]
+    assert "flex flex-col" in tags[footer] and "variant ===" not in tags[footer], tags[footer]
+    for tag in tags[: footer + 2]:
+        assert "flex-wrap" not in tag, tag
 
 
 def test_save_settings_is_not_rendered_when_it_could_do_nothing():
@@ -2550,8 +2564,8 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
-        "{ syncModelOverride(" in src
+        "if ( saved && (remember || forgets) && (target.apiLoadable ?? target.isGguf) && "
+        "!nativePathToken ) { syncModelOverride(" in src
     )
     assert "const saved = remember ? savePerModelConfig(" in src
 
@@ -2561,7 +2575,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken) { syncModelOverride(" in page
+    assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2816,14 +2830,10 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # The known-quant pattern itself, not tokens from it: #13899 widened MXFP to (?:MX|NV)FP in all
-    # three places, which a literal "MXFP" check read as a drift. What has to hold is that the
-    # frontend, the hub scanner and the llama.cpp backend spell one pattern, and that it still
-    # recognises each quant family.
+    # three places, which a literal "MXFP" check read as a drift. The frontend must spell the
+    # backend's pattern (utils/gguf_names.py) and still recognise each quant family.
     patterns = {
-        "llama_cpp.py": _python_regex_source(
-            _read_backend("core/inference/llama_cpp.py"), "_GGUF_KNOWN_QUANT_RE"
-        ),
-        "gguf.py": _python_regex_source(_read_backend("hub/utils/gguf.py"), "_GGUF_QUANT_RE"),
+        "gguf.py": _python_regex_source(_read_backend("utils/gguf_names.py"), "GGUF_QUANT_RE"),
         "model-identity.ts": re.search(r'const QUANT_TOKEN_SOURCE =\s*"([^"]+)";', identity).group(
             1
         ),

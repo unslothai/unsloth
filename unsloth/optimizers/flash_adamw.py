@@ -11,7 +11,8 @@ Qwen2.5-0.5B full finetune. optim_args = "quantize=True" stores the moments in 8
 (about 8 bytes per parameter; with "master_weight_bits=24", flashoptim's own default,
 about 7), but its loss curve moved measurably away from AdamW there.
 fp32 parameters (LoRA adapters) have no correction term; for them only quantize=True
-saves memory.
+saves memory. Trainable fp16 parameters need quantize=True: unquantized fp16 moments
+underflow, so the optimizer refuses them.
 
 transformers validates `optim` against OptimizerNames, so the config stores
 `adamw_torch` and marks itself with `_unsloth_flash_adamw` plus a token in `optim_args`
@@ -146,8 +147,58 @@ def _get_flash_adamw_class():
                 )
             super().__init__(params, *args, master_weight_bits = master_weight_bits, **kwargs)
 
+        # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
+        # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
+        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
+        # Checked per group after flashoptim fills its defaults (so positional and per-group
+        # quantize both count), for groups added at construction and by add_param_group later.
+        def _group_quantizes(self, group):
+            # flashoptim resolves a group without the key (a vanilla AdamW state dict) to the
+            # optimizer-wide setting.
+            return group.get("quantize", getattr(self, "_quantize", True))
+
+        def add_param_group(self, param_group):
+            super().add_param_group(param_group)
+            group = self.param_groups[-1]
+            if not self._group_quantizes(group) and any(
+                p.dtype == torch.float16 and p.requires_grad for p in group["params"]
+            ):
+                # Not kept: a caller that catches this can add the params again with quantize=True.
+                self.param_groups.pop()
+                self.__dict__.pop("quantized_state_spec", None)
+                _refuse_unquantized_fp16()
+
+        # Every update goes through step_param: step() loops over it and gradient release calls
+        # it per parameter. Checked there against the group's current quantize (load_state_dict
+        # can restore an older group's quantize=False), so a frozen fp16 param unfrozen later is
+        # refused before it gets moments. A param frozen after backward keeps its .grad, but
+        # flashoptim skips it (requires_grad False), so it is not refused. Only fp16 params pay
+        # for the group lookup.
+        def step_param(
+            self,
+            p,
+            group = None,
+        ):
+            if p.dtype == torch.float16 and p.requires_grad and p.grad is not None:
+                if group is None:
+                    group = next(
+                        (g for g in self.param_groups if any(q is p for q in g["params"])), None
+                    )
+                if group is not None and not self._group_quantizes(group):
+                    _refuse_unquantized_fp16()
+            return super().step_param(p, group)
+
     _FLASH_ADAMW_CLASS = UnslothFlashAdamW
     return _FLASH_ADAMW_CLASS
+
+
+def _refuse_unquantized_fp16():
+    raise ValueError(
+        "Unsloth: optim = 'adamw_flash' with quantize=False stores the Adam moments in "
+        "the parameter dtype, and float16 moments underflow (wrong updates). Found "
+        "trainable float16 parameters: cast them to float32 or bfloat16, or set "
+        "optim_args = 'quantize=True'."
+    )
 
 
 def _materialize_params(params):

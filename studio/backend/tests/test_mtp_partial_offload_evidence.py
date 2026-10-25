@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What counts as evidence that a placement is partial, and what does not.
-
-Auto stands the embedded Hybrid Mamba MTP head down by emitting
-``--spec-type none`` when the placement is partial, because the recurrent
-rollback copies then cost more layers than the drafting wins back. Getting the
-EVIDENCE test wrong is expensive in both directions: too strict and Unsloth is
-back to the 3.11 token/s of the reported regression, too loose and it gives up a
-real speedup on a card that had room for every layer.
-
-``--fit on`` alone is not evidence. ``use_fit`` starts True at its declaration,
-every placement-planner branch is gated on a non-empty ``gpus``, and the except
-path restores True having priced nothing -- so an unfitted ``--fit on`` means
-"nobody looked" at least as often as it means "it does not fit". Only a planner
-run that completed over a real device list and still could not fit the model is
-a verdict; a concrete ``--gpu-layers`` count is independent evidence and needs
-no planner at all.
-
-Platform is simulated by patching sys.platform (llama_cpp.py reads it at call
-time) and the accelerator by stubbing the probe, which is what actually differs
-between hosts: _get_gpu_memory returns nvidia-smi output on Linux/Windows/WSL
-with NVIDIA, amd-smi output on ROCm, ggml Vulkan ordinals on a Vulkan build, and
-[] on a Metal Mac and on any CPU-only box (llama_cpp.py:6598-6680).
-"""
+"""Partial evidence: a completed planner verdict or a concrete --gpu-layers count, not bare --fit on."""
 
 import sys
 import tempfile
@@ -36,23 +14,13 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
-# Reuse the module's dependency stubs, fixtures and launch harness.
 from test_llama_cpp_placement import _hybrid_mtp_backend, _launch  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
 def test_auto_keeps_mtp_when_the_gpu_selector_raises():
-    """GPUs enumerated, then _select_gpus throws.
-
-    The handler logs "GPU selection failed, using --fit on" and restores
-    `gpu_indices, use_fit = None, True`. _detected_gpus is already populated, so
-    the GPU-evidence guard passes and a fit-only test would read that fallback
-    True as a partial verdict -- but no placement was ever computed.
-
-    This route is why a `bool(_detected_gpus)` guard would not be enough: the
-    verdict has to be recorded where the planner returns, not inferred later.
-    """
+    """A failed GPU selection resets use_fit to True unpriced; record verdicts where the planner returns."""
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
         backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
@@ -80,13 +48,7 @@ def test_auto_keeps_mtp_when_the_gpu_selector_raises():
 
 
 def test_auto_keeps_mtp_when_the_planner_proved_full_offload():
-    """The planner returned a fully offloaded placement.
-
-    _select_gpus gives ([0], False) -- every layer fits -- and the user appends a
-    last-wins `--fit on` in the extras. fit_is_effectively_on then reads True and
-    the arm calls the placement partial, discarding a verdict that positively
-    proved the opposite.
-    """
+    """A planner that proved every layer fits must not be overturned by a user's appended --fit on."""
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
         backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
@@ -109,11 +71,7 @@ def test_auto_keeps_mtp_when_the_planner_proved_full_offload():
 
 
 def test_a_concrete_partial_layer_count_still_stands_mtp_down():
-    """The control: independent evidence must keep working.
-
-    42 of 65 blocks is partial whatever the planner did, so tightening the fit arm
-    must not touch this one. Passes on the PR head and must keep passing.
-    """
+    """A concrete partial --gpu-layers count (42 of 65) stands MTP down whatever the planner did."""
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
         backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
@@ -132,9 +90,6 @@ def test_a_concrete_partial_layer_count_still_stands_mtp_down():
     assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
-# ─────────────── the platform x accelerator product ───────────────
-
-# (id, sys.platform value, extra marker so WSL is distinguishable from Linux)
 PLATFORMS = [
     ("linux", "linux"),
     ("wsl", "linux"),
@@ -168,12 +123,7 @@ def _mtp_is_engaged(cmd):
 def test_partial_layer_count_stands_mtp_down_everywhere(
     tmp_path, plat_id, plat, acc_id, memory, vulkan, device
 ):
-    """A concrete partial `--gpu-layers` is placement evidence on every host.
-
-    42 of 65 blocks is partial whatever the planner, the probe or the OS did, so
-    this cell must stand MTP down uniformly -- except CPU-only, where there is no
-    GPU to partially offload TO and the CPU MTP policy still applies.
-    """
+    """A partial --gpu-layers count stands MTP down on every GPU host; CPU-only uses the CPU policy."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
     backend._is_vulkan_backend = lambda _binary = None: vulkan
     extra = ["--gpu-layers", "42"]
@@ -192,7 +142,6 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
 
     cmd = result["cmd"]
     if acc_id == "cpu_only" and not device:
-        # No GPU anywhere: keep the CPU MTP policy (llama_cpp.py:15530 guard).
         assert not _mtp_is_engaged(cmd) or _spec_of(cmd) != "none"
     else:
         assert _spec_of(cmd) == "none", f"{plat_id}/{acc_id} did not stand MTP down"
@@ -310,13 +259,7 @@ def test_explicit_mtp_survives_partial_offload_everywhere(tmp_path, plat_id, pla
 
 @pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
-    """No probe result and no concrete layer count is not evidence of anything.
-
-    A Metal Mac reaches llama_cpp.py:6598 with no nvidia-smi, no amd-smi and no
-    torch.cuda, so the probe is [] and `--fit on` is the untouched default from
-    llama_cpp.py:14127 rather than a planner verdict. Same shape as a failed
-    Vulkan probe on Linux or Windows.
-    """
+    """An empty GPU probe (a Metal Mac) is not evidence: --fit on there is the default, not a verdict."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     with patch.object(sys, "platform", plat):
@@ -335,13 +278,7 @@ def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
 
 @pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, plat):
-    """The b126194 hole: a device pin proves a GPU EXISTS, not that fit is partial.
-
-    On a Metal Mac (`--device Metal0`) or after a failed Vulkan probe
-    (`--device Vulkan0`) the planner never ran -- every branch of it is gated on a
-    non-empty `gpus` -- so `--fit on` is still the default. Standing MTP down here
-    costs a real speedup on a card that may have room for every layer.
-    """
+    """A hand-pinned device proves a GPU exists, not a partial fit; the planner never ran."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
     device = "Metal0" if plat == "darwin" else "Vulkan0"
 
@@ -361,15 +298,8 @@ def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, p
     )
 
 
-# ───────────────────── binary + GGUF vintage ─────────────────────
-
-
 def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
-    """An old llama.cpp with no MTP spelling must not claim a placement policy.
-
-    Its `--spec-type` enum may not even carry "none", so the emit path below has
-    to name binary_no_mtp and keep the update affordance.
-    """
+    """A build whose --spec-type enum lacks none must report the binary, not a placement policy."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_ngram_mod": False,
@@ -389,11 +319,7 @@ def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
 
 
 def test_an_old_gguf_without_ssm_group_count_is_priced_as_before(tmp_path):
-    """A GGUF predating the ssm.group_count key must not get a garbage estimate.
-
-    _mamba_recurrent_state_bytes returns 0 when any dimension is missing, so the
-    load degrades to the pre-PR number instead of a wrong one.
-    """
+    """A GGUF without ssm.group_count prices recurrent state at 0, keeping the earlier estimate."""
     b = LlamaCppBackend()
     for k, v in {
         "_n_layers": 65,
@@ -413,7 +339,6 @@ def test_an_old_gguf_without_ssm_group_count_is_priced_as_before(tmp_path):
 
     assert b._mamba_recurrent_state_bytes() == 0
     assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 0
-    # And the KV estimate is still the plain attention number.
     assert b._estimate_kv_cache_bytes(4096, "f16") == 16 * 4096 * 4 * (256 + 256) * 2
 
 
@@ -497,20 +422,11 @@ def test_zero_full_attention_interval_does_not_divide_by_zero():
     }.items():
         setattr(b, k, v)
 
-    # fai == 0 means every layer is attention, so nothing is recurrent.
     assert b._mamba_recurrent_state_bytes(n_parallel = 4) == 0
 
 
 def test_the_reported_regression_is_still_fixed(tmp_path):
-    """The whole point of the PR, guarded against every fix above.
-
-    Qwen3.8-27B UD-IQ2_M, about 12 GiB free, Auto, four slots: nvidia-smi answers,
-    the planner runs over a real device list and cannot fit the model, so --fit on
-    IS a verdict here and the stand-down must fire. If a tightening of the fit arm
-    ever breaks this, Unsloth is back to 3.11 token/s.
-
-    See https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/discussions/18.
-    """
+    """Qwen3.8-27B with ~12 GiB free that cannot fit must stand MTP down, or the regression returns."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(

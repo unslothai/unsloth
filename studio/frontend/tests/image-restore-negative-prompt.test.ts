@@ -6,6 +6,8 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 import { enhanceRestoreFor } from "../src/features/images/lib/prompt-enhance.ts";
+import { restoredInpaintMaskOptions } from "../src/features/images/lib/inpaint-options.ts";
+import { detailerNotApplied, restoredDetailer } from "../src/features/images/lib/detailer.ts";
 
 function restoreSettingsWith(negativeCapable: boolean) {
   const source = readSrc("features/images/images-page.tsx");
@@ -49,6 +51,9 @@ function restoreSettingsWith(negativeCapable: boolean) {
     changeSamplerChoice: () => {},
     // Its return value is read, so it cannot be a recording no-op.
     enhanceRestoreFor,
+    restoredInpaintMaskOptions,
+    restoredDetailer,
+    detailerNotApplied,
     toast: { success: () => {} },
   };
   // Every closure name the callback reads that is not a real global resolves to a recording no-op,

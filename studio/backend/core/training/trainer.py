@@ -89,6 +89,7 @@ from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
     has_custom_labels,
     prepare_pretokenized_dataset,
+    resolve_completion_only_loss,
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
@@ -670,6 +671,9 @@ class UnslothTrainer:
                 from transformers import AutoProcessor
                 self.tokenizer = AutoProcessor.from_pretrained(
                     lookup_name,
+                    # Labels are encoded before load_model: match FastModel's English/transcribe prefix.
+                    language = "English",
+                    task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = hf_token,
                     local_files_only = local_files_only,
@@ -3192,19 +3196,27 @@ class UnslothTrainer:
         return (train_data, eval_data)
 
     @staticmethod
+    def _resolve_local_path(dataset_file: str) -> Path:
+        dataset_file = os.path.expanduser(dataset_file)
+        if os.path.isabs(dataset_file):
+            return Path(dataset_file)
+        if os.path.exists(dataset_file):
+            return Path(os.path.abspath(dataset_file))
+        return Path(str(resolve_dataset_path(dataset_file)))
+
+    @staticmethod
+    def _load_saved_dataset(file_paths: list):
+        if len(file_paths) != 1:
+            return None
+        from utils.datasets.saved import load_saved_dataset
+        return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
+
+    @staticmethod
     def _resolve_local_files(file_paths: list) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
-            if os.path.isabs(dataset_file):
-                file_path = dataset_file
-            elif os.path.exists(dataset_file):
-                # A path relative to the current working directory (CLI usage)
-                file_path = os.path.abspath(dataset_file)
-            else:
-                file_path = str(resolve_dataset_path(dataset_file))
-
-            file_path_obj = Path(file_path)
+            file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
                 all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
@@ -3355,7 +3367,11 @@ class UnslothTrainer:
             if local_datasets:
                 # load_dataset() is Arrow-backed; an in-memory Dataset.from_list() has no cache and forces num_proc=1
                 # during tokenization.
-                all_files = self._resolve_local_files(local_datasets)
+                saved = self._load_saved_dataset(local_datasets)
+                all_files = [] if saved is not None else self._resolve_local_files(local_datasets)
+                if saved is not None:
+                    dataset = saved
+                    logger.info(f"Loaded {len(dataset)} samples from a saved dataset folder\n")
 
                 if all_files:
                     loader = self._loader_for_files(all_files)
@@ -3377,7 +3393,18 @@ class UnslothTrainer:
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
                 if local_eval_datasets and eval_enabled:
-                    eval_all_files = self._resolve_local_files(local_eval_datasets)
+                    eval_saved = self._load_saved_dataset(local_eval_datasets)
+                    eval_all_files = (
+                        []
+                        if eval_saved is not None
+                        else self._resolve_local_files(local_eval_datasets)
+                    )
+                    if eval_saved is not None:
+                        eval_dataset = eval_saved
+                        has_separate_eval_source = True
+                        logger.info(
+                            f"Loaded {len(eval_dataset)} eval samples from a saved dataset folder\n"
+                        )
                     if eval_all_files:
                         eval_loader = self._loader_for_files(eval_all_files)
                         eval_dataset = load_dataset(
@@ -4548,7 +4575,12 @@ class UnslothTrainer:
                 trainer_kwargs = {
                     "model": self.model,
                     "train_dataset": dataset,
-                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(processor = self.tokenizer),
+                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(
+                        processor = self.tokenizer,
+                        decoder_start_token_id = getattr(
+                            self.model.config, "decoder_start_token_id", None
+                        ),
+                    ),
                     "processing_class": self.tokenizer.feature_extractor,
                     "args": Seq2SeqTrainingArguments(**config),
                 }
@@ -4604,6 +4636,7 @@ class UnslothTrainer:
             )
 
             data_collator = None
+            audio_response_masker = None
             if is_deepseek_ocr:
                 logger.info("Detected DeepSeek OCR model\n")
                 if not _ensure_deepseek_ocr_installed():
@@ -4662,6 +4695,32 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                if training_args.get("train_on_completions", False) and not training_args.get(
+                    "is_cpt", False
+                ):
+                    from unsloth.chat_templates import train_on_responses_only
+
+                    def _build_response_masker(holder, **kwargs):
+                        holder.masker = train_on_responses_only(
+                            None, tokenizer = processor, return_function = True, **kwargs
+                        )
+                        return holder
+
+                    def _notify_masking(level, message):
+                        if level == "warning":
+                            logger.warning(message)
+                        else:
+                            logger.info(f"{message}\n")
+
+                    # Same marker policy as the text path: auto-detect, template table, else full sequences.
+                    holder, audio_masking_applied = apply_completion_masking(
+                        types.SimpleNamespace(processing_class = processor, masker = None),
+                        self.model_name,
+                        _build_response_masker,
+                        notify = _notify_masking,
+                    )
+                    if audio_masking_applied:
+                        audio_response_masker = holder.masker
 
                 def audio_vlm_collate_fn(examples):
                     texts = []
@@ -4689,6 +4748,8 @@ class UnslothTrainer:
                         if token_id is not None:
                             labels[labels == token_id] = -100
                     batch["labels"] = labels
+                    if audio_response_masker is not None:
+                        batch["labels"] = audio_response_masker(batch)["labels"]
                     return batch
 
                 data_collator = audio_vlm_collate_fn
@@ -4895,12 +4956,23 @@ class UnslothTrainer:
                 except Exception:
                     vocab_size = None
                 max_seq = training_args.get("max_seq_length", 2048)
+                # completion_mask is applied (so checked) only under completion_only_loss, which TRL resolves
+                # once from the train split when unset and uses for eval too.
+                completion_only = resolve_completion_only_loss(
+                    dataset["dataset"], config_args.get("completion_only_loss")
+                )
                 dataset["dataset"] = prepare_pretokenized_dataset(
-                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                    dataset["dataset"],
+                    max_seq_length = max_seq,
+                    vocab_size = vocab_size,
+                    completion_only_loss = completion_only,
                 )
                 if eval_dataset is not None:
                     eval_dataset = prepare_pretokenized_dataset(
-                        eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                        eval_dataset,
+                        max_seq_length = max_seq,
+                        vocab_size = vocab_size,
+                        completion_only_loss = completion_only,
                     )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
@@ -5158,6 +5230,8 @@ class UnslothTrainer:
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
                     logger.info("Train on responses handled by DeepSeek OCR collator\n")
+                elif train_on_responses_enabled and audio_response_masker is not None:
+                    logger.info("Train on responses handled by audio VLM collator\n")
                 else:
                     logger.info("Training on full sequences (including prompts)\n")
 

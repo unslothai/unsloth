@@ -37,6 +37,7 @@ import {
   useState,
 } from "react";
 import {
+  type ModelConfigFocus,
   type ModelConfigHandoffRequest,
   modelConfigTarget,
   modelConfigTargetIsResident,
@@ -66,6 +67,10 @@ import {
   hasDownloadedModels,
   type ModelPickerRowFilter,
 } from "./model-selector/pickers";
+import {
+  type HubSection,
+  resolveHubSection,
+} from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
@@ -123,6 +128,7 @@ interface ModelSelectorProps {
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   loadedCount?: number;
+  loadedNames?: string[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -176,10 +182,12 @@ function ModelSelectorTrigger({
   dataTour,
   onEject,
   loadedCount = 0,
+  loadedNames,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
   loadedCount?: number;
+  loadedNames?: string[];
   currentModel?: ModelOption;
   isLoaded: boolean;
   showCloudIndicator?: boolean;
@@ -192,10 +200,17 @@ function ModelSelectorTrigger({
   placeholder?: string;
 }) {
   const severalLoaded = loadedCount > 1;
-  const triggerTitle = severalLoaded
-    ? `${loadedCount} models loaded`
-    : (currentModel?.name ?? placeholder);
-  const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
+  const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
+  const triggerTitle = listsNames
+    ? loadedNames?.join(" • ")
+    : severalLoaded
+      ? `${loadedCount} models loaded`
+      : (currentModel?.name ?? placeholder);
+  const subtitle = listsNames
+    ? undefined
+    : severalLoaded
+      ? currentModel?.name
+      : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -287,7 +302,7 @@ function ModelSelectorTrigger({
               </span>
             )}
           </span>
-          {currentModel?.descriptionSuffix && (
+          {!listsNames && currentModel?.descriptionSuffix && (
             <span
               className={cn(
                 "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
@@ -312,8 +327,6 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "connected";
-
 // The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
 // Last tab the user actually clicked, or null. Only On Device / Recommended persist.
@@ -333,7 +346,7 @@ function saveLastHubSection(section: HubSection): void {
     // Ignore unavailable storage.
   }
 }
-// Default the Hub section: the last tab clicked; first time, On Device with downloads else Recommended.
+// Preserve saved choices until the task-scoped inventory settles.
 function defaultHubSection(hasAdditionalOnDeviceModels = false): HubSection {
   return (
     loadLastHubSection() ??
@@ -470,9 +483,16 @@ function ModelSelectorContent({
       ? "connected"
       : defaultHubSection(hasAdditionalOnDeviceModels),
   );
-  // Connected is only valid while external providers exist; fall back otherwise.
-  const effectiveHubSection: HubSection =
-    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+  const [sectionChosenThisOpen, setSectionChosenThisOpen] = useState(false);
+  const [hasDeviceModels, setHasDeviceModels] = useState<boolean | null>(null);
+  // Inventory is scoped to this picker's task. A remembered On Device tab must not
+  // open empty just because another page has downloaded models.
+  const effectiveHubSection = resolveHubSection({
+    section: hubSection,
+    hasExternal,
+    hasDeviceModels,
+    sectionChosenThisOpen,
+  });
 
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
@@ -480,6 +500,20 @@ function ModelSelectorContent({
   const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
     string | null
   >(null);
+  const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
+  const [configStandalone, setConfigStandalone] = useState(false);
+
+  // Cleared during render, not in an effect: a reopen inside the exit animation dropped the adopted target.
+  const [renderedOpen, setRenderedOpen] = useState(open);
+  if (renderedOpen !== open) {
+    setRenderedOpen(open);
+    if (!open) {
+      setSectionChosenThisOpen(false);
+      setConfigTarget(null);
+      setConfigFocus(null);
+      setConfigStandalone(false);
+    }
+  }
 
   // The picker remounts on each open but this section state does not, so re-derive the default
   // section on the open edge.
@@ -491,9 +525,6 @@ function ModelSelectorContent({
           ? "connected"
           : defaultHubSection(hasAdditionalOnDeviceModels),
       );
-    }
-    if (!open && wasOpen.current) {
-      setConfigTarget(null);
     }
     wasOpen.current = open;
   }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
@@ -545,6 +576,8 @@ function ModelSelectorContent({
       ? id.slice(NPU_MODEL_PREFIX.length)
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
+    setConfigFocus(null);
+    setConfigStandalone(false);
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -581,6 +614,8 @@ function ModelSelectorContent({
   ) {
     setAdoptedConfigRequestId(configRequest.requestId);
     setConfigTarget(requestedConfigTarget);
+    setConfigFocus(configRequest.focus ?? null);
+    setConfigStandalone(configRequest.standalone === true);
   }
   useEffect(() => {
     if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
@@ -617,12 +652,14 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
-            // the rounded box the scroller put the scrollbar inside it, running the full height
-            // and straight through the top and bottom right corners, which squared them off on
-            // any machine set to show scrollbars always. The padding moves in with the scroller so
-            // the bar sits beside the content instead of on the edge.
-            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
+          ? // Clips, never scrolls: as the scroller, the always-on scrollbar squared off its corners.
+            // !px-0: the list view's snapped inline padding would hold the scrollbar 8px off the edge.
+            cn(
+              "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0",
+              hasExternal
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))]"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))]",
+            )
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
@@ -644,7 +681,8 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable]">
+          // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
+          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,
@@ -652,7 +690,15 @@ function ModelSelectorContent({
                 visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
-              onBack={() => setConfigTarget(null)}
+              onBack={
+                configStandalone
+                  ? undefined
+                  : () => {
+                      setConfigTarget(null);
+                      setConfigFocus(null);
+                    }
+              }
+              focusField={configFocus ?? undefined}
               onRun={(config, isDiffusion) =>
                 onSelect(
                   visibleConfigTarget.configId ?? visibleConfigTarget.id,
@@ -709,6 +755,7 @@ function ModelSelectorContent({
               rowFilter={rowFilter}
               moreModels={moreModels}
               npu={npu}
+              onDeviceInventoryChange={setHasDeviceModels}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -720,6 +767,7 @@ function ModelSelectorContent({
                   value={effectiveHubSection}
                   onValueChange={(next) => {
                     const section = next as HubSection;
+                    setSectionChosenThisOpen(true);
                     setHubSection(section);
                     saveLastHubSection(section);
                   }}
@@ -780,6 +828,7 @@ export function ModelSelector({
   placeholder,
   loaded,
   loadedCount,
+  loadedNames,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -960,6 +1009,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
         loadedCount={loadedCount}
+        loadedNames={loadedNames}
         placeholder={placeholder}
       />
       <ModelSelectorContent

@@ -29,9 +29,10 @@ ROOTFS = {
     "size": 356739129,
 }
 UV = {
-    "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz",
-    "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
-    "size": 19831732,
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f",
+    "size": 16682639,
+    "version": "0.13.5",
 }
 # AMD: ROCm from AMD's apt repo plus the DXG bridge .deb (HSA reaches the Windows driver via /dev/dxg).
 # The repo key ships with Studio: repo.radeon.com serves it at a mutable URL, breaking a pinned download.
@@ -182,9 +183,18 @@ def native_machine() -> str:
     """The OS architecture, not the interpreter's: an x64 Python under ARM64 emulation reports AMD64."""
     try:
         import ctypes
+        from ctypes import wintypes
 
-        process, native = ctypes.c_ushort(), ctypes.c_ushort()
-        kernel32 = ctypes.windll.kernel32
+        # Typed, or the pseudo-handle arrives truncated under x64-on-ARM64 emulation and AMD64 is reported.
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.IsWow64Process2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.USHORT),
+            ctypes.POINTER(wintypes.USHORT),
+        ]
+        kernel32.IsWow64Process2.restype = wintypes.BOOL
+        process, native = wintypes.USHORT(), wintypes.USHORT()
         if kernel32.IsWow64Process2(
             kernel32.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)
         ):
@@ -192,7 +202,12 @@ def native_machine() -> str:
     except (AttributeError, OSError):
         pass
     arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
-    return {"AMD64": "x86_64", "ARM64": "arm64"}.get(arch.upper(), arch.lower())
+    if not arch:
+        import platform
+        arch = platform.machine()
+    return {"AMD64": "x86_64", "X86_64": "x86_64", "ARM64": "arm64", "AARCH64": "arm64"}.get(
+        arch.upper(), arch.lower()
+    )
 
 
 def windows_build() -> int:
@@ -548,9 +563,14 @@ def ensure_distro(
         guest(["mkdir", "-p", f"{GUEST_ROOT}/bin"])
         put(f"{GUEST_ROOT}/owner.json", owner)
     put(f"{GUEST_ROOT}/bin/run-engine", RUNNER, "755")
+    # The pinned release, not merely a uv: an older guest uv (0.12.x) still trusts the emSign roots.
     try:
-        guest(["test", "-x", f"{GUEST_ROOT}/bin/uv"])
-    except RuntimeError:
+        installed = re.search(
+            r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"], timeout = 60), re.M
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
+        installed = None
+    if not installed or installed.group(1) != UV["version"]:
         archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)
         guest(
             [
@@ -649,7 +669,7 @@ def unregister() -> None:
     if distro_ready():
         owner = json.loads(guest(["cat", f"{GUEST_ROOT}/owner.json"]))
         if owner.get("distro") != distro_name():
-            raise RuntimeError("The WSL environment belongs to another Studio installation.")
+            raise RuntimeError("The WSL environment belongs to another Unsloth installation.")
     code, output = run(["--unregister", distro_name()], timeout = 300)
     if code and distro_name() in registered_distros():
         raise RuntimeError("Could not remove the WSL environment. " + output.strip()[-500:])

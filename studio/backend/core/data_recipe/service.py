@@ -6,11 +6,13 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import functools
+import hashlib
 import io
 import json
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +133,7 @@ def _apply_data_designer_image_context_patch() -> None:
 
     try:
         from data_designer.config.models import ImageContext  # pyright: ignore[reportMissingImports]
+        from data_designer.config.utils.image_helpers import is_image_path  # pyright: ignore[reportMissingImports]
     except ImportError:
         return
 
@@ -142,7 +145,17 @@ def _apply_data_designer_image_context_patch() -> None:
 
     def _patched_auto_resolve(self: Any, context_value: Any, base_path: str | None) -> Any:
         normalized = _normalize_image_context_value(context_value, base_path = base_path)
-        return original_auto_resolve(self, normalized, base_path)
+        if not managed_account():
+            return original_auto_resolve(self, normalized, base_path)
+        # Managed image paths load under the workspace rule; with no base_path the engine never opens files.
+        if (
+            isinstance(normalized, str)
+            and not normalized.lower().startswith(("http://", "https://", "data:"))
+            and is_image_path(normalized)
+        ):
+            if as_base64 := _load_image_file_to_base64(normalized, base_path = base_path):
+                return self._format_base64_context(as_base64)
+        return original_auto_resolve(self, normalized, None)
 
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
     setattr(ImageContext, "_unsloth_image_context_patch_applied", True)
@@ -397,6 +410,53 @@ def _apply_data_designer_mixed_type_parquet_patch() -> None:
     setattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", True)
 
 
+def _apply_data_designer_seed_uri_quote_patch() -> None:
+    # Seeds are read as FROM '<uri>': quote it for DuckDB. No ImportError guard: never run unquoted.
+    from data_designer.engine.resources.seed_reader import SeedReader  # pyright: ignore[reportMissingImports]
+
+    if getattr(SeedReader, "_unsloth_seed_uri_quote_patch_applied", False):
+        return
+
+    original_attach = SeedReader.attach
+
+    @functools.wraps(original_attach)
+    def _patched_attach(self: Any, *args: Any, **kwargs: Any) -> None:
+        # Calls the class method, so attaching twice never quotes twice.
+        self.get_dataset_uri = lambda: type(self).get_dataset_uri(self).replace("'", "''")
+        original_attach(self, *args, **kwargs)
+
+    SeedReader.attach = _patched_attach
+    setattr(SeedReader, "_unsloth_seed_uri_quote_patch_applied", True)
+
+
+def _ignore_sqlfluff_inline_config(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+def _apply_data_designer_sql_inline_config_patch() -> None:
+    # sqlfluff applies inline "-- sqlfluff:" config from the linted text (recipe data); code_lang sets the dialect.
+    try:
+        from data_designer.engine.validators.sql import SQLValidator  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return
+
+    if getattr(SQLValidator, "_unsloth_sql_inline_config_patch_applied", False):
+        return
+
+    original_validate = SQLValidator._validate_query
+
+    @functools.wraps(original_validate)
+    def _patched_validate(self: Any, content: str) -> Any:
+        # sqlfluff is imported lazily, on the first SQL cell.
+        from sqlfluff.core import FluffConfig  # pyright: ignore[reportMissingImports]
+        if FluffConfig.process_raw_file_for_config is not _ignore_sqlfluff_inline_config:
+            FluffConfig.process_raw_file_for_config = _ignore_sqlfluff_inline_config
+        return original_validate(self, content)
+
+    SQLValidator._validate_query = _patched_validate
+    setattr(SQLValidator, "_unsloth_sql_inline_config_patch_applied", True)
+
+
 def _require_public_provider_endpoint(endpoint: str) -> None:
     """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
     transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
@@ -534,6 +594,71 @@ def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
     )
 
 
+# Each env fallback is read only when its literal key is empty.
+_ENV_CREDENTIAL_KEYS = {"api_key_env": "api_key", "token_env": "token", "hf_token_env": "hf_token"}
+_LITERAL_CREDENTIAL_KEYS = set(_ENV_CREDENTIAL_KEYS.values())
+
+
+def _names_env_credential(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_names_env_credential(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if key in _ENV_CREDENTIAL_KEYS and item and not value.get(_ENV_CREDENTIAL_KEYS[key]):
+            return True
+        if key in _LITERAL_CREDENTIAL_KEYS and isinstance(item, str) and item in os.environ:
+            return True
+        if isinstance(item, (dict, list)) and _names_env_credential(item):
+            return True
+    return False
+
+
+def recipe_names_host_env_credential(recipe: Any) -> bool:
+    """True when a credential would come from this host's environment (Data Designer resolves a bare
+    variable name in api_key/token from the environment first). Only top-level local model providers
+    are exempt: the routes rewire exactly those to this server and drop their external auth."""
+    if isinstance(recipe, dict) and isinstance(recipe.get("model_providers"), list):
+        rest = {key: value for key, value in recipe.items() if key != "model_providers"}
+        external = [
+            provider
+            for provider in recipe["model_providers"]
+            if not (isinstance(provider, dict) and provider.get("is_local") is True)
+        ]
+        return _names_env_credential(rest) or _names_env_credential(external)
+    return _names_env_credential(recipe)
+
+
+def _hf_seed_sends_host_token_elsewhere(recipe: Any) -> bool:
+    """A tokenless HF seed sends the host's HF token to whatever endpoint it names."""
+    if not isinstance(recipe, dict):
+        return False
+    seed_config = recipe.get("seed_config")
+    source = seed_config.get("source") if isinstance(seed_config, dict) else None
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return False
+    if str(source.get("token") or "").strip():
+        return False
+    typed = str(source.get("endpoint") or "").strip()
+    if not typed:
+        return False
+    from utils.hf_endpoint import get_hf_endpoint
+
+    return typed.rstrip("/") != get_hf_endpoint().rstrip("/")
+
+
+def require_ui_session_for_host_env_credentials(recipe: Any, via_api_key: bool) -> None:
+    """API key / keyless callers bring their own credentials; UI sessions keep the env lookup."""
+    if via_api_key and (
+        recipe_names_host_env_credential(recipe) or _hf_seed_sends_host_token_elsewhere(recipe)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Recipes sent with an API key cannot read credentials from the server's "
+            "environment. Put the provider key in api_key instead of naming an environment variable.",
+        )
+
+
 def _require_confinable_mcp_transport(provider_type: str) -> None:
     """Refuse network MCP for managed accounts: the engine opens its own connections and cannot use chat's confined transport."""
     if provider_type not in {"sse", "streamable_http"} or not managed_account():
@@ -622,8 +747,58 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
     }
 
 
+def validate_recipe_names(recipe: dict[str, Any]) -> None:
+    """Processor names must be one folder: Data Designer stores them as `processors-files/<name>`
+    and neither previews nor lists a nested one. Column names are sanitized by the validator patch."""
+    processors = recipe.get("processors")
+    for item in processors if isinstance(processors, list) else []:
+        name = item.get("name") if isinstance(item, dict) else None
+        if isinstance(name, str) and (
+            "/" in name or "\\" in name or name in (".", "..") or re.match(r"^[A-Za-z]:", name)
+        ):
+            raise ValueError(
+                f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
+            )
+
+
+def _safe_module_name(record_id: Any, column_name: str) -> str:
+    # The code validator writes `<tmp>/<module>.py`: keep the column name readable but path-free.
+    safe = re.sub(r"[^\w-]", "_", str(column_name))
+    if safe != column_name:
+        safe += "_" + hashlib.sha256(str(column_name).encode("utf-8")).hexdigest()[:8]
+    return f"{record_id}_{safe}"
+
+
+def _apply_data_designer_python_validator_path_patch() -> None:
+    try:
+        from data_designer.engine.validators.python import (  # pyright: ignore[reportMissingImports]
+            RECORD_ID_COLUMN_NAME,
+            PythonValidator,
+        )
+    except ImportError:
+        return
+
+    if getattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", False):
+        return
+
+    def _patched_write(self: Any, row: Any, code_column: str, path: str) -> None:
+        root = Path(path).resolve()
+        target = (
+            root / f"{self._get_module_name(row[RECORD_ID_COLUMN_NAME], code_column)}.py"
+        ).resolve()
+        if target.parent != root:
+            raise ValueError(f"Code validator file left its temp folder: {code_column!r}")
+        with open(target, "w", encoding = "utf-8") as file:
+            file.write(row[code_column])
+
+    PythonValidator._get_module_name = staticmethod(_safe_module_name)
+    PythonValidator._write_code_to_file = _patched_write
+    setattr(PythonValidator, "_unsloth_python_validator_path_patch_applied", True)
+
+
 def build_config_builder(recipe: dict[str, Any]):
     validate_recipe_access(recipe)
+    validate_recipe_names(recipe)
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
     from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
@@ -670,6 +845,9 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_prompt_blank_patch()
     _apply_data_designer_expression_blank_patch()
     _apply_data_designer_mixed_type_parquet_patch()
+    _apply_data_designer_seed_uri_quote_patch()
+    _apply_data_designer_sql_inline_config_patch()
+    _apply_data_designer_python_validator_path_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:

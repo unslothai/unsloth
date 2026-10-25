@@ -53,6 +53,9 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
+# Per device: (lengths, cu_seqlens, host tuple) from the one D2H read in get_packed_info_from_kwargs
+_PACKED_HOST_LENGTHS_CACHE: dict = {}
+
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
@@ -767,8 +770,9 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     tensor = _varlen_input(args, kwargs)
     if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
-    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
-    return total in (tensor.shape[1], tensor.shape[-1])
+    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...). Compared with ==:
+    # after a dynamic-shape recompile Dynamo evaluated `total in (...)` False for a matching row.
+    return total == tensor.shape[1] or total == tensor.shape[-1]
 
 
 def _wrap_mamba2_seq_idx_call(orig, *, hit_attr = "_unsloth_varlen_fused_hit"):
@@ -931,6 +935,13 @@ def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     return None
 
 
+def _kwargs_alias_namespace(namespace):
+    """The namespace Dynamo resolves `namespace`'s globals through (sys.modules[__name__]), when it differs."""
+    name = namespace.get("__name__") if isinstance(namespace, dict) else None
+    alias = getattr(sys.modules.get(name), "__dict__", None) if isinstance(name, str) else None
+    return alias if isinstance(alias, dict) and alias is not namespace else None
+
+
 def _install_kwargs_probes(namespace) -> None:
     if not isinstance(namespace, dict):
         return
@@ -953,6 +964,33 @@ def _install_kwargs_probes(namespace) -> None:
 
         probe._unsloth_varlen_probe_of = fn
         namespace[name] = probe
+        # Dynamo reads an inlined function's globals through sys.modules[__name__]; Unsloth's compiled
+        # modules import transformers' __name__, so both namespaces must hold the same probe or the
+        # block compile guards one object and traces the other.
+        alias = _kwargs_alias_namespace(namespace)
+        if alias is not None and callable(alias.get(name)):
+            alias[name] = probe
+
+
+_FOLDS_IS_EXPORTING = []
+
+
+def _dynamo_folds_is_exporting() -> bool:
+    # torch 2.10 / 2.11 Dynamo constant-folds torch.compiler.is_exporting() to True inside any
+    # compiled region; 2.12+ reads the real flag. Probed once, eagerly, outside any trace.
+    if not _FOLDS_IS_EXPORTING:
+
+        def probe(x):
+            return x + 1 if torch.compiler.is_exporting() else x
+
+        try:
+            folds = bool(
+                torch.compile(probe, backend = "eager", fullgraph = True)(torch.zeros(1)).item()
+            )
+        except Exception:
+            folds = True  # unknown: keep the packed mixer eager, which is always correct
+        _FOLDS_IS_EXPORTING.append(folds)
+    return _FOLDS_IS_EXPORTING[0]
 
 
 def _wrap_kwargs_mixer_forward(module) -> None:
@@ -963,6 +1001,9 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         varlen = getattr(module, "_unsloth_varlen", None)
         if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
             return forward_orig(*args, **kwargs)
+        return _packed_forward(varlen, args, kwargs)
+
+    def _packed_forward(varlen, args, kwargs):
         varlen = _varlen_on(varlen, args, kwargs)
         if kwargs.get("seq_idx") is None:
             kwargs["seq_idx"] = varlen[1]
@@ -977,6 +1018,13 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         if all(ok for _, ok in trace) and any(n != "causal_conv1d_fn" for n, _ in trace):
             module._unsloth_varlen_kwargs_hit = True
         return out
+
+    if _dynamo_folds_is_exporting():
+        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
+        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
+        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
+        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward
     module._unsloth_varlen_kwargs_mode = True
@@ -1442,9 +1490,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
     namespace_rollback = {}
     for ns in mask_namespaces + kwargs_namespaces:
-        if isinstance(ns, dict) and id(ns) not in namespace_rollback:
-            names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
-            namespace_rollback[id(ns)] = (ns, {name: ns[name] for name in names if name in ns})
+        # The alias namespace too: _install_kwargs_probes mirrors into it, and a failed probe must undo that.
+        for space in (ns, _kwargs_alias_namespace(ns)):
+            if isinstance(space, dict) and id(space) not in namespace_rollback:
+                names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
+                namespace_rollback[id(space)] = (
+                    space,
+                    {name: space[name] for name in names if name in space},
+                )
     for ns in mask_namespaces:
         _install_packed_mask_positions(ns, lambda: _PACKED[0])
     for ns in kwargs_namespaces:
@@ -1627,27 +1680,78 @@ def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
     model._unsloth_varlen_generate_wrapped = True
 
 
+def _stage_packed_metadata(seq_lengths: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, ...]]:
+    """Host int32 [2n+1] = lengths ++ cu_seqlens (same cumsum as the device path), plus the lengths as ints."""
+    host_lengths = seq_lengths.reshape(-1).to(torch.int32)
+    n = host_lengths.numel()
+    staged = torch.zeros(2 * n + 1, dtype = torch.int32, device = "cpu")
+    staged[:n] = host_lengths
+    torch.cumsum(host_lengths, dim = 0, dtype = torch.int32, out = staged[n + 1 :])
+    return staged, tuple(host_lengths.tolist())
+
+
 def get_packed_info_from_kwargs(
-    kwargs: dict, device: torch.device
+    kwargs: dict,
+    device: torch.device,
+    position_ids: Optional[torch.Tensor] = None,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
-    """Return packed sequence metadata expected by the attention kernels."""
+    """Return packed metadata, optionally inferring a mask-free prefill's boundaries."""
 
     seq_lengths = kwargs.get("packed_seq_lengths")
     if seq_lengths is None:
-        return None
+        # Callers must exclude padding masks and cached decoding before opting in.
+        if position_ids is None or position_ids.dim() != 2:
+            return None
+        varlen = _varlen_from_position_ids(position_ids)
+        if varlen is None:
+            return None
+        cu_seqlens, _ = varlen
+        seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]
 
     entry = _PACKED_INFO_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths:
         return entry["result"]
 
-    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
-    cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
-    torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+    if (
+        isinstance(seq_lengths, torch.Tensor)
+        and seq_lengths.device.type == "cpu"
+        and torch.device(device).type == "cuda"
+    ):
+        # One pinned non_blocking H2D copy; pageable copies and .item() both drain the stream.
+        staged, host = _stage_packed_metadata(seq_lengths)
+        n = len(host)
+        moved = staged.pin_memory().to(device = device, non_blocking = True)
+        lengths, cu_seqlens = moved[:n], moved[n:]
+    else:
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+        cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
+        torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
+        # The one D2H read per batch.
+        host = tuple(lengths.tolist())
 
-    max_seqlen = int(lengths.max().item())
+    max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
     _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+    _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
+
+
+def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, ...]]:
+    """Host copy of the lengths get_packed_info_from_kwargs built (no device read), else None.
+    With cu_seqlens, also requires that it is the cumsum built beside those lengths."""
+    entry = _PACKED_HOST_LENGTHS_CACHE.get(getattr(seq_lengths, "device", None))
+    if entry is None or entry[0] is not seq_lengths:
+        return None
+    if cu_seqlens is not None and entry[1] is not cu_seqlens:
+        return None
+    return entry[2]
+
+
+def _host_segment_lengths(seq_lengths) -> Tuple[int, ...]:
+    host = _cached_host_lengths(seq_lengths)
+    if host is not None:
+        return host
+    return tuple(int(length) for length in seq_lengths.tolist())
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
@@ -1671,10 +1775,15 @@ def cover_padded_cu_seqlens(
     if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
         return entry["result"]
 
-    padding = total_tokens - int(cu_seqlens[-1].item())
+    host = _cached_host_lengths(seq_info[0], cu_seqlens)
+    if host is not None:
+        padding = total_tokens - sum(host)
+    else:
+        padding = total_tokens - int(cu_seqlens[-1].item())
     result = (cu_seqlens, max_seqlen)
     if padding > 0:
-        tail = torch.tensor([total_tokens], dtype = cu_seqlens.dtype, device = device)
+        # new_full is a fill kernel; torch.tensor(..., device = cuda) is a blocking H2D copy.
+        tail = cu_seqlens.new_full((1,), total_tokens)
         result = (torch.cat([cu_seqlens, tail]), max(max_seqlen, padding))
     _PADDED_CU_SEQLENS_CACHE[device] = {
         "cu_seqlens": cu_seqlens,
@@ -1704,10 +1813,12 @@ def build_xformers_block_causal_mask(
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
 
-        lengths_tensor = seq_lengths.to("cpu", torch.int32)
-        if lengths_tensor.numel() == 0:
+        lengths = _cached_host_lengths(seq_lengths)
+        if lengths is None:
+            lengths_tensor = seq_lengths.to("cpu", torch.int32)
+            lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        if len(lengths) == 0:
             return None
-        lengths = tuple(int(x) for x in lengths_tensor.tolist())
         lengths = _with_padding_segment(lengths, total_tokens)
         mask = _get_cached_block_mask(lengths, sliding_window, device, is_causal = is_causal)
 
@@ -1757,9 +1868,7 @@ def packed_segment_lengths(
     entry = _SEGMENT_LENGTHS_CACHE.get(seq_lengths.device)
     if entry is not None and entry[0] is seq_lengths and entry[1] == total_tokens:
         return entry[2]
-    lengths = _with_padding_segment(
-        tuple(int(length) for length in seq_lengths.tolist()), total_tokens
-    )
+    lengths = _with_padding_segment(_host_segment_lengths(seq_lengths), total_tokens)
     _SEGMENT_LENGTHS_CACHE[seq_lengths.device] = (seq_lengths, total_tokens, lengths)
     return lengths
 
@@ -1780,10 +1889,7 @@ def build_sdpa_packed_attention_mask(
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
-    lengths = _with_padding_segment(
-        tuple(int(length) for length in seq_lengths.tolist()),
-        total_tokens,
-    )
+    lengths = _with_padding_segment(_host_segment_lengths(seq_lengths), total_tokens)
     total_tokens = sum(lengths)
     mask = torch.full(
         (total_tokens, total_tokens),
@@ -1896,6 +2002,7 @@ def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
     _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
+    _PACKED_HOST_LENGTHS_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _SEGMENT_LENGTHS_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()

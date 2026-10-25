@@ -2956,3 +2956,124 @@ def test_a_custom_repository_asset_name_is_judged_by_the_recorded_platform(tmp_p
         install_dir, asset = f"whisper-v1.9.1-{os_token}-{arch_token}-cpu.tar.gz", os = None, arch = None
     )
     assert _whisper_check(install_dir, host) is True
+
+
+def _paired_macos_release(requires_llama_tag: str) -> M.ReleaseBundle:
+    asset = "whisper-macos-arm64-slim.tar.gz"
+    return _release_for_selection(
+        "v1.9.5-unsloth.9",
+        "v1.9.5",
+        _slim_artifact(
+            os = "macos",
+            arch = "arm64",
+            asset = asset,
+            requires_llama_tag = requires_llama_tag,
+            requires_ggml_sonames = ["libggml.0.dylib", "libggml-base.0.dylib"],
+        ),
+    )
+
+
+def _macos_pairing_gap(
+    monkeypatch,
+    installed_llama_tag: str,
+    llama_repo: str | None = "unslothai/llama.cpp",
+) -> list[str]:
+    """The newest whisper.cpp release pairs with b10069; llama.cpp is installed at another build."""
+    newest = _paired_macos_release(SLIM_LLAMA_TAG)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (Path("/nowhere"), installed_llama_tag, ""),
+    )
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda *a, **k: None)
+    monkeypatch.setattr(M, "installed_llama_tree_repo", lambda *a, **k: llama_repo)
+    monkeypatch.setattr(M, "published_llama_ggml_tree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (newest, {})
+    )
+    listed: list[str] = []
+
+    def listing(repo):
+        listed.append(repo)
+        return [newest.release_tag]
+
+    monkeypatch.setattr(M, "_published_release_tags", listing)
+    return listed
+
+
+def _plan_on_macos(published_repo: str = "unslothai/whisper.cpp"):
+    return M._release_plan_for_host(
+        _host("macos", "arm64", macos_version = (15, 7)),
+        published_repo = published_repo,
+        published_release_tag = None,
+        whisper_tag = "latest",
+        requested_backend = "metal",
+    )
+
+
+def test_macos_does_not_walk_back_when_llama_is_ahead_of_every_whisper_release(monkeypatch):
+    """llama.cpp b10080 is out and its paired whisper.cpp release is not yet: no older release can
+    pair with a newer llama.cpp, so listing and fetching all of them (two requests each, on every
+    update) found nothing. Seen in CI as ~50 GitHub requests in a no-op macOS update."""
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
+    with pytest.raises(M.LlamaPairingGapError, match = SLIM_LLAMA_TAG):
+        _plan_on_macos()
+    assert listed == []
+
+
+def test_macos_still_walks_back_when_llama_is_behind_the_newest_whisper_release(monkeypatch):
+    # An older whisper.cpp release may pair with the older llama.cpp still installed.
+    listed = _macos_pairing_gap(monkeypatch, "b10060-mix-0000000")
+    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
+
+
+@pytest.mark.parametrize(
+    "tag, build",
+    [
+        ("b11734-mix-c208e5f", 11734),
+        ("b11734", 11734),
+        ("b11734x", None),
+        ("v1.9.5", None),
+        (None, None),
+    ],
+)
+def test_llama_build_numbers(tag, build):
+    assert M._llama_build(tag) == build
+
+
+def test_an_unparsable_llama_tag_keeps_the_walk(monkeypatch):
+    listed = _macos_pairing_gap(monkeypatch, "custom-build")
+    with pytest.raises(ReleaseCompatibilityError):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
+
+
+def test_macos_still_walks_back_when_the_tags_pair_but_selection_failed_otherwise(monkeypatch):
+    # b10079 shares b10069's ggml, so the pairing holds and the miss is about the runtime's files
+    # (none at /nowhere); an older release may need fewer of them, so the build numbers alone
+    # must not stop the walk.
+    listed = _macos_pairing_gap(monkeypatch, NEWER_LLAMA_TAG)
+    with pytest.raises(PrebuiltFallback) as raised:
+        _plan_on_macos()
+    assert not isinstance(raised.value, M.LlamaPairingGapError)
+    assert listed == ["unslothai/whisper.cpp"]
+
+
+def test_a_custom_release_repo_keeps_the_walk_when_llama_is_ahead(monkeypatch):
+    # Only our releases are published in llama.cpp build order; another repo may hold an older
+    # release that pairs with a newer llama.cpp.
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
+    with pytest.raises(M.LlamaPairingGapError):
+        _plan_on_macos("someone/whisper.cpp")
+    assert listed == ["someone/whisper.cpp"]
+
+
+@pytest.mark.parametrize("llama_repo", ["someone/llama.cpp", None])
+def test_a_llama_runtime_from_another_repo_keeps_the_walk(monkeypatch, llama_repo):
+    # Its build numbers say nothing about the ggml trees our whisper.cpp releases were built on.
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000", llama_repo)
+    with pytest.raises(M.LlamaPairingGapError):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
