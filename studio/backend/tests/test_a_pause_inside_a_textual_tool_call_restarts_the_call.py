@@ -192,8 +192,9 @@ def test_a_dropped_call_is_not_charged_as_replayed_prompt(monkeypatch):
     assert checkpoints, "the attempt never paused"
     kept = checkpoints[0]
     assert kept.visible_text.strip() == "Intro.", kept.visible_text
-    assert (
-        kept.charged_tokens <= 5
+    # At most one token per kept byte, the bound that holds for any tokenizer.
+    assert kept.charged_tokens <= len(
+        kept.visible_text.encode()
     ), f"{kept.charged_tokens} tokens charged as replayed prompt for a kept {kept.visible_text!r}"
 
 

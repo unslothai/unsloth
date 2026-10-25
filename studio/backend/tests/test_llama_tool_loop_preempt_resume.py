@@ -651,9 +651,54 @@ class TestADroppedStructuredCallIsNotReplayed:
         assert policy.checkpoints, "the attempt never paused"
         checkpoint = policy.checkpoints[0]
         assert checkpoint.visible_text == "Intro. "
-        assert (
-            checkpoint.charged_tokens <= 5
+        # At most one token per kept byte, the bound that holds for any tokenizer.
+        assert checkpoint.charged_tokens <= len(
+            checkpoint.visible_text.encode()
         ), f"{checkpoint.charged_tokens} tokens charged as replay for a kept {checkpoint.visible_text!r}"
+
+
+    def test_kept_reasoning_denser_than_the_dropped_call_is_charged_in_full(self, monkeypatch):
+        """Characters do not prorate tokens: 3000 digits of kept reasoning are 3000 tokens on a
+        tokenizer that splits digits one by one (Qwen's), beside a cheap 29000-character dropped
+        call. Prorated by characters the replay was charged a quarter of what it puts back."""
+        import json as _json
+
+        call = {
+            "index": 0,
+            "id": "call_big",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": '{"query": "' + "x" * 29000},
+        }
+        fragment = (
+            "data: "
+            + _json.dumps(
+                {
+                    "choices": [{"index": 0, "delta": {"tool_calls": [call]}}],
+                    "timings": {"predicted_n": 8005},
+                }
+            )
+            + "\n"
+        )
+        kept = "1" * 3000
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_reasoning(kept), fragment, _finish(), _done()],
+                [_delta("It is 6.10."), _finish(), _done()],
+            ],
+            signal = signal,
+            pause_after = {0: 2},
+        )
+        _run(recorder.backend, signal = signal, policy = policy)
+        assert policy.checkpoints, "the attempt never paused"
+        checkpoint = policy.checkpoints[0]
+        assert checkpoint.reasoning_text == kept
+        assert checkpoint.charged_tokens >= len(kept), (
+            f"{checkpoint.charged_tokens} tokens charged for {len(kept)} digits of replayed reasoning"
+        )
+        assert checkpoint.charged_tokens <= 8005
 
 
 def test_a_resumed_answer_reports_its_context_apart_from_its_usage():

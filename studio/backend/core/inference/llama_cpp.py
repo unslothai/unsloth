@@ -46864,9 +46864,14 @@ class LlamaCppBackend:
                     )
                 )
                 if _kept_chars < _made_chars:
+                    # Not prorated by characters: kept text can be far denser in tokens than the
+                    # dropped call. A token covers at least one byte, so the kept bytes bound it.
+                    _kept_bytes = len(_preempt_content.encode("utf-8", "replace")) + len(
+                        reasoning_accum.encode("utf-8", "replace")
+                    )
                     _pre_charged = max(
                         self._preempt_charged(_preempt_content, reasoning_accum),
-                        _pre_charged * _kept_chars // max(1, _made_chars),
+                        min(_pre_charged, _kept_bytes),
                     )
                 _checkpoint = _preemption.StreamCheckpoint(
                     visible_text = _preempt_content,
