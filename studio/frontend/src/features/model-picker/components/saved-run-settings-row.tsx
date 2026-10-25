@@ -140,7 +140,7 @@ export function RunSettingsPicker({
           <button
             type="button"
             aria-label="Run settings for this model"
-            className="flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-full border border-border bg-transparent pr-2.5 pl-3.5 text-left text-ui-13 font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            className="flex h-9 w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-border bg-transparent px-3.5 text-left text-ui-13 font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             <span className="min-w-0 truncate">
               {selected ?? customName ?? "Default settings"}
@@ -148,7 +148,7 @@ export function RunSettingsPicker({
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={2}
-              className="size-3.5 shrink-0 text-muted-foreground"
+              className="size-4 shrink-0 text-muted-foreground"
             />
           </button>
         </DropdownMenuTrigger>
@@ -196,7 +196,7 @@ export function RunSettingsPicker({
               <button
                 type="button"
                 aria-label={`Delete ${entry.name}`}
-                className={cn(ROW_ICON, "hover:text-destructive")}
+                className={ROW_ICON}
                 onPointerDown={keepRow}
                 onPointerUp={keepRow}
                 onClick={(event) => {
