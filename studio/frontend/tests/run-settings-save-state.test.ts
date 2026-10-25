@@ -30,11 +30,12 @@ test("the save status covers every Remember state and is always rendered", () =>
     "Saved for this model",
     "Unsaved changes",
     "Saved settings will be forgotten",
-    "Not saved yet",
     "Using default settings",
-    "Not remembered for this model",
   ]) {
     assert.ok(CONFIG_PAGE.includes(`"${label}"`), `missing status: ${label}`);
+  }
+  for (const label of ["Not saved yet", "Not remembered for this model"]) {
+    assert.ok(!CONFIG_PAGE.includes(`"${label}"`), `redundant status: ${label}`);
   }
   // Mounted on demand it would push Load down under the cursor on the click that saves.
   assert.match(CONFIG_PAGE, /\{saveStatus\}/);

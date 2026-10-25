@@ -26,6 +26,18 @@ from typing import Any, Optional
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 
+BG_PLANNED_REPLAY_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_PLANNED"
+
+
+def _bg_planned_replay_enabled() -> bool:
+    return (os.environ.get(BG_PLANNED_REPLAY_ENV) or "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 CUDA_GRAPH_DISABLE_ENV = "UNSLOTH_DISABLE_CUDA_GRAPH"
 # Master switch for every diffusion CUDA graph (whole-forward and per-block): "0" turns them all off.
 CUDA_GRAPHS_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPHS"
@@ -1546,6 +1558,27 @@ class GraphedForward:
         args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
 
+    def _background_call(self, args: tuple, kwargs: dict) -> Any:
+        """Replay through the call a render captures: otherwise the render's compiled code guards on other layouts and recompiles."""
+        if (
+            self.plan is not None
+            and self.enabled
+            and not self.poisoned
+            and not self.bypassed
+            and kwargs.get("return_dict", True) is False
+            and _bg_planned_replay_enabled()
+        ):
+            planned = self.plan(self.module, args, kwargs)
+            if planned is not None:
+                call, planned_kwargs = planned
+                if self.placement is not None:
+                    call = self._placed_step
+                live: list = []
+                spec = _flatten(((), planned_kwargs), live)
+                warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
+                return call(*warm_args, **warm_kwargs)
+        return self.orig(*args, **kwargs)
+
     def _placement_declined(self) -> bool:
         # A declined placement refuses every later recording for the load (a merely dropped key does not).
         return getattr(getattr(self, "placement", None), "_declined", None) is not None
@@ -1570,7 +1603,7 @@ class GraphedForward:
     def __call__(self, *args, **kwargs):
         if _bg_capture_suppressed():
             # Background compile thread: never capture off the render thread.
-            return self.orig(*args, **kwargs)
+            return self._background_call(args, kwargs)
         if getattr(self, "fallback", None) is not None and (self.poisoned or self._dropped):
             self._engage_fallback()
         if (

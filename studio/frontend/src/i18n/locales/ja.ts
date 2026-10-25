@@ -73,7 +73,7 @@ export const ja = {
       cursorDescription: "モデルがページ上でクリック、入力、ドラッグする位置にポインターを表示します",
       askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
-      permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",
+      permissionsDescription: "既定の動作とサイトごとの例外を設定します。パスワードや支払い情報の欄は入力されません。",
       site: "サイトまたはパターン",
       sitePlaceholder: "example.com または *.example.com",
       default: "既定",
@@ -1045,6 +1045,9 @@ export const ja = {
       storageDisk: "このディスクの空き容量 {free} / {total}",
       storageEmpty: "ライブラリにはまだ何も保存されていません。",
       storageHidden: "コンテンツ設定で非表示: {size}",
+      storageHiddenLabel: "非表示",
+      storageRefresh: "更新",
+      storageOpen: "開く",
       storageError: "ライブラリのストレージを読み込めませんでした。",
       locationsSection: "ディスク上のファイル",
       locationsDescription: "Unsloth が各種ファイルを保存している場所です。ライブラリのフォルダは Unsloth 内のラベルで、ディスク上のフォルダではありません。ファインチューニングとエクスポートは、学習とチャットがパスで参照するため移動できません。",
@@ -2288,7 +2291,7 @@ export const ja = {
       },
     },
     resources: {
-      title: "システム",
+      title: "システムとエンジン",
       description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
@@ -2444,6 +2447,13 @@ export const ja = {
       storage: {
         title: "ストレージ",
         systemDisk: "システムディスク",
+        systemUsed: "システムディスク {total} のうち {used} を使用中",
+        modelsDiskSummary: "モデルフォルダのドライブ: {total} のうち {used} を使用中、空き {free}",
+        segmentModels: "モデル",
+        segmentCaches: "キャッシュ",
+        segmentOther: "その他",
+        segmentFree: "空き",
+        refreshAction: "更新",
         modelsDisk: "モデルディスク",
         diskUsage: "{used} 使用中 / {total}",
         diskFree: "{free} 空き",
@@ -2741,6 +2751,11 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
+      showGenerationDetails: "生成の詳細",
+      showGenerationDetailsDescription:
+        "応答の生成中に速度とトークン数をリアルタイムで表示し、ローカルモデルのレイヤーの配置も表示します。",
+      showGenerationDetailsKeywords:
+        "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
