@@ -1055,7 +1055,7 @@ class TestEstimate:
         def run(gguf = None, **kw):
             cfg = config if gguf is None else SimpleNamespace(**{**vars(config), "gguf_file": gguf})
             return ri._gguf_memory_breakdown(
-                cfg, gguf or path, n_ctx = 4096, **{"gpu_memory_mode": "auto", **kw}
+                cfg, gguf or path, **{"n_ctx": 4096, "gpu_memory_mode": "auto", **kw}
             )
 
         yield run
@@ -1116,16 +1116,17 @@ class TestEstimate:
         )
         assert breakdown(llama_extra_args = extras).lookup_table_on_disk is on_disk
 
+    @pytest.mark.parametrize("ram_gib", [66, 256])
     @pytest.mark.parametrize("cpu_build", [False, True])
-    def test_a_cpu_child_proves_residency_against_ram_alone(
-        self, breakdown, monkeypatch, cpu_build
+    def test_a_cpu_child_keeps_the_table_streamed_as_the_launch_does(
+        self, breakdown, monkeypatch, cpu_build, ram_gib
     ):
-        """66 GiB RAM holds Flash-Next's table beside a 24 GiB card's share, not the whole load."""
+        """The launch's resident verdict abstains for a CPU child, whatever RAM holds."""
         import routes.inference as ri
 
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
         monkeypatch.setattr(
-            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 66 * 1024)
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_gib * 1024)
         )
         monkeypatch.setattr(
             ri.LlamaCppBackend,
@@ -1134,6 +1135,35 @@ class TestEstimate:
         )
         assert breakdown().lookup_table_on_disk is cpu_build
         assert breakdown(llama_extra_args = ["--device", "none"]).lookup_table_on_disk is True
+
+    @pytest.mark.parametrize(
+        "ram_gib, kw, on_disk",
+        [
+            (66, {}, False),
+            (66, {"gpu_memory_mode": "manual", "gpu_layers": -1}, True),
+            (66, {"gpu_memory_mode": "manual", "gpu_layers": 20}, True),
+            (256, {"gpu_memory_mode": "manual", "gpu_layers": -1}, False),
+            (256, {"gpu_memory_mode": "manual", "gpu_layers": -1, "n_ctx": 0}, True),
+        ],
+        ids = [
+            "auto_gpu_credit",
+            "manual_ram_only",
+            "manual_layers_ram_only",
+            "manual_fits",
+            "manual_no_ctx",
+        ],
+    )
+    def test_manual_mode_proves_residency_as_the_launch_does(
+        self, breakdown, monkeypatch, ram_gib, kw, on_disk
+    ):
+        """Manual launches plan no cards (gpus = []), and Auto layers with no context leave it to --fit."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_gib * 1024)
+        )
+        assert breakdown(**kw).lookup_table_on_disk is on_disk
 
     def test_a_cpu_pinned_projector_is_charged_to_ram_in_the_residency_proof(
         self, breakdown, monkeypatch

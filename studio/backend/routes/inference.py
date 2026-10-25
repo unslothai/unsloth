@@ -16094,7 +16094,7 @@ def _gguf_memory_breakdown(
             _sidecar_adapter_bytes,
             _sidecar_adapter_paths,
         )
-        from core.inference.llama_server_args import fit_target_margin_in
+        from core.inference.llama_server_args import fit_target_margin_in, resolve_requested_ctx
 
         _lt_flags, _lt_env_name = _LAZY_MODE_SPELLINGS.get(_lt_flag, (frozenset({_lt_flag}), ""))
         _lt_user = bool(
@@ -16113,6 +16113,19 @@ def _gguf_memory_breakdown(
                 return False
             # A pass-through -c 0 or larger --parallel sizes a cache runtime did not price.
             if _pass_through_reprices_cache(_lt_extras, n_parallel):
+                return False
+            # The launch keeps llama.cpp's default for a CPU child, and Manual Auto layers
+            # with no context leave its size to --fit: no resident verdict to mirror.
+            if LlamaCppBackend._binary_ships_no_gpu_backend(
+                _lt_backend._find_llama_server_binary(), _lt_env
+            ) or _device_selection_is_cpu(_lt_extras, _lt_env):
+                return False
+            _lt_manual = gpu_memory_mode == "manual"
+            if (
+                _lt_manual
+                and (gpu_layers if gpu_layers is not None else -1) < 0
+                and resolve_requested_ctx(_lt_extras, n_ctx) <= 0
+            ):
                 return False
             prompt = _prompt_cache_host_bytes(
                 None,
@@ -16168,12 +16181,10 @@ def _gguf_memory_breakdown(
             except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
                 rows = []
             pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None
-            # A CPU child uses no card: the whole load is RAM.
-            _lt_binary = _lt_backend._find_llama_server_binary()
+            # Manual mode plans no cards at launch (gpus = []): the whole load is RAM.
             if (
                 not rows
-                or LlamaCppBackend._binary_ships_no_gpu_backend(_lt_binary, _lt_env)
-                or _device_selection_is_cpu(_lt_extras, _lt_env)
+                or _lt_manual
                 or _pass_through_overrides_placement(
                     _lt_extras,
                     _lt_env,
