@@ -77,6 +77,8 @@ def test_summarise_task_folds_turns():
     assert out == {"reply": {"summary": "Pip owes me a lure."}}
     call = ctx.llm_calls[0]
     assert call["schema"] is SUMMARY_SCHEMA
+    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
+    assert call.get("seed") is None
     assert SUMMARY["text"] in call["prompt"] and "line 19" in call["prompt"]
     # A summary that comes back empty fails the call, so the player keeps every turn.
     ctx = FakeCtx("world.npc_reply", inputs = {"state": state}, llm = lambda **kw: {"summary": ""})

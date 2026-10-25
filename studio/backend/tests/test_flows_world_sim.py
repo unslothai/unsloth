@@ -258,6 +258,7 @@ def test_plan_places_are_restricted():
     out = run(
         world_nodes.world_npc_plan(SimCtx("world.npc_plan", inputs = {"state": state}, llm = llm))
     )["plan"]
+    assert seen.get("seed") is None
     assert out["npc"] == "bea" and out["day"] == 1
     assert out["plan"] == [
         {"start": 1440 + 420, "minutes": 60, "activity": "Bake", "place": "cafe"},
@@ -295,6 +296,8 @@ def test_encounter_output_schema():
     }
     ctx = SimCtx("world.npc_chat", inputs = {"state": state}, llm = lambda **kw: copy.deepcopy(raw))
     chat = run(world_nodes.world_npc_chat(ctx))["chat"]
+    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
+    assert ctx.llm_calls[0].get("seed") is None
     assert chat["lines"] == [
         {"npc": a["id"], "text": "Party at the cafe tonight!"},
         {"npc": b["id"], "text": "Hmph, fine."},

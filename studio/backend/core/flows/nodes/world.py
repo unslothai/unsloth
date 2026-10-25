@@ -325,7 +325,6 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         schema = NPC_REPLY_SCHEMA if memories is None else NPC_MEMORY_REPLY_SCHEMA,
         temperature = 0.8,
         max_tokens = int(ctx.params.get("max_tokens") or 200) + (120 if memories is None else 200),
-        seed = seed_from(ctx.seed, state.get("npc_id"), len(state.get("history") or [])),
         on_text = on_text,
     )
     reply = validate_npc_reply(raw, state)
@@ -347,7 +346,6 @@ async def _summarise(ctx: NodeContext, state: dict) -> dict:
         schema = SUMMARY_SCHEMA,
         temperature = 0.3,
         max_tokens = 320,
-        seed = seed_from(ctx.seed, state.get("npc_id"), "summary", talk_summary(state)[1]),
     )
     try:
         return {"reply": {"summary": clean_summary(raw)}}
@@ -377,7 +375,6 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
             schema = DIRECTOR_SCHEMA,
             temperature = 0.9,
             max_tokens = 500,
-            seed = seed_from(ctx.seed, "director", len(world.get("quests") or []), attempt),
         )
         try:
             return {"reply": {"patch": validate_director(raw, state)}}
@@ -421,7 +418,6 @@ async def world_npc_plan(ctx: NodeContext) -> dict:
         schema = _plan_schema(names, 6),
         temperature = 0.7,
         max_tokens = 600,
-        seed = seed_from(ctx.seed, npc["id"], day),
     )
     by_name = {p["name"]: p["id"] for p in places}
     plan = []
@@ -456,7 +452,6 @@ async def world_npc_chat(ctx: NodeContext) -> dict:
         schema = chat_schema(a, b),
         temperature = 0.8,
         max_tokens = 700,
-        seed = seed_from(ctx.seed, a["id"], b["id"], int(state.get("clock") or 0)),
     )
     try:
         chat = validate_chat(raw, a, b)

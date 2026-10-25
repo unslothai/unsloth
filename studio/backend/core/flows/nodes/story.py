@@ -387,7 +387,6 @@ async def story_next_scene(ctx: NodeContext) -> dict:
         ),
         temperature = 0.9,
         max_tokens = 1500,
-        seed = seed_from(ctx.seed, len(history), state.get("choice")),
     )
     try:
         return {"scene": repair_live_scene(raw, state, choices = choices)}
