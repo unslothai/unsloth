@@ -640,6 +640,8 @@ class GpuLease:
                 await self._cond.wait_for(lambda: not self._exclusive and self._shared == 0)
             finally:
                 self._waiting -= 1
+                # A cancelled exclusive waiter must not leave shared callers asleep behind it.
+                self._cond.notify_all()
             self._exclusive = True
         return self
 

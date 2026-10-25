@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from core.flows.compiler import parse_document
-from core.flows.engine import FlowEngine
+from core.flows.engine import FlowEngine, GpuLease
 
 from ._flows_helpers import doc, node, run_async
 
@@ -331,3 +331,43 @@ def test_ensure_model_never_loads_while_the_lane_is_shared(monkeypatch):
     with pytest.raises(NeedsExclusiveGpu):
         asyncio.run(_common._ensure_model(Ctx(), "chat", {"repo": "want/model"}, None))
     assert loaded == []
+
+
+def test_a_cancelled_exclusive_waiter_lets_queued_chat_calls_in():
+    async def go():
+        lease = GpuLease()
+        held, release = asyncio.Event(), asyncio.Event()
+
+        async def background():
+            async with lease.shared(background = True, slots = 4):
+                held.set()
+                await release.wait()
+
+        async def exclusive():
+            async with lease:
+                pass
+
+        bg = asyncio.create_task(background())
+        await held.wait()
+        ex = asyncio.create_task(exclusive())
+        await asyncio.sleep(0.01)
+        inside = []
+        both = asyncio.Event()
+
+        async def reply(name):
+            async with lease.shared(slots = 4):
+                inside.append(name)
+                if len(inside) == 2:
+                    both.set()
+                await both.wait()
+
+        # Two calls queued: Python 3.13 wakes one waiter on a cancel by itself, 3.12 none.
+        reps = [asyncio.create_task(reply(n)) for n in ("a", "b")]
+        await asyncio.sleep(0.01)
+        assert not inside
+        ex.cancel()
+        await asyncio.wait_for(both.wait(), 1)
+        release.set()
+        await asyncio.gather(bg, *reps, return_exceptions = True)
+
+    asyncio.run(go())
