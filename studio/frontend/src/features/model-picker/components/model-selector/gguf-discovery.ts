@@ -26,7 +26,7 @@ function withHubState<V extends GgufVariantDetail>(
     lookup_table_bytes: published?.update_available
       ? (published.lookup_table_bytes ?? 0)
       : published
-        ? published.lookup_table_bytes || local.lookup_table_bytes
+        ? local.lookup_table_bytes || published.lookup_table_bytes
         : local.lookup_table_bytes,
   };
 }

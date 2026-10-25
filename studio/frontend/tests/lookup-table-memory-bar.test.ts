@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { KvCacheEstimate } from "../src/features/chat/api/chat-api.ts";
 import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -74,4 +75,9 @@ test("the memory bar's estimate takes the lookup table off the whole-file weight
     hook,
     /weightsBytes:\s*r\.weights_bytes == null\s*\?\s*null\s*:\s*Math\.max\(0, r\.weights_bytes - \(r\.lookup_table_bytes \?\? 0\)\)/,
   );
+});
+
+test("the kv-cache-estimate type carries the route's null for a model without a table", () => {
+  const noTable: Pick<KvCacheEstimate, "lookup_table_bytes"> = { lookup_table_bytes: null };
+  assert.equal(noTable.lookup_table_bytes ?? 0, 0);
 });
