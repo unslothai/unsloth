@@ -91,6 +91,7 @@ import {
   TextWrapIcon,
   ViewIcon,
   VolumeMute02Icon,
+  ReloadIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -1486,7 +1487,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RefreshGlyph strokeWidth={NAV_STROKE} className={NAV_ICON} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar
@@ -1601,7 +1602,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RefreshGlyph strokeWidth={NAV_STROKE} className={NAV_ICON} />
+          <HugeiconsIcon icon={ReloadIcon} strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
       </div>
       <AddressBar

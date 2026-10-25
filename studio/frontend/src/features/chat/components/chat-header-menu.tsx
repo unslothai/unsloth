@@ -43,7 +43,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  ReloadIcon,
+  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -227,7 +227,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         {t("common.rename")}
       </Item>
       <Item
-        icon={ReloadIcon}
+        icon={Refresh01Icon}
         onSelect={() => void regenerateChatTitleWithToast(menu.item)}
         disabled={generating}
       >

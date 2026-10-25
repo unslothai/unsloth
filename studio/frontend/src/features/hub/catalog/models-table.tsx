@@ -23,7 +23,7 @@ import {
   Download01Icon,
   FavouriteIcon,
   LayoutTwoColumnIcon,
-  ReloadIcon,
+  Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -166,7 +166,7 @@ export function HubListHeader({
                 className="inline-flex size-7 shrink-0 translate-y-px cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <HugeiconsIcon
-                  icon={ReloadIcon}
+                  icon={Refresh01Icon}
                   strokeWidth={1.75}
                   className={cn("size-[calc(11px*var(--ui-space-scale,1))]", isRefreshing && "animate-spin")}
                 />

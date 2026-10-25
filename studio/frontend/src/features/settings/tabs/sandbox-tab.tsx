@@ -25,7 +25,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
-import { ArrowUpRight01Icon, ReloadIcon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -645,7 +645,7 @@ function OsSandboxSections() {
                 {loading ? (
                   <Spinner />
                 ) : (
-                  <HugeiconsIcon strokeWidth={1.75} icon={ReloadIcon} />
+                  <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
                 )}
                 {t("settings.sandbox.refresh")}
               </Button>
