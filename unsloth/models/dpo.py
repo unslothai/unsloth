@@ -564,7 +564,9 @@ def _entropy_and_argmax(hidden_or_logits, is_hidden, head, transforms, mask):
     flat = hidden_or_logits.reshape(-1, hidden_or_logits.shape[-1])
     flat_mask = mask.reshape(-1).to(device = flat.device, dtype = torch.bool)
     index = flat_mask.nonzero(as_tuple = True)[0]
-    entropy = torch.zeros(flat_mask.shape[0], dtype = torch.float32, device = flat.device)
+    # float32 at least, float64 kept (TRL computes its metrics in the logits dtype).
+    stat_dtype = torch.promote_types(flat.dtype, torch.float32)
+    entropy = torch.zeros(flat_mask.shape[0], dtype = stat_dtype, device = flat.device)
     argmax = torch.full((flat_mask.shape[0],), -1, dtype = torch.long, device = flat.device)
     if index.numel() == 0:
         return entropy.reshape(mask.shape), argmax.reshape(mask.shape)
@@ -577,7 +579,7 @@ def _entropy_and_argmax(hidden_or_logits, is_hidden, head, transforms, mask):
             idx = index[start : start + rows]
             if is_hidden:
                 chunk = flat[idx].to(device = weight.device, dtype = weight.dtype)
-                logits = F.linear(chunk, weight, bias).float()
+                logits = F.linear(chunk, weight, bias).to(stat_dtype)
                 if scale_multiply != 0.0:
                     logits = logits * scale_multiply
                 if scale_divide != 0.0:
@@ -585,7 +587,7 @@ def _entropy_and_argmax(hidden_or_logits, is_hidden, head, transforms, mask):
                 if softcapping != 0.0:
                     logits = softcapping * torch.tanh(logits / softcapping)
             else:
-                logits = flat[idx].float()
+                logits = flat[idx].to(stat_dtype)
             logps = torch.log_softmax(logits, dim = -1)
             entropy[idx] = (-(torch.exp(logps) * logps).sum(-1)).to(entropy.device)
             argmax[idx] = logits.argmax(dim = -1).to(argmax.device)
@@ -593,7 +595,9 @@ def _entropy_and_argmax(hidden_or_logits, is_hidden, head, transforms, mask):
     return entropy.reshape(mask.shape), argmax.reshape(mask.shape)
 
 
-def _dpo_v1_supported(trainer, model, inputs, return_outputs):
+def _dpo_v1_supported(trainer, model, inputs, return_outputs, trl_semantics):
+    if not isinstance(trl_semantics, dict):
+        return False
     if not fused_preference_loss_enabled() or _zoo_kernels() is None:
         return False
     if return_outputs:
@@ -611,7 +615,12 @@ def _dpo_v1_supported(trainer, model, inputs, return_outputs):
     if "input_ids" not in inputs or "completion_mask" not in inputs:
         return False
     # alpha_divergence clamps by the logps dtype, which is float32 here and half in TRL.
-    if getattr(trainer, "f_divergence_type", None) not in ("reverse_kl", "forward_kl", "js_divergence"):
+    f_divergence_types = ("reverse_kl", "forward_kl", "js_divergence")
+    if trl_semantics.get("legacy_fdiv", True):
+        # Before TRL 1.10 these scores drop their constants and replace the log ratios in some
+        # losses; only reverse_kl, where the score is the log ratio, is the same everywhere.
+        f_divergence_types = ("reverse_kl",)
+    if getattr(trainer, "f_divergence_type", None) not in f_divergence_types:
         return False
     loss_types = getattr(trainer, "loss_types", None)
     loss_weights = getattr(trainer, "loss_weights", None)
@@ -650,10 +659,16 @@ def _dpo_v1_heads(trainer, model):
     return (unwrapped, head, transforms), ref
 
 
-def unsloth_fused_dpo_compute_loss_v1(trainer, model, inputs, return_outputs = False):
+def unsloth_fused_dpo_compute_loss_v1(
+    trainer, model, inputs, return_outputs = False, trl_semantics = None
+):
     """TRL 1.x ``DPOTrainer._compute_loss`` for text-only decoder models, scored from hidden
-    states in row chunks. Returns ``None`` (run TRL's own) whenever the inputs leave that case."""
-    if not _dpo_v1_supported(trainer, model, inputs, return_outputs):
+    states in row chunks. Returns ``None`` (run TRL's own) whenever the inputs leave that case.
+
+    ``trl_semantics`` is what rl_replacements read from the installed TRL's source: legacy_fdiv
+    (pre-1.10 f-divergence scores), entropy_mean (pre-1.3 entropy metric) and tp_size (1.13+
+    divides the token count by the tensor-parallel size)."""
+    if not _dpo_v1_supported(trainer, model, inputs, return_outputs, trl_semantics):
         return None
     heads = _dpo_v1_heads(trainer, model)
     if heads is None:
@@ -866,16 +881,22 @@ def unsloth_fused_dpo_compute_loss_v1(trainer, model, inputs, return_outputs = F
 
     # Metrics, as TRL logs them, from the chunked statistics.
     mask = shift_completion_mask
-    entropy_sum = (per_token_entropy * mask).sum()
-    total_tokens = mask.sum()
-    entropy_sum = self.accelerator.gather_for_metrics(entropy_sum).sum()
-    total_tokens = self.accelerator.gather_for_metrics(total_tokens).sum()
-    entropy = (entropy_sum / total_tokens).item() if total_tokens > 0 else 0.0
+    if trl_semantics.get("entropy_mean", False):
+        entropy = per_token_entropy[mask.bool()].mean()
+        entropy = self.accelerator.gather_for_metrics(entropy).mean().item()
+    else:
+        entropy_sum = (per_token_entropy * mask).sum()
+        total_tokens = mask.sum()
+        entropy_sum = self.accelerator.gather_for_metrics(entropy_sum).sum()
+        total_tokens = self.accelerator.gather_for_metrics(total_tokens).sum()
+        entropy = (entropy_sum / total_tokens).item() if total_tokens > 0 else 0.0
     self._metrics[mode]["entropy"].append(entropy)
 
     if mode == "train":
         num_tokens_in_batch = self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
-        self._total_train_tokens += num_tokens_in_batch // self._tp_size
+        if trl_semantics.get("tp_size", False):
+            num_tokens_in_batch = num_tokens_in_batch // self._tp_size
+        self._total_train_tokens += num_tokens_in_batch
     self._metrics[mode]["num_tokens"] = [self._total_train_tokens]
 
     chosen_means, rejected_means = mean_logits.detach().chunk(2, dim = 0)

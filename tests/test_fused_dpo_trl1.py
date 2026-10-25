@@ -1,13 +1,5 @@
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """UNSLOTH_FUSED_PREFERENCE_LOSS=1 on TRL >= 1.0: ``unsloth_fused_dpo_compute_loss_v1`` must
 give TRL's ``DPOTrainer._compute_loss`` loss, gradients and logged metrics (float64, CPU)."""
@@ -40,6 +32,27 @@ from tests.test_fused_preference_loss import (  # noqa: E402
     _model,
     dpo_module,  # noqa: F401  (fixture)
 )
+
+
+def _rl_replacements_namespace():
+    import pathlib
+    import textwrap
+
+    text = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py").read_text(
+        encoding = "utf-8"
+    )
+    start = text.index("def _insert_after_docstring(")
+    end = text.index('RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)')
+    namespace = {"os": os, "re": re, "textwrap": textwrap}
+    exec(text[start:end], namespace)
+    return namespace
+
+
+_RR = _rl_replacements_namespace()
+_TRL_SOURCE = inspect.getsource(DPOTrainer._compute_loss)
+# What the installed TRL's _compute_loss does; None = the hook is not installed on this TRL.
+TRL_SEMANTICS = _RR["_dpo_v1_semantics"](_TRL_SOURCE)
+needs_hook = pytest.mark.skipif(TRL_SEMANTICS is None, reason = "the hook does not apply to this TRL")
 
 
 def _batch(seed, n = 3, width = 12):
@@ -78,8 +91,10 @@ def _trainer(model, ref_model, **overrides):
         use_weighting = False,
         _metrics = {"train": defaultdict(list), "eval": defaultdict(list)},
         _total_train_tokens = 0,
-        _tp_size = 1,
     )
+    if "_tp_size" in _TRL_SOURCE:
+        # Only releases that read it set it (1.13+); older ones would raise on it.
+        trainer._tp_size = 1
     trainer.args = types.SimpleNamespace(
         gradient_checkpointing_kwargs = None, discopop_tau = 0.05, padding_free = False
     )
@@ -121,7 +136,9 @@ def _run(trainer, model, batch, fused, module):
     model.train()
     if fused:
         HiddenStatesLlama.hidden_calls = 0
-        loss = module.unsloth_fused_dpo_compute_loss_v1(trainer, model, dict(batch), False)
+        loss = module.unsloth_fused_dpo_compute_loss_v1(
+            trainer, model, dict(batch), False, trl_semantics = TRL_SEMANTICS
+        )
         assert loss is not None, "fused path declined a supported case"
         assert HiddenStatesLlama.hidden_calls >= 1
     else:
@@ -145,10 +162,23 @@ def _same(base, head, tol = 1e-9):
         torch.testing.assert_close(grads_h[name], grads_b[name], rtol = tol, atol = tol, msg = name)
 
 
+def _declined_here(case):
+    # Pre-1.10 TRL: the fused path keeps forward_kl / js on TRL's own function.
+    return TRL_SEMANTICS["legacy_fdiv"] and case.get("f_divergence_type", "reverse_kl") != "reverse_kl"
+
+
+def _loss_type_known(case):
+    known = set(re.findall(r'loss_type == "([^"]+)"', _TRL_SOURCE))
+    return set(case.get("loss_types", ["sigmoid"])) <= known
+
+
+@needs_hook
 @pytest.mark.parametrize("case", CASES, ids = lambda c: "-".join(f"{k}={v}" for k, v in c.items()) or "default")
 @pytest.mark.parametrize("reference", ["ref_model", "precomputed"])
 def test_compute_loss_matches_trl(dpo_module, monkeypatch, case, reference):
     case = dict(case)
+    if not _loss_type_known(case):
+        pytest.skip("loss type not in this TRL")
     softcap = case.pop("softcap", 0.0)
     bias = case.pop("bias", False)
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, softcap))
@@ -167,10 +197,16 @@ def test_compute_loss_matches_trl(dpo_module, monkeypatch, case, reference):
             run_batch["ref_chosen_logps"], run_batch["ref_rejected_logps"] = logps.chunk(2)
             trainer.precompute_ref_logps = True
             trainer.ref_model = None
+        if fused and _declined_here(case):
+            assert dpo_module.unsloth_fused_dpo_compute_loss_v1(
+                trainer, model, dict(run_batch), False, trl_semantics = TRL_SEMANTICS
+            ) is None
+            return
         results.append(_run(trainer, model, run_batch, fused, dpo_module))
     _same(*results)
 
 
+@needs_hook
 def test_compute_loss_peft_reference(dpo_module, monkeypatch):
     peft = pytest.importorskip("peft")
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
@@ -202,38 +238,85 @@ def test_compute_loss_declines(dpo_module, monkeypatch, overrides, inputs_extra,
     model = _model(0)
     trainer = _trainer(model, _model(1), **overrides)
     batch = dict(_batch(seed = 1), **inputs_extra)
-    assert dpo_module.unsloth_fused_dpo_compute_loss_v1(trainer, model, batch, return_outputs) is None
+    semantics = dict(TRL_SEMANTICS or {"legacy_fdiv": False, "entropy_mean": False, "tp_size": True})
+    assert (
+        dpo_module.unsloth_fused_dpo_compute_loss_v1(
+            trainer, model, batch, return_outputs, trl_semantics = semantics
+        )
+        is None
+    )
+
+
+def test_compute_loss_declines_without_semantics(dpo_module, monkeypatch):
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    model = _model(0)
+    assert dpo_module.unsloth_fused_dpo_compute_loss_v1(_trainer(model, _model(1)), model, _batch(1), False) is None
+
+
+def test_legacy_fdiv_keeps_only_reverse_kl(dpo_module, monkeypatch):
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    legacy = {"legacy_fdiv": True, "entropy_mean": False, "tp_size": False}
+    for f_div in ("forward_kl", "js_divergence"):
+        model = _model(0)
+        trainer = _trainer(model, _model(1), f_divergence_type = f_div)
+        assert dpo_module.unsloth_fused_dpo_compute_loss_v1(trainer, model, _batch(1), False, trl_semantics = legacy) is None
 
 
 def test_compute_loss_flag_off(dpo_module, monkeypatch):
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "0")
     model = _model(0)
-    assert dpo_module.unsloth_fused_dpo_compute_loss_v1(_trainer(model, _model(1)), model, _batch(1), False) is None
+    semantics = {"legacy_fdiv": False, "entropy_mean": False, "tp_size": True}
+    assert (
+        dpo_module.unsloth_fused_dpo_compute_loss_v1(
+            _trainer(model, _model(1)), model, _batch(1), False, trl_semantics = semantics
+        )
+        is None
+    )
 
 
 def test_rl_replacement_hooks_installed_trl_compute_loss(monkeypatch):
-    import pathlib
-
-    text = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py").read_text(
-        encoding = "utf-8"
-    )
-    start = text.index("def _insert_after_docstring(")
-    end = text.index('RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)')
-    rr = types.SimpleNamespace()
-    namespace = {"os": os, "re": re, "textwrap": __import__("textwrap")}
-    exec(text[start:end], namespace)
-    rr.dpo_trainer_fused_preference_compute_loss = namespace["dpo_trainer_fused_preference_compute_loss"]
-
-    source = inspect.getsource(DPOTrainer._compute_loss)
+    hook = _RR["dpo_trainer_fused_preference_compute_loss"]
+    source = _TRL_SOURCE
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "0")
-    assert rr.dpo_trainer_fused_preference_compute_loss("_compute_loss", source) == source
+    assert hook("_compute_loss", source) == source
     monkeypatch.setenv("UNSLOTH_FUSED_PREFERENCE_LOSS", "1")
-    patched = rr.dpo_trainer_fused_preference_compute_loss("_compute_loss", source)
-    assert "unsloth_fused_dpo_compute_loss_v1(self, model, inputs, return_outputs)" in patched
+    patched = hook("_compute_loss", source)
+    if TRL_SEMANTICS is None:
+        # 0.29.x (truncates inside) and 1.15+ (TRL's own fused lm head) keep TRL's function.
+        assert patched == source
+        assert "self._truncate_inputs(" in source or "fused_lm_head=True" in source
+        return
+    assert "unsloth_fused_dpo_compute_loss_v1(self, model, inputs, return_outputs, trl_semantics = " in patched
+    assert repr(TRL_SEMANTICS) in patched
     compile(__import__("textwrap").dedent(patched), "<patched>", "exec")
+    # The flags follow the source: a release that reads _tp_size gets it, one that does not never does.
+    assert TRL_SEMANTICS["tp_size"] == ("// self._tp_size" in source)
     # A TRL that logs a metric the replacement does not reproduce keeps its own function.
     extra = source.replace('self._metrics[mode]["entropy"]', 'self._metrics[mode]["entropy_new"]')
-    assert rr.dpo_trainer_fused_preference_compute_loss("_compute_loss", extra) == extra
-    assert rr.dpo_trainer_fused_preference_compute_loss("compute_loss", source) == source
-    assert re.search("_unsloth_fused_output", patched)
-    assert os.environ["UNSLOTH_FUSED_PREFERENCE_LOSS"] == "1"
+    assert hook("_compute_loss", extra) == extra
+    assert hook("compute_loss", source) == source
+    # Shapes the replacement does not reproduce keep TRL's function.
+    for marker in ("self._truncate_inputs(", "fused_lm_head=True"):
+        mutated = source.replace("mode = ", f"{marker}\n        mode = ", 1)
+        assert hook("_compute_loss", mutated) == mutated
+    # A release with neither f-divergence spelling keeps TRL's function.
+    no_fdiv = source.replace("1 - torch.exp(-chosen_logratios)", "torch.expm1(chosen_logratios)").replace(
+        "-torch.exp(-chosen_logratios)", "torch.expm1(chosen_logratios)"
+    )
+    assert hook("_compute_loss", no_fdiv) == no_fdiv
+
+
+def test_semantics_for_recorded_release_spellings():
+    """The three behaviour switches, from the lines that differ between TRL 1.0 and 1.14."""
+    sem = _RR["_dpo_v1_semantics"]
+    base = _TRL_SOURCE if TRL_SEMANTICS is not None else None
+    if base is None:
+        pytest.skip("installed TRL source is not a hooked release")
+    modern = base.replace("-torch.exp(-chosen_logratios)", "1 - torch.exp(-chosen_logratios)") if TRL_SEMANTICS[
+        "legacy_fdiv"
+    ] else base
+    assert sem(modern)["legacy_fdiv"] is False
+    legacy = modern.replace("chosen_scores = 1 - torch.exp(-chosen_logratios)", "chosen_scores = -torch.exp(-chosen_logratios)")
+    assert sem(legacy)["legacy_fdiv"] is True
+    assert sem(modern + "\n        entropy = per_token_entropy[shift_completion_mask.bool()].mean()\n")["entropy_mean"] is True
+    assert sem(modern.replace("// self._tp_size", ""))["tp_size"] is False

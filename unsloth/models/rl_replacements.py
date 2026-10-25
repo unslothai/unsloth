@@ -756,8 +756,10 @@ def cpo_trainer_fused_preference_forward(function_name, function):
     )
 
 
-# TRL >= 1.0 DPOTrainer._compute_loss: the replacement reproduces exactly these metric keys and
-# these logits reads; any other source shape (an older or newer TRL) keeps TRL's own function.
+# TRL >= 0.29 DPOTrainer._compute_loss: the replacement reproduces exactly these metric keys and
+# these logits reads; any other source shape keeps TRL's own function. Measured on every release
+# 0.29.0 .. 1.16.0: 0.29.x truncates inside the function (declined), 1.0 .. 1.13 and 1.14 match
+# (two spellings of the same reads), 1.15+ already scores through TRL's own fused lm head.
 _DPO_V1_METRIC_KEYS = frozenset(
     (
         "aux_loss",
@@ -774,12 +776,52 @@ _DPO_V1_METRIC_KEYS = frozenset(
         "logps/rejected",
     )
 )
+# Each entry: the spellings (whitespace-insensitive) one of which must appear.
 _DPO_V1_SOURCE_MARKERS = (
-    "per_token_logps = selective_log_softmax(shift_logits, shift_labels)",
-    "ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)",
-    "per_token_entropy = entropy_from_logits(shift_logits.detach())",
-    "predictions = chosen_logits.argmax(dim=-1)",
+    (
+        "per_token_logps = selective_log_softmax(shift_logits, shift_labels)",
+        "per_token_logps, per_token_entropies = selective_log_softmax_and_entropy( shift_logits, shift_labels,",
+    ),
+    (
+        "ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)",
+        "ref_per_token_logps = selective_log_softmax( ref_shift_logits, shift_labels, row_mask=shift_completion_mask )",
+    ),
+    (
+        "per_token_entropy = entropy_from_logits(shift_logits.detach())",
+        "per_token_entropy = per_token_entropies",
+    ),
+    ("predictions = chosen_logits.argmax(dim=-1)",),
 )
+# Sources the replacement does not reproduce.
+_DPO_V1_DECLINE_MARKERS = ("self._truncate_inputs(", "fused_lm_head=True")
+# Releases before 1.10 drop the constants of the forward_kl / js f-divergence scores and feed
+# those scores (not the log ratios) to nca_pair / bco_pair / sppo_hard / apo_down.
+_DPO_V1_FDIV_SCORES_MARKER = "chosen_scores = 1 - torch.exp(-chosen_logratios)"
+_DPO_V1_FDIV_LEGACY_MARKER = "chosen_scores = -torch.exp(-chosen_logratios)"
+# Releases before 1.3 log the entropy as a mean of the masked per-token entropies.
+_DPO_V1_ENTROPY_MEAN_MARKER = "entropy = per_token_entropy[shift_completion_mask.bool()].mean()"
+
+
+def _dpo_v1_semantics(function):
+    """The TRL-release differences the fused _compute_loss must follow, read from its source, or
+    None when the source is not one the replacement reproduces."""
+    flat = " ".join(function.split())
+    if any(marker in flat for marker in _DPO_V1_DECLINE_MARKERS):
+        return None
+    for spellings in _DPO_V1_SOURCE_MARKERS:
+        if not any(" ".join(spelling.split()) in flat for spelling in spellings):
+            return None
+    if _DPO_V1_FDIV_SCORES_MARKER in flat:
+        legacy_fdiv = False
+    elif _DPO_V1_FDIV_LEGACY_MARKER in flat:
+        legacy_fdiv = True
+    else:
+        return None
+    return {
+        "legacy_fdiv": legacy_fdiv,
+        "entropy_mean": _DPO_V1_ENTROPY_MEAN_MARKER in flat,
+        "tp_size": "// self._tp_size" in flat,
+    }
 
 
 def dpo_trainer_fused_preference_compute_loss(function_name, function):
@@ -791,7 +833,8 @@ def dpo_trainer_fused_preference_compute_loss(function_name, function):
         return function
     if not re.search(r"def _compute_loss\(self, model, inputs, return_outputs\)", function):
         return function
-    if not all(marker in function for marker in _DPO_V1_SOURCE_MARKERS):
+    semantics = _dpo_v1_semantics(function)
+    if semantics is None:
         return function
     keys = set(re.findall(r'self\._metrics\[mode\]\["([^"]+)"\]', function))
     if not keys or not keys.issubset(_DPO_V1_METRIC_KEYS):
@@ -800,7 +843,8 @@ def dpo_trainer_fused_preference_compute_loss(function_name, function):
         function,
         [
             "from unsloth.models.dpo import unsloth_fused_dpo_compute_loss_v1",
-            "_unsloth_fused_output = unsloth_fused_dpo_compute_loss_v1(self, model, inputs, return_outputs)",
+            "_unsloth_fused_output = unsloth_fused_dpo_compute_loss_v1("
+            f"self, model, inputs, return_outputs, trl_semantics = {semantics!r})",
             "if _unsloth_fused_output is not None:",
             "    return _unsloth_fused_output",
         ],
