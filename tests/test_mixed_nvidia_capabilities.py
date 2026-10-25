@@ -152,7 +152,6 @@ def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain
     assert run(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
-
 @pytest.mark.parametrize("current", [0, 1])
 def test_a_distributed_launch_keeps_the_public_bf16_probe_on_the_weakest_card(monkeypatch, current):
     # torch.cuda.is_bf16_supported() must agree with SUPPORTS_BFLOAT16 on every rank (save.py reads
@@ -173,6 +172,7 @@ def test_a_distributed_launch_keeps_the_public_bf16_probe_on_the_weakest_card(mo
     assert fake.cuda.is_bf16_supported(False) is True
     fake.cuda.set_device(1)
     assert fake.cuda.is_bf16_supported(False) is False
+
 
 def test_capability_cache_follows_set_device(monkeypatch):
     fake = _fake_torch([SM86, SM75])
@@ -274,7 +274,6 @@ def test_pre_volta_switch_reads_the_current_device(monkeypatch, capsys, caps, cu
         )
 
 
-
 @pytest.mark.parametrize("world_size,major", [("2", 6), ("1", 9)])
 def test_a_distributed_launch_keeps_the_weakest_card_for_the_compile_switch(
     monkeypatch, capsys, world_size, major
@@ -285,6 +284,7 @@ def test_a_distributed_launch_keeps_the_weakest_card_for_the_compile_switch(
     fake = _fake_torch([SM90, SM61])
     applied, _ = _run_pre_volta(fake, monkeypatch, capsys)
     assert applied == [major]
+
 
 def test_pre_volta_switch_skips_an_unreadable_card(monkeypatch, capsys):
     fake = _fake_torch([SM61, SM90])
@@ -418,7 +418,6 @@ def test_an_unreadable_card_does_not_matter(monkeypatch, capsys, caps, current, 
     assert _run_model_utils_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
-
 @pytest.mark.parametrize("world_size,applied", [("2", True), ("1", False)])
 def test_a_distributed_launch_keeps_every_card_for_the_gfx906_switch(
     monkeypatch, capsys, world_size, applied
@@ -446,6 +445,7 @@ def test_a_distributed_launch_keeps_every_card_for_the_gfx906_switch(
     exec(compile(body, str(DEVICE_TYPE_PY), "exec"), namespace)
     capsys.readouterr()
     assert dynamo_config.disable is applied
+
 
 class _Placed:
     def __init__(self, device_map):
@@ -598,13 +598,20 @@ def test_both_llama_load_branches_check_the_placement():
     branches = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.If) and ast.unparse(n.test) == "num_labels is not None"
-        and any("AutoModelForSequenceClassification.from_pretrained" in ast.unparse(s) for s in n.body)
+        if isinstance(n, ast.If)
+        and ast.unparse(n.test) == "num_labels is not None"
+        and any(
+            "AutoModelForSequenceClassification.from_pretrained" in ast.unparse(s) for s in n.body
+        )
     ]
     assert branches, "sequence-classification load branch not found"
     for branch in branches:
-        assert checks(branch.body), "the num_labels branch must check where device_map put the weights"
-        assert branch.orelse and checks(branch.orelse), "the causal LM branch must check the placement"
+        assert checks(
+            branch.body
+        ), "the num_labels branch must check where device_map put the weights"
+        assert branch.orelse and checks(
+            branch.orelse
+        ), "the causal LM branch must check the placement"
 
 
 def test_sentence_transformer_direct_loads_check_the_placement():
@@ -631,7 +638,8 @@ def test_sentence_transformer_direct_loads_check_the_placement():
                 continue
             found += 1
             assert any(
-                isinstance(n, ast.Call) and getattr(n.func, "id", None) == "check_mixed_gpu_placement"
+                isinstance(n, ast.Call)
+                and getattr(n.func, "id", None) == "check_mixed_gpu_placement"
                 for later in body[i + 1 :]
                 for n in ast.walk(later)
             ), f"SentenceTransformer load at line {stmt.lineno} must check the placement"
@@ -641,9 +649,12 @@ def test_sentence_transformer_direct_loads_check_the_placement():
 class _ParamsOn:
     """A model with no hf_device_map (an extracted text core) whose parameters sit on these devices."""
 
-    def __init__(self, *devices, dtype = None):
+    def __init__(
+        self,
+        *devices,
+        dtype = None,
+    ):
         import torch
-
         dtype = torch.float16 if dtype is None else dtype
         self._params = [types.SimpleNamespace(device = torch.device(d), dtype = dtype) for d in devices]
 
@@ -691,7 +702,9 @@ def test_text_only_composite_loads_check_the_retained_core():
         # Outer blocks hold both inside one statement; the block that lists them as siblings decides.
         if core and check and min(core) != min(check):
             checked += 1
-            assert min(check) > min(core), "check the placement of the retained core, not the composite"
+            assert min(check) > min(
+                core
+            ), "check the placement of the retained core, not the composite"
     assert checked
 
 
@@ -759,7 +772,6 @@ class _PlacedByTrainer(_ParamsOn):
 
     def place(self, device):
         import torch
-
         for p in self._params:
             p.device = torch.device(device)
 
@@ -780,7 +792,11 @@ def test_sentence_transformer_trainer_checks_the_placement_before_the_deferred_c
     compiled = []
 
     class SentenceTransformerTrainer:
-        def __init__(self, model = None, args = None):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+        ):
             self.model = model
             if moved == "trainer_init":
                 model.place("cuda:1")  # Trainer moves the model to args.device
@@ -814,7 +830,11 @@ def test_sentence_transformer_trainer_checks_the_placement_before_the_deferred_c
     assert "GPU 1 (card1)" in capsys.readouterr().out
 
 
-def _public_bf16_helper(fake, monkeypatch, world_size = "1"):
+def _public_bf16_helper(
+    fake,
+    monkeypatch,
+    world_size = "1",
+):
     """The import-time chain of models/_utils.py, then its public is_bfloat16_supported, both from
     the real source, so the helper reads exactly the state that chain leaves behind."""
     monkeypatch.setenv("WORLD_SIZE", world_size)
@@ -877,7 +897,9 @@ def test_loader_dtype_choices_ask_the_helper_at_call_time(path):
     for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        names = [n for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == "SUPPORTS_BFLOAT16"]
+        names = [
+            n for n in ast.walk(node) if isinstance(n, ast.Name) and n.id == "SUPPORTS_BFLOAT16"
+        ]
         if any(isinstance(n.ctx, ast.Load) for n in names) and not any(
             isinstance(n.ctx, ast.Store) for n in names
         ):
