@@ -457,8 +457,7 @@ def load(
 
 
 STREAM_BUILD_ENV = "UNSLOTH_DIFFUSION_NATIVE_STREAM_BUILD"
-# Stored dtypes the per-tensor build reads as-is: a bf16 load casts none of them (``from_pretrained`` only casts
-# floating tensors, and a non-bf16 floating tensor is a checkpoint this path leaves to the dense load).
+# Dtypes a bf16 load never casts; any other floating dtype falls back to the dense load.
 _STREAM_DTYPES = {
     "BF16": "bfloat16",
     "I64": "int64",
@@ -471,7 +470,6 @@ _STREAM_DTYPES = {
 
 
 def stream_build_enabled() -> bool:
-    """``UNSLOTH_DIFFUSION_NATIVE_STREAM_BUILD=0`` makes a cache miss load the dense module whole again."""
     value = (os.environ.get(STREAM_BUILD_ENV) or "").strip().lower()
     return value not in ("0", "off", "false", "no")
 
@@ -503,9 +501,8 @@ def _shard_entries(path: str) -> Optional[tuple[int, dict]]:
 
 
 def _map_tensor(fd: int, start: int, entry: dict) -> Any:
-    """One tensor over its own private file mapping, which is unmapped when the tensor is freed. The dense load maps
-    a whole shard, so one surviving tensor (a bias, a norm) keeps every page of it resident; here a quantized weight
-    leaves nothing mapped behind, and a kept tensor maps only its own bytes."""
+    """One tensor over its own private mapping, unmapped when freed (a whole-shard mapping stays resident while any
+    tensor survives)."""
     import mmap
 
     import torch
@@ -522,7 +519,7 @@ def _map_tensor(fd: int, start: int, entry: dict) -> Any:
         return torch.empty(shape, dtype = dtype)
     offset = start + begin
     aligned = offset - offset % mmap.ALLOCATIONGRANULARITY
-    # Copy-on-write, as torch maps a dense shard: the tensor is writable and nothing reaches the file.
+    # Copy-on-write: writable, nothing reaches the file.
     window = mmap.mmap(
         fd, offset + (end - begin) - aligned, offset = aligned, access = mmap.ACCESS_COPY
     )
@@ -542,11 +539,8 @@ def build_from_shards(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
 ) -> Any:
-    """Build the native ``component`` from its dense bf16 shards one tensor at a time, into an empty-weights model
-    (as ``load`` rebuilds a cached entry), or None for the caller's whole dense load. Each Linear the in-place build
-    quantizes is quantized by the same constructor from the same bf16 weight, so the layers are bit-identical; the
-    dense weight is freed as soon as its codes exist, and no shard stays memory-mapped. A cancel from
-    ``cancel_check`` is a None the caller re-checks. Never raises."""
+    """Build the native ``component`` per tensor, bit-identical to the in-place build, or None for the dense load
+    (also on cancel, which the caller re-checks). Never raises."""
     cancelled = [False]
 
     def _check() -> None:
@@ -641,7 +635,6 @@ def build_from_shards(
                     parent_name, _, attr = fqn.rpartition(".")
                     parent = model.get_submodule(parent_name) if parent_name else model
                     dense = getattr(parent, attr)
-                    # Shapes, dtype and the (still meta) bias from the module; the weight from the shard.
                     stand_in = torch.nn.Linear(
                         int(dense.in_features),
                         int(dense.out_features),

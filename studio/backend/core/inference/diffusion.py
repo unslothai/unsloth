@@ -9714,8 +9714,7 @@ class DiffusionBackend:
                                         ),
                                     )
                                     if native_cached is None:
-                                        # Miss: build it per tensor from the shards, so the dense module is never
-                                        # resident (or mapped) beside the codes when the offload arena is built.
+                                        # Miss: build per tensor so the dense module is never resident beside the codes.
                                         native_cached = self._native_quant_build_streamed(
                                             fam,
                                             transformer_cls,
@@ -9734,7 +9733,6 @@ class DiffusionBackend:
                                         )
                                         native_streamed = native_cached is not None
                                     if native_cached is not None:
-                                        # Cached or per-tensor native build: no dense transformer load or in-place quantize.
                                         pipe_kwargs["transformer"] = native_cached
                                         native_scheme = native_offload_scheme
                                         transformer_quant_engaged = native_offload_scheme
@@ -10151,7 +10149,6 @@ class DiffusionBackend:
                                     )
 
                     if native_streamed and pipe is not None:
-                        # Built per tensor before the pipeline: cache it as the in-place build below would.
                         pending_cache_write = self._save_pipeline_quant_to_cache(
                             pipe,
                             fam,
@@ -11910,8 +11907,7 @@ class DiffusionBackend:
         config_kwargs: Optional[dict] = None,
         cancel_check: Optional[Callable[[], None]] = None,
     ) -> Any:
-        """The forced-offload native ``transformer`` built per tensor from its dense shards, or None (the dense
-        ``from_pretrained`` + in-place quantize then runs, as before). CUDA only. Never raises."""
+        """Forced-offload native ``transformer`` built per tensor, or None for the dense load. Never raises."""
         try:
             if (
                 fam is None
