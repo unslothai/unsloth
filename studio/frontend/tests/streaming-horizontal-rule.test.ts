@@ -171,8 +171,7 @@ test("preserves ambiguous-looking content in raw HTML blocks", () => {
 });
 
 test("preserves GFM footnote content that does not render a rule", () => {
-  // An empty footnote renders nothing, so buffering it is invisible. Assert
-  // the rendered output, not the string.
+  // An empty footnote renders nothing; assert the rendered output, not the string.
   const markdown = "See[^1]\n\n[^1]:\n    * **";
   const html = render(markdown);
 
@@ -196,8 +195,7 @@ test("buffers a populated GFM footnote that does render a rule", () => {
 });
 
 test("is not defeated by literal dollar signs", () => {
-  // Dollar parity mistook prices, shell vars and code spans for math, which
-  // disabled buffering for the rest of the response.
+  // Dollar parity mistook prices, shell vars and code spans for math.
   for (const preceding of [
     "Price is $5",
     "Use `$HOME`",
@@ -211,26 +209,23 @@ test("is not defeated by literal dollar signs", () => {
     );
   }
 
-  // Real math is still left alone. `render` has no math plugin, unlike the app,
-  // so only the decision can be asserted here.
+  // `render` has no math plugin, so only the decision can be asserted here.
   assert.equal(stabilizeStreamingMarkdown("$$\n* **", true), "$$\n* **");
 });
 
 test("keeps lines that Streamdown's incomplete-Markdown repair already fixes", () => {
-  // remend closes the open construct, so these already render as a list and
-  // buffering would hide a correctly displayed line.
+  // remend closes the open construct, so these already render as a list.
   for (const markdown of ["[open\n* **", "`open\n* **", "[open](\n* **"]) {
     assert.ok(!render(markdown).includes(HORIZONTAL_RULE));
     assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
   }
 
-  // An unclosed bold still leaves a real rule to buffer.
   assert.ok(render("**open\n* **").includes(HORIZONTAL_RULE));
   assert.equal(stabilizeStreamingMarkdown("**open\n* **", true), "**open\n");
 });
 
 test("does not parse a degenerate punctuation run", () => {
-  // Parsing a long run is quadratic: unbounded, 100k dashes took over 8s.
+  // Parsing a long run is quadratic, so the run length is bounded.
   for (const run of ["-", "*", "_"]) {
     const markdown = `Intro.\n\n* ${run.repeat(100_000)}`;
     const started = performance.now();
@@ -238,7 +233,6 @@ test("does not parse a degenerate punctuation run", () => {
     assert.ok(performance.now() - started < 250);
   }
 
-  // A plausible run is still inside the bound.
   assert.equal(stabilizeStreamingMarkdown(`* ${"*".repeat(60)}`, true), "");
 });
 
@@ -263,8 +257,7 @@ test("does not reinterpret adjacent Markdown constructs", () => {
 });
 
 test("buffers dash and underscore runs, not only asterisks", () => {
-  // Same ambiguity: CLI flag lists ("- --verbose: ...") stream through a
-  // thematic-break frame.
+  // CLI flag lists ("- --verbose: ...") stream through a thematic-break frame.
   for (const markdown of [
     "- --",
     "- ---",
@@ -286,8 +279,7 @@ test("buffers dash and underscore runs, not only asterisks", () => {
 });
 
 test("keeps runs that do not currently render a rule", () => {
-  // Two characters never make a break, and mixed runs are not breaks, so
-  // nothing is flashing and nothing may be hidden.
+  // Two characters never make a break, and mixed runs are not breaks.
   for (const markdown of ["- **", "+ **", "* --", "- *-*", "* -_-", "+ ++"]) {
     assert.ok(!render(markdown).includes(HORIZONTAL_RULE));
     assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);

@@ -91,6 +91,7 @@ from state.tool_approvals import (
     begin_tool_decision,
     new_approval_id,
     decision_reason,
+    note_host_access,
     wait_tool_decision,
 )
 
@@ -1609,6 +1610,8 @@ def run_safetensors_tool_loop(
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            if needs_confirm:
+                note_host_access(approval_id, decision.tool_name, decision.arguments)
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
@@ -1640,6 +1643,7 @@ def run_safetensors_tool_loop(
                 # answered. Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
+                    yield decision.tool_approved_event(approval_id)
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None

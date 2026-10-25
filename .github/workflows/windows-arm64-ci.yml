@@ -43,6 +43,9 @@ on:
       - 'studio/backend/utils/wheel_utils.py'
       - 'studio/backend/utils/uv_path_safety.py'
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
       - 'scripts/uninstall.ps1'
@@ -91,6 +94,7 @@ permissions:
 
 jobs:
   woa:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Free for public repositories since 2025-08-07; a fork on a private plan fails to start.
     runs-on: windows-11-arm
     timeout-minutes: 40

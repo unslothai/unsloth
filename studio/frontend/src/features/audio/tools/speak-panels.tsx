@@ -107,7 +107,7 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
           1: Hello.” Plain text is read by Speaker 1.
         </p>
         {text && script !== text ? (
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-xl bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
             {script}
           </pre>
         ) : null}

@@ -499,7 +499,11 @@ def _copy_file_chunks(
                     got += read
         return
     buffers = max(1, min(buffers, len(jobs)))
-    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)]
+    from .host_pinning import host_pinning_allowed
+
+    # Pageable on an integrated GPU: the copy then completes before copy_ returns, so slot reuse stays safe.
+    pin = host_pinning_allowed(device)
+    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = pin) for _ in range(buffers)]
     done_events: list[Any] = [None] * buffers
     handles: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
     opened: list[Any] = []
@@ -1249,6 +1253,7 @@ def load_ltx23_comfy_transformer(
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
     fp8_storage: Optional[bool] = None,
+    fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
     target: Any = None,
     logger: Any = None,
@@ -1277,6 +1282,7 @@ def load_ltx23_comfy_transformer(
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
         fp8_storage = fp8_storage,
+        fp8_widen_chosen = fp8_widen_chosen,
         family = family,
         target = target,
         logger = logger,
