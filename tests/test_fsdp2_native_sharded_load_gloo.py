@@ -83,7 +83,9 @@ def _prefix_checkpoint_keys(directory):
 
     rename = lambda k: "language_model." + k
     for path in glob.glob(os.path.join(directory, "*.safetensors")):
-        save_file({rename(k): v for k, v in load_file(path).items()}, path, metadata = {"format": "pt"})
+        save_file(
+            {rename(k): v for k, v in load_file(path).items()}, path, metadata = {"format": "pt"}
+        )
     index = os.path.join(directory, "model.safetensors.index.json")
     if os.path.exists(index):
         with open(index, encoding = "utf-8") as f:

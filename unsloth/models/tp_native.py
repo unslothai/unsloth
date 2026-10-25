@@ -1719,7 +1719,11 @@ def _checkpoint_key(names, model, index):
     return None
 
 
-def _checkpoint_aliases(model, index, key_mapping = None):
+def _checkpoint_aliases(
+    model,
+    index,
+    key_mapping = None,
+):
     """{model key: checkpoint key} for a checkpoint saved under another naming: transformers 5's conversion
     mapping renames (VLMs save `model.layers.*` for `model.language_model.layers.*`) and 4.x
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
