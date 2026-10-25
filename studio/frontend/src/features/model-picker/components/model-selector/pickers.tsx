@@ -7079,9 +7079,8 @@ export function HubModelPicker({
               />
             </span>
           ) : (
-            // No chevron until the probe rules out a sole quant, which renders its own row. The whole
-            // gutter toggles, for the mouse (the row button has the keyboard); pr-2.5 puts the glyph in
-            // the heading chevron's column.
+            // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
+            // has the keyboard); pr-2.5 is the heading chevron's column.
             <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
               {soleQuants.pending.has(c.repo_id) ? null : (
                 <button
