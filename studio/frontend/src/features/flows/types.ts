@@ -483,9 +483,7 @@ export interface WorldSpec {
   /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
-  /** Scenery placed with the 3D editor; saved on the World Player block. */
   props3d?: WorldProp3d[];
-  /** The World Player block whose settings this world was played with; scenery is saved back onto it. */
   player_node?: string;
 }
 
@@ -513,20 +511,15 @@ export interface WorldProp3d {
   kind: WorldPropKind;
   asset?: ModelAsset;
   name?: string;
-  /** Tile units; a prop on a tile stands at its centre (x + 0.5). */
   x: number;
   y: number;
-  /** Degrees about the vertical axis. */
   rot?: number;
   scale?: number;
-  /** Blocks walking on its tile (2D and 3D). */
   solid?: boolean;
 }
 
-/** How the first-person 3D player draws a world. Every field is optional; the player fills in defaults. */
 export interface World3dView {
   time_of_day?: "dawn" | "day" | "dusk" | "night";
-  /** "#rrggbb"; the time of day picks one when unset. */
   sky?: string;
   /** 0 = clear, 1 = thick. */
   fog?: number;
@@ -534,7 +527,6 @@ export interface World3dView {
   camera_height?: number;
   /** Tiles per second. */
   walk_speed?: number;
-  /** Hill height scale. */
   terrain?: number;
   ambient?: MediaValue;
 }

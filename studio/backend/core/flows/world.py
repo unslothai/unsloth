@@ -265,7 +265,6 @@ _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def _view3d(raw: Any) -> dict:
-    """Clean the optional 3D view settings: out of range numbers are clamped, unknown values dropped."""
     if not isinstance(raw, dict):
         return {}
     out: dict[str, Any] = {}
@@ -357,9 +356,7 @@ def apply_play_view(
     node_outputs: Optional[dict] = None,
     source: Optional[str] = None,
 ) -> dict:
-    """The World Player node's view settings win over the world's own: they are read from the saved flow, so
-    switching to 3D or changing the time of day needs no rerun. With several players, the one fed by ``source``
-    (the node the world came from) wins."""
+    """Player node view settings win over the world's (read from the saved flow, so no rerun); the one fed by ``source`` wins."""
     players = [
         n for n in doc.get("nodes") or [] if n["type"] == "world.play" and not n.get("disabled")
     ]
@@ -384,10 +381,8 @@ def apply_play_view(
                 world["action"] = act
             else:
                 world.pop("action", None)
-        # Scenery placed in the 3D editor is saved on the World Player, so it needs no rerun either.
         if isinstance(p.get("props3d"), list):
             world["props3d"] = props3d(p["props3d"], world["width"], world["height"])
-        # The editor saves scenery back onto this player only, so other players keep their own.
         world["player_node"] = n["id"]
         break
     return world

@@ -30,7 +30,6 @@ const picnic = JSON.parse(picnicJson) as StoryManifest;
 
 const params = new URLSearchParams(location.search);
 const kind = params.get("flow") === "world" ? "world" : "story";
-// `&render=3d` opens the world in the first-person view; `&time=dusk` picks its time of day.
 const time = params.get("time");
 
 const WORLD: WorldSpec = {
@@ -95,7 +94,6 @@ const WORLD: WorldSpec = {
     : {}),
 };
 
-// `&autonomy=1`: the same village with villagers acting on their own (trade, homes, a rival, a hostile drifter).
 const LIVELY: WorldSpec = {
   ...WORLD,
   autonomy: {
@@ -145,8 +143,6 @@ const LIVELY: WorldSpec = {
   ],
 };
 const LIVED = params.get("autonomy") ? LIVELY : WORLD;
-// `&action=action|shooter`: action play in the 3D view; `&course=1` puts a crate, a rock, a fence and a house
-// around the spawn to jump on and run into.
 const gameplay = params.get("action");
 const course = (spec: WorldSpec): WorldProp3d[] => {
   const m = generateMap(spec);
@@ -179,7 +175,6 @@ const PLAYED: WorldSpec =
     : params.get("course")
       ? { ...LIVED, props3d: course(LIVED) }
       : LIVED;
-// Scenery saved by the 3D editor and uploaded models outlive a page load (sessionStorage), like the flow does.
 const PROPS_KEY = "flows-smoke-props3d";
 const MODELS_KEY = "flows-smoke-models";
 const savedProps = (): WorldProp3d[] | null => {

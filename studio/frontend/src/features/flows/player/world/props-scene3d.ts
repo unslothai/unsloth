@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The 3D editor's props in the scene: low-poly pieces built from primitives, plus imported GLB models (GLTFLoader is
-// only fetched when a world has one). Part of the lazily loaded 3D chunk.
 
 import * as three from "three";
 
@@ -28,14 +26,11 @@ export function disposeTree(root: three.Object3D): void {
 }
 
 export interface PropLayer {
-  /** Every prop's object; exported with the scene and raycast by the editor. */
   root: three.Group;
   sync(props: readonly WorldProp3d[]): void;
   objectOf(id: string): three.Object3D | undefined;
   idOf(obj: three.Object3D | null): string | null;
-  /** Hand over a model's file (an import, or one fetched for a saved world); loads it and redraws its props. */
   addModel(ref: string, data: ArrayBuffer): Promise<void>;
-  /** Models currently held in memory (diagnostics and tests). */
   modelCount(): number;
   dispose(): void;
 }
@@ -67,7 +62,6 @@ export function createPropLayer(
 ): PropLayer {
   const root = new three.Group();
   root.name = "props";
-  // Geometry and materials are shared by every prop of a kind and released with the layer.
   const shared = new Map<string, { dispose(): void }>();
   const cached = <T extends { dispose(): void }>(
     key: string,
@@ -175,13 +169,10 @@ export function createPropLayer(
     return g;
   };
 
-  // Imported models: one parsed template per file, normalised to stand on the ground inside one tile; each prop is a
-  // clone that shares the template's geometry and materials.
   const templates = new Map<string, three.Object3D>();
   const loading = new Map<string, Promise<void>>();
   // Model files stay here after their GPU copy is released, so undoing a delete can draw the model again.
   const pending: Record<string, ArrayBuffer> = { ...models };
-  // Imported but not placed yet: kept even though no prop uses them so far.
   const fresh = new Set<string>();
   let last: readonly WorldProp3d[] = [];
   let disposed = false;
@@ -279,7 +270,6 @@ export function createPropLayer(
           objects.delete(id);
         }
       }
-      // A model no prop uses any more is released (its clones only shared these buffers).
       const used = new Set(
         props.filter((p) => p.kind === "model").map((p) => p.asset?.ref),
       );

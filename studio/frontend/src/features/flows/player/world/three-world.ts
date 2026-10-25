@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// First-person 3D renderer, loaded only via import() so three.js stays out of the startup bundle. It implements the
-// same WorldGameHandle / WorldBridge as the 2D Phaser player on the same map, so saves, quests and the sim carry over.
+// Loaded only via import() so three.js stays out of the startup bundle; same WorldGameHandle / WorldBridge as Phaser.
 
 import * as three from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
@@ -99,7 +98,6 @@ function hash2(x: number, y: number, seed: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-/** A canvas text tag: a dark pill with white text (names, the E prompt) or a white speech bubble. */
 function textCanvas(
   text: string,
   opts: { bubble?: boolean; px?: number; maxW?: number } = {},
@@ -151,7 +149,6 @@ function textCanvas(
   return c;
 }
 
-/** The mean colour of an image, to tint the ground with a World Art tile. */
 function meanColor(img: HTMLImageElement): three.Color | null {
   try {
     const [, ctx] = canvas(8, 8);
@@ -194,7 +191,6 @@ export function createWorld3d(
     disposables.push(x);
     return x;
   };
-  // Speech bubbles and status tags are replaced all through a long simulation: free each one as it goes.
   const drop = (x: { dispose(): void } | null | undefined) => {
     if (!x) return;
     x.dispose();
@@ -266,7 +262,6 @@ export function createWorld3d(
     scene.add(skyDome);
   }
 
-  // The ground, water and scenery: what the editor's Export writes (villagers, items and labels stay in `scene`).
   const world = new three.Group();
   world.name = "world";
   scene.add(world);
@@ -443,7 +438,6 @@ export function createWorld3d(
     () => [0.5, 1.001, wallH, 0],
   );
   if (!dungeon) {
-    // Town walls are house blocks: one pitched roof over each connected block.
     const seen = new Set<string>();
     const roofMat = keep(
       new three.MeshLambertMaterial({ color: "#a2533c", flatShading: true }),
@@ -551,7 +545,6 @@ export function createWorld3d(
   let opening: Promise<WorldEditor> | null = null;
   let destroyed = false;
 
-  // Billboards: World Art sprites when there are some, else a capsule with the villager's colour.
   const texOf = (c: HTMLCanvasElement) => {
     const t = keep(new three.CanvasTexture(c));
     t.colorSpace = three.SRGBColorSpace;
@@ -774,7 +767,6 @@ export function createWorld3d(
     }
   ).__flowsWorldPerf;
   {
-    // Face the nearest villager so the first frame shows somebody.
     let best: Npc | null = null;
     for (const n of npcs)
       if (
@@ -791,7 +783,6 @@ export function createWorld3d(
   controls.minPolarAngle = 0.4;
   controls.maxPolarAngle = Math.PI - 0.4;
 
-  // Click to look: the overlay asks for pointer lock; where the browser refuses it, dragging looks instead.
   const overlay = document.createElement("button");
   overlay.type = "button";
   overlay.dataset.testid = "world3d-lock";
@@ -978,7 +969,6 @@ export function createWorld3d(
   function tileOf(p: { x: number; y: number }): Point {
     return { x: Math.floor(p.x), y: Math.floor(p.y) };
   }
-  /** Walk `p` along `path` (tile waypoints) at `speed` tiles/s; false when there is nowhere left to go. */
   function steer(
     p: { x: number; y: number },
     path: Point[],
@@ -1285,7 +1275,6 @@ export function createWorld3d(
           ? Math.atan2(me.x - n.pos.x, me.y - n.pos.y)
           : null;
       if (look !== null) n.group.rotation.y = look;
-      // Talking: step back to a comfortable distance so the villager is not pressed against the camera.
       if (talking === n.id) {
         const d = Math.hypot(me.x - n.pos.x, me.y - n.pos.y);
         if (d > 1e-3 && d < 1.7) {

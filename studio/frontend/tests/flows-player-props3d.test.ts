@@ -36,7 +36,6 @@ function spec(extra: Partial<Spec> = {}): Spec {
   } as Spec;
 }
 
-/** A walkable tile next to spawn that is not reserved, to put a prop on. */
 function openNear(map: ReturnType<typeof P.generateMap>) {
   const at = E.freeTileNear(
     map,
@@ -70,7 +69,6 @@ test("a solid prop blocks its tile for walking (3D) and paths (2D and villagers)
   assert.deepEqual(map.tiles, base.tiles, "terrain is untouched");
   assert.equal(P.isSolid(base, at.x, at.y), false);
   assert.equal(P.isSolid(map, at.x, at.y), true);
-  // 3D walking: the collision circle cannot stand on the prop's tile.
   assert.equal(V.canStand(base, at.x + 0.5, at.y + 0.5), true);
   assert.equal(V.canStand(map, at.x + 0.5, at.y + 0.5), false);
   const path = P.findPath(map, map.spawn, at);
@@ -155,7 +153,6 @@ test("a solid prop dropped where the player stands never traps them", async () =
     player,
     /await saves\.current\.idle\(\);[\s\S]*await saveUntilCurrent\(current, lastSaved\.current, saveScene\)/,
   );
-  // Done waits for model imports still uploading, so an imported model is saved rather than added after close.
   assert.match(
     player,
     /while \(imports\.current\.size\)\s*await Promise\.allSettled\(\[\.\.\.imports\.current\]\);/,
@@ -259,11 +256,9 @@ test("undo and redo step through whole prop lists; a new edit clears redo", () =
   h = E.commit(h, E.removeProp(h.props, "a"));
   assert.deepEqual(h.future, []);
   assert.equal(E.redo(h), h);
-  // An edit that changes nothing is not a step.
   assert.equal(E.commit(h, [...h.props]), h);
 });
 
-// A minimal binary glTF: one JSON chunk (padded to 4 bytes) and an optional BIN chunk.
 function glb(json: object, bin = new Uint8Array(0)): ArrayBuffer {
   let text = JSON.stringify(json);
   while (text.length % 4) text += " ";
@@ -323,7 +318,6 @@ test("models that point elsewhere, are too big, too dense or need a codec are re
     glb({ ...TRI, extensionsRequired: ["KHR_draco_mesh_compression"] }),
     /Draco/,
   );
-  // One 100k-triangle mesh placed by two nodes draws 200k triangles.
   refuse(
     glb({
       ...TRI,
@@ -390,7 +384,6 @@ test("scenery saves only onto the World Player the world was played with", () =>
     { props3d: [{ id: "keep" }] },
     "the other world keeps its scenery",
   );
-  // An unknown player (a world from before this field) falls back to every enabled player.
   const all = A.withWorldProps(doc, props, "gone");
   assert.ok(
     all?.nodes.every(

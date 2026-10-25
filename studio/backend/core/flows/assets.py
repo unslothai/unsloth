@@ -101,7 +101,6 @@ def sniff_mime(data: bytes) -> Optional[str]:
         audio_only = (b"A_OPUS" in tracks or b"A_VORBIS" in tracks) and b"V_" not in tracks
         return "audio/webm" if audio_only else "video/webm"
     if head[:4] == b"glTF":
-        # A 3D model a world places as a prop; core.flows.glb checks it before it is stored.
         return "model/gltf-binary"
     if head.startswith(b"%PDF-"):
         return "application/pdf"

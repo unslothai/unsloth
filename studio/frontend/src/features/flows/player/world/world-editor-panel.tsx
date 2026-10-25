@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The 3D editor's side panel: prop library, GLB import, gizmo mode, undo / redo, the object list and save / export.
-// world-player.tsx loads it with lazy(), only when you press Edit.
 
 import {
   DownloadIcon,

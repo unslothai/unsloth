@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The pure half of the first-person 3D player: view settings, terrain heights and where things stand. No three.js
-// here, so it is cheap to import and runs under node --test. One tile is one world unit; tile (x, y) covers
-// [x, x + 1] x [y, y + 1] on the ground plane, with y going into the screen (world z).
+// No three.js here (runs under node --test). Tile (x, y) covers [x, x + 1] x [y, y + 1]; tile y is world z.
 
 import { Prng, seedFrom } from "../../expr";
 import type { World3dView, WorldSpec } from "../../types";
@@ -29,9 +27,7 @@ export interface View3d {
 
 export interface Lighting {
   sky: string;
-  /** Hemisphere light: sky colour, ground colour, intensity. */
   hemi: [string, string, number];
-  /** Directional sun: colour, intensity, elevation in degrees. */
   sun: [string, number, number];
 }
 
@@ -73,7 +69,6 @@ const clamp = (v: unknown, lo: number, hi: number, d: number): number =>
     ? Math.max(lo, Math.min(hi, v))
     : d;
 
-/** The world's 3D settings with every gap filled; the same ranges the backend clamps to. */
 export function resolveView3d(spec: Pick<WorldSpec, "view3d"> | null): View3d {
   const v = spec?.view3d ?? {};
   const timeOfDay: TimeOfDay =
@@ -104,7 +99,6 @@ export function fogRange(fog: number): [number, number] {
   return [far * 0.25, far];
 }
 
-/** Ground colour per tile kind; tiles painted by World Art tint these. */
 export const TILE_COLORS: Record<TileKind, string> = {
   grass: "#6fae4f",
   path: "#c9a874",
@@ -118,7 +112,6 @@ export const TILE_COLORS: Record<TileKind, string> = {
   flowers: "#79b85a",
 };
 
-/** How far each kind sits above or below the rolling ground. Water is a dip, walls stand on level ground. */
 export const TILE_LIFT: Record<TileKind, number> = {
   grass: 0,
   path: -0.02,
@@ -144,11 +137,9 @@ export function tileLook(
 export interface Terrain {
   width: number;
   height: number;
-  /** Height at every tile corner, (width + 1) x (height + 1), row-major. */
   corners: Float32Array;
 }
 
-/** Smooth hills from the world seed, plus each tile's lift averaged onto its corners. Same spec, same hills. */
 export function buildTerrain(
   map: WorldMap,
   seed: number,
@@ -193,7 +184,6 @@ export function buildTerrain(
         lift += TILE_LIFT[k];
         n++;
       }
-      // Any corner touching water is a shore corner: it dips so the water surface meets the bank.
       const base = (hill(x, y) - 0.5) * 1.6 * scale;
       corners[y * (W + 1) + x] =
         base + (water ? TILE_LIFT.water : lift / Math.max(1, n));
@@ -202,7 +192,6 @@ export function buildTerrain(
   return { width: W, height: H, corners };
 }
 
-/** Ground height at a point in tile units (bilinear over the tile's corners). */
 export function heightAt(t: Terrain, x: number, y: number): number {
   const cx = Math.max(0, Math.min(t.width - 1e-6, x));
   const cy = Math.max(0, Math.min(t.height - 1e-6, y));
@@ -218,7 +207,6 @@ export function heightAt(t: Terrain, x: number, y: number): number {
   return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
 }
 
-/** Where the water surface sits on a water tile: just under the lowest bank around it. */
 export function waterLevel(t: Terrain, x: number, y: number): number {
   return heightAt(t, x + 0.5, y + 0.5) - TILE_LIFT.water - 0.18;
 }
@@ -242,10 +230,7 @@ export function decorCells(
   return out;
 }
 
-/**
- * A cottage for each region: on the solid, non-water cell nearest the region's centre (a tree or rock it
- * replaces), so walking and NPC paths are exactly the 2D map's. Regions with no such cell nearby get none.
- */
+/** One cottage per region, only on a solid cell so walking and NPC paths match the 2D map exactly. */
 export function houseCells(
   spec: Pick<WorldSpec, "regions">,
   map: WorldMap,
@@ -279,7 +264,6 @@ export function houseCells(
   return out;
 }
 
-/** Every tile a circle of `radius` tiles at (x, y) touches: the tiles `canStand` tests. */
 export function standTiles(x: number, y: number, radius = 0.22): Point[] {
   const out = new Map<string, Point>();
   for (const dx of [-radius, radius])
@@ -308,7 +292,6 @@ export function canStand(
   return true;
 }
 
-/** Move by (dx, dy) one axis at a time, so walking into a wall slides along it. */
 export function slide(
   map: WorldMap,
   x: number,
@@ -325,7 +308,6 @@ export function slide(
 
 let webgl: boolean | null = null;
 
-/** Whether this browser can draw WebGL (checked once); the 3D view is offered only when it can. */
 export function webglAvailable(): boolean {
   if (webgl !== null) return webgl;
   try {

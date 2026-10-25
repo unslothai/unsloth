@@ -144,13 +144,11 @@ export interface PlayerApi {
     signal?: AbortSignal,
   ): Promise<void>;
   mediaBlob(media: MediaValue): Promise<Blob>;
-  /** Keep the 3D editor's scenery: written to the flow's World Player block, so it needs no rerun. */
   saveWorldProps?(
     flowId: string,
     props: WorldProp3d[],
     player?: string,
   ): Promise<void>;
-  /** Store a .glb model as a flow asset (the server checks it again). */
   uploadModel?(file: Blob, name: string): Promise<ModelAsset>;
 }
 
