@@ -187,7 +187,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # Phi-4 Mini's catalog wrapper around .Tools, not its call syntax.
     r"|tool_response|tool"
     r"|assistant|return|system|start|turn|user|call)\|?>"
-    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
+    # DeepSeek-V4.1's image placeholder is media the same way: its template raise_exception()s on one in string
+    # content, so a replayed reply that merely mentioned it 500'd every later turn, and in a text block it rendered
+    # as an image with nothing behind it.
+    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence|deepseek_image)\uff5c>"
     # "/?" as in the control pattern: Gemma's delimiters are bare tags, so a replayed "</start_of_turn>" is as much a
     # boundary as "<start_of_turn>". "tools" is the Qwen catalog block around the system turn.
     r"|/?(?:(?:start|end)_of_turn|eos|bos|s|sop|tool_response|tools"
