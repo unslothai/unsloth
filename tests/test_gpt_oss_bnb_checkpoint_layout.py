@@ -314,8 +314,23 @@ def test_lone_unreadable_bin_fails_closed(tmp_path):
         _use_new_zipfile_serialization = False,
     )
     cfg = SimpleNamespace(quantization_config = BNB_QC)
-    with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError, match = "safe_serialization"):
+    with pytest.raises(
+        loader_utils.GptOssUnknownExpertLayoutError, match = "safe_serialization"
+    ) as e:
         _fused(cfg, str(d))
+    # The lone .bin outranks pytorch_model.bin.index.json, so the hint must not suggest adding one.
+    assert "index" not in str(e.value)
+    assert "Downloading" not in str(e.value)  # already local
+    # Even with an index added beside it, the lone .bin still decides (and still fails closed).
+    shard = "pytorch_model-00001-of-00001.bin"
+    torch.save(_tensors(FUSED_QS, False), str(d / shard))
+    (d / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {n: shard for n in FUSED_QS}})
+    )
+    with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError, match = "pytorch_model.bin"):
+        _fused(cfg, str(d))
+    os.remove(d / "pytorch_model.bin.index.json")
+    os.remove(d / shard)
     # Unsloth's split pre-quantized repos are named *-unsloth-bnb-4bit.
     named = tmp_path / "gpt-oss-20b-unsloth-bnb-4bit"
     shutil.copytree(d, named)
@@ -511,6 +526,116 @@ def test_loader_forwards_use_safetensors_to_the_probe(tmp_path, monkeypatch):
             use_safetensors = False,
         )
     assert seen and all(v is False for v in seen)
+
+
+def _single_beside_stale_index(tmp_path, single, stale, index, keep_shard):
+    # Non-sharded save over a sharded one: old index kept, transformers loads model.safetensors.
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    save_file(_tensors(single, False), str(d / "model.safetensors"))
+    if index == "model.safetensors.index.json":
+        shard = "model-00001-of-00002.safetensors"
+        if keep_shard:
+            save_file(_tensors(stale, False), str(d / shard))
+    else:
+        shard = "pytorch_model-00001-of-00002.bin"
+        if keep_shard:
+            torch.save(_tensors(stale, False), str(d / shard))
+    (d / index).write_text(json.dumps({"metadata": {}, "weight_map": {n: shard for n in stale}}))
+    return str(d)
+
+
+def _transformers_resolved_checkpoint_files(path):
+    # Private signature differs 4.57.x vs 5.x: bind by name; callers assert the probe before this.
+    import inspect
+
+    from transformers.modeling_utils import _get_resolved_checkpoint_files
+
+    known = dict(
+        pretrained_model_name_or_path = path,
+        subfolder = "",
+        variant = None,
+        gguf_file = None,
+        from_tf = False,
+        from_flax = False,
+        use_safetensors = None,
+        cache_dir = None,
+        force_download = False,
+        proxies = None,
+        local_files_only = False,
+        token = None,
+        user_agent = None,
+        revision = "main",
+        commit_hash = None,
+        is_remote_code = False,
+        transformers_explicit_filename = None,
+        download_kwargs = None,
+        tqdm_class = None,
+    )
+    kwargs = {}
+    for name, param in inspect.signature(_get_resolved_checkpoint_files).parameters.items():
+        if name in known:
+            kwargs[name] = known[name]
+        elif param.default is inspect.Parameter.empty:
+            pytest.skip(
+                reason = f"transformers resolver cross-check only: new required parameter {name!r}"
+            )
+    files, _ = _get_resolved_checkpoint_files(**kwargs)
+    return files
+
+
+@pytest.mark.parametrize("index", ["model.safetensors.index.json", "pytorch_model.bin.index.json"])
+@pytest.mark.parametrize("keep_shard", [True, False])
+@pytest.mark.parametrize(
+    "single, stale, expected",
+    [(SPLIT, FUSED_DENSE, False), (FUSED_DENSE, SPLIT, True)],
+    ids = ["split_single", "fused_single"],
+)
+def test_single_safetensors_wins_over_a_stale_index(
+    tmp_path, index, keep_shard, single, stale, expected
+):
+    path = _single_beside_stale_index(tmp_path, single, stale, index, keep_shard)
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path) is expected
+    files = _transformers_resolved_checkpoint_files(path)
+    assert [os.path.basename(f) for f in files] == ["model.safetensors"]
+
+
+def test_lone_bin_wins_over_a_bin_index(tmp_path):
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    torch.save(_tensors(SPLIT, False), str(d / "pytorch_model.bin"))
+    shard = "pytorch_model-00001-of-00001.bin"
+    torch.save(_tensors(FUSED_DENSE, False), str(d / shard))
+    (d / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {n: shard for n in FUSED_DENSE}})
+    )
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, str(d)) is False
+
+
+def test_offline_cached_single_safetensors_wins_over_cached_index(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    single = tmp_path / "model.safetensors"
+    save_file(_tensors(SPLIT, False), str(single))
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(json.dumps({"weight_map": {n: "gone.safetensors" for n in FUSED_DENSE}}))
+    cached = {"model.safetensors": str(single), "model.safetensors.index.json": str(index)}
+
+    def download(repo_id, filename, *args, **kwargs):
+        if filename in cached:
+            return cached[filename]
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(
+            cfg, "someone/gpt-oss-bnb", local_files_only = True
+        )
+        is False
+    )
 
 
 def test_online_probe_ignores_a_stale_cached_single_file(monkeypatch, tmp_path):

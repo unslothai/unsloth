@@ -218,6 +218,10 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    request_background_encoder_pins,
+    finish_encoder_pins_at_load,
+    start_background_pins,
+    stop_background_pins,
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
@@ -426,6 +430,7 @@ from .diffusion_comfy_quant import (
     comfy_int8_backend,
     comfy_torchao_quantized,
     fp8_storage_wanted,
+    fp8_widen_chosen,
     fp8_stored_layers,
     pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
@@ -9286,6 +9291,7 @@ class DiffusionBackend:
                 state_committed = False
                 load_bg_compile = None
                 state = None
+                pending_cache_write = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
                     if (
@@ -9789,6 +9795,9 @@ class DiffusionBackend:
                                     fp8_storage = self._fp8_storage_for(
                                         single_file_path, target, loras
                                     ),
+                                    fp8_widen_chosen = self._fp8_widen_for(
+                                        single_file_path, target, loras
+                                    ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
@@ -9804,6 +9813,9 @@ class DiffusionBackend:
                                         sf_kwargs,
                                         logger,
                                         fp8_storage = self._fp8_storage_for(
+                                            single_file_path, target, loras
+                                        ),
+                                        fp8_widen_chosen = self._fp8_widen_for(
                                             single_file_path, target, loras
                                         ),
                                     )
@@ -10151,7 +10163,7 @@ class DiffusionBackend:
                                     transformer_quant_engaged = cached_scheme
                                 elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
-                                    self._save_pipeline_quant_to_cache(
+                                    pending_cache_write = self._save_pipeline_quant_to_cache(
                                         pipe,
                                         fam,
                                         denoisers,
@@ -10161,7 +10173,10 @@ class DiffusionBackend:
                                         cancel_check = lambda: self._raise_if_load_cancelled(
                                             _load_token
                                         ),
+                                        defer = True,
                                     )
+                                    if not hasattr(pending_cache_write, "start"):
+                                        pending_cache_write = None
                                     self._raise_if_load_cancelled(_load_token)
                                 else:
                                     # A clean decline can remain bf16; a partial in-place conversion is unusable.
@@ -10767,6 +10782,8 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    # streamed text encoders pin after the load returns, before or during the first encode
+                    request_background_encoder_pins(pipe)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,
@@ -10777,6 +10794,7 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)
                     _drop_measured_reserve_for_layer_split(pipe, plan)
@@ -11083,8 +11101,19 @@ class DiffusionBackend:
                     raise
                 finally:
                     self._stop_load_prefetch()
+                    if pending_cache_write is not None:
+                        try:
+                            if state_committed:
+                                pending_cache_write.start()
+                            else:
+                                pending_cache_write.discard()
+                        except Exception:  # noqa: BLE001 - a cache write never fails a load
+                            pass
+                        pending_cache_write = None
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
+                        # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.
+                        stop_background_pins(pipe)
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
                         if load_bg_compile is not None:
                             load_bg_compile.close()
@@ -11122,6 +11151,7 @@ class DiffusionBackend:
             "; ".join(plan.reasons),
             plan.estimates,
         )
+        finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
         return self.status()
 
     @staticmethod
@@ -11175,6 +11205,14 @@ class DiffusionBackend:
         """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
+        """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
+        does the host RAM refusal reserve what that rule keeps free."""
+        picks = getattr(self, "_fp8_widen_picks", None) or {}
+        return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
+            target, lora = _has_active_lora(loras)
+        )
 
     def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
@@ -11613,9 +11651,10 @@ class DiffusionBackend:
         base: Optional[str],
         source_base: Optional[str],
         cancel_check: Optional[Callable[[], None]] = None,
-    ) -> Optional[str]:
+        defer: bool = False,
+    ) -> Any:
         """Cache a load-time quantized ``transformer`` (single denoiser only, the cache keys that component; no LoRA).
-        Never raises."""
+        ``defer`` may return a ``PendingWrite`` for the caller to start once the load is published. Never raises."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             if fam is None or names != ["transformer"] or _has_active_lora(loras):
@@ -11629,6 +11668,7 @@ class DiffusionBackend:
                 source_base = source_base,
                 logger = logger,
                 cancel_check = cancel_check,
+                defer = defer,
             )
         except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
             logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
@@ -12717,21 +12757,25 @@ class DiffusionBackend:
             # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
             from .diffusion_memory import _available_system_memory_mib
 
-            store = fp8_storage_wanted(
-                target,
+            fp8_rule = dict(
                 lora = lora,
                 offload = not plan_keeps_transformer_resident(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
+            store = fp8_storage_wanted(target, **fp8_rule)
             picks = self.__dict__.setdefault("_fp8_storage_picks", {})
             picks[str(single_file_path)] = store
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = (
+                not store and fp8_widen_chosen(target, **fp8_rule)
+            )
             if store:
                 plan = _plan(
                     model_dense_mib - int(transformer_resident) + single_file_fp8_stored_mib
                 )
         elif kind == "single_file" and single_file_path:
             self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = False
         return plan
 
     @staticmethod
@@ -14955,9 +14999,18 @@ class DiffusionBackend:
 
     def _unload_locked(self) -> None:
         release_load_budget_fraction("image")
+        # Let a background prequant write finish so the next load never shares host RAM with it.
+        prequant_cache = sys.modules.get(f"{__package__}.diffusion_prequant_cache")
+        if prequant_cache is not None:
+            try:
+                prequant_cache.finish_background_writes(logger = logger)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
         state = self._state
         if state is None:
             return
+        # A pinner still copying would hold its host copies past release_pinned_host_memory().
+        stop_background_pins(getattr(state, "pipe", None))
         # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:
             try:

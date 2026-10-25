@@ -2854,7 +2854,9 @@ def _extract_quant_label(filename: str) -> str:
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
     quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
-        r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"|NVFP[0-9]+(?:_[A-Z0-9]+)*"  # NVFP4, last in the name only
+        r"(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)"
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
