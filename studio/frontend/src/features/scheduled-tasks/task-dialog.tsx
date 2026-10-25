@@ -295,7 +295,8 @@ export function TaskDialog({
         if (named !== task.named) patch.named = named;
         if (notify !== task.notify) patch.notify = notify;
         if (model !== task.model) patch.model = model;
-        if (effort !== task.reasoningEffort) patch.reasoningEffort = effort;
+        // Only a changed choice: a saved level the current model does not offer is kept, not cleared.
+        if (chosenEffort !== task.reasoningEffort) patch.reasoningEffort = effort;
         if (allowLoad !== task.allowModelLoad) patch.allowModelLoad = allowLoad;
         if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
         if (projectId !== task.projectId) patch.projectId = projectId;

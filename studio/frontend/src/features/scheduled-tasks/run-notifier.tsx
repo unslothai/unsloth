@@ -318,7 +318,12 @@ export function ScheduledTaskRunNotifier() {
   if (!ask) return null;
   return (
     <Suspense fallback={null}>
-      <ModelLoadPrompt key={ask.id} run={ask} onDone={() => setAsking((current) => current.slice(1))} />
+      <ModelLoadPrompt
+        key={ask.id}
+        run={ask}
+        // By id: Load and run closes the dialog too, and both must not drop the next prompt.
+        onDone={() => setAsking((current) => current.filter((run) => run.id !== ask.id))}
+      />
     </Suspense>
   );
 }
