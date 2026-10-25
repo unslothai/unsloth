@@ -74,7 +74,6 @@ test("with summaries on, a turn is never dropped before it is summarised", () =>
   );
   // A summary from before a newer one changes nothing.
   assert.equal(W.foldSummary(s, "tom", "old", 40), s);
-  // New turns carry on numbering after the summary.
   s = W.addTurn(s, "tom", { role: "player", text: "next" }, true);
   assert.equal(s.talks.tom.at(-1)?.seq, 100);
 });
@@ -110,7 +109,6 @@ test("saves from before summaries load and keep talking", () => {
   assert.equal(W.summaryDue(s, "tom")?.upto, 9);
   const next = W.addTurn(s, "tom", { role: "player", text: "x" }, true);
   assert.equal(next.talks.tom.at(-1)?.seq, 30);
-  // A saved summary survives a save and load.
   const folded = W.foldSummary(next, "tom", "We met.", 9);
   const back = W.deserialize(SPEC, JSON.parse(JSON.stringify(folded)));
   assert.deepEqual(back?.summaries, { tom: { text: "We met.", upto: 9 } });

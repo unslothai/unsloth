@@ -413,5 +413,4 @@ def test_a_slow_embedder_never_holds_up_a_live_reply(monkeypatch):
     reply, took = run(go())
     assert reply["text"] == "Come along!" and took < 1.0
     assert any("keywords this turn" in m for _, m in ctx.logs)
-    # The vectors arrived after the reply and are cached for the next turn.
     assert {"I am hosting a party at the cafe", "The weather was nice"} <= set(world_nodes._VECTORS)

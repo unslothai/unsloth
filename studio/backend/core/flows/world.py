@@ -536,7 +536,6 @@ def talk_summary(state: dict) -> tuple[str, int]:
 
 
 def compact_prompt(state: dict) -> tuple[str, str]:
-    """Fold the oldest turns of one NPC's conversation into their running summary."""
     world, npc = npc_context(state)
     player = (world.get("player") or {}).get("name", "Player")
     previous, _ = talk_summary(state)
