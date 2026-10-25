@@ -247,6 +247,7 @@ def _bind_listener(address: str, port: int) -> socket.socket:
 
 
 def _listener_config(app, host: str, port: int):
+    from utils.forwarded_headers import uvicorn_forwarded_kwargs
     from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
 
     # a TLS launch must not reopen plain HTTP on the network
@@ -267,6 +268,7 @@ def _listener_config(app, host: str, port: int):
         access_log = False,
         server_header = False,
         http = uvicorn_http_protocol(),
+        **uvicorn_forwarded_kwargs(is_colab = False),
     )
 
 
