@@ -78,7 +78,11 @@ def _apply_user_rope_scaling(config, rope_scaling):
     return dict(applied)
 
 
-def _vllm_rope_scaling(rope_scaling, load_vllm_takes_it, is_vlm = False):
+def _vllm_rope_scaling(
+    rope_scaling,
+    load_vllm_takes_it,
+    is_vlm = False,
+):
     """The caller's RoPE override for load_vllm (flat dicts on text models only)."""
     from .llama import _rope_scaling_as_dict
 
@@ -4151,7 +4155,8 @@ class FastBaseModel:
                 _vllm_rope_scaling(
                     user_rope_scaling,
                     "rope_scaling" in _inspect.getfullargspec(_load_vllm).args,
-                    is_vlm = getattr(model_config, "get_text_config", lambda: model_config)() is not model_config,
+                    is_vlm = getattr(model_config, "get_text_config", lambda: model_config)()
+                    is not model_config,
                 )
             # vLLM gets what the model got (theta, original window, layout keys filled in).
             user_rope_scaling = (
@@ -4424,7 +4429,8 @@ class FastBaseModel:
                     load_vllm_kwargs["rope_scaling"] = _vllm_rope_scaling(
                         user_rope_scaling,
                         "rope_scaling" in allowed_args,
-                        is_vlm = getattr(model_config, "get_text_config", lambda: model_config)() is not model_config,
+                        is_vlm = getattr(model_config, "get_text_config", lambda: model_config)()
+                        is not model_config,
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
