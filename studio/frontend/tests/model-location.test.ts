@@ -147,6 +147,24 @@ test("Ollama models are skipped even when the id is a link path", () => {
   }
 });
 
+test("Lemonade NPU ids never reach the Hub-cache lookup", () => {
+  for (const npu of [
+    target({
+      id: "lemonade:qwen3-0.6b-FLM",
+      isGguf: false,
+      meta: { source: "local", isLora: false, isDownloaded: true },
+    }),
+    target({
+      id: "Qwen3 0.6B FLM",
+      configId: "lemonade:qwen3-0.6b-FLM",
+      isGguf: false,
+      meta: { source: "local", isLora: false, isDownloaded: true },
+    }),
+  ]) {
+    assert.equal(resolveModelLocation(npu), null);
+  }
+});
+
 test("a blank id with no picked path resolves to nothing", () => {
   const blank = target({
     id: "   ",

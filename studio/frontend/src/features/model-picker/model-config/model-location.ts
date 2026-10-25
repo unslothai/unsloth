@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { looksLikeLocalPath } from "@/lib/local-path";
+import { isNpuModelId } from "../../npu/model-id";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import { isOllamaModelId } from "./model-identity";
 
@@ -18,6 +19,10 @@ export function resolveModelLocation(
   // Before the path test: a materialized Ollama link is itself a path, but it points into
   // Ollama's blob store rather than naming files this app loads.
   if (isOllamaModelId(id)) {
+    return null;
+  }
+  // A Lemonade NPU id is a backend handle, not a Hub repo: the cache lookup would answer 400.
+  if (isNpuModelId(id)) {
     return null;
   }
 
@@ -43,7 +48,12 @@ export function resolveModelLocation(
   }
 
   const repoId = (target.configId ?? id).trim();
-  if (!repoId || looksLikeLocalPath(repoId) || isOllamaModelId(repoId)) {
+  if (
+    !repoId ||
+    looksLikeLocalPath(repoId) ||
+    isOllamaModelId(repoId) ||
+    isNpuModelId(repoId)
+  ) {
     return null;
   }
   // The endpoint's variant lookup matches GGUF files only; an MLX precision folder resolves to its snapshot.
