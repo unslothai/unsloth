@@ -196,7 +196,6 @@ export function WorldPlayer({
   // Switching views rebuilds the renderer; the player keeps standing where they were.
   const lastTile = useRef<{ x: number; y: number } | null>(null);
   const bootedView = useRef<"2d" | "3d" | null>(null);
-  // The 3D view's optional ambient loop, played once you start exploring.
   const ambientUrl = useMediaUrl(
     api,
     view === "3d" ? spec.view3d?.ambient : null,
