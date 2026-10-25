@@ -72,7 +72,7 @@ from core.inference.stt_sidecar import (
     normalize_whisper_language,
 )
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
-from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.prebuilt.runtime_libs import dedupe_existing_dirs, oneapi_lib_dirs
 from utils.prebuilt.whisper_layout import lookup_marker
 from utils.process_lifetime import (
     adopt_pid,
@@ -400,7 +400,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     elif sys.platform == "darwin":
         var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
     else:
-        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs]
+        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs, *oneapi_lib_dirs(bin_dir)]
         wsl_rocm = _wsl_system_rocm_lib_dirs()
         if wsl_rocm:
             lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]

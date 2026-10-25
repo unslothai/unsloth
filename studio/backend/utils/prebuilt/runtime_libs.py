@@ -226,3 +226,16 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
     return dedupe_existing_dirs(candidates)
+
+
+ONEAPI_LIB_DIRS_FILENAME = "UNSLOTH_ONEAPI_LIB_DIRS"
+
+
+def oneapi_lib_dirs(binary_dir: str | Path) -> list[str]:
+    """oneAPI runtime dirs the installer recorded in a SYCL build.
+    It links libsycl, MKL, and the compiler runtime."""
+    try:
+        text = (Path(binary_dir) / ONEAPI_LIB_DIRS_FILENAME).read_text(encoding = "utf-8")
+    except OSError:
+        return []
+    return [d for d in text.strip().split(os.pathsep) if d and os.path.isdir(d)]
