@@ -474,6 +474,26 @@ def test_widen_keeps_the_single_gpu_pick():
     assert (d.mode, d.auto) == ("tensor", True)
 
 
+@pytest.mark.parametrize(
+    "single_util, shared",
+    [
+        pytest.param(0.0, frozenset(), id = "matching-idle-pick-ranked-elsewhere"),
+        pytest.param(90.0, frozenset(), id = "busy-pick"),
+        pytest.param(None, frozenset(), id = "unread-pick"),
+        pytest.param(0.0, frozenset({0}), id = "held-pick"),
+    ],
+)
+def test_widen_vetoed_only_by_an_idle_card_of_another_class(single_util, shared):
+    # Three T4s: the one-GPU pick (0) sits outside the idle pair, but it is no bigger card to keep.
+    three = [
+        sp.GpuInfo(index = 0, name = T4, total_mib = 15_360, free_mib = 15_000, util_pct = single_util),
+        sp.GpuInfo(index = 1, name = T4, total_mib = 15_360, free_mib = 15_360, util_pct = 0.0),
+        sp.GpuInfo(index = 2, name = T4, total_mib = 15_360, free_mib = 15_360, util_pct = 0.0),
+    ]
+    d = _decide(gpus = three, fits_one_gpu = True, single_gpu_index = 0, shared_gpus = shared)
+    assert (d.mode, d.auto, tuple(d.gpu_indices)) == ("tensor", True, (1, 2))
+
+
 def test_wired_kill_switch(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
@@ -2457,7 +2477,7 @@ def test_wired_resident_source_that_cannot_import_holds_nothing(tmp_path, monkey
     assert _split_flag(cmd) == "tensor"
 
 
-@pytest.mark.parametrize("child", [(1,), None])
+@pytest.mark.parametrize("child", [(0,), (1,), None])
 def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch, child):
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -2479,4 +2499,6 @@ def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch,
     if child is None:
         assert _split_flag(cmd) != "tensor" and "unknown" in decision.reason
     else:
-        assert _split_flag(cmd) == "tensor" and tuple(decision.gpu_indices) == (0, 2)
+        # The helper's card is never the pair, nor the one-GPU pick that keeps a widen off.
+        expected = tuple(i for i in range(3) if i not in child)
+        assert _split_flag(cmd) == "tensor" and tuple(decision.gpu_indices) == expected

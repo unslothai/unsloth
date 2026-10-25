@@ -186,8 +186,15 @@ def choose_split_mode(
             "none" if fits_one_gpu else "layer", not fits_one_gpu, f"layer split: {why_not}"
         )
     indices = tuple(g.index for g in pair)
-    if fits_one_gpu and single_gpu_index is not None and single_gpu_index not in indices:
-        # A widen keeps the card the one-GPU placement picked: a matching pair elsewhere can be smaller.
+    single = next((g for g in gpus if g.index == single_gpu_index), None)
+    if (
+        fits_one_gpu
+        and single is not None
+        and single.index not in indices
+        and _gpu_idle_status(single, thresholds, shared_gpus) == "idle"
+        and _gpus_match([single, pair[0]], thresholds) is not None
+    ):
+        # A widen keeps the idle card the one-GPU placement picked when the pair is another (smaller) class.
         return SplitDecision(
             "none",
             False,
@@ -218,6 +225,25 @@ def choose_split_mode(
     return SplitDecision("tensor", True, reason, indices)
 
 
+def _gpu_idle_status(g: GpuInfo, thresholds: SplitPolicyThresholds, shared_gpus: frozenset) -> str:
+    """One card's state ("idle", "busy" or "unknown"), by the rules the pair is picked with."""
+    if thresholds.max_util_pct is not None:
+        # Free memory does not prove a card idle: an unread / N/A utilisation is not idle.
+        if g.util_pct is None:
+            return "unknown"
+        if g.util_pct > thresholds.max_util_pct:
+            return "busy"
+    if thresholds.refuse_shared_gpus and g.index in shared_gpus:
+        return "busy"
+    if (
+        thresholds.min_free_frac > 0
+        and g.total_mib > 0
+        and g.free_mib < thresholds.min_free_frac * g.total_mib
+    ):
+        return "busy"
+    return "idle"
+
+
 def _pick_pair(
     gpus: Sequence[GpuInfo], thresholds: SplitPolicyThresholds, shared_gpus: frozenset
 ) -> tuple[Optional[list], str]:
@@ -226,25 +252,13 @@ def _pick_pair(
     busy = []
     unknown = []
     for g in gpus:
-        if thresholds.max_util_pct is not None:
-            # Free memory does not prove a card idle: an unread / N/A utilisation is not idle.
-            if g.util_pct is None:
-                unknown.append(g.index)
-                continue
-            if g.util_pct > thresholds.max_util_pct:
-                busy.append(g.index)
-                continue
-        if thresholds.refuse_shared_gpus and g.index in shared_gpus:
+        status = _gpu_idle_status(g, thresholds, shared_gpus)
+        if status == "unknown":
+            unknown.append(g.index)
+        elif status == "busy":
             busy.append(g.index)
-            continue
-        if (
-            thresholds.min_free_frac > 0
-            and g.total_mib > 0
-            and g.free_mib < thresholds.min_free_frac * g.total_mib
-        ):
-            busy.append(g.index)
-            continue
-        idle.append(g)
+        else:
+            idle.append(g)
     need = max(2, thresholds.min_gpus)
     if len(idle) < need:
         why = []
