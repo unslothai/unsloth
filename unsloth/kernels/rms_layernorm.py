@@ -542,7 +542,11 @@ def _arch_settings(n_cols, device, dw):
 _cached_arch_settings = functools.lru_cache(maxsize = None)(_arch_settings)
 
 
-def _settings(n_cols, device = None, dw = False):
+def _settings(
+    n_cols,
+    device = None,
+    dw = False,
+):
     # Cached per (width, device) for eager calls (host bound at small shapes); tracing calls it directly.
     if torch.compiler.is_compiling():
         return _arch_settings(n_cols, device, dw)

@@ -132,7 +132,9 @@ def test_table_warps_match_default_accuracy(mod, dtype, capability, monkeypatch)
                 row = mod._NUM_WARPS.get((cap, n_cols)) if arm == "table" else None
                 dw = mod._DW_NUM_WARPS.get((cap, n_cols)) if arm == "table" else None
                 assert mod._settings(n_cols, X.device)[1] == (row or calculate_settings(n_cols)[1])
-                assert mod._settings(n_cols, X.device, dw = True)[1] == (dw or calculate_settings(n_cols)[1])
+                assert mod._settings(n_cols, X.device, dw = True)[1] == (
+                    dw or calculate_settings(n_cols)[1]
+                )
                 frozen = _run(mod, X, W, b, dY, False)
                 trained = _run(mod, X, W, b, dY, True)
                 results[arm] = {**frozen, **{k + "_w": v for k, v in trained.items()}}
