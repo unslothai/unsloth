@@ -223,6 +223,20 @@ global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry.
 
 
+def _fold_rope_parameters(rope_scaling, kwargs):
+    """transformers v5 and TRL's model_init_kwargs spell the RoPE override `rope_parameters`.
+    Read it as `rope_scaling`, else FastLanguageModel ignores it (and its auto linear scaling
+    replaces a YaRN request) and FastModel passes it to the model constructor, which fails."""
+    rope_parameters = kwargs.pop("rope_parameters", None)
+    if rope_parameters is None:
+        return rope_scaling
+    if rope_scaling is not None and dict(rope_scaling) != dict(rope_parameters):
+        raise ValueError(
+            "Unsloth: `rope_scaling` and `rope_parameters` were both given and differ; pass one."
+        )
+    return rope_parameters
+
+
 def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     """Remove Unsloth 4bit suffixes without lowercasing (HF cache dirs are case-sensitive)."""
     s = model_name
@@ -1257,6 +1271,7 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1323,7 +1338,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1853,7 +1868,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 device_map = device_map,
                 device_map_planner_kwargs = device_map_planner_kwargs,
-                rope_scaling = rope_scaling,  # [TODO] No effect
+                rope_scaling = rope_scaling,
                 fix_tokenizer = fix_tokenizer,
                 trust_remote_code = trust_remote_code,
                 use_gradient_checkpointing = use_gradient_checkpointing,
@@ -2186,7 +2201,7 @@ class FastModel(FastBaseModel):
         device_map = DEFAULT_DEVICE_MAP,
         # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
-        rope_scaling = None,  # [TODO] No effect
+        rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
         use_gradient_checkpointing = "unsloth",
@@ -2216,6 +2231,7 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
         float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
         if float8_training is not None and not full_finetuning:
@@ -3308,6 +3324,7 @@ class FastModel(FastBaseModel):
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
+            rope_scaling = rope_scaling,
             dtype = _get_dtype(dtype),
             load_in_4bit = load_in_4bit_kwargs,
             load_in_8bit = load_in_8bit_kwargs,

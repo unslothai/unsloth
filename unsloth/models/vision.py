@@ -25,6 +25,31 @@ except:
     from transformers import AutoModelForVision2Seq
 
 
+def _apply_user_rope_scaling(config, rope_scaling):
+    """Put the caller's rope_scaling (e.g. YaRN) on the text config before the model is built."""
+    from .llama import _rope_scaling_as_dict, _user_rope_scaling
+
+    target = config.get_text_config() if hasattr(config, "get_text_config") else config
+    scaling = _rope_scaling_as_dict(rope_scaling)
+    current = getattr(target, "rope_parameters", None)
+    # transformers v5 keys rope_parameters by layer type on mixed-attention models (Gemma 3).
+    per_layer_type = (
+        isinstance(current, dict)
+        and current
+        and "rope_type" not in current
+        and all(isinstance(v, dict) for v in current.values())
+    )
+    if per_layer_type:
+        if set(scaling) != set(current) or not all(isinstance(v, dict) for v in scaling.values()):
+            raise ValueError(
+                "Unsloth: this model keeps one RoPE setting per layer type "
+                f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
+            )
+        target.rope_parameters = {k: dict(v) for k, v in scaling.items()}
+        return
+    target.rope_scaling = _user_rope_scaling(target, scaling)
+
+
 def _embeddings_or_none(model, getter):
     """Call `model.<getter>()`, or None when the model cannot answer.
 
@@ -3290,6 +3315,7 @@ class FastBaseModel:
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
+        user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
         _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
@@ -4069,6 +4095,8 @@ class FastBaseModel:
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
+        if user_rope_scaling is not None:
+            _apply_user_rope_scaling(model_config, user_rope_scaling)
 
         verify_fp8_support_if_applicable(
             model_config, fast_inference = bool(fast_inference and is_vLLM_available())
