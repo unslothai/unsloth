@@ -1473,13 +1473,13 @@ def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
     root = Path("/sys/fs/cgroup")
     while True:
         try:
-            raw = (node / "memory.max").read_text().strip()
+            raw = (node / "memory.max").read_text(encoding = "utf-8").strip()
             if raw != "max":
                 limit = int(raw)
-                used = int((node / "memory.current").read_text().strip())
+                used = int((node / "memory.current").read_text(encoding = "utf-8").strip())
                 stat = dict(
                     ln.split()
-                    for ln in (node / "memory.stat").read_text().splitlines()
+                    for ln in (node / "memory.stat").read_text(encoding = "utf-8").splitlines()
                     if ln.strip()
                 )
                 avail = max(0, limit - used + int(stat.get("file", 0)))
