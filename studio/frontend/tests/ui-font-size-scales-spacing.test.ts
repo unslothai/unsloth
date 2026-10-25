@@ -268,11 +268,11 @@ test("the plain stylesheets' controls follow the scale", () => {
     const body = HUB.slice(at, HUB.indexOf("}", at));
     assert.match(
       body,
-      /(?:height|width): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
+      /(?:height|width|padding): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
       `${rule} has a fixed size`,
     );
   }
-  assert.match(CSS, /--slider-thumb-size: calc\(1\.25rem \* var\(--ui-space-scale, 1\)\);/);
+  assert.match(CSS, /--slider-thumb-size: calc\(1\.125rem \* var\(--ui-space-scale, 1\)\);/);
   assert.match(CSS, /--slider-track-height: calc\(0\.15625rem \* var\(--ui-space-scale, 1\)\);/);
 });
 

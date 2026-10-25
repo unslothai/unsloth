@@ -236,7 +236,7 @@ function NoPreview({
       <KindIcon item={item} className="size-16" />
       <p className="text-sm">{message}</p>
       {onDownload && (
-        <Button variant="muted" size="sm" className="rounded-full px-4" onClick={onDownload}>
+        <Button variant="muted" size="sm" className="rounded-full" onClick={onDownload}>
           {t("library.menu.download")}
         </Button>
       )}

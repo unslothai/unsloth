@@ -246,3 +246,89 @@ def test_bias_never_writes_out_whatever_the_memory(sm75, monkeypatch, compiling)
     got = mcl.mxfp4_packed_matmul(x, packed, scale, out = out, bias = b)
     assert got.data_ptr() != out.data_ptr() and bool((out == 7.0).all())
     torch.testing.assert_close(got, want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+
+
+def _grad_oracle(x, packed, scale, bias, transpose):
+    # fp64 oracle for d(sum(y)) / dx (and / dbias) of y = x @ W^T + b (or x @ W).
+    w = mcl.dequantize_mxfp4_packed(packed, scale, torch.float32).double()
+    xd = x.detach().double().requires_grad_()
+    bd = None if bias is None else bias.detach().double().requires_grad_()
+    y = xd @ w if transpose else torch.nn.functional.linear(xd, w, bd)
+    y.sum().backward()
+    return xd.grad, None if bd is None else bd.grad
+
+
+def _assert_grad_close(got, want):
+    err = (got.double() - want).norm() / want.norm()
+    assert err.item() < 1e-2, err.item()
+
+
+@pytest.mark.parametrize("path", ["chunks", "tile", "single_shot"])
+@pytest.mark.parametrize("bias", [False, True])
+def test_direct_helper_backward_is_exact_on_every_path(sm75, path, bias):
+    # Each chunk's F.linear saved a view of the one reused decode buffer: backward read only the last chunk.
+    device = sm75
+    N, K = 512, 256
+    packed, scale = _weight(N, K, device, seed = 8)
+    x = torch.randn(3, K, dtype = torch.float16, device = device).requires_grad_()
+    b = torch.randn(N, dtype = torch.float16, device = device).requires_grad_() if bias else None
+    if path == "chunks":
+        mcl._DENSE_BUDGET[device.index] = [128 * K * x.element_size(), 1024]  # four 128-row chunks
+    elif path == "tile":
+        mcl._DENSE_BUDGET[device.index] = [64 * K * x.element_size(), 1024]  # below the chunk floor
+    y = mcl.mxfp4_packed_matmul(x, packed, scale, bias = b)
+    assert y.requires_grad
+    y.float().sum().backward()
+    want_x, want_b = _grad_oracle(x, packed, scale, b, False)
+    _assert_grad_close(x.grad, want_x)
+    if bias:
+        _assert_grad_close(b.grad, want_b)
+
+
+def test_direct_helper_transpose_backward(sm75):
+    device = sm75
+    N, K = 512, 256
+    packed, scale = _weight(N, K, device, seed = 9)
+    g = torch.randn(3, N, dtype = torch.float16, device = device).requires_grad_()
+    mcl._DENSE_BUDGET[device.index] = [
+        128 * K * g.element_size(),
+        1024,
+    ]  # its backward is a chunked forward
+    mcl.mxfp4_packed_matmul(g, packed, scale, transpose = True).float().sum().backward()
+    want, _ = _grad_oracle(g, packed, scale, None, True)
+    _assert_grad_close(g.grad, want)
+
+
+def test_compiled_direct_helper_backward(sm75):
+    # The bounded custom op has no autograd formula of its own: a grad-requiring call goes through the Function.
+    device = sm75
+    N, K = 512, 256
+    packed, scale = _weight(N, K, device, seed = 10)
+    x = torch.randn(3, K, dtype = torch.float16, device = device).requires_grad_()
+    torch._dynamo.reset()
+    f = torch.compile(lambda a: mcl.mxfp4_packed_matmul(a, packed, scale), fullgraph = True)
+    f(x).float().sum().backward()
+    want, _ = _grad_oracle(x, packed, scale, None, False)
+    _assert_grad_close(x.grad, want)
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_direct_helper_with_grad_keeps_the_out_contract(sm75, bias):
+    # As without grad: a bias returns a new tensor and leaves ``out`` alone; no bias fills ``out``.
+    device = sm75
+    N, K = 512, 256
+    packed, scale = _weight(N, K, device, seed = 11)
+    x = torch.randn(3, K, dtype = torch.float16, device = device).requires_grad_()
+    b = torch.randn(N, dtype = torch.float16, device = device) if bias else None
+    mcl._DENSE_BUDGET[device.index] = [128 * K * x.element_size(), 1024]
+    out = torch.full((3, N), 7.0, dtype = torch.float16, device = device)
+    got = mcl.mxfp4_packed_matmul(x, packed, scale, out = out, bias = b)
+    want = _single_shot(x.detach(), packed, scale, b)
+    torch.testing.assert_close(got.detach(), want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+    if bias:
+        assert got.data_ptr() != out.data_ptr() and bool((out == 7.0).all())
+    else:
+        assert got.data_ptr() == out.data_ptr()
+    got.float().sum().backward()
+    want_x, _ = _grad_oracle(x, packed, scale, b, False)
+    _assert_grad_close(x.grad, want_x)
