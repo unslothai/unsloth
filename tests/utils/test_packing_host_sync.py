@@ -279,7 +279,9 @@ def test_compiled_dynamic_does_not_specialize_on_segment_count():
 def test_compiling_takes_tensor_path(monkeypatch):
     monkeypatch.setattr(packing, "_is_compiling", lambda: True)
     seq = torch.tensor([3, 5, 2], dtype = torch.int64)
-    lengths, cu, max_seqlen = packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, "cpu")
+    lengths, cu, max_seqlen = packing.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": seq}, "cpu"
+    )
     old = _old_packed_info(seq, "cpu")
     _same(lengths, old[0])
     _same(cu, old[1])
