@@ -652,12 +652,14 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
-            // the rounded box the scroller put the scrollbar inside it, running the full height
-            // and straight through the top and bottom right corners, which squared them off on
-            // any machine set to show scrollbars always. The padding moves in with the scroller so
-            // the bar sits beside the content instead of on the edge.
-            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
+          ? // Clips, never scrolls: as the scroller, the always-on scrollbar squared off its corners.
+            // !px-0: the list view's snapped inline padding would hold the scrollbar 8px off the edge.
+            cn(
+              "max-h-[var(--radix-popover-content-available-height)] overflow-hidden p-0 !px-0",
+              hasExternal
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))]"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))]",
+            )
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
@@ -679,7 +681,8 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4 [scrollbar-gutter:stable]">
+          // 28px sides like the list's text; the right is 20px plus the bar, an overlay strip capped at 8px.
+          <div className="min-h-0 w-full overflow-y-auto pt-4.5 pr-[calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))] pb-4.5 pl-7 [scrollbar-gutter:stable]">
             <ModelConfigPage
               key={modelConfigInstanceKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,

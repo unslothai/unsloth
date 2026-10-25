@@ -36,6 +36,7 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
+from . import _decode_graphs
 from .rl_replacements import (
     _unsloth_get_model_config,
     _unsloth_text_configs,
@@ -292,7 +293,10 @@ def PatchRL(FastLanguageModel):
             def generate_with_clone(*args, **kwargs):
                 if generating_model is not unwrapped_model:
                     kwargs = _caller_sampling_only(generating_model, kwargs)
-                out = original_generate(*args, **kwargs)
+                # RL rollouts on the training model: CUDA-graph decode defaults on here
+                # (UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out), off for plain model.generate().
+                with _decode_graphs.rl_generation():
+                    out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
                 return out
@@ -303,6 +307,9 @@ def PatchRL(FastLanguageModel):
                 yield unwrapped_model
             finally:
                 generating_model.generate = original_generate
+                # Back to training: the next optimizer step invalidates the decode graphs, so free
+                # them and their decode buffers (KV cache) for the backward pass now.
+                _decode_graphs.release_for_training(model)
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -643,6 +650,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
+        if "model" in locals():
+            try:
+                from unsloth.models._gc_config_default import honour_gradient_checkpointing_off
+                honour_gradient_checkpointing_off(args, model)
+            except Exception:
+                pass
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
@@ -653,7 +666,9 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             except Exception:
                 pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
-        if "model" in locals() and hasattr(model, "for_inference"):
+        # A tensor parallel model (tp_native.tp_trainer_setup) stays on its training path: for_inference would
+        # route the decoder layers onto decode paths outside the tensor parallel regions.
+        if "model" in locals() and hasattr(model, "for_inference") and not getattr(self, "_unsloth_tensor_parallel", False):
             model.for_inference()
 {RLTrainer_post}
 pass
@@ -877,6 +892,35 @@ def _wrap_ppo_train(trainer_cls):
     functools.update_wrapper(wrapped, original)
     wrapped._unsloth_ppo_train_wrapped = True
     trainer_cls.train = wrapped
+
+
+def _wrap_distillation_padding_mask(trainer_cls):
+    original = getattr(trainer_cls, "_get_last_hidden_state", None)
+    if original is None or getattr(original, "_unsloth_padding_mask_wrapped", False):
+        return
+
+    @functools.wraps(original)
+    def wrapped(self, unwrapped_model, *args, **kwargs):
+        # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
+        missing = object()
+        states = [
+            (module, getattr(module, "_unsloth_keep_padding_mask", missing))
+            for module in unwrapped_model.modules()
+            if hasattr(module, "embed_tokens")
+        ]
+        for module, _ in states:
+            module._unsloth_keep_padding_mask = True
+        try:
+            return original(self, unwrapped_model, *args, **kwargs)
+        finally:
+            for module, previous in states:
+                if previous is missing:
+                    del module._unsloth_keep_padding_mask
+                else:
+                    module._unsloth_keep_padding_mask = previous
+
+    wrapped._unsloth_padding_mask_wrapped = True
+    trainer_cls._get_last_hidden_state = wrapped
 
 
 def _park_optimizer_enabled(trainer):
@@ -2210,7 +2254,16 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
-    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = device)
+    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = "cpu")
+    # torch.tensor(..., device = cuda) is a pageable, stream-draining copy; pinned + non_blocking is not.
+    if device.type == "cuda":
+        try:
+            present = present.pin_memory().to(device, non_blocking = True)
+        except RuntimeError:
+            # Pinning can fail (pinned limit, WSL); a pageable copy carries the same mask.
+            present = present.to(device)
+    else:
+        present = present.to(device)
     dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
     buckets = {}
     for p, has_grad in zip(params, present.tolist()):
@@ -3995,6 +4048,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _patched_config = getattr(created_module, f"Unsloth{RLConfig_name}", None)
     _patch_config_pickle_identity(RLConfig, _patched_config)
     if _patched_config is not None:
+        try:
+            from ._gc_config_default import track_explicit_gradient_checkpointing
+            track_explicit_gradient_checkpointing(_patched_config)
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not track explicit gradient_checkpointing on {RLConfig_name}: {e}"
+            )
+    if _patched_config is not None:
         _register_config_pickle_fallback(_displaced_config, _patched_config)
 
     if trainer_file == "sft_trainer":
@@ -4055,6 +4116,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
+    if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
+        _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(

@@ -997,24 +997,70 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         install_methods()
 
 
+# Backends with single-tensor collectives; others (MPI) keep the list path.
+_FUSED_GATHER_BACKENDS = ("nccl", "gloo", "xccl", "hccl", "ucc")
+
+
+def _fused_gather_ok(group) -> bool:
+    try:
+        backend = str(dist.get_backend(group)).lower()
+    except Exception:
+        return False
+    return "mpi" not in backend and any(name in backend for name in _FUSED_GATHER_BACKENDS)
+
+
+# Newer torch deprecates *_tensor for *_single (same signatures).
+_reduce_scatter = getattr(dist, "reduce_scatter_single", None) or getattr(
+    dist, "reduce_scatter_tensor", None
+)
+_all_gather_into = getattr(dist, "all_gather_single", None) or getattr(
+    dist, "all_gather_into_tensor", None
+)
+
+
 # DPO / GRPO: the loss reads per-token logps of whole sequences (sums over completions, group masks),
 # so only the decoder is sharded; its last hidden states are gathered back to full length before lm_head.
 class _GatherSequence(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, group, rank, size):
         ctx.group, ctx.rank, ctx.local = group, rank, x.shape[1]
-        x = x.contiguous()
-        parts = [torch.empty_like(x) for _ in range(size)]
-        dist.all_gather(parts, x, group = group)
-        return torch.cat(parts, dim = 1)
+        # Peers hold equal shards: the manager pads the sequence to a multiple of the group size.
+        ctx.fused = (
+            _reduce_scatter is not None and _all_gather_into is not None and _fused_gather_ok(group)
+        )
+        if not ctx.fused:
+            x = x.contiguous()
+            parts = [torch.empty_like(x) for _ in range(size)]
+            dist.all_gather(parts, x, group = group)
+            return torch.cat(parts, dim = 1)
+        batch, local, rest = x.shape[0], x.shape[1], x.shape[2:]
+        # Gather concatenates on dim 0, so sequence goes first; fresh output like torch.cat.
+        out = x.new_empty((batch, size * local, *rest))
+        if batch == 1:
+            _all_gather_into(
+                out.view(size * local, *rest), x.reshape(local, *rest).contiguous(), group = group
+            )
+            return out
+        buffer = x.new_empty((size * local, batch, *rest))
+        _all_gather_into(buffer, x.movedim(1, 0).contiguous(), group = group)
+        return out.copy_(buffer.movedim(0, 1))
 
     @staticmethod
     def backward(ctx, grad):
         # Every peer computes the same loss on the gathered sequence: summing their gradients makes each
         # shard's parameter grads N x its share, and DDP's average over the group then yields one copy.
-        grad = grad.clone(memory_format = torch.contiguous_format)
-        dist.all_reduce(grad, group = ctx.group)
-        return grad.narrow(1, ctx.rank * ctx.local, ctx.local), None, None, None
+        if not ctx.fused:
+            grad = grad.clone(memory_format = torch.contiguous_format)
+            dist.all_reduce(grad, group = ctx.group)
+            return grad.narrow(1, ctx.rank * ctx.local, ctx.local), None, None, None
+        # Only this rank's slice of the sum is needed: a reduce-scatter sends half an all-reduce's bytes.
+        batch, rest = grad.shape[0], grad.shape[2:]
+        source = grad.movedim(1, 0).clone(memory_format = torch.contiguous_format)
+        shard = grad.new_empty((ctx.local, batch, *rest))
+        _reduce_scatter(shard, source, group = ctx.group)
+        if batch == 1:
+            return shard.view(1, ctx.local, *rest), None, None, None
+        return shard.movedim(0, 1).contiguous(), None, None, None
 
 
 def gather_sequence(x, manager):

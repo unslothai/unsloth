@@ -1938,6 +1938,33 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Total layers in the model, alongside offloaded_layers.",
     )
+    overflow_layers: Optional[int] = Field(
+        None,
+        description = (
+            "Layers with MoE expert weights that llama.cpp's --fit left in system memory: their "
+            "routed experts, or part of the FFN for the first partial layer on a device. "
+            "offloaded_layers still counts them as on the GPU, so a spill shows only here. Every "
+            "MoE layer when expert_cache_mib is set. None when --fit did not run."
+        ),
+    )
+    expert_cache_mib: Optional[float] = Field(
+        None,
+        description = (
+            "--moe-cache-mib auto: every routed expert is in system memory and this many MiB of "
+            "the most used ones are cached on the GPU. None when no MoE cache is in use."
+        ),
+    )
+    gpu_weights_mib: Optional[float] = Field(
+        None,
+        description = "MiB of model weights llama.cpp placed in GPU buffers, from its load log.",
+    )
+    host_weights_mib: Optional[float] = Field(
+        None,
+        description = (
+            "MiB of model weights in system memory (CPU, memory-mapped or pinned host buffers). "
+            "Token embeddings stay here even when every layer is on the GPU."
+        ),
+    )
     gpu_backend_unavailable: bool = Field(
         False,
         description = (

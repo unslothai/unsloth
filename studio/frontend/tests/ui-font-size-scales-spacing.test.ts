@@ -268,7 +268,7 @@ test("the plain stylesheets' controls follow the scale", () => {
     const body = HUB.slice(at, HUB.indexOf("}", at));
     assert.match(
       body,
-      /(?:height|width): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
+      /(?:height|width|padding): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
       `${rule} has a fixed size`,
     );
   }

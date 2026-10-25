@@ -2004,6 +2004,10 @@ _TEARDOWN_TASK_RECANCEL_S = 0.01
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
+# How often a UI stream looks for new prefill progress while the generator is silent.
+_LIVE_PROGRESS_POLL_S = 0.25
+# Minimum gap between two live decode frames: the client only redraws one line of text.
+_LIVE_DECODE_FRAME_INTERVAL_S = 1.0
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
@@ -4067,7 +4071,11 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
+from state.tool_approvals import (
+    resolve_tool_decision,
+    tool_decision_grants_host_access,
+    tool_decision_is_pending,
+)
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -7697,21 +7705,61 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
     return _callback
 
 
+def _live_count(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number)
+
+
+def _live_rate(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return round(number, 1)
+
+
 class _PrefillProgressSignal:
     """Counts advancing ``prompt_progress`` so the stall loop can send ``: prefill-progress``.
 
-    Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease."""
+    Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease.
 
-    def __init__(self, inner):
+    With ``live`` it also feeds ``live_frame``, the chat UI's ``generation_progress`` frames."""
+
+    def __init__(
+        self,
+        inner,
+        live: bool = False,
+    ):
         self._inner = inner
         self._last_processed = None
         self._advances = 0
         self._seen = 0
-        self.wants_timings = inner is not None
+        self._live = live
+        # Written from the generator thread, read on the event loop: each is replaced whole, never mutated.
+        self._prefill: Optional[dict] = None
+        self._prefill_sent: Optional[dict] = None
+        self._decode: Optional[dict] = None
+        self._decode_sent_at = 0.0
+        self.wants_timings = inner is not None or live
 
     @property
     def needs_phase(self) -> bool:
         return self._inner is not None and getattr(self._inner, "needs_phase", True)
+
+    @property
+    def live(self) -> bool:
+        return self._live
 
     def __call__(self, sample: dict) -> None:
         progress = sample.get("prompt_progress")
@@ -7721,8 +7769,65 @@ class _PrefillProgressSignal:
             if processed is not None and processed != self._last_processed:
                 self._last_processed = processed
                 self._advances += 1
+            if self._live:
+                self._record_prefill(progress, sample.get("prompt_per_second"))
+        elif self._live:
+            self._record_decode(sample)
         if self._inner is not None:
             self._inner(sample)
+
+    def _record_prefill(self, progress: dict, rate: Any) -> None:
+        total = _live_count(progress.get("total"))
+        processed = _live_count(progress.get("processed"))
+        if processed is None:
+            return
+        if total:
+            processed = min(processed, total)
+        cached = _live_count(progress.get("cache"))
+        # A new prompt pass (the next round of a tool loop): the last round's decode figures must not follow it.
+        self._decode = None
+        self._prefill = {
+            "type": "generation_progress",
+            "phase": "prefill",
+            "processed": processed,
+            "total": total,
+            "cached": min(cached, processed) if cached is not None else None,
+            "tok_per_s": _live_rate(rate),
+        }
+
+    def _record_decode(self, sample: dict) -> None:
+        tokens = _live_count(sample.get("predicted_n"))
+        if not tokens:
+            return
+        frame = {
+            "type": "generation_progress",
+            "phase": "decode",
+            "tokens": tokens,
+            "tok_per_s": _live_rate(sample.get("predicted_per_second")),
+        }
+        draft_n = _live_count(sample.get("draft_n"))
+        draft_accepted = _live_count(sample.get("draft_n_accepted"))
+        if draft_n and draft_accepted is not None:
+            frame["draft_n"] = draft_n
+            frame["draft_accepted"] = min(draft_accepted, draft_n)
+        self._decode = frame
+
+    def live_frame(self) -> Optional[str]:
+        """The next ``generation_progress`` line: the newest unsent prefill sample, else decode figures at most
+        once per ``_LIVE_DECODE_FRAME_INTERVAL_S``. None when nothing is due."""
+        if not self._live:
+            return None
+        prefill = self._prefill
+        if prefill is not None and prefill is not self._prefill_sent:
+            self._prefill_sent = prefill
+            return f"data: {json.dumps(prefill, separators = (',', ':'))}\n\n"
+        decode = self._decode
+        now = time.monotonic()
+        if decode is not None and now - self._decode_sent_at >= _LIVE_DECODE_FRAME_INTERVAL_S:
+            self._decode = None
+            self._decode_sent_at = now
+            return f"data: {json.dumps(decode, separators = (',', ':'))}\n\n"
+        return None
 
     def advanced(self) -> bool:
         advances = self._advances
@@ -7730,6 +7835,34 @@ class _PrefillProgressSignal:
             return False
         self._seen = advances
         return True
+
+
+async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
+    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    Never cancels ``next_task``: the caller's finally drains it."""
+    timeout = first_timeout
+    waited = 0.0
+    while True:
+        poll = min(timeout - waited, _LIVE_PROGRESS_POLL_S) if signal.live else timeout
+        done_tasks, _ = await asyncio.wait({next_task}, timeout = poll)
+        if done_tasks:
+            # Steps faster than the poll get their pending prefill sample, then decode figures, sent here.
+            for _ in range(2):
+                frame = signal.live_frame()
+                if frame is not None:
+                    yield frame
+            return
+        frame = signal.live_frame()
+        if frame is not None:
+            yield frame
+        waited += poll
+        if waited < timeout:
+            continue
+        yield (
+            _OPENAI_PREFILL_PROGRESS_SSE if signal.advanced() else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+        )
+        waited = 0.0
+        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -9639,6 +9772,8 @@ def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+# Routes a named model to the slot already serving it but never loads one (scheduled runs).
+LOADED_MODELS_ONLY_SCOPE_KEY = "_unsloth_loaded_models_only"
 # Sentinel a raw-body endpoint passes when the request omits ``model``: it must
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
@@ -11229,6 +11364,7 @@ async def _reject_unservable_model(
     from core.inference.local_model_resolver import (
         index_is_built,
         local_gguf_pinned_variant,
+        local_gguf_torn_only,
         local_gguf_withheld,
         recently_downloaded,
         resolve_local_gguf,
@@ -11256,7 +11392,7 @@ async def _reject_unservable_model(
             ),
         )
 
-    still_indexing = False
+    still_indexing = torn = False
     try:
         if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
@@ -11339,6 +11475,13 @@ async def _reject_unservable_model(
             or recently_downloaded(base)
             or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
         )
+        # Torn split sets are kept out of the index, but the name is still ours, not a foreign label.
+        torn = (
+            not here
+            and base.strip().count("/") == 1
+            and await asyncio.to_thread(local_gguf_torn_only, base)
+        )
+        here = here or torn
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
         # A refusal decided above is the answer, not a failure to decide: without this
@@ -11351,7 +11494,7 @@ async def _reject_unservable_model(
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
-        downloaded = here = switchable = False
+        downloaded = here = switchable = torn = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
     if gguf_hub_repo and not (quantified or here):
@@ -11380,6 +11523,12 @@ async def _reject_unservable_model(
         message = (
             f"The model '{requested_model}' is downloaded, but this server could not "
             "switch to it. Retry shortly, or load it in Unsloth Studio."
+        )
+    elif torn:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is only partly downloaded on this server, so it "
+            "cannot be served. Finish the download in Unsloth Studio."
         )
     elif downloaded:
         status_code, code = 404, "model_not_found"
@@ -11809,6 +11958,19 @@ async def _maybe_auto_switch_model(
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
     if _auto_switch_opted_out(fastapi_request):
+        return
+    if (
+        named_model
+        and isinstance(_swap_scope, dict)
+        and _swap_scope.get(LOADED_MODELS_ONLY_SCOPE_KEY)
+    ):
+        # A named model not routed to a kept slot: only the resident may answer, under the same
+        # access check. An omitted one (the reload-only sentinel) keeps the path below.
+        if not await asyncio.to_thread(_loaded_identity_satisfies, named_model):
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        await _refuse_foreign_resident()
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
     auto_switch_on = get_openai_auto_switch_enabled()
 
@@ -23310,6 +23472,18 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
+    if (
+        request.decision == "allow"
+        and auth_policy.api_full_access_refused()
+        and tool_decision_grants_host_access(request.approval_id, request.session_id)
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "This tool call reaches files outside the sandbox, and API keys cannot approve "
+            "that: approve it in the Unsloth UI, or set UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on "
+            "the server to allow it.",
+        )
     matched = resolve_tool_decision(
         request.approval_id,
         request.decision,
@@ -28027,9 +28201,12 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
     import torchaudio
     import tempfile
     import os
+    from utils.media_playlist import refuse_playlist
     from utils.paths import ensure_dir, tmp_root
 
     raw = base64.b64decode(b64)
+    # torchaudio and torchcodec open the file through FFmpeg, which follows playlist entries.
+    refuse_playlist(raw)
     # torchaudio.load needs a path or file-like with a format hint; write a
     # temp file so it can auto-detect the format.
     with tempfile.NamedTemporaryFile(
@@ -28800,6 +28977,10 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
     in full ML environments, but is absent from no-torch GGUF-only installs.
     """
+    from utils.media_playlist import refuse_playlist
+
+    # Checked once up front so no decoder below, the librosa fallback included, sees a playlist.
+    refuse_playlist(raw)
     try:
         arr, sr = _decode_audio_mono_with_soundfile(raw)
     except _DecodedAudioTooLongError:
@@ -28819,11 +29000,8 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
-            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
-            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
-            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,
@@ -34169,7 +34347,10 @@ async def produce_openai_chat_completions(
             else None
         )
         # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands.
-        _gguf_prefill_signal = _PrefillProgressSignal(_gguf_monitor_callback)
+        _gguf_prefill_signal = _PrefillProgressSignal(
+            _gguf_monitor_callback,
+            live = bool(payload.stream and _ui_events and not _wants_multiple_choices(payload)),
+        )
         _gguf_perf_callback = _gguf_prefill_signal if payload.stream else _gguf_monitor_callback
 
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
@@ -34698,20 +34879,10 @@ async def produce_openai_chat_completions(
                                 if approval_flush_pending
                                 else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             )
-                            while True:
-                                done_tasks, _ = await asyncio.wait(
-                                    {next_task},
-                                    timeout = wait_timeout,
-                                )
-                                if done_tasks:
-                                    break
-                                yield (
-                                    _OPENAI_PREFILL_PROGRESS_SSE
-                                    if _gguf_prefill_signal.advanced()
-                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                )
-                                approval_flush_pending = False
-                                wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                            async for stall_line in _stall_wait_frames(
+                                next_task, _gguf_prefill_signal, wait_timeout
+                            ):
+                                yield stall_line
                             event = next_task.result()
                             approval_flush_pending = False
                         finally:
@@ -35423,18 +35594,12 @@ async def produce_openai_chat_completions(
                             # Stall-timeout wait: keepalive while the generator stays
                             # silent (e.g. no-tool prefill). asyncio.wait never cancels
                             # next_task, matching the finally-drain shield (see GGUF stream).
-                            while True:
-                                done_tasks, _ = await asyncio.wait(
-                                    {next_task},
-                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                                )
-                                if done_tasks:
-                                    break
-                                yield (
-                                    _OPENAI_PREFILL_PROGRESS_SSE
-                                    if _gguf_prefill_signal.advanced()
-                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                )
+                            async for stall_line in _stall_wait_frames(
+                                next_task,
+                                _gguf_prefill_signal,
+                                _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                            ):
+                                yield stall_line
                             cumulative = next_task.result()
                         finally:
                             if next_task.done():

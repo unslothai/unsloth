@@ -22,6 +22,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._utils import _refuse_tensor_parallel_for_inference
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
@@ -156,6 +157,7 @@ from ..kernels.fused_add_rms_layernorm import (
     fast_add_rms_layernorm_inference_ok,
 )
 from ..kernels import fast_lora as _fast_lora
+from . import _decode_graphs
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -541,6 +543,9 @@ def _fast_prepare_inputs_for_generation(
             position_ids = original_attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(original_attention_mask == 0, 1)
             position_ids = position_ids[:, -seq_length:]
+            if _decode_graphs.enabled():
+                # Positions from the mask stay below its length: graphed decode skips a host read.
+                position_ids._unsloth_position_bound = original_attention_mask.shape[-1]
             kwargs["position_ids"] = position_ids
         elif kwargs.get("cache_position", None) is not None:
             cp = kwargs["cache_position"]
@@ -697,55 +702,37 @@ def LlamaAttention_fast_forward_inference(
 
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
+    # Graph mode (a captured decode step): no host lengths, the cache slot is on the device.
+    static = _decode_graphs.static()
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
     device = hidden_states.device
     if do_prefill:
-        self.paged_attention = torch.empty(
-            (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype = dtype,
-            device = device,
+        _decode_graphs.alloc_decode_buffers(
+            self, K1, V1, bsz, n_heads, n_kv_heads, head_dim, hidden_size, dtype, device,
+            KV_CACHE_INCREMENT,
+        )  # fmt: skip
+    elif static is None and kv_seq_len >= self.paged_attention.shape[0]:
+        _decode_graphs.resize_decode_buffers(
+            self, KV_CACHE_INCREMENT, bsz, n_heads, n_kv_heads, head_dim
         )
-        self.paged_attention_K = self.paged_attention[:, 0]
-        self.paged_attention_V = self.paged_attention[:, 1]
-        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
-        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-
-        # Mistral Nemo 12b has weird dimensions.
-        if attention_size != hidden_size:
-            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
-        else:
-            self.temp_O = self.temp_QA[1][:, :, :hidden_size]
-
-        # Row stride kept a multiple of 8 so the grouped decode bmm stays on the fast cuBLAS path.
-        self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
-            dtype = dtype,
-            device = device,
-        )
-        self.scalar = 1.0 / math_sqrt(self.head_dim)
-        self.half_head_dim = head_dim // 2
-    elif kv_seq_len >= self.paged_attention.shape[0]:
-        self.paged_attention.resize_(
-            (
-                self.paged_attention.shape[0] + KV_CACHE_INCREMENT,
-                2,
-                bsz,
-                n_kv_heads,
-                head_dim,
-            )
-        )
-        self.paged_attention_K = self.paged_attention[:, 0]
-        self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
+    # K / V land straight in this step's cache slot (contiguous [bsz, n_kv_heads, head_dim]); K is rotated
+    # there in place, so the two per-layer cache copies below disappear. Graph mode writes scratch,
+    # copied into the device-side slot after RoPE.
+    if static is None:
+        K_slot = self.paged_attention_K[seq_len].view(bsz, 1, n_kv_heads * head_dim)
+        V_slot = self.paged_attention_V[seq_len].view(bsz, 1, n_kv_heads * head_dim)
+    else:
+        K_slot, V_slot = self.temp_KV[0], self.temp_KV[1]
+    Kn = fast_linear_forward(self.k_proj, Xn, out = K_slot)
+    if Kn.data_ptr() != K_slot.data_ptr():
+        Kn = K_slot.copy_(Kn)
+    Vn = fast_linear_forward(self.v_proj, Xn, out = V_slot)
+    if Vn.data_ptr() != V_slot.data_ptr():
+        Vn = V_slot.copy_(Vn)
     Qn = Qn.view(bsz, 1, n_heads, head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -785,8 +772,21 @@ def LlamaAttention_fast_forward_inference(
         Kn *= cos
         Kn.addcmul_(RH_K, sin)
 
-    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    if static is not None:
+        # Captured step: the cache slot is on the device; the attention itself runs eagerly
+        # between two captured segments (static.attention), over the true length.
+        self.paged_attention_K.index_copy_(
+            0, static.slot, K_slot.view(1, bsz, n_kv_heads, head_dim)
+        )
+        self.paged_attention_V.index_copy_(
+            0, static.slot, V_slot.view(1, bsz, n_kv_heads, head_dim)
+        )
+        A = static.attention(
+            lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
+        )
+        A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
+        return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
+
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
@@ -853,6 +853,93 @@ def LlamaAttention_fast_forward_inference(
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 
+
+def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_with_batch_mask):
+    """softmax(Q K^T) V of one decode token over the first kv_seq_len cache rows; returns
+    (A [bsz, n_heads, 1, head_dim], K, V). The captured step calls it between its graph segments.
+    It is op for op the attention inlined in the Llama / Qwen3 decode functions (kept inline there
+    so the eager step pays no extra call), so both compute bit for bit the same.
+    sdpa_gqa_with_batch_mask=False (Qwen3) expands K / V instead of SDPA GQA for a masked batch."""
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
+    n_groups = self.num_key_value_groups
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
+    head_dim = self.head_dim
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+
+    # Handle sliding windows, from transformers models/mistral/modeling_mistral.py#L193
+    sliding_window = getattr(self.config, "sliding_window", None)
+    if sliding_window is not None and kv_seq_len > sliding_window:
+        start = kv_seq_len - sliding_window
+        Knn = Kn[:, :, start:, :]
+        Vnn = Vn[:, :, start:, :]
+        if attention_mask is not None:
+            attention_mask = attention_mask[..., start:]
+    else:
+        Knn, Vnn = Kn, Vn
+
+    if attention_mask is not None and attention_mask.dim() == 2:
+        attention_mask = attention_mask[:, None, None, :].to(torch.bool)
+    elif (
+        attention_mask is not None
+        and attention_mask.dim() == 4
+        and attention_mask.dtype != torch.bool
+    ):
+        # Decode is more stable with boolean keep masks than additive bf16 masks.
+        attention_mask = attention_mask.eq(0)
+
+    use_sdpa_gqa = SDPA_HAS_GQA
+    if (
+        use_sdpa_gqa
+        and not sdpa_gqa_with_batch_mask
+        and isinstance(attention_mask, torch.Tensor)
+        and attention_mask.dim() >= 3
+        and attention_mask.shape[0] > 1
+    ):
+        # Avoid SDPA GQA drift for batched masked decode.
+        use_sdpa_gqa = False
+
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    _, _, cached_len, _ = Knn.shape
+    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+
+    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
+    Q_len = Qn.shape[-2]
+    K_len = Knn.shape[-2]
+    if attention_mask is None and Q_len == K_len:
+        is_causal = True
+    else:
+        is_causal = False
+    if bsz == 1:
+        Qn *= self.scalar
+        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
+        if attention_mask is not None:
+            A.masked_fill_(~attention_mask, float("-inf"))
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
+        A = _gqa_decode_values(A, Vnn, Qn)
+    else:
+        if use_sdpa_gqa:
+            A = scaled_dot_product_attention(
+                Qn,
+                Knn,
+                Vnn,
+                attn_mask = attention_mask,
+                is_causal = is_causal,
+                enable_gqa = True,
+            )
+        else:
+            A = scaled_dot_product_attention(
+                Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
+            )
+    return A, Kn, Vn
+
+
+_decode_graphs.register_attention(LlamaAttention_fast_forward_inference)
 
 torch_nn_functional_silu = torch.nn.functional.silu
 
@@ -996,9 +1083,9 @@ def LlamaAttention_fast_forward(
         del self.attention
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -1630,6 +1717,23 @@ def LlamaModel_fast_forward(
 
 
 # Ported from transformers models/llama/modeling_llama.py#L825
+def _decode_step_mask(self, attention_mask, bsz, q_len, X, seq_len):
+    """The decode step's attention mask: None, or a bool keep mask for every layer."""
+    if attention_mask is None:
+        return None
+    attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+        attention_mask,
+        (bsz, q_len),
+        X,
+        seq_len,
+        sliding_window = getattr(self.config, "sliding_window", None),
+    )
+    # Pre-convert to bool once for all layers, avoiding a per-layer .eq(0).
+    if attention_mask is not None and attention_mask.dtype != torch.bool:
+        attention_mask = attention_mask.eq(0)
+    return attention_mask
+
+
 def _LlamaModel_fast_forward_inference(
     attention_fast_forward_inference = LlamaAttention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
@@ -1668,7 +1772,11 @@ def _LlamaModel_fast_forward_inference(
 
         seq_len = past_key_values[0][0].shape[-2]
         kv_seq_len = seq_len + 1
-        if attention_mask is not None:
+        static = _decode_graphs.static()
+        if static is not None:
+            # Captured step: the runner builds this mask per step (_decode_step_mask), outside the graph.
+            attention_mask = None
+        elif attention_mask is not None:
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (bsz, q_len),
@@ -1683,7 +1791,10 @@ def _LlamaModel_fast_forward_inference(
             attention_mask = None
 
         # Compute rotary_seq_len once to avoid a per-layer GPU-CPU sync from .item().
-        rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+        if static is not None:
+            rotary_seq_len = static.rope_len
+        else:
+            rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
@@ -1750,6 +1861,11 @@ def _LlamaModel_fast_forward_inference(
             attentions = [],
         )
 
+    if mlp_fast_forward_inference is fast_swiglu_inference:
+        # The attention function decides whether a captured (graph-mode) step is possible.
+        LlamaModel_fast_forward_inference_custom._unsloth_graph_attention = (
+            attention_fast_forward_inference
+        )
     return LlamaModel_fast_forward_inference_custom
 
 
@@ -1850,6 +1966,19 @@ def _run_backbone(self, **kwargs):
         model._unsloth_head_reads_final_norm = False
 
 
+def _decode_logits(self, hidden_states):
+    """The decode branch of CausalLM_fast_forward's head (q_len == 1, no labels), for captured steps."""
+    lm_head = self.lm_head.weight
+    dtype = lm_head.dtype
+    if hidden_states.shape[0] == 1:
+        logits = torch.mv(lm_head, hidden_states.ravel().to(dtype)).unsqueeze(0).unsqueeze(0)
+    else:
+        logits = self.lm_head(hidden_states.to(dtype))
+    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
+    logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
+    return apply_logit_transforms(logits, logit_softcapping, logit_scaling)
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1875,6 +2004,19 @@ def CausalLM_fast_forward(fast_forward_inference):
         if past_key_values is not None and len(past_key_values) == 0:
             past_key_values = None
         if past_key_values is not None and input_ids is not None and input_ids.shape[1] == 1:
+            if labels is None and shift_labels is None and _decode_graphs.enabled():
+                graphed = _decode_graphs.decode_step(
+                    self, fast_forward_inference, _decode_logits, _decode_step_mask, input_ids,
+                    past_key_values, position_ids, attention_mask,
+                )  # fmt: skip
+                if graphed is not None:
+                    # The same output the eager decode branch below returns.
+                    if not return_dict:
+                        return (graphed[0], graphed[1], [], [])
+                    return CausalLMOutputWithPast(
+                        loss = None, logits = graphed[0], past_key_values = graphed[1],
+                        hidden_states = [], attentions = [],
+                    )  # fmt: skip
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -2789,6 +2931,25 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         ]
 
 
+def _generation_max_len(self, args, kwargs):
+    """prompt + max_new_tokens of a generate() call (0 if unknown), to size the decode buffers once."""
+    try:
+        ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if args else None))
+        if ids is None:
+            ids = kwargs.get("inputs_embeds", None)
+        prompt = ids.shape[1] if hasattr(ids, "shape") and len(ids.shape) >= 2 else 0
+        config = kwargs.get("generation_config", None) or getattr(self, "generation_config", None)
+        new = kwargs.get("max_new_tokens", None)
+        if new is None and kwargs.get("max_length", None) is not None:
+            return int(kwargs["max_length"])
+        if new is None:
+            # A config's default max_length (often the context size) is not a request.
+            new = getattr(config, "max_new_tokens", None)
+        return prompt + int(new) if new is not None else 0
+    except Exception:
+        return 0
+
+
 def unsloth_fast_generate(self, *args, **kwargs):
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it, so the restore
@@ -2870,12 +3031,28 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
+    # Decided once per call (env / RL generation scope), so the prefill and every decode step agree.
+    graphs = _decode_graphs.enabled()
+    if graphs:
+        _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
     # Mixed precision autocast.
-    with (
-        _get_inference_mode_context_manager(self),
-        torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-    ):
-        output = self._old_generate(*args, **kwargs)
+    try:
+        with (
+            _get_inference_mode_context_manager(self),
+            torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+        ):
+            output = self._old_generate(*args, **kwargs)
+    finally:
+        if graphs:
+            _decode_graphs.end_generation()
+    if graphs and restore_training_mode:
+        # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
+        # decode buffers for training.
+        _decode_graphs.release_for_training(self)
+    elif graphs and getattr(output, "past_key_values", None) is not None:
+        # The returned cache views the persistent decode buffers: hand them over, so a later
+        # generate() allocates its own instead of overwriting a cache the caller kept.
+        _decode_graphs.release(self)
 
     if restore_training_mode:
         FastLlamaModel.for_training(
@@ -4295,6 +4472,10 @@ class FastLlamaModel:
             "    try:\n"
             "        from unsloth.models._utils import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
             "        _unsloth_reset_cc(self)\n"
+            "    except Exception: pass\n"
+            "    try:\n"
+            "        from unsloth.models._utils import _unsloth_non_blocking_batches\n"
+            "        _unsloth_non_blocking_batches(self)\n"
             "    except Exception: pass",
             1,
         )
@@ -5341,6 +5522,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
+        _refuse_tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
