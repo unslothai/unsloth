@@ -16,7 +16,6 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 CAPS = ("python", "http", "mcp", "provider", "trigger")
-# Run origins the owner can stand behind.
 TRUSTED_KINDS = ("ui", "trigger", "player")
 
 

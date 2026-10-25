@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Flows players end to end against a mock backend (studio/frontend/smoke-flows-player.html).
-
-Story: begin, read, pick choices, save, and reach the ending the compiled Lantern Picnic example promises.
-World: start the Phaser village, walk to Old Tom, start his quest, pick up the rod, return it and see the
-quest complete. Screenshots go to $FLOWS_SHOTS (default ./outputs/flows)."""
-
 from __future__ import annotations
 
 import os
@@ -52,7 +46,6 @@ def play_story(page: Page) -> None:
             if not chose:
                 page.wait_for_timeout(500)
                 shot(page, "story_choice")
-                # Save mid-story through the real menu.
                 page.click("button[aria-label=Save]")
                 page.get_by_text("Slot 1").first.click()
                 page.wait_for_function("window.__flowsPlayerSmoke.sessions.has('story-1')")
@@ -72,7 +65,6 @@ def play_story(page: Page) -> None:
 
 
 def walk_to(page: Page, kind: str, entity: str, label: str) -> None:
-    """Walk next to an item, or chase an NPC (they wander) until the interaction prompt names it."""
     prompt = page.get_by_text(label)
     for _ in range(30):
         if kind == "npcs":
@@ -108,7 +100,6 @@ def play_world(page: Page) -> None:
     page.wait_for_function("window.__flowsPlayerSmoke.world !== null")
     page.wait_for_timeout(1200)
     shot(page, "world_explore")
-    # Keyboard movement works (the player leaves spawn).
     before = page.evaluate("window.__flowsPlayerSmoke.world.playerTile()")
     moved = None
     for key in ("d", "a", "s", "w"):
@@ -149,7 +140,6 @@ STAMP: dict[str, float] = {}
 
 
 def arm(page: Page) -> None:
-    """Mark the page right after a scenario's own navigation; a later reload loses the mark."""
     STAMP["value"] = page.evaluate("window.__flowsStamp = Math.random()")
 
 

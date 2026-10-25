@@ -20,7 +20,6 @@ DEFAULT_DECAY = 0.995
 MAX_RECORDS = 5000
 
 _WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
-# Scripts written without spaces (Chinese, Japanese, Korean) also match on character pairs.
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 _STOP = frozenset(
     "a an the and or but if of to in on at by for with from as is are was were be been being it its this that "
@@ -45,7 +44,6 @@ def as_stream(value: Any) -> dict:
     next_id = value.get("next_id")
     if not isinstance(next_id, int) or next_id < len(records):
         next_id = max([len(records)] + [_id_number(r.get("id")) + 1 for r in records])
-    # Recall, Reflect and Agent Summary address records by id: a hand-written list may have none.
     seen: set = set()
     for r in records:
         if not isinstance(r.get("id"), str) or not r["id"] or r["id"] in seen:
@@ -120,7 +118,6 @@ def normalise(values: list[float]) -> list[float]:
 
 def recency(records: list[dict], now: float, decay: float, mode: str) -> list[float]:
     if mode == "rank":
-        # The released simulation: newest access first, decay ** rank (it uses 0.99).
         order = sorted(range(len(records)), key = lambda i: -float(records[i].get("t_access") or 0))
         out = [0.0] * len(records)
         for rank, i in enumerate(order):

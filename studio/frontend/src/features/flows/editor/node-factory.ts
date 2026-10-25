@@ -72,7 +72,6 @@ export function tryConnect(req: ConnectRequest): string | null {
   return null;
 }
 
-/** Add a node and wire it to the dangling connection it was created from. */
 export function addNodeConnected(
   type: string,
   pos: [number, number],

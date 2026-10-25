@@ -39,13 +39,11 @@ class NodeContext(Protocol):
     flow_id: str
     node_id: str
     spec: dict
-    # Params with defaults applied and {{name}} templates left as-is.
     params: dict[str, Any]
     # Connected inputs by port id. A `multi` port is always a list; an unconnected port is absent.
     inputs: dict[str, Any]
     # Effective seed: param `seed` if set, else input `seed`, else derived from the flow seed and node id.
     seed: int
-    # Flow-level params supplied for this run (Run dialog, MCP, player).
     flow_params: dict[str, Any]
 
     async def call(
@@ -200,7 +198,6 @@ class NodeContext(Protocol):
         """Register a coroutine the engine awaits when the run is cancelled while this node is in flight."""
         ...
 
-    # Who started the run: {"kind": "ui" | "api_key" | "trigger" | "player", "owner": bool}.
     origin: dict[str, Any]
 
     def capability_refusal(

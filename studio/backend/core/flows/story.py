@@ -58,7 +58,6 @@ def _unique(base: str, taken: set[str]) -> str:
     return out
 
 
-# Graph helpers shared with world.py
 def node_value(doc: dict, node_outputs: dict, node_id: str, port: str) -> Any:
     """A node's output: the latest run first (a re-roll replaces what a package shipped), then the baked value."""
     ran = ((node_outputs or {}).get(node_id) or {}).get(port)
@@ -131,7 +130,6 @@ def _entry_points(doc: dict, kinds: dict[str, str]) -> dict[str, str]:
 STORY_ENTRY_TYPES = {"story.next_scene": "next_scene", "story.scene_art": "scene_art"}
 
 
-# Lines
 _LINE_RE = re.compile(r"^\s*([^:\n]{1,40}?)\s*(?:\(([^)]{1,30})\))?\s*:\s*(.+)$")
 
 
@@ -298,7 +296,6 @@ def parse_lines(
     return lines
 
 
-# Authored graph -> manifest
 def _flow_successors(doc: dict) -> dict[tuple[str, str], str]:
     succ: dict[tuple[str, str], str] = {}
     for e in doc.get("edges") or []:
@@ -308,7 +305,6 @@ def _flow_successors(doc: dict) -> dict[tuple[str, str], str]:
 
 
 def _index_key(d: Any, i: int) -> Any:
-    """Choice conditions/effects keyed by 0-based index ("0") or given as a list."""
     if isinstance(d, dict):
         return d.get(str(i))
     if isinstance(d, list) and i < len(d):
@@ -409,7 +405,6 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
             for ln in lines:
                 st = ln.get("stage") or {}
                 directed.update(x for x in (st.get("show"), st.get("hide")) if x)
-                # A character a direction brings on (or takes off) is not on stage from the start.
                 if (
                     ln["speaker"]
                     and ln["speaker"] not in on_stage
@@ -450,7 +445,6 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
             for i, text in enumerate(authored[:4]):
                 goto = target(nid, f"choice_{i + 1}")
                 if goto is None and infinite:
-                    # Infinite mode: an open exit asks the Next Scene entry point to write what follows.
                     goto = f"gen_{nid}_{i + 1}"
                 elif goto is None:
                     warnings.append(f"choice {text!r} of {nid} leads nowhere and was dropped")
@@ -522,7 +516,6 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                 }
             )
 
-    # A scene that flows straight into a Choice shows the menu itself, under its own background.
     by_id = {s["id"]: s for s in scenes}
     for s in scenes:
         nxt = by_id.get(s.get("next") or "")
@@ -565,7 +558,6 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
     }
 
 
-# Validation and repair (authored and generated)
 def _reaches_ending(scenes: dict[str, dict]) -> set[str]:
     rev: dict[str, set[str]] = {sid: set() for sid in scenes}
     for sid, s in scenes.items():
@@ -792,14 +784,12 @@ def repair_generated(
     by_id = {s["id"]: s for s in scenes}
     ending_ids = [s["id"] for s in scenes if s.get("ending")]
     if not ending_ids:
-        # The last scene ends the story.
         last = scenes[-1]
         last["choices"] = []
         last.pop("next", None)
         last["ending"] = {"title": last.get("title") or "The End", "kind": "neutral"}
         ending_ids = [last["id"]]
 
-    # Dead ends that are not endings continue to the next scene in writing order, or an ending.
     order = [s["id"] for s in scenes]
     for i, s in enumerate(scenes):
         if not s.get("ending") and not s["choices"] and not s.get("next"):
@@ -1034,7 +1024,6 @@ def authored_sounds(doc: dict, node_outputs: dict, warnings: list[str]) -> dict[
     return sounds
 
 
-# Entry point used by GET /api/flows/{id}/story
 def compile_story_report(doc: dict, node_outputs: Optional[dict] = None) -> tuple[dict, list[str]]:
     node_outputs = node_outputs or {}
     warnings: list[str] = []
