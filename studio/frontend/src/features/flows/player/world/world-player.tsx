@@ -589,6 +589,8 @@ export function WorldPlayer({
     chat,
   ]);
 
+  // The reply being written; a load stops it so the old game's answer does not keep the model busy.
+  const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
     const text = draft.trim();
     if (!text || !talking || thinking) return;
@@ -605,6 +607,8 @@ export function WorldPlayer({
     }
     setThinking(true);
     const generation = loads.current;
+    const run = new AbortController();
+    replyRun.current = run;
     try {
       const res = await api.invoke(
         flowId,
@@ -624,6 +628,7 @@ export function WorldPlayer({
           },
         },
         {
+          signal: run.signal,
           // The line appears as it is written; items and quests apply once the whole reply is in.
           onDelta: (piece) =>
             setLive((l) =>
@@ -685,6 +690,7 @@ export function WorldPlayer({
     } finally {
       // A reply from before a load must not unlock the newer request still in flight.
       if (generation === loads.current) setThinking(false);
+      if (replyRun.current === run) replyRun.current = null;
     }
   };
 
@@ -721,6 +727,8 @@ export function WorldPlayer({
       return;
     }
     loads.current += 1;
+    replyRun.current?.abort();
+    replyRun.current = null;
     queue.clear();
     busy.current.clear();
     setBackground(null);
