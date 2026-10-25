@@ -1048,6 +1048,9 @@ export const de = {
       storageDisk: "{free} frei von {total} auf diesem Laufwerk",
       storageEmpty: "In der Bibliothek ist noch nichts gespeichert.",
       storageHidden: "{size} in den Inhaltseinstellungen ausgeblendet",
+      storageHiddenLabel: "Ausgeblendet",
+      storageRefresh: "Aktualisieren",
+      storageOpen: "Öffnen",
       storageError: "Der Speicher der Bibliothek konnte nicht gelesen werden.",
       locationsSection: "Dateien auf dem Datenträger",
       locationsDescription: "Wo Unsloth jede Dateiart speichert. Bibliotheksordner sind Beschriftungen in Unsloth, keine Ordner auf dem Datenträger. Feinabstimmungen und Exporte bleiben, wo sie sind, da Training und Chats sie über ihren Pfad finden.",
@@ -2337,7 +2340,7 @@ export const de = {
       },
     },
     resources: {
-      title: "System",
+      title: "System und Engine",
       description:
         "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",
@@ -2505,6 +2508,13 @@ export const de = {
       storage: {
         title: "Speicher",
         systemDisk: "Systemfestplatte",
+        systemUsed: "{used} von {total} auf der Systemfestplatte belegt",
+        modelsDiskSummary: "Laufwerk des Modellordners: {used} von {total} belegt, {free} frei",
+        segmentModels: "Modelle",
+        segmentCaches: "Caches",
+        segmentOther: "Sonstiges",
+        segmentFree: "Frei",
+        refreshAction: "Aktualisieren",
         modelsDisk: "Modell-Datenträger",
         diskUsage: "{used} belegt / {total}",
         diskFree: "{free} frei",

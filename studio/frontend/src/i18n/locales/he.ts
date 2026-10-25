@@ -1128,6 +1128,9 @@ export const he = {
       storageDisk: "{free} פנויים מתוך {total} בדיסק זה",
       storageEmpty: "עדיין לא מאוחסן דבר בספרייה.",
       storageHidden: "{size} מוסתרים בהגדרות התוכן",
+      storageHiddenLabel: "מוסתר",
+      storageRefresh: "רענון",
+      storageOpen: "פתיחה",
       storageError: "לא ניתן לקרוא את אחסון הספרייה.",
       locationsSection: "קבצים בדיסק",
       locationsDescription:
@@ -2402,7 +2405,7 @@ export const he = {
       },
     },
     resources: {
-      title: "מערכת",
+      title: "מערכת ומנוע",
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",
@@ -2582,6 +2585,13 @@ export const he = {
       storage: {
         title: "אחסון",
         systemDisk: "דיסק מערכת",
+        systemUsed: "{used} בשימוש מתוך {total} בדיסק המערכת",
+        modelsDiskSummary: "כונן תיקיית המודלים: {used} בשימוש מתוך {total}, {free} פנויים",
+        segmentModels: "מודלים",
+        segmentCaches: "מטמונים",
+        segmentOther: "אחר",
+        segmentFree: "פנוי",
+        refreshAction: "רענון",
         modelsDisk: "דיסק המודלים",
         diskUsage: "{used} בשימוש / {total}",
         diskFree: "{free} פנוי",

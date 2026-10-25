@@ -3543,6 +3543,12 @@ def _refuse_tensor_parallel_model(model):
             "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
             "ranks only (data parallel size 1)."
         )
+    if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth pipeline parallelism "
+            "(apply_pipeline_parallel) yet; train a pipeline parallel model with PipelineParallel.step "
+            "over the pp ranks only (data parallel size 1)."
+        )
     if (tp_size or 1) > 1 or dtensor:
         raise RuntimeError(
             "Unsloth: native FSDP2 got a model that is already distributed (tensor-parallel tp_plan, "

@@ -444,8 +444,10 @@ export const BUDGET = {
   // about 500 B raw / 200 B transfer (CI measures about 100 B over a local build).
   // Merged with main at 40840d7212, which adds live prefill / decode progress: measured 6,780.0 KB raw / 2,043.4 KB
   // transfer (Node 24, 99 chunks), set to that plus about 600 B raw / 250 B transfer.
-  transferBytes: 2_092_700,
-  rawBytes: 6_943_400,
+  // Merged with main at abfe8dc5cd: measured 6,780.8 KB raw / 2,043.2 KB transfer (Node 24, 99 chunks). Main keeps
+  // moving under this branch, so set to that plus about 1.4 KB raw / 1.1 KB transfer.
+  transferBytes: 2_093_400,
+  rawBytes: 6_945_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

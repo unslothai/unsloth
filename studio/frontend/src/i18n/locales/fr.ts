@@ -1048,6 +1048,9 @@ export const fr = {
       storageDisk: "{free} libres sur {total} sur ce disque",
       storageEmpty: "Rien n'est encore stocké dans la Bibliothèque.",
       storageHidden: "{size} masqués dans les réglages du contenu",
+      storageHiddenLabel: "Masqué",
+      storageRefresh: "Actualiser",
+      storageOpen: "Ouvrir",
       storageError: "Impossible de lire le stockage de la Bibliothèque.",
       locationsSection: "Fichiers sur le disque",
       locationsDescription: "Où Unsloth conserve chaque type de fichier. Les dossiers de la bibliothèque sont des étiquettes dans Unsloth, pas des dossiers sur le disque. Les affinages et les exports restent en place, car l'entraînement et les chats les retrouvent par leur chemin.",
@@ -2336,7 +2339,7 @@ export const fr = {
       },
     },
     resources: {
-      title: "Système",
+      title: "Système et moteur",
       description:
         "Surveillez le matériel et le stockage de ce serveur Unsloth.",
       liveUpdates: "Mises à jour en direct",
@@ -2504,6 +2507,13 @@ export const fr = {
       storage: {
         title: "Stockage",
         systemDisk: "Disque système",
+        systemUsed: "{used} utilisés sur {total} sur le disque système",
+        modelsDiskSummary: "Disque du dossier des modèles : {used} utilisés sur {total}, {free} libres",
+        segmentModels: "Modèles",
+        segmentCaches: "Caches",
+        segmentOther: "Autres",
+        segmentFree: "Libre",
+        refreshAction: "Actualiser",
         modelsDisk: "Disque des modèles",
         diskUsage: "Espace utilisé : {used} / Total : {total}",
         diskFree: "Espace libre : {free}",
