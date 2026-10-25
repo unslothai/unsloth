@@ -1769,9 +1769,8 @@ def native_full_state_dict(
     trainable_only = False,
     cpu_offload = True,
 ):
-    """Collective: every rank of the model's mesh must call. Full (unsharded) state dict on the
-    writer, {} on the others. The writer is rank 0, or the lowest rank of a sub-mesh that leaves
-    rank 0 out (fsdp2_save.mesh_writer_rank)."""
+    """Collective over the model's mesh. Full state dict on the writer (fsdp2_save.mesh_writer_rank),
+    {} on the others."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
     from .fsdp2_save import mesh_writer_rank
@@ -1787,9 +1786,8 @@ def native_full_state_dict(
 
 
 def _gather_to_writer(state, writer_rank):
-    """A sharded (DTensor) state dict made full and moved to the CPU on global rank `writer_rank` only,
-    {} elsewhere: what StateDictOptions(full_state_dict, cpu_offload) does for rank 0, which is not
-    part of a sub-mesh that leaves it out (it would return {} on every rank of that mesh)."""
+    """StateDictOptions(full_state_dict, cpu_offload) for `writer_rank` instead of rank 0, which a
+    sub-mesh may not contain."""
     from torch.distributed._state_dict_utils import _gather_state_dict
     return _gather_state_dict(state, cpu_offload = True, ranks_only = (writer_rank,))
 
@@ -2184,9 +2182,9 @@ def native_save_optimizer(
     should_save = None,
 ):
     """Collective (every rank must call): the full, unsharded optimizer state keyed by parameter FQN
-    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0 (the lowest
-    rank of a sub-mesh that leaves rank 0 out, fsdp2_save.mesh_writer_rank). A plain
-    `optimizer.state_dict()` on rank 0 holds only rank 0's DTensor shards, so a resume from it is wrong."""
+    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` by
+    fsdp2_save.mesh_writer_rank. A plain `optimizer.state_dict()` on rank 0 holds only rank 0's
+    DTensor shards, so a resume from it is wrong."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
 
     model = _native_root(model)
@@ -2203,8 +2201,7 @@ def native_save_optimizer(
         state = _gather_to_writer(state, writer_rank)
     dist = _dist()
     if should_save is None or writer_rank != 0:
-        # A sub-mesh that leaves rank 0 out: only its first rank holds the full state, so a caller's
-        # global-rank-zero flag (TrainingArguments.should_save) would write nothing or {}.
+        # Only the sub-mesh writer holds the state; a global-rank-0 should_save would write nothing.
         should_save = dist is None or dist.get_rank() == writer_rank
     if path is None:
         return state
@@ -2886,10 +2883,8 @@ def _save_unwrapped(
 
 
 def _trainer_save_writer(trainer, root):
-    """(writes, writer_rank) for a Trainer save of the sharded `root`. TrainingArguments.should_save is
-    global process 0 (the local one under save_on_each_node), which is not part of a sub-mesh that
-    leaves rank 0 out: there the mesh's first rank (fsdp2_save.mesh_writer_rank) holds the gathered
-    state and writes, or nobody would and the mesh would wait on a key rank 0 never sets."""
+    """(writes, writer_rank) for a Trainer save of `root`: should_save, unless the mesh leaves out
+    rank 0, then its own first rank (else nobody writes and the mesh waits forever)."""
     from .fsdp2_save import _dist, mesh_writer_rank
 
     writer_rank = mesh_writer_rank(root)

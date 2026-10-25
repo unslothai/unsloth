@@ -11,11 +11,8 @@ sharding its own model replica on its own data):
   there, while the other pair, whose ranks agree, trains;
 * the one-time layout agreement in shard_model runs over the mesh too: pairs whose GPUs differ pick
   their own fit layout, and one pair shards while the other never calls shard_model;
-* collective saves (fsdp2_gathered, native_full_state_dict, native_save_optimizer) write from the
-  mesh's own first rank: pair [2, 3] never contains rank 0, and both pairs save at the same time
-  without releasing each other's waiting ranks; also with every parameter left unsharded by a
-  forward (no DTensor to read the mesh from), and through the Trainer hooks (save_model for a LoRA
-  and a full model, the optimizer and scheduler save), whose should_save is global rank 0 only."""
+* collective and Trainer saves write from the mesh's own first rank (pair [2, 3] has no rank 0),
+  also with every parameter left unsharded by a forward, both pairs saving at once."""
 
 import multiprocessing
 import os
@@ -139,7 +136,6 @@ def _case_subgroup(native, rank):
 
 
 def _case_save(native, rank):
-    """Each pair shards its own toy model and saves it at the same time."""
     from torch.distributed.fsdp import fully_shard
 
     save = sys.modules["unsloth.models.fsdp2_save"]
@@ -154,7 +150,6 @@ def _case_save(native, rank):
         res["writer"] = writer
         res["gathered_shape"] = tuple(model[0].weight.shape) if writer else None
     res["full_keys"] = sorted(native.native_full_state_dict(model))
-    # Every parameter unsharded (plain tensors) by a forward that does not reshard afterwards.
     for unit in save.fsdp2_units(model):
         unit.set_reshard_after_forward(False)
     with torch.no_grad():
