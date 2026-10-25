@@ -1813,6 +1813,7 @@ class MiniMaxH3NativeRuntime:
     fit_inputs: Any = None
     # Free VRAM now (bytes or ``{device: bytes}``), read per launch for the explicit ``--max-vram`` budget.
     vram_free_probe: Optional[Callable[[], Any]] = None
+    vram_reserve_probe: Optional[Callable[[], Optional[int]]] = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.

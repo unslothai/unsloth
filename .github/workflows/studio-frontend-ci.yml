@@ -13,6 +13,9 @@ name: Frontend CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/frontend/**'
       - 'scripts/check_frontend_dep_removal.py'
@@ -720,6 +723,7 @@ jobs:
   # runner's core.autocrlf says, and the assertions that match on exact source
   # substrings see the bytes in the repo.
   windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
     # 30, not 15. The cap stopped fitting the job's own steps once the browser smokes

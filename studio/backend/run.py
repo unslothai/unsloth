@@ -1377,6 +1377,9 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its lazy
 # submodule imports and the DiffusionGemma runner never trip the install guard on a clean install.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# Studio decides training / export / chat-only from its own hardware detection, so keep
+# `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 
 _OWN_PID_FILE: "Path | None" = None

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -62,6 +63,145 @@ def test_an_approved_host_call_loads_nothing_from_the_workdir(tmp_path, monkeypa
 
 
 @_POSIX
+def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    # Terminal deliberately retains cwd imports; exercise only the session-package precedence here.
+    (workdir / "csv.py").unlink()
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    (packages / "usercustomize.py").write_text("print('PLANTED usercustomize')\n", encoding = "utf-8")
+    host_file = tmp_path / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        "import chatpkg, csv, sys; "
+        "print('PKG', chatpkg.VALUE); "
+        "print('ROWS', list(csv.reader(open(sys.argv[1]))))"
+    )
+    command = "python -c " + shlex.quote(code) + " " + shlex.quote(str(host_file))
+    assert tools._reaches_host_paths("terminal", command)
+    for _ in range(2):
+        out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+        assert "PKG from-session-packages" in out, out
+        assert "ROWS [['a', 'b']]" in out, out
+        assert "PLANTED" not in out, out
+
+
+@_POSIX
+def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    (workdir / "helper.py").write_text("VALUE = 'from-chat-folder'\n", encoding = "utf-8")
+    for name in ("json.py", "os.py"):
+        (workdir / name).write_text("print('PLANTED', __file__)\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = "import helper, json, os; print('HELPER', helper.VALUE); print('JSON', json.dumps([1]), json.__file__)\n"
+    for _ in range(2):
+        out = tools._python_exec(
+            code + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n",
+            None,
+            60,
+            "hardening-chat",
+            host_access_approved = True,
+        )
+        assert "HELPER from-chat-folder" in out, out
+        assert "JSON [1]" in out and str(workdir) not in out.split("JSON", 1)[1], out
+        assert "PLANTED" not in out, out
+    # Terminal-started Python keeps importing helpers from the chat folder too.
+    (workdir / "json.py").unlink()
+    command = (
+        "python -c "
+        + shlex.quote("import helper; print('HELPER', helper.VALUE)")
+        + " "
+        + str(tmp_path)
+    )
+    assert tools._reaches_host_paths("terminal", command)
+    out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+    assert "HELPER from-chat-folder" in out, out
+    assert "PLANTED" not in out, out
+
+
+def test_chat_cli_names_match_case_insensitively_on_windows(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "ruff.exe").write_bytes(b"MZ")
+    (scripts / "other.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(tools.os, "name", "nt")
+    dest = tools._requested_chat_clis(str(scripts), "RUFF check C:\\data", str(tmp_path / "bin"))
+    assert dest is not None and sorted(os.listdir(dest)) == ["ruff.exe"]
+
+
+def test_chat_folder_only_supplies_the_helpers_the_script_imports(tmp_path):
+    """Startup hooks and optional imports a library probes never come from the chat folder."""
+    assert tools._script_top_level_imports(
+        "import helper, os.path\nfrom pkg.sub import x\nfrom . import y\n"
+    ) == [
+        "helper",
+        "os",
+        "pkg",
+    ]
+    assert tools._script_top_level_imports("def (") == []
+    workdir = tmp_path / "chat"
+    workdir.mkdir()
+    (workdir / "helper.py").write_text("import config\nVALUE = config.X\n", encoding = "utf-8")
+    (workdir / "config.py").write_text("X = 1\n", encoding = "utf-8")
+    for name in ("usercustomize.py", "optional_dep.py"):
+        (workdir / name).write_text("print('PLANTED')\n", encoding = "utf-8")
+    site_dir = os.path.join(os.path.dirname(tools.__file__), "sandbox_site")
+    env = dict(
+        os.environ,
+        PYTHONPATH = site_dir,
+        _UNSLOTH_HOST_WORKDIR = str(workdir),
+        _UNSLOTH_HOST_WORKDIR_MODULES = "helper,usercustomize",
+    )
+    code = (
+        "import importlib.util as u, sys, helper; "
+        "print('HOOK', u.find_spec('usercustomize'), u.find_spec('optional_dep'), 'HELPER', helper.VALUE, "
+        f"{str(workdir)!r} in sys.path)"
+    )
+    for _ in range(2):
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            env = env,
+            cwd = str(tmp_path),
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        ).stdout
+        assert "HOOK None None HELPER 1 False" in out, out
+        assert "PLANTED" not in out, out
+
+
+@_POSIX
+def test_an_approved_terminal_call_runs_chat_clis_after_system_ones(tmp_path, monkeypatch):
+    workdir = _planted_workdir(tmp_path)
+    bin_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / "bin"
+    bin_dir.mkdir()
+    for name, body in (
+        ("chatcli", "echo CHATCLI ok"),
+        ("cat", "echo PLANTED cat"),
+        ("unsloth-missing-tool", "echo PLANTED probe"),
+    ):
+        (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n", encoding = "utf-8")
+        (bin_dir / name).chmod(0o755)
+    host_file = tmp_path / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    # A probe for a command the call never names (`command -v`, as tools probe for ffmpeg) misses the chat folder.
+    # The name is built at run time, so it never appears in the command text.
+    command = (
+        "chatcli && cat "
+        + shlex.quote(str(host_file))
+        + " && { command -v $(printf %s unsloth-missing; printf %s -tool) || echo PROBE-MISSED; }"
+    )
+    assert tools._reaches_host_paths("terminal", command)
+    for _ in range(2):
+        out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+        assert "CHATCLI ok" in out, out
+        assert "a,b" in out, out
+        assert "PROBE-MISSED" in out, out
+        assert "PLANTED" not in out, out
+
+
+@_POSIX
 def test_an_approved_host_launch_env_drops_every_workdir_input(tmp_path):
     workdir = _planted_workdir(tmp_path)
     script = workdir / "studio_exec_x.py"
@@ -82,7 +222,9 @@ def test_an_approved_host_launch_env_drops_every_workdir_input(tmp_path):
         assert prepared.env["HOME"] != str(workdir)
         packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
         assert packages not in prepared.env.get("PYTHONPATH", "").split(os.pathsep)
-        assert not any(part.startswith(packages) for part in prepared.env["PATH"].split(os.pathsep))
+        # The chat bin folder itself is never on PATH; only CLIs the call names are, last.
+        path = prepared.env["PATH"].split(os.pathsep)
+        assert not any(part.startswith(packages) for part in path)
         assert not prepared.argv[-1].startswith(str(workdir))
         # The approved code, not whatever the workdir copy was replaced with.
         ran = subprocess.run(

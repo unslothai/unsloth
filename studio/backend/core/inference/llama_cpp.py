@@ -22,6 +22,7 @@ import math
 import os
 import re
 import struct
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -584,6 +585,8 @@ from utils.first_token_timeout import (
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
+from utils import gguf_archs as _gguf_archs
+from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
@@ -998,6 +1001,10 @@ _LOG_LEVEL_TOKEN_RE = re.compile(rf"^{_ANSI}(?:\d+\.\d+\.\d+\.\d+{_ANSI} )?{_ANS
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
 _STDOUT_HEAD_MAX = 5000
+# Bind addresses whose listener accepts the health probe's 127.0.0.1 connection.
+_LOOPBACK_REACHABLE_BIND_IPS = frozenset(
+    {"127.0.0.1", "0.0.0.0", "::", "::ffff:127.0.0.1", "::ffff:0.0.0.0"}
+)
 
 
 def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
@@ -1040,6 +1047,165 @@ _GPU_DEVICE_PREFIXES = (
     "musa",
     "cann",
 )
+
+
+# Any backend's "model buffer size" line (CUDA0, CPU_Mapped, RPC0[host:port], ...).
+_MODEL_BUFFER_RE = re.compile(
+    r"\b([A-Za-z][^\s=]*)\s+model buffer size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s+MiB\b"
+)
+# --fit's verdict per device, e.g. "- CUDA0 (NVIDIA GeForce RTX 3090): 31 layers ( 8 overflowing), 22815 MiB used".
+# An overflowing layer keeps its MoE experts (or part of a layer) out of that device's memory.
+_FIT_DEVICE_RE = re.compile(
+    r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
+    r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
+)
+# The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
+_FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
+# From here the per-device lines carry an explicit "(N overflowing)" count.
+_FIT_FULL_LAYERS_MARK = "converting dense-only layers to full layers"
+# One extra partial layer squeezed onto device i; on any device but the last it overflows to the NEXT GPU, not RAM.
+_FIT_EXTRA_LAYER_RE = re.compile(
+    r"set ngl_per_device\[(?P<index>\d+)\]\.\(n_layer, n_part, overflow_type\)=\(\d+, \d+, (?:UP|GATE|ATTN)\)"
+)
+# --moe-cache-mib auto: every routed expert stays in host RAM and a cache of the busiest ones goes on the GPU. --fit
+# returns before any per-device line on this path.
+_FIT_MOE_CACHE_RE = re.compile(
+    r"moe cache auto: all routed experts in host RAM, cache (?P<mib>\d+) MiB"
+)
+
+
+def _host_buffer(name: str) -> bool:
+    """CPU* buffers, AMX and a GPU backend's pinned host buffer (CUDA_Host) live in system memory."""
+    upper = name.upper()
+    return "CPU" in upper or upper.endswith("_HOST") or upper == "AMX"
+
+
+def parse_weight_placement(
+    lines: "list[str]", model_bytes: Optional[int] = None
+) -> "Optional[dict]":
+    """Where llama.cpp put the main model's weights, from its startup log.
+
+    ``gpu_mib`` / ``host_mib`` sum the main model's buffer block, the first allocated one (dry runs log 0.00 MiB).
+    "offloaded 31/31" hides an expert spill, so ``overflow_layers`` comes from --fit's final per-device
+    lines; the last device's count includes the output layer, which spills nothing (a 3090 gemma-4-26B
+    load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host). None without --fit.
+    A ``*_Mapped`` buffer logs its mmap span, first to last host tensor, which covers GPU tensors in
+    between when experts spill; ``model_bytes`` (the main GGUF set) caps host at the file minus the GPU side."""
+    blocks: list[list] = []
+    current: Optional[list] = None
+    # A build without GPU offload logs no "offloaded N/M layers" line, only the buffers: each run of them is a block.
+    unmarked = False
+    moe = False
+    full_phase = False
+    # device -> (layers, overflow or None for a dense-only line), in the order of the final verdict
+    verdict: dict[str, tuple[int, Optional[int]]] = {}
+    dense_only_order: list[str] = []
+    extra_layer_on: set[int] = set()
+    expert_cache_mib: Optional[float] = None
+    for line in lines:
+        if _FIT_DENSE_ONLY_MARK in line:
+            moe = True
+            continue
+        if _FIT_FULL_LAYERS_MARK in line:
+            full_phase = True
+            verdict = {}
+            continue
+        cache = _FIT_MOE_CACHE_RE.search(line)
+        if cache is not None:
+            expert_cache_mib = float(cache.group("mib"))
+            continue
+        extra = _FIT_EXTRA_LAYER_RE.search(line)
+        if extra is not None and full_phase:
+            extra_layer_on.add(int(extra.group("index")))
+            continue
+        fit = _FIT_DEVICE_RE.search(line)
+        if fit is not None:
+            device = fit.group("device")
+            overflow = fit.group("overflow")
+            verdict[device] = (
+                int(fit.group("layers")),
+                int(overflow) if overflow is not None else None,
+            )
+            if not full_phase and device not in dense_only_order:
+                dense_only_order.append(device)
+            continue
+        counts = _OFFLOADED_LAYERS_RE.search(line)
+        if counts is not None:
+            current, unmarked = [int(counts.group(2)), 0.0, 0.0, False], False
+            blocks.append(current)
+            continue
+        buffer = _MODEL_BUFFER_RE.search(line)
+        if buffer is None:
+            if unmarked:
+                current, unmarked = None, False
+            continue
+        if current is None:
+            current, unmarked = [0, 0.0, 0.0, False], True
+            blocks.append(current)
+        mib = float(buffer.group(2))
+        if _host_buffer(buffer.group(1)):
+            current[2] += mib
+            current[3] = current[3] or (mib > 0 and buffer.group(1).upper().endswith("_MAPPED"))
+        else:
+            current[1] += mib
+    # A no-alloc dry run logs the same block with every buffer at 0.00 MiB.
+    loaded = [block for block in blocks if block[1] + block[2] > 0]
+    if not loaded:
+        return None
+    # llama-server loads the main model before any drafter, which can have MORE layers (Gemma 4 E2B: 35 vs 26B A4B: 30).
+    main = loaded[0]
+    host_mib = main[2]
+    if main[3] and main[1] > 0 and model_bytes:
+        host_mib = min(host_mib, max(0.0, model_bytes / (1024 * 1024) - main[1]))
+
+    overflow: Optional[int] = None
+    if verdict:
+        devices = list(verdict)
+        overflow = 0
+        for index, device in enumerate(devices):
+            layers, counted = verdict[device]
+            if counted is None:
+                # Dense-only fill (filled back to front, so the first device it printed is the last one). A dense
+                # model's layers are full. The last device keeps one layer full and its output slot spills nothing.
+                if not moe:
+                    continue
+                last = bool(dense_only_order) and device == dense_only_order[0]
+                counted = max(0, layers - 2) if last else layers
+            elif index < len(devices) - 1:
+                if index in extra_layer_on and counted > 0:
+                    counted -= 1
+            elif counted > 0:
+                counted -= 1
+            overflow += counted
+    return {
+        "gpu_mib": round(main[1], 1),
+        "host_mib": round(host_mib, 1),
+        "overflow_layers": overflow,
+        "all_experts_in_ram": expert_cache_mib is not None,
+        "expert_cache_mib": expert_cache_mib,
+    }
+
+
+def _extra_weight_file_bytes(argv, env: Optional[Mapping[str, str]] = None) -> int:
+    """GGUF sets of the projector, local drafter and adapters a llama-server launch loads. arg.cpp reads
+    the ``LLAMA_ARG_*`` env first and lets argv override it, so ``env`` is the one the child got."""
+    tokens = [str(token) for token in argv] if isinstance(argv, (list, tuple)) else []
+    env_map = env or {}
+    projector: Optional[str] = None
+    for index, token in enumerate(tokens):
+        if _flag_name(token) not in ("--mmproj", "-mm"):
+            continue
+        _, eq, value = token.partition("=")
+        if eq:
+            projector = value
+        elif index + 1 < len(tokens):
+            projector = tokens[index + 1]
+    if projector is None:
+        projector = (env_map.get("LLAMA_ARG_MMPROJ") or "").strip() or None
+    drafter, remote = _extra_args_mtp_draft_source(tokens, env_map)
+    paths = [path for path in (projector, None if remote else drafter) if path]
+    paths += _sidecar_adapter_paths(tokens)
+    return sum(_gguf_set_bytes(Path(path)) for path in dict.fromkeys(paths))
 
 
 def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
@@ -2285,6 +2451,8 @@ def _archive_and_recall(
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    background: bool = False,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -2309,19 +2477,26 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
+        if background:
+            # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
+            conversation_archive.note_branch(thread_id, before, cancel_check)
         # `conversation` is the fitted prompt, so it says which repeats of a turn the model
         # can still read. Without it a twice-said turn is archived twice and spends two
         # recall slots on text already in the prompt.
         archived = (
             conversation_archive.archive_turns(
-                thread_id, gone, live = conversation, branch = branch_messages or conversation
+                thread_id,
+                gone,
+                live = conversation,
+                branch = branch_messages or conversation,
+                cancel_check = cancel_check,
             )
             if gone
             else 0
         )
         counts = {"archived_messages": archived}
 
-        if recall_done:
+        if recall_done or (cancel_check is not None and cancel_check()):
             result["counts"] = counts
             return result
         if not force_recall:
@@ -2740,6 +2915,39 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+
+
+def _gguf_set_bytes(path: Path) -> int:
+    """Size of a GGUF plus, when it is a split one, its sibling shards: llama-server opens the whole set."""
+    total = 0
+    try:
+        if path.is_file():
+            total += path.stat().st_size
+        m = _SHARD_FULL_RE.match(path.name)
+        if m is None or not path.parent.is_dir():
+            return total
+        # llama.cpp names a shard "<prefix>-<i>-of-<count>.gguf" from the first one's, so both must match: a
+        # drafter split as "<main prefix>-MTP-..." or a stale set with another count is not this set.
+        prefix, count = m.group(1).lower(), int(m.group(3))
+        for sibling in path.parent.iterdir():
+            if sibling.name == path.name:
+                continue
+            sibling_match = _SHARD_FULL_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group(1).lower() != prefix
+                or int(sibling_match.group(3)) != count
+                or not 1 <= int(sibling_match.group(2)) <= count
+            ):
+                continue
+            try:
+                if sibling.is_file():
+                    total += sibling.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -3403,59 +3611,30 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
 
 # Human label per resolved spec mode, for launch logging and the UI notice.
 _DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash", "eagle3": "EAGLE-3"}
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
-    """Drafter kind naming *path*: basename prefix, or exact parent dir for
-    ``_DRAFTER_DIR_KINDS``. Never a substring: the kind names double as family
-    names, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything
-    in a user's ``dflash/`` folder."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return None
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    for kind in _DRAFTER_KINDS:
-        if name.startswith(f"{kind}-"):
-            return kind
-    for kind in _DRAFTER_DIR_KINDS:
-        if kind in parents:
-            return kind
-    return None
+    return _gguf_names.drafter_path_kind(path)
 
 
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
-    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
-    drafters for DeepSeek V4 Flash, the ``<model>-dspark-<quant>.gguf`` drafters for
-    prism-ml Bonsai, the ``eagle3-*.gguf`` draft heads). Mirrors
-    hub.utils.gguf so variant resolution never picks a companion as the main model --
-    a Gemma ``Q8_0`` request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts
-    ahead of the real weight.
-
-    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
-    """
+    """Exclude companions from main-model selection; use _is_mtp_only_drafter_path for launch."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
-    # holding calibration statistics, so only the name rules it out.
-    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+    if _gguf_names.is_imatrix_filename(p):
         return True
-    if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
-        return True
-    return _drafter_path_kind(path) is not None
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def _is_mtp_only_drafter_path(path: str) -> bool:
@@ -3512,22 +3691,8 @@ def _is_root_dflash_drafter_path(path: str) -> bool:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
-_GGUF_KNOWN_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
-# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_companion_gguf_path.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_KNOWN_QUANT_RE = _gguf_names.GGUF_QUANT_RE
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
@@ -4045,7 +4210,12 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     return mtp_drafter_loads_standalone(path)
 
 
-def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+def _pick_mmproj(
+    candidates: list[str],
+    *,
+    order: Optional[tuple] = None,
+    weight: Optional[str] = None,
+) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
@@ -4055,7 +4225,27 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     )
     if not mmproj_files:
         return None
+    if order:
+        from utils.models.model_config import mmproj_order_rank, mmproj_weight_match
+
+        # Pair with the weight first, so a repo of several checkpoints never hands over another one's projector.
+        return max(
+            mmproj_files,
+            key = lambda f: (mmproj_weight_match(weight, f), mmproj_order_rank(f, order)),
+        )
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _mmproj_picker(
+    model: Optional[str], weight_path: Optional[str] = None
+) -> Callable[[list[str]], Optional[str]]:
+    from utils.models.model_config import mmproj_order
+
+    order = mmproj_order(model, weight_path)
+    if not order:
+        return _pick_mmproj
+    weight = Path(weight_path).name if weight_path else None
+    return functools.partial(_pick_mmproj, order = order, weight = weight)
 
 
 def _hub_download_in_flight(hf_repo: str) -> bool:
@@ -8587,6 +8777,8 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         # (offloaded, total) layers llama.cpp reported for this load, when it said.
         self._gpu_offload_layers: Optional[tuple[int, int]] = None
+        # parse_weight_placement's result for this load.
+        self._weight_placement: Optional[dict] = None
         # Whether the user's own extras pinned the layer split for this load.
         self._offload_overridden: bool = False
         # Studio saw a GPU for this load but llama.cpp's device table did not.
@@ -8821,6 +9013,8 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
+        # Mixed-pin --tensor-split tokens; the --fit on retry strips them (fit.cpp aborts on a set split).
+        self._mixed_split_flags: list[str] = []
         # The pair a launch in flight is committed to, None when none is. ONE attribute:
         # a separate marker and snapshot read out of step answered a save with
         # reload_required=false about a child already committed to the pre-save flags.
@@ -9112,6 +9306,29 @@ class LlamaCppBackend:
     def offload_total_layers(self) -> Optional[int]:
         return self._gpu_offload_layers[1] if self._gpu_offload_layers else None
 
+    def _placement_value(self, key: str):
+        placement = getattr(self, "_weight_placement", None)
+        return placement.get(key) if placement else None
+
+    @property
+    def gpu_weights_mib(self) -> Optional[float]:
+        return self._placement_value("gpu_mib")
+
+    @property
+    def host_weights_mib(self) -> Optional[float]:
+        return self._placement_value("host_mib")
+
+    @property
+    def overflow_layers(self) -> Optional[int]:
+        """Under --moe-cache-mib auto every routed expert is in RAM, so this is every MoE layer."""
+        if self._placement_value("all_experts_in_ram"):
+            return self.n_moe_layers or None
+        return self._placement_value("overflow_layers")
+
+    @property
+    def expert_cache_mib(self) -> Optional[float]:
+        return self._placement_value("expert_cache_mib")
+
     @property
     def gpu_backend_unavailable(self) -> bool:
         """Studio found a GPU for this load but llama.cpp reported none."""
@@ -9228,38 +9445,104 @@ class LlamaCppBackend:
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
-        """Resident set size of ``pid`` in bytes, from /proc/<pid>/status (Linux).
-        0 when the status has no VmRSS line (zombie / kernel thread); None where
-        /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        """``RssFile`` of ``pid`` (Linux), ``VmRSS`` before kernel 4.5; 0 when neither, None without /proc.
+        Not ``RssAnon``: CUDA pins the host weight buffer (``CUDA_Host``) before a byte of it is read."""
+        vm_rss = None
         try:
             with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
                 for line in f:
-                    if line.startswith("VmRSS:"):
-                        # IndexError guards a "VmRSS:" line with no value column.
+                    # IndexError guards a line with no value column.
+                    if line.startswith("RssFile:"):
                         return int(line.split()[1]) * 1024  # kB -> bytes
+                    if line.startswith("VmRSS:"):
+                        vm_rss = int(line.split()[1]) * 1024
         except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
             return None
-        return 0  # readable but no VmRSS line
+        return 0 if vm_rss is None else vm_rss
+
+    @staticmethod
+    def _read_load_bytes(pid: int) -> Optional[int]:
+        """Bytes ``pid`` has taken in, for a load that streams weights to VRAM and keeps little RSS.
+
+        Linux: ``rchar`` (page cache hits included). Windows: psutil read_bytes. macOS: the larger of
+        disk bytes read (a cold mmap Metal load) and physical footprint (a copy into Metal or CPU
+        buffers)."""
+        if os.path.isdir("/proc"):
+            try:
+                with open(f"/proc/{pid}/io", "r", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("rchar:"):
+                            return int(line.split()[1])
+            except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
+                return None
+            return None
+        if sys.platform == "darwin":
+            usage = LlamaCppBackend._darwin_rusage(pid)
+            return max(usage) if usage else None
+        if sys.platform != "win32":
+            return None
+        try:
+            import psutil
+            return int(psutil.Process(pid).io_counters().read_bytes)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _darwin_rusage(pid: int) -> Optional[tuple]:
+        """``(ri_diskio_bytesread, ri_phys_footprint)`` of ``pid`` from proc_pid_rusage, or None."""
+        import ctypes
+
+        class _RusageInfoV2(ctypes.Structure):
+            _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+                (name, ctypes.c_uint64)
+                for name in (
+                    "ri_user_time",
+                    "ri_system_time",
+                    "ri_pkg_idle_wkups",
+                    "ri_interrupt_wkups",
+                    "ri_pageins",
+                    "ri_wired_size",
+                    "ri_resident_size",
+                    "ri_phys_footprint",
+                    "ri_proc_start_abstime",
+                    "ri_proc_exit_abstime",
+                    "ri_child_user_time",
+                    "ri_child_system_time",
+                    "ri_child_pkg_idle_wkups",
+                    "ri_child_interrupt_wkups",
+                    "ri_child_pageins",
+                    "ri_child_elapsed_abstime",
+                    "ri_diskio_bytesread",
+                    "ri_diskio_byteswritten",
+                )
+            ]
+
+        try:
+            info = _RusageInfoV2()
+            # RUSAGE_INFO_V2 = 2
+            if (
+                ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(pid, 2, ctypes.byref(info))
+                != 0
+            ):
+                return None
+            return int(info.ri_diskio_bytesread), int(info.ri_phys_footprint)
+        except (OSError, AttributeError, ValueError):
+            return None
 
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
-        During warm-up llama-server mmaps weight shards into page cache before
-        pushing layers to VRAM, a window where status only reports ``loading``
-        and the UI spinner looks stuck for minutes on large MoEs. Samples
-        ``/proc/<pid>/status VmRSS`` against the sum of GGUF shard sizes for a
-        real progress bar. Returns ``None`` when no load is in flight.
+        ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
+        which counts buffers allocated before any read. The total includes projector, drafter and adapters.
 
         Shape::
 
             {
                 "phase": "mmap" | "ready",
-                "bytes_loaded": int,   # VmRSS of the llama-server
-                "bytes_total":  int,   # sum of shard file sizes
+                "bytes_loaded": int,   # as above, never decreasing
+                "bytes_total":  int,   # weight files the server loads
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
             }
-
-        Linux-only; returns ``None`` where ``/proc/<pid>/status`` is unavailable.
         """
         proc = self._process
         if proc is None:
@@ -9268,42 +9551,19 @@ class LlamaCppBackend:
         if pid is None:
             return None
 
-        # Sum shard sizes (primary + any extras alongside).
-        bytes_total = 0
         gguf_path = self._gguf_path
-        if gguf_path:
-            primary = Path(gguf_path)
-            try:
-                if primary.is_file():
-                    bytes_total += primary.stat().st_size
-            except OSError:
-                pass
-            # Extra shards share the primary's prefix before the shard index.
-            try:
-                parent = primary.parent
-                stem = primary.name
-                m = _SHARD_RE.match(stem)
-                prefix = m.group(1) if m else None
-                if prefix and parent.is_dir():
-                    prefix_lower = prefix.lower()
-                    for sibling in parent.iterdir():
-                        if (
-                            sibling.is_file()
-                            and sibling.name.lower().startswith(prefix_lower)
-                            and sibling.name != stem
-                            and sibling.suffix.lower() == ".gguf"
-                        ):
-                            try:
-                                bytes_total += sibling.stat().st_size
-                            except OSError:
-                                pass
-            except OSError:
-                pass
+        bytes_total = _gguf_set_bytes(Path(gguf_path)) if gguf_path else 0
+        launched = getattr(self, "_process_env", None)
+        bytes_total += _extra_weight_file_bytes(
+            getattr(proc, "args", None),
+            launched[1] if launched is not None and launched[0] is proc else None,
+        )
 
-        # VmRSS of the llama-server; None where /proc is unavailable.
-        bytes_loaded = LlamaCppBackend._read_rss_bytes(pid)
-        if bytes_loaded is None:
+        rss = LlamaCppBackend._read_rss_bytes(pid)
+        read = LlamaCppBackend._read_load_bytes(pid)
+        if rss is None and read is None:
             return None
+        bytes_loaded = max(rss or 0, read or 0)
 
         # RSS climbs as weights page in, then drops once -ngl offloads them to
         # VRAM and the mmap pages are freed. Hold a per-process high-water mark
@@ -9316,6 +9576,8 @@ class LlamaCppBackend:
         phase = "ready" if self._healthy else "mmap"
         fraction = 0.0
         if bytes_total > 0:
+            # Reads past the weights (headers, a second pass) must not push the figure past the total.
+            bytes_loaded = min(bytes_loaded, bytes_total)
             fraction = min(1.0, bytes_loaded / bytes_total)
         # Once llama-server is healthy the load is complete by definition. With
         # layers offloaded to VRAM (-ngl) the process releases the mmap'd weight
@@ -10142,6 +10404,189 @@ class LlamaCppBackend:
             if peak > 0:
                 rendered = _render(v / peak for v in values)
         return ",".join(rendered)
+
+    @staticmethod
+    def _discrete_first_split(
+        gpu_indices: List[int],
+        usable_mib: dict[int, float],
+        shared_gpu_ids: Iterable[int],
+        layer_mib: List[float],
+        per_device_mib: float = 0.0,
+        main_reserve_mib: float = 0.0,
+        pipeline_mib: float = 0.0,
+    ) -> Optional[List[float]]:
+        """Layer-count ``--tensor-split`` shares over ``gpu_indices``: discrete cards first,
+        iGPUs (whose "free" is the host pool) take the overflow. llama.cpp cuts contiguous runs
+        by COUNT (get_layer_buft_list). None unless the pin mixes both kinds and every run fits."""
+        shared = set(shared_gpu_ids)
+        discrete = [i for i in gpu_indices if i not in shared]
+        igpus = [i for i in gpu_indices if i in shared]
+        n = len(layer_mib)
+        if not discrete or not igpus or n == 0:
+            return None
+        room = {
+            i: usable_mib.get(i, 0.0)
+            - per_device_mib
+            - (main_reserve_mib if k == 0 else pipeline_mib)
+            for k, i in enumerate(gpu_indices)
+        }
+        prefix = [0.0]
+        for mib in layer_mib:
+            prefix.append(prefix[-1] + mib)
+
+        def most_layers(cap: float) -> int:
+            k = 0
+            while k < n and max(prefix[j + k + 1] - prefix[j] for j in range(n - k)) <= cap:
+                k += 1
+            return k
+
+        counts: dict[int, float] = {}
+        left = n
+        for i in sorted(discrete, key = lambda d: room[d], reverse = True):
+            counts[i] = min(most_layers(room[i]), left)
+            left -= counts[i]
+        if left == n:
+            return None
+        igpu_room = {i: max(0.0, room[i]) for i in igpus}
+        igpu_total = sum(igpu_room.values())
+        exact = {
+            i: (left * igpu_room[i] / igpu_total if igpu_total > 0 else left / len(igpus))
+            for i in igpus
+        }
+        for i in igpus:
+            counts[i] = int(exact[i])
+        for i in sorted(igpus, key = lambda d: exact[d] - counts[d], reverse = True)[
+            : left - sum(counts[i] for i in igpus)
+        ]:
+            counts[i] += 1
+        # The runs llama.cpp will really cut, in device order: each must fit its room.
+        start = 0
+        for i in gpu_indices:
+            end = start + int(counts[i])
+            if prefix[end] - prefix[start] > max(0.0, room[i]):
+                return None
+            start = end
+        shares = [float(counts[i]) for i in gpu_indices]
+        # Boundaries half a layer early: float rounding in upper_bound cannot add a layer.
+        first = next(k for k, v in enumerate(shares) if v > 0)
+        if first != len(shares) - 1:
+            shares[first] -= 0.5
+            shares[-1] += 0.5
+        return shares
+
+    def _mixed_pin_split(
+        self,
+        gpu_indices: List[int],
+        spill_inputs: Optional[dict],
+        shared_gpu_ids: Iterable[int],
+        extra_args: Optional[Iterable[str]],
+        env: Mapping[str, str],
+        *,
+        layer_min_gpus: int,
+        tensor_parallel: bool,
+        pin_owns_devices: bool = False,
+    ) -> Optional[List[float]]:
+        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
+        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
+        cannot be priced or someone else owns the placement."""
+        if (
+            not shared_gpu_ids
+            or spill_inputs is None
+            or tensor_parallel
+            # A downgraded tensor request keeps every device in use.
+            or layer_min_gpus > 1
+            # A GPU-resident separate drafter spreads over every device.
+            or spill_inputs["separate_draft_on_gpu"]
+            or spill_inputs.get("env_mmproj_unsized")
+            # A host-resident cache or projector draws on the pool the iGPU reports.
+            or spill_inputs.get("host_mmproj_bytes")
+            or not _kv_offload_from_args(extra_args, env)
+            or _extra_args_have_tensor_split(extra_args, env)
+            # argv only: a non-layer inherited LLAMA_ARG_SPLIT_MODE is popped before launch.
+            or _extra_args_split_mode(extra_args, {}) not in (None, "layer")
+            # Extras follow the generated --fit off; the fitter rejects a multi-device split.
+            or any(
+                str(a) in ("-fit", "--fit") or str(a).startswith(("-fit=", "--fit="))
+                for a in (extra_args or ())
+            )
+            # RPC devices go ahead of the local ones, so the shares would land on them.
+            or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+            or str(env.get("LLAMA_ARG_RPC", "")).strip()
+            # Tensor overrides move bytes after the split is priced.
+            or _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(env)
+            # A projector pinned to another device is charged to device 0 below.
+            or (_extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}) or "").strip()
+            or str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
+            # A surviving device list owns the share order; a gpu_ids pin strips it.
+            or (
+                not pin_owns_devices
+                and (
+                    _extra_args_main_device(extra_args) is not None
+                    or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                )
+            )
+        ):
+            return None
+        # Adapters may target only some layers, which a total cannot place.
+        if _sidecar_adapter_paths(extra_args):
+            return None
+        # A larger pass-through --parallel (last-wins) grows the cache priced here.
+        _np_override = _extra_args_n_parallel(extra_args, env)
+        if _np_override is not None and _np_override > int(spill_inputs.get("n_parallel") or 1):
+            return None
+        layout = self._tensor_spill_layout(spill_inputs.get("model_path"))
+        if layout is None or not layout.complete or not layout.blocks:
+            return None
+        n_blocks = len(layout.blocks)
+        kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
+        kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
+        if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
+            # MLA, hybrid recurrent and an unpriced sliding window are uneven (_kv_layer_weights).
+            if kv_total and (
+                self._kv_lora_rank is not None
+                or self._ssm_inner_size is not None
+                or self._sliding_window_pattern
+                or self._effective_sliding_window()
+            ):
+                return None
+            kv_weights = [1] * n_blocks
+        kv_scale = kv_total / sum(kv_weights)
+        layer_bytes = [
+            blk.spillable_bytes + blk.resident_bytes + w * kv_scale
+            for blk, w in zip(layout.blocks, kv_weights)
+        ]
+        # Trailing nextn rows count in llama.cpp's n_layer_all + 1; resident only with a draft.
+        n_mtp = int(self._nextn_predict_layers or 0) if layout.has_excluded_blocks else 0
+        if layout.has_excluded_blocks and n_mtp <= 0:
+            return None
+        mtp_row = (
+            layout.excluded_block_bytes / n_mtp
+            if n_mtp and spill_inputs.get("mtp_will_engage")
+            else 0.0
+        ) + max(kv_weights) * kv_scale  # archs walking n_layer_all cache these rows too
+        layer_bytes.extend([mtp_row] * n_mtp)
+        # The output layer rides the last row (the last device's run).
+        layer_bytes.append(layout.lm_head_bytes + layout.other_resident_bytes)
+        reserve = (
+            spill_inputs["compute_buffer_flat"]
+            + spill_inputs["extra_gpu_bytes"]
+            + int(spill_inputs.get("env_mmproj_bytes") or 0)
+        )
+        # As _planned_tensor_spill; a hybrid run may hold one attention layer over its share.
+        per_device = spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]
+        if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
+            per_device += kv_total / layout.n_attention_layers
+        mib = 1024 * 1024
+        return self._discrete_first_split(
+            list(gpu_indices),
+            spill_inputs["gpu_usable_mib"],
+            shared_gpu_ids,
+            [x / mib for x in layer_bytes],
+            per_device / mib,
+            reserve / mib,
+            self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
+        )
 
     @staticmethod
     def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
@@ -17648,11 +18093,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _llama_server_env_for_binary(
-        binary: str, *, use_system_rocm: bool = True
+        binary: str,
+        *,
+        use_system_rocm: bool = True,
+        verify_system_rocm: bool = True,
     ) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs.
 
-        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend;
+        ``verify_system_rocm=False`` keeps it without the GPU visibility probe.
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
@@ -17706,9 +18155,15 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver (#7233).
+            # which can be incompatible with the host amdkfd driver (#7233). On other
+            # hosts the system copy is the mismatched one and hides the GPU (#14906).
             if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
-                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+                _system_rocm = _native_linux_system_rocm_lib_dirs(binary_dir)
+                if _system_rocm and not (
+                    verify_system_rocm
+                    and LlamaCppBackend._system_rocm_hides_gpu(binary, _system_rocm)
+                ):
+                    lib_dirs.extend(_system_rocm)
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -17810,6 +18265,7 @@ class LlamaCppBackend:
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -17832,6 +18288,7 @@ class LlamaCppBackend:
         ``per_device_overhead_bytes`` is the fixed layer-split cost per GPU beyond
         the first; a k-GPU pin must hold ``model + (k-1) * overhead`` or it can OOM
         a device after -ngl -1 (no --fit fallback). Single-GPU adds none.
+        ``shared_gpu_ids`` (iGPUs whose "VRAM" is host RAM) rank after every discrete card.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -17873,12 +18330,30 @@ class LlamaCppBackend:
 
         # Rank by usable budget (free - reserve), not raw free: a more-used large
         # card can have less usable room than a less-used small one.
-        ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
+        _shared = set(shared_gpu_ids or ())
+        ranked = sorted(
+            gpus,
+            key = lambda g: (
+                g[0] not in _shared and _usable(g[0], g[1]) > overhead_mib,
+                _usable(g[0], g[1]),
+            ),
+            reverse = True,
+        )
 
         # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
         # in a near-full card to hit min_gpus. No-op for the default min_gpus == 1.
         usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
         min_gpus = max(1, min(min_gpus, usable_count or 1))
+
+        # A busy card too small alone must not pull a card that fits into a shared pin.
+        if (
+            min_gpus <= 1
+            and ranked[0][0] in shared
+            and _usable(ranked[0][0], ranked[0][1]) < model_size_mib
+        ):
+            for idx, free_mib in ranked:
+                if idx not in shared and _usable(idx, free_mib) >= model_size_mib:
+                    return [idx], False
 
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
@@ -17920,6 +18395,7 @@ class LlamaCppBackend:
         shared: frozenset = frozenset(),
         integrated: frozenset = frozenset(),
         discrete_size_bytes: Optional[int] = None,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -17958,6 +18434,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
             shared = shared,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -17968,6 +18445,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -17979,6 +18457,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
             shared = shared,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -19238,6 +19717,7 @@ class LlamaCppBackend:
         exact: bool = False,
         integrated: frozenset = frozenset(),
         discrete_host_only_bytes: int = 0,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -19317,6 +19797,7 @@ class LlamaCppBackend:
                 ),
                 integrated = integrated,
                 discrete_size_bytes = discrete_total,
+                shared_gpu_ids = shared_gpu_ids,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -19529,6 +20010,83 @@ class LlamaCppBackend:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
+
+    def _health_listener_is_ours(self, process) -> bool:
+        """False when the port answering /health is demonstrably not held by our child's tree.
+
+        _find_free_port releases the port before llama-server binds it, so another local user could
+        answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
+        on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
+        ownership keeps today's behaviour."""
+        port = getattr(self, "_port", None)
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or not isinstance(port, int):
+            return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(process, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
+        try:
+            import psutil
+            from core.inference.sd_cpp_server import _has_ancestor
+        except Exception:  # noqa: BLE001 -- optional dependency
+            return True
+        try:
+            root = psutil.Process(pid)
+            tree = [root, *root.children(recursive = True)]
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:  # noqa: BLE001 -- access denied / platform quirk
+            return True
+
+        def _listens(conn) -> bool:
+            laddr = getattr(conn, "laddr", None)
+            return (
+                bool(laddr)
+                and getattr(laddr, "port", None) == port
+                and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
+                and conn.status == psutil.CONN_LISTEN
+            )
+
+        tree_readable = True
+        for member in tree:
+            try:
+                read = getattr(member, "net_connections", None) or member.connections
+                if any(_listens(c) for c in read(kind = "inet")):
+                    return True
+            except psutil.NoSuchProcess:
+                continue
+            except Exception:  # noqa: BLE001 -- access denied / platform quirk
+                tree_readable = False
+        tree_pids = {m.pid for m in tree}
+        foreign = None
+        try:
+            # Scan every listener: a foreign one listed before ours must not refuse our start.
+            for conn in psutil.net_connections(kind = "inet"):
+                if not _listens(conn) or conn.pid is None:
+                    continue
+                if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
+                    return True
+                foreign = conn.pid
+        except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
+            logger.debug("llama-server port ownership check unavailable: %s", exc)
+        if foreign is not None:
+            logger.error(
+                "llama-server port %s is held by pid %s, not our child %s; refusing to use it",
+                port,
+                foreign,
+                pid,
+            )
+            return False
+        if tree_readable:
+            logger.error(
+                "llama-server port %s answered /health but our child %s is not listening on it; "
+                "refusing to use it",
+                port,
+                pid,
+            )
+            return False
+        return True
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
@@ -20824,6 +21382,7 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
+        self._mixed_split_flags = []
         self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -21437,14 +21996,27 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_precision
+
+        names = (hf_repo, near_path)
+        pick = _mmproj_picker(hf_repo, near_path)
+        f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
+        if f16_unsafe and near_path:
+            # Only a cached MiMo-VL F16 projector is broken; a cached BF16 / F32 one is reused as usual.
+            cached = _companion_snapshot_sibling(near_path, pick)
+            with contextlib.suppress(OSError):
+                if cached and mmproj_precision(cached) != "f16" and Path(cached).stat().st_size > 0:
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            reuse_snapshot_sibling = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:
@@ -22106,79 +22678,16 @@ class LlamaCppBackend:
             return None
         return str(mtp_draft_path)
 
-    # ── Lifecycle ─────────────────────────────────────────────────
-
-    # GGUF ``general.architecture`` values for diffusion / image models.
-    # llama.cpp has no such architectures, so loading one as a chat model dies
-    # with "unknown model architecture: '<arch>'". These match the patched
-    # stable-diffusion.cpp / ComfyUI-GGUF enums. Unsloth publishes FLUX and
-    # Qwen-Image GGUFs under
-    # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
-    # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
-    # (e.g. "taiwan") isn't misrouted to Images.
-    _IMAGE_ARCHES = frozenset(
-        (
-            "qwen_image",
-            "qwen_image21",
-            "flux",
-            # Krea 2 GGUFs from some converters (molbal/krea2-gguf), #14474.
-            "krea2",
-        )
-    )
-    # Archs shared by more than one family, so the header alone does NOT say whether the
-    # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
-    # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
-    # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
-    # repo id and the filename and tags the rest ``image-diffusion-unsupported``, hiding
-    # them from the Images picker, so the refusal must run the SAME resolution before it
-    # names that page -- e.g. ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf``
-    # declares "lumina2" and resolves to no family ("lumina-2" is not aliased to bare
-    # "lumina"). Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
-    _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
-    # Text-to-video archs the Video page can offer. Split from the image set so the refusal
-    # names Video: sending a Wan / LTX-2 GGUF to Images is a second dead end.
-    _VIDEO_ARCHES = frozenset(
-        (
-            "ltxv",
-            "wan",
-        )
-    )
-    # Media archs Unsloth recognises but NO page can run, so the refusal must not promise
-    # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
-    # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
-    #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
-    #     every cosmos repo id and for override="cosmos"), and the published cosmos GGUFs
-    #     are Cosmos-Predict2-14B-Text2Image, which Images cannot assemble either.
-    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the 1.5 GGUFs that do map to
-    #     one are still tagged unsupported (that family ships no ``gguf_repo``).
-    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
-    #     the same reason, so "use the Images page" was always an empty promise.
-    # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
-    # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
-    _UNRUNNABLE_MEDIA_ARCHES = frozenset(
-        (
-            "cosmos",
-            "hyvid",
-            "sd1",
-            "sd3",
-            "sdxl",
-            "aura",
-            "hidream",
-        )
-    )
+    _IMAGE_ARCHES = _gguf_archs.DIFFUSION_IMAGE_GGUF_ARCHS
+    _AMBIGUOUS_IMAGE_ARCHES = _gguf_archs.AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+    _VIDEO_ARCHES = _gguf_archs.VIDEO_GGUF_ARCHS
+    _UNRUNNABLE_MEDIA_ARCHES = _gguf_archs.UNSUPPORTED_DIFFUSION_GGUF_ARCHS
     _DIFFUSION_ARCHES = (
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
-    # TTS archs llama.cpp cannot load (CSM support is only on an unmerged upstream branch). One
-    # shared definition, so this gate and the listing classifier cannot drift.
     _SPEECH_ARCHES = _SPEECH_GGUF_ARCHS
 
-    # Not architectures: the literal placeholders gguf-connector writes into
-    # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
-    # calcuis/cosmos-predict2-gguf both declare "pig"); ComfyUI-GGUF special cases the same
-    # two. llama.cpp knows neither, so without this they slip past the arch sets and die in
-    # llama-server as the opaque failure this preflight exists to prevent.
-    _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
+    _PLACEHOLDER_ARCHES = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 
     @staticmethod
     def _video_arch_is_pickable(
@@ -24138,6 +24647,67 @@ class LlamaCppBackend:
         with LlamaCppBackend._bundle_only_rocm_lock:
             return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
 
+    # Build dirs whose system ROCm prepend was already probed, keyed like the latch above.
+    _system_rocm_probed: dict[str, tuple] = {}
+    _system_rocm_probe_lock = threading.Lock()
+
+    @staticmethod
+    def _list_devices_under(binary: str, env: Mapping[str, str]) -> Optional[list[str]]:
+        try:
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(dict(env)),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            return None
+        return _parse_listed_devices(result.stdout)
+
+    @staticmethod
+    def _system_rocm_hides_gpu(binary: str, system_dirs: "list[str]") -> bool:
+        """True when llama-server lists no GPU with system ROCm first but does with its bundle.
+
+        The prepend crash-proofs hosts whose bundled ROCR mismatches amdkfd (#7208), but
+        where the system copy is the mismatched one HIP init fails silently and the server
+        runs on CPU (#14906). No crash means the load_model retry never fires, so this asks
+        the binary directly, once per build. Any other answer keeps the prepend.
+        """
+        resolved = _resolve_llama_binary(binary)
+        key = str(resolved.parent)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._system_rocm_probe_lock:
+            # A caller that waited out the first probe re-reads its verdict from the latch.
+            if LlamaCppBackend._system_rocm_probed.get(key) == revision:
+                return LlamaCppBackend._prefers_bundle_only_rocm(binary)
+            mixed = LlamaCppBackend._list_devices_under(
+                binary,
+                LlamaCppBackend._llama_server_env_for_binary(binary, verify_system_rocm = False),
+            )
+            bundled = None
+            if mixed == []:
+                bundled = LlamaCppBackend._list_devices_under(
+                    binary,
+                    LlamaCppBackend._llama_server_env_for_binary(binary, use_system_rocm = False),
+                )
+            LlamaCppBackend._system_rocm_probed[key] = revision
+            if not bundled:
+                return False
+            logger.warning(
+                "llama-server lists no GPU with the system ROCm libraries (%s) ahead of its "
+                "bundled runtime, but lists %s without them; using the bundled ROCm runtime.",
+                ":".join(system_dirs),
+                ", ".join(bundled),
+            )
+            LlamaCppBackend._remember_bundle_only_rocm(binary)
+            return True
+
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
         """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
@@ -25483,6 +26053,8 @@ class LlamaCppBackend:
                 )
             )
             self._process = _spawned
+            # The env picks companions too (LLAMA_ARG_MMPROJ, ...): load_progress sizes them from it.
+            self._process_env = (_spawned, env)
             _invalidate_gpu_memory("llama-server spawned")
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
@@ -25531,6 +26103,7 @@ class LlamaCppBackend:
 
     @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
+    @holds_inference
     def load_model(
         self,
         intent: GgufLoadIntent,
@@ -26699,6 +27272,7 @@ class LlamaCppBackend:
                     self._tensor_split = None
                     self._auto_tensor_split = None
                     self._auto_tensor_split_emitted = None
+                self._mixed_split_flags = []
                 self._requested_gpu_ids = [int(i) for i in gpu_ids] if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -27194,6 +27768,15 @@ class LlamaCppBackend:
                             frac,
                             sysmem_fallback = _sysmem_fallback,
                         )
+
+                    def _gpu_rank(
+                        g,
+                        frac = _vram_frac,
+                        floor_mib = 0.0,
+                    ):
+                        # iGPUs after every discrete card that holds its split buffers (_select_gpus).
+                        usable = _gpu_usable(g, frac)
+                        return (g[0] not in _shared_gpu_ids and usable > floor_mib, usable)
 
                     def _pool_budget_mib(subset, frac):
                         # Sum each GPU's own usable budget. Pooling free and total
@@ -28010,6 +28593,7 @@ class LlamaCppBackend:
                                     + _cc_bytes(_mm_floor_ctx),
                                     min_gpus = _layer_min_gpus,
                                     split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                                    shared_gpu_ids = _shared_gpu_ids,
                                 )
                                 if _mm_split_aware
                                 else self._select_gpus(
@@ -28019,6 +28603,7 @@ class LlamaCppBackend:
                                     total_by_idx = total_by_idx,
                                     per_device_overhead_bytes = _pipeline_overhead_bytes,
                                     min_gpus = _layer_min_gpus,
+                                    shared_gpu_ids = _shared_gpu_ids,
                                 )
                             )[1]
 
@@ -28120,7 +28705,11 @@ class LlamaCppBackend:
                         def _probe_rank(drafter: bool) -> list:
                             return sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _probe_frac(drafter),
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
 
@@ -28642,7 +29231,11 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _vram_frac - _flat_mtp_reserve),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _vram_frac - _flat_mtp_reserve,
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
                             best_cap = 0
@@ -28760,6 +29353,7 @@ class LlamaCppBackend:
                                 shared = _shared_gpus,
                                 integrated = _tier_gpus,
                                 discrete_size_bytes = requested_total - _discrete_host_only(),
+                                shared_gpu_ids = _shared_gpu_ids,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -28824,6 +29418,7 @@ class LlamaCppBackend:
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, cache_type = "q8_0")
                                             - _discrete_host_only(),
+                                            shared_gpu_ids = _shared_gpu_ids,
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(
@@ -28837,8 +29432,14 @@ class LlamaCppBackend:
                             # headroom threshold as _select_gpus (#5106). Rank by the
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
+                            # Max _reserve_at ask: a short card must not hide an iGPU that fits.
+                            _rank_floor_mib = (
+                                _pipeline_overhead_bytes + _cc_bytes(effective_ctx, 2) // 2
+                            ) / (1024 * 1024)
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus,
+                                key = lambda g: _gpu_rank(g, pin_fraction, _rank_floor_mib),
+                                reverse = True,
                             )
                             # Skips _select_gpus, so apply its cap: count only cards
                             # whose usable VRAM clears the per-device layer overhead.
@@ -28928,10 +29529,8 @@ class LlamaCppBackend:
                                 ):
                                     # Keep the largest context the smallest card holds
                                     # rather than lose the subset to the 4096 drop below.
-                                    # Costs no context: subsets are prefixes of a
-                                    # usable-descending ranking and the reserve is the
-                                    # same function of context for every n > 1, so any
-                                    # later subset clears the gate no higher than this.
+                                    # Costs no context: a longer prefix never has a larger
+                                    # smallest card, and the reserve is one function for n > 1.
                                     capped = self._cap_ctx_to_per_device_reserve(
                                         capped, _usable_mib, _reserve_at
                                     )
@@ -29026,6 +29625,7 @@ class LlamaCppBackend:
                             shared = _shared_gpus,
                             integrated = _tier_gpus,
                             discrete_size_bytes = _fs_total - _discrete_host_only(),
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
@@ -29446,6 +30046,7 @@ class LlamaCppBackend:
                             # Picks a subset, so an explicit device pick keeps the base pick.
                             integrated = _tier_gpus,
                             discrete_host_only_bytes = _discrete_host_only(),
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -29483,6 +30084,7 @@ class LlamaCppBackend:
                                     ctx_checkpoints = _placement_ctx_checkpoints,
                                     integrated = _tier_gpus,
                                     discrete_host_only_bytes = _discrete_host_only(),
+                                    shared_gpu_ids = _shared_gpu_ids,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -30148,6 +30750,9 @@ class LlamaCppBackend:
                     # allowance, exactly what _fit_model_size and _fit_soft_overhead
                     # just charged, and the same abstain when it cannot be sized.
                     _spill_inputs["env_mmproj_unsized"] = _fit_env_mmproj_unsized
+                    _spill_inputs["host_mmproj_bytes"] = _mmproj_pinned_bytes + (
+                        _fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0
+                    )
                     _spill_inputs["env_mmproj_bytes"] = (
                         0
                         if _fit_env_mmproj_on_host
@@ -30876,6 +31481,32 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
+                    _mixed_split = self._mixed_pin_split(
+                        list(gpu_indices),
+                        _spill_inputs,
+                        _shared_gpu_ids,
+                        extra_args,
+                        env,
+                        layer_min_gpus = _layer_min_gpus,
+                        tensor_parallel = tensor_parallel,
+                        pin_owns_devices = _gpu_ids_own_device_flags,
+                    )
+                    if _mixed_split is not None:
+                        self._mixed_split_flags = [
+                            "--tensor-split",
+                            self._format_tensor_split(_mixed_split),
+                        ]
+                        cmd.extend(self._mixed_split_flags)
+                        if gpu_memory_mode != "manual":
+                            self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                                _mixed_split
+                            )
+                        logger.info(
+                            "Filling discrete GPU(s) before the shared-memory iGPU: "
+                            "--tensor-split %s over %s",
+                            cmd[-1],
+                            list(gpu_indices),
+                        )
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
@@ -33181,6 +33812,7 @@ class LlamaCppBackend:
                                 )
                             )
                             self._process = _spawned
+                            self._process_env = (_spawned, env)
                             _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
@@ -33366,6 +33998,10 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            if self._mixed_split_flags:
+                                # common/fit.cpp aborts a multi-device fit on a set split.
+                                _run = _without_subsequence(_run, self._mixed_split_flags)
+                                self._auto_tensor_split_emitted = None
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
@@ -35189,6 +35825,10 @@ class LlamaCppBackend:
                 ):
                     _offload_counts = None
                 self._gpu_offload_layers = _offload_counts
+                self._weight_placement = parse_weight_placement(
+                    self._stdout_lines,
+                    _gguf_set_bytes(Path(self._gguf_path)) if self._gguf_path else None,
+                )
                 self._gpu_backend_unavailable = bool(_detected_gpus or _metal_capable_host()) and (
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )
@@ -36770,6 +37410,7 @@ class LlamaCppBackend:
             # server's stale zero-offload flag until the health probe reclassifies.
             self._gpu_offload_active = None
             self._gpu_offload_layers = None
+            self._weight_placement = None
             self._offload_overridden = False
             self._gpu_backend_unavailable = False
             # Drives _wait_for_vram_settle in the next load_model; set in finally
@@ -38468,6 +39109,8 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
                         return False
+                    if not self._health_listener_is_ours(process):
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -38854,13 +39497,18 @@ class LlamaCppBackend:
                     or getattr(self, "_chat_template", None),
                 ),
             }
+        from core.rag.conversation_archive import inference_running
+
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-        with httpx.Client(
-            timeout = stream_timeout,
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        ) as client:
+        with (
+            inference_running(),
+            httpx.Client(
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client,
+        ):
             first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
@@ -39594,6 +40242,8 @@ class LlamaCppBackend:
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = continue_final_message,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -40668,6 +41318,8 @@ class LlamaCppBackend:
                                 strict = True,
                                 chat_template_kwargs = _reasoning_kw,
                             ),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -40829,6 +41481,8 @@ class LlamaCppBackend:
                                 style = "inline",
                                 recall_done = True,
                                 branch_messages = _extend_live_branch(conversation),
+                                cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                                background = True,
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -42354,7 +43008,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None
@@ -43518,6 +44173,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -43662,6 +44319,8 @@ class LlamaCppBackend:
                             style = "inline",
                             recall_done = True,
                             branch_messages = _extend_live_branch(conversation),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )["counts"]
                     )
                 # Recorded rather than only forwarded, for the same reason as the
@@ -44648,6 +45307,7 @@ class LlamaCppBackend:
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,
