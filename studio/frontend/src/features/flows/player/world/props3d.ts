@@ -228,6 +228,7 @@ const UNSUPPORTED: Record<string, string> = {
   KHR_draco_mesh_compression: "Draco compression",
   EXT_meshopt_compression: "meshopt compression",
   KHR_texture_basisu: "KTX2 textures",
+  EXT_mesh_gpu_instancing: "GPU instancing",
 };
 
 export class GlbError extends Error {}
@@ -243,18 +244,20 @@ interface GltfJson {
       attributes?: Record<string, number>;
     }[];
   }[];
+  nodes?: { mesh?: unknown }[];
   extensionsUsed?: string[];
   extensionsRequired?: string[];
 }
 
+/** Triangles drawn: a mesh counts once per node that places it, so reusing one mesh many times is not free. */
 export function countTriangles(doc: GltfJson): number {
   const acc = doc.accessors ?? [];
   const count = (i: unknown) => {
     const c = typeof i === "number" ? acc[i]?.count : undefined;
     return typeof c === "number" && c > 0 ? c : 0;
   };
-  let total = 0;
-  for (const mesh of doc.meshes ?? []) {
+  const perMesh = (doc.meshes ?? []).map((mesh) => {
+    let total = 0;
     for (const prim of mesh?.primitives ?? []) {
       const mode = prim.mode ?? 4;
       const n =
@@ -264,8 +267,18 @@ export function countTriangles(doc: GltfJson): number {
       if (mode === 4) total += Math.floor(n / 3);
       else if (mode === 5 || mode === 6) total += Math.max(0, n - 2);
     }
+    return total;
+  });
+  let placed = 0;
+  for (const node of doc.nodes ?? []) {
+    const m = node?.mesh;
+    if (typeof m === "number" && m >= 0 && m < perMesh.length)
+      placed += perMesh[m];
   }
-  return total;
+  return Math.max(
+    placed,
+    perMesh.reduce((a, b) => a + b, 0),
+  );
 }
 
 /** `{bytes, triangles}` for a model a world can use; throws GlbError with a readable reason otherwise. */

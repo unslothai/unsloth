@@ -21,6 +21,7 @@ UNSUPPORTED_EXTENSIONS = {
     "KHR_draco_mesh_compression": "Draco compression",
     "EXT_meshopt_compression": "meshopt compression",
     "KHR_texture_basisu": "KTX2 textures",
+    "EXT_mesh_gpu_instancing": "GPU instancing",
 }
 
 
@@ -41,8 +42,9 @@ def _triangles(doc: dict) -> int:
             return c if isinstance(c, int) and c > 0 else 0
         return 0
 
-    total = 0
+    per_mesh = []
     for mesh in doc.get("meshes") or []:
+        total = 0
         prims = mesh.get("primitives") if isinstance(mesh, dict) else None
         for prim in prims if isinstance(prims, list) else []:
             if not isinstance(prim, dict):
@@ -54,7 +56,17 @@ def _triangles(doc: dict) -> int:
                 total += n // 3
             elif mode in (5, 6):
                 total += max(0, n - 2)
-    return total
+        per_mesh.append(total)
+    # A mesh is drawn once per node that places it, so reusing one mesh many times is not free.
+    placed = sum(
+        per_mesh[n["mesh"]]
+        for n in doc.get("nodes") or []
+        if isinstance(n, dict)
+        and isinstance(n.get("mesh"), int)
+        and not isinstance(n.get("mesh"), bool)
+        and 0 <= n["mesh"] < len(per_mesh)
+    )
+    return max(placed, sum(per_mesh))
 
 
 def inspect_glb(data: bytes) -> dict:

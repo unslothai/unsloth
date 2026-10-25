@@ -294,6 +294,19 @@ test("models that point elsewhere, are too big, too dense or need a codec are re
     glb({ ...TRI, extensionsRequired: ["KHR_draco_mesh_compression"] }),
     /Draco/,
   );
+  // One 100k-triangle mesh placed by two nodes draws 200k triangles.
+  refuse(
+    glb({
+      ...TRI,
+      accessors: [{ count: 300_000 }],
+      nodes: [{ mesh: 0 }, { mesh: 0 }],
+    }),
+    /200,000 triangles/,
+  );
+  refuse(
+    glb({ ...TRI, extensionsUsed: ["EXT_mesh_gpu_instancing"] }),
+    /instancing/,
+  );
   refuse(
     new TextEncoder().encode("not a model at all, sorry").buffer as ArrayBuffer,
     /Not a binary glTF/,

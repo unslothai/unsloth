@@ -46,6 +46,14 @@ def test_a_self_contained_model_passes():
         (make_glb({**TRI, "images": [{"uri": "data:image/png;base64,AAAA"}]}), "outside files"),
         (make_glb({**TRI, "accessors": [{"count": 3_000_000}]}), "1,000,000 triangles"),
         (make_glb({**TRI, "extensionsUsed": ["EXT_meshopt_compression"]}), "meshopt"),
+        # One 100k-triangle mesh placed by two nodes draws 200k triangles.
+        (
+            make_glb(
+                {**TRI, "accessors": [{"count": 300_000}], "nodes": [{"mesh": 0}, {"mesh": 0}]}
+            ),
+            "200,000 triangles",
+        ),
+        (make_glb({**TRI, "extensionsUsed": ["EXT_mesh_gpu_instancing"]}), "instancing"),
         (b"glTF" + struct.pack("<II", 1, 20) + b"\0" * 8, "version 1"),
         (make_glb(TRI)[:-4], "cut short"),
         (b"glTF" + b"\0" * (glb.MAX_GLB_BYTES + 1), "at most 20 MB"),
