@@ -119,6 +119,34 @@ class TestExactNeedsTheServerToPark:
     def test_off_stays_off_whatever_the_server_does(self):
         assert self._state(setting = "off", server_parks = False) == exact.EXACT_STATE_OFF
 
+    @pytest.mark.parametrize("setting", ["auto", "on"])
+    def test_one_slot_needs_no_parking(self, setting):
+        """One slot never shares the cache, so nothing is ever parked, and llama-server reports
+        parking off below two slots: the mode still runs, and a healthy server is kept."""
+        assert (
+            self._state(
+                setting = setting, server_parks = False, parking_holds = False, parallel_slots = 1
+            )
+            == exact.EXACT_STATE_ON
+        )
+
+    @pytest.mark.parametrize("setting", ["auto", "on"])
+    def test_more_slots_still_need_the_server_to_park(self, setting):
+        assert (
+            self._state(setting = setting, server_parks = False, parallel_slots = 4)
+            == exact.EXACT_STATE_UNAVAILABLE
+        )
+        assert (
+            self._state(setting = setting, parking_holds = False, parallel_slots = 2)
+            == exact.EXACT_STATE_UNAVAILABLE
+        )
+
+    def test_the_load_judges_at_the_slots_it_came_up_with(self):
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        call = source.index("self._exact_concurrency = self._exact_state_after_launch(")
+        window = source[call : source.index(")", source.index("parking_holds =", call))]
+        assert "parallel_slots = n_parallel" in window
+
     def test_the_settings_page_is_told_what_parking_needs(self, monkeypatch):
         from core.inference import llama_preemption as preemption
         from routes import settings as settings_mod

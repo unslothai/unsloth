@@ -10423,8 +10423,11 @@ class LlamaCppBackend:
         supports_exact: bool,
         server_parks: bool = True,
         parking_holds: bool = True,
+        parallel_slots: int = 2,
     ) -> str:
-        """What to report for a child that has just come up healthy."""
+        """What to report for a child that has just come up healthy. One slot never shares the
+        cache, so nothing is parked, and llama-server reports parking off below two slots: the
+        parking checks apply only to more."""
         if not _exact.wants_exact(setting):
             return _exact.EXACT_STATE_OFF
         running = (
@@ -10434,8 +10437,7 @@ class LlamaCppBackend:
             and _flash_attn_enabled_from_args(args, env = env)
             and not _exact.contradicting_args(args)
             and not _exact.contradicting_env(env, args)
-            and bool(server_parks)
-            and bool(parking_holds)
+            and (int(parallel_slots or 1) <= 1 or (bool(server_parks) and bool(parking_holds)))
         )
         if running:
             return _exact.EXACT_STATE_ON
@@ -37372,6 +37374,7 @@ class LlamaCppBackend:
                     supports_exact = _exact_running,
                     server_parks = self.server_preempts_kv,
                     parking_holds = _exact_short is None and _exact_host_short is None,
+                    parallel_slots = n_parallel,
                 )
                 if self._exact_concurrency == _exact.EXACT_STATE_UNAVAILABLE:
                     if not self.server_preempts_kv:
