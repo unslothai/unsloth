@@ -84,7 +84,7 @@ const speechStroke = {
   strokeWidth: "1.5",
 } as const;
 
-// Audio everywhere: ai-speech without its sparkle, the last two bars filled out (5-21, 11-15) into the space it left.
+// Audio: ai-speech without its sparkle, the last two bars lengthened into its space.
 export const AiSpeechIcon: IconSvgElement = [
   ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
   ["path", { d: "M16 5L16 21", ...speechStroke, key: "1" }],
@@ -93,7 +93,7 @@ export const AiSpeechIcon: IconSvgElement = [
   ["path", { d: "M4 9V15", ...speechStroke, key: "4" }],
 ];
 
-// Text to Speech: hugeicons' ai-speech as drawn, sparkle included.
+// Text to Speech: ai-speech as drawn.
 export const TextToSpeechIcon: IconSvgElement = [
   ["path", { d: "M12 7V17", ...speechStroke, key: "0" }],
   ["path", { d: "M16 11L16 19", ...speechStroke, key: "1" }],

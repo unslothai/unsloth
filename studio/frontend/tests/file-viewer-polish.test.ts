@@ -24,7 +24,6 @@ test("audio reads as the bars-only icon everywhere and Text to Speech as ai-spee
   for (const file of ["components/app-sidebar.tsx", "components/command-palette.tsx", "features/library/file-kind.ts"]) {
     assert.doesNotMatch(read(file), /AudioWave01Icon/, file);
   }
-  // Chat's audio chips and Upload audio used lucide's headphones.
   for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
     assert.doesNotMatch(read(file), /HeadphonesIcon/, file);
   }
