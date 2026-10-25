@@ -7420,6 +7420,8 @@ def _uncovered_rocm_gpu_takes_vulkan(host: HostInfo) -> bool:
         host.is_linux
         and host.is_x86_64
         and not host.has_physical_nvidia
+        # Following ROCm torch clears has_physical_nvidia but keeps the card's evidence.
+        and not (host.nvidia_smi or host.physical_compute_caps or host.driver_cuda_version)
         and not _hip_visible_device_mask_set()
         and not _vulkan_visible_device_mask_set()
         and not _hipcc_available()

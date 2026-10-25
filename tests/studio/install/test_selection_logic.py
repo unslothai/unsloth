@@ -5185,6 +5185,20 @@ class TestLinuxUncoveredRocmGpuTakesVulkan:
         with pytest.raises(PrebuiltFallback):
             self._resolve("gfx1153")
 
+    def test_rocm_torch_beside_an_nvidia_card_keeps_the_source_build(self, monkeypatch):
+        # Following ROCm torch clears has_physical_nvidia; the card is still there for Vulkan.
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: True)
+        with pytest.raises(PrebuiltFallback):
+            self._resolve(
+                "gfx1152",
+                nvidia_smi = "/usr/bin/nvidia-smi",
+                driver_cuda_version = (12, 8),
+                compute_caps = ["89"],
+                physical_compute_caps = ["89"],
+                has_physical_nvidia = True,
+                has_usable_nvidia = True,
+            )
+
     def test_beside_an_nvidia_card_the_source_build_stays(self):
         # Vulkan would reach the NVIDIA card too; the masked-NVIDIA rules stay as they are.
         with pytest.raises(PrebuiltFallback):
