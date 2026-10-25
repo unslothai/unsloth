@@ -488,6 +488,15 @@ class TestAnInheritedReasoningModeIsHonoured:
 
 
 QWEN38 = "unsloth/Qwen3.8-27B-GGUF"
+# Replays history reasoning per its own preserve_thinking default, as Qwen3.8's template does.
+_HISTORY_TEMPLATE = (
+    "{% if enable_thinking %}<think>{% endif %}{% for m in messages %}"
+    "{% if PRESERVE %}{{ m.reasoning_content }}{% endif %}{{ m.content }}{% endfor %}"
+)
+KEEPS_TEMPLATE = _HISTORY_TEMPLATE.replace(
+    "PRESERVE", "preserve_thinking is undefined or preserve_thinking is true"
+)
+DROPS_TEMPLATE = _HISTORY_TEMPLATE.replace("PRESERVE", "preserve_thinking|default(false)")
 
 
 class TestThePreserveThinkingLaunchDefault:
@@ -506,8 +515,19 @@ class TestThePreserveThinkingLaunchDefault:
     def test_qwen38_keeps_its_on_default_with_its_own_template(self, tmp_path, monkeypatch):
         assert self._preserve(tmp_path, monkeypatch, template = None, gguf_template = THINKING_TEMPLATE)
 
-    def test_a_template_override_gets_the_off_default(self, tmp_path, monkeypatch):
-        assert not self._preserve(tmp_path, monkeypatch, template = THINKING_TEMPLATE)
+    def test_an_override_defaulting_off_turns_the_qwen38_default_off(self, tmp_path, monkeypatch):
+        assert not self._preserve(tmp_path, monkeypatch, template = DROPS_TEMPLATE)
+
+    @pytest.mark.parametrize("model_identifier", [QWEN38, "test"])
+    def test_an_override_defaulting_on_keeps_it_on(self, tmp_path, monkeypatch, model_identifier):
+        assert self._preserve(
+            tmp_path, monkeypatch, template = KEEPS_TEMPLATE, model_identifier = model_identifier
+        )
+
+    def test_an_unrenderable_override_gets_the_off_default(self, tmp_path, monkeypatch):
+        assert not self._preserve(
+            tmp_path, monkeypatch, template = THINKING_TEMPLATE + "{{ raise_exception('x') }}"
+        )
 
     @pytest.mark.parametrize("flag", ["--no-reasoning-preserve", "--no_reasoning_preserve"])
     def test_no_reasoning_preserve_turns_the_qwen38_default_off(self, tmp_path, monkeypatch, flag):

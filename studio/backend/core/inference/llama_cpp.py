@@ -5484,6 +5484,39 @@ def _reasoning_preserve_from_args_or_env(
     return None
 
 
+def _template_preserves_thinking_by_default(template: str, context: Mapping) -> bool:
+    """Whether ``template`` replays an earlier turn's reasoning with preserve_thinking omitted.
+
+    Qwen3.8's own template keeps it (``preserve_thinking is undefined or ...``) while
+    ``preserve_thinking|default(false)`` drops it, so an override is rendered, not
+    matched by family. False when Python's Jinja cannot render it.
+    """
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def _raise(message):
+        raise ValueError(message)
+
+    marker = "unsloth-preserve-thinking-probe"
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": marker},
+        {"role": "user", "content": "q2"},
+    ]
+    try:
+        jinja = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"],
+        )
+        jinja.globals.update(raise_exception = _raise, strftime_now = lambda fmt: time.strftime(fmt))
+        rendered = jinja.from_string(template).render(
+            **{**context, "messages": messages, "add_generation_prompt": True}
+        )
+    except Exception:
+        return False
+    return marker in rendered
+
+
 def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
     value = env.get("LLAMA_ARG_REASONING_EFFORT")
     return None if value == "default" else value
@@ -32114,13 +32147,17 @@ class LlamaCppBackend:
                     # supporting family keep the existing off default. The
                     # frontend receives the same resolved value via load/status.
                     # The Qwen3.8 on default follows Qwen's shipped template, so a
-                    # chat_template_override falls back to the off default every other
-                    # family uses, and an explicit --[no-]reasoning-preserve beats both:
-                    # this kwarg is applied after that flag, so it would otherwise
-                    # silently undo it (#15115).
+                    # chat_template_override takes the default its own text renders,
+                    # and an explicit --[no-]reasoning-preserve beats both: this kwarg
+                    # is applied after that flag, so it would otherwise silently undo
+                    # it (#15115).
                     if self._supports_preserve_thinking:
                         if chat_template_override:
-                            self._preserve_thinking_default = False
+                            self._preserve_thinking_default = (
+                                _template_preserves_thinking_by_default(
+                                    chat_template_override, reasoning_kw
+                                )
+                            )
                         _preserve = _reasoning_preserve_from_args_or_env(extra_args, env)
                         if _preserve is not None:
                             self._preserve_thinking_default = _preserve
