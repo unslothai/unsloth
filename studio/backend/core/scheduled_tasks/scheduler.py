@@ -600,6 +600,15 @@ async def generate_answer(
                 release()
             if holder is None and swap is not None and not cancel_event.is_set():
                 await _restore_after_swap(swap, app)
+            elif (
+                holder is not None
+                and carried is not None
+                and holder.pending is swap
+                and not _model_is_loaded(swap.model)
+                and _model_is_loaded(carried.model)
+            ):
+                # This load failed and left the carried model in place: that swap still has to be put back.
+                holder.pending = carried
     if cancel_event.is_set():
         raise RunFailed("cancelled")
     body = getattr(response, "body", None)

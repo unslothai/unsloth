@@ -1537,6 +1537,30 @@ def test_back_to_back_runs_on_one_model_load_it_once_and_switch_back_once(monkey
     assert world.loaded == SwapWorld.EARLIER
 
 
+def test_a_failed_load_keeps_the_carried_swap_to_put_back(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    holder = scheduler_module.SwapHolder()
+    first = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
+    run_held(world, monkeypatch, first, {"id": "run-1", "source": "schedule"}, holder)
+    carried = holder.pending
+    other = make_task(id = "task-2", model = "unsloth/gemma-3-1b-it-GGUF", allowModelLoad = True)
+    monkeypatch.setattr(
+        inference_routes, "produce_openai_chat_completions", FakeProducer(completion("Ok."))
+    )
+    with pytest.raises(RunFailed) as failure:
+        asyncio.run(
+            generate_answer(
+                SimpleNamespace(state = SimpleNamespace()),
+                other,
+                {"id": "run-2", "source": "schedule"},
+                threading.Event(),
+                holder,
+            )
+        )
+    assert failure.value.code == "model_load_failed"
+    assert holder.pending is carried and carried.previous == SwapWorld.EARLIER
+
+
 def test_a_run_on_the_loaded_model_gets_the_users_model_back_first(monkeypatch):
     world = SwapWorld(monkeypatch)
     holder = scheduler_module.SwapHolder()
