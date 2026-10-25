@@ -942,7 +942,7 @@ export function createWorld3d(
       camera,
     );
     const hit = raycaster.intersectObjects(
-      npcs.map((n) => n.group),
+      npcs.filter((n) => n.group.visible).map((n) => n.group),
       true,
     )[0];
     const npc =
@@ -1314,7 +1314,7 @@ export function createWorld3d(
           n.speech = null;
         }
       }
-      if (pendingTalk === n.id && dist <= REACH && !locked)
+      if (pendingTalk === n.id && dist <= REACH && !locked && n.group.visible)
         interact({ kind: "npc", id: n.id, name: n.name });
     }
     for (const it of items.values()) {
@@ -1334,6 +1334,8 @@ export function createWorld3d(
     let bestD = REACH;
     let bp: three.Vector3 | null = null;
     for (const n of npcs) {
+      // A knocked-out hostile is hidden and cannot be talked to.
+      if (!n.group.visible) continue;
       const d = Math.hypot(n.pos.x - me.x, n.pos.y - me.y);
       if (d < bestD) {
         bestD = d;

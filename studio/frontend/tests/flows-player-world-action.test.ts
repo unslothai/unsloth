@@ -341,3 +341,12 @@ test("a prop dropped on the player stays passable for them, director hostiles fi
   assert.ok(house && A.circleHitsBox(house, 5.2, 5.1, A.RADIUS));
   assert.ok(house && !A.circleHitsBox(house, 8, 8, A.RADIUS));
 });
+
+test("a knocked-out hostile is never the interaction target", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/three-world.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /if \(!n\.group\.visible\) continue;\s*const d = Math\.hypot\(n\.pos\.x - me\.x/);
+  assert.match(src, /npcs\.filter\(\(n\) => n\.group\.visible\)\.map\(\(n\) => n\.group\)/);
+});
