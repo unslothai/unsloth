@@ -14,6 +14,7 @@ import type {
   ToolProfileConfig,
   ValidatorConfig,
 } from "../../types";
+import { superCardsFromUi } from "../graph/super-cards";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
 import { parseColumn, parseModelConfig, parseModelProvider } from "./parsers";
@@ -47,6 +48,7 @@ type UiInput = {
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
   advanced_open_by_node?: unknown;
+  super_cards?: unknown;
 };
 
 type ImportRecipePayloadOptions = {
@@ -641,6 +643,7 @@ export function importRecipePayload(
       layoutDirection: resolvedLayoutDirection,
       nextId,
       nextY: maxY + 140,
+      superCards: superCardsFromUi(ui?.super_cards, nameToId),
     },
   };
 }

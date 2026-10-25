@@ -8,6 +8,7 @@ import type {
   RecipeProcessorConfig,
   NodeConfig,
 } from "../../types";
+import type { SuperCard } from "../graph/super-cards";
 
 export type RecipeSnapshot = {
   configs: Record<string, NodeConfig>;
@@ -18,6 +19,7 @@ export type RecipeSnapshot = {
   layoutDirection: LayoutDirection;
   nextId: number;
   nextY: number;
+  superCards?: Record<string, SuperCard>;
 };
 
 export type ImportResult = {

@@ -58,6 +58,14 @@ export type RecipePayload = {
     layout_direction?: "LR" | "TB";
     // ui-only, used to preserve seed block mode across imports/refresh
     seed_source_type?: "hf" | "local" | "unstructured" | "github_repo";
+    // ui-only, super cards (grouping is not part of the recipe the backend runs)
+    super_cards?: Array<{
+      id: string;
+      title: string;
+      members: string[];
+      x: number;
+      y: number;
+    }>;
     // ui-only, persisted aux node positions by llm name + aux key
     aux_nodes?: Array<{
       llm: string;
