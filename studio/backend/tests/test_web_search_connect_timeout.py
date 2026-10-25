@@ -15,8 +15,9 @@ from core.inference import tools
 @pytest.fixture
 def fresh_install(monkeypatch):
     """Undo the install after each test, so no test sees another's wrapped clients."""
-    from ddgs import http_client, http_client2
+    from ddgs import ddgs as ddgs_module, http_client, http_client2
 
+    monkeypatch.setattr(ddgs_module, "wait", ddgs_module.wait)
     monkeypatch.setattr(http_client, "primp", http_client.primp)
     cls = http_client2.HttpClient2
     monkeypatch.setattr(cls, "__init__", cls.__init__)
@@ -98,3 +99,35 @@ def test_a_connected_engine_that_answers_too_late_keeps_the_budget_message():
         tools._search_failure_message(exc, 300)
         == "Search failed: the search engines did not respond within 300s."
     )
+
+
+def test_an_engine_failing_fast_does_not_drop_a_slower_engines_answer(fresh_install, monkeypatch):
+    """ddgs's batch wait returned on the first failure and dropped the still running engine, so a
+    blocked engine hitting its connect cap threw away a slow engine's answer."""
+    import time
+
+    from ddgs.ddgs import DDGS
+    from ddgs.engines import ENGINES
+    from ddgs.exceptions import DDGSException
+    from ddgs.results import TextResult
+
+    if callable(getattr(DDGS, "_get_network_client", None)):
+        monkeypatch.setattr(DDGS, "_get_network_client", lambda self: None)
+
+    def slow(engine, query, **kwargs):
+        time.sleep(0.5)
+        return [TextResult(title = "slow answer", href = "https://slow.example/", body = "late")]
+
+    def blocked(engine, query, **kwargs):
+        raise DDGSException("connection timed out")
+
+    for name, behaviour in (("wikipedia", slow), ("brave", blocked)):
+        cls = ENGINES["text"][name]
+        monkeypatch.setattr(cls, "__init__", lambda self, *a, **k: None, raising = False)
+        monkeypatch.setattr(cls, "search", behaviour)
+    monkeypatch.setattr(tools, "_SEARCH_ENGINE_TIERS", (("wikipedia", "brave"),))
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
+
+    result = tools._web_search("anything", max_results = 1, timeout = 30)
+
+    assert "Title: slow answer" in result

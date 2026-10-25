@@ -18241,14 +18241,29 @@ class _PrimpWithConnectTimeout:
             return self._module.Client(*args, **kwargs)
 
 
+def _ddgs_wait_all(
+    fs,
+    timeout = None,
+    return_when = None,
+):
+    # ddgs waits FIRST_EXCEPTION and drops futures still pending after its last batch, so an engine
+    # failing its connect cap discarded a slower engine's answer; its executor joins them anyway.
+    import concurrent.futures
+    return concurrent.futures.wait(fs, timeout = timeout)
+
+
 def _install_ddgs_connect_timeout() -> None:
     """Cap how long a ddgs engine may take to connect (#15143), leaving the read on the caller's
     timeout so a slow engine that did connect can still answer late. Applies once; never raises."""
     try:
-        from ddgs import http_client
+        import concurrent.futures
+
+        from ddgs import ddgs as ddgs_module, http_client
         with _DDGS_CONNECT_TIMEOUT_LOCK:
             if not getattr(http_client.primp, "_unsloth_connect_timeout", False):
                 http_client.primp = _PrimpWithConnectTimeout(http_client.primp)
+            if getattr(ddgs_module, "wait", None) is concurrent.futures.wait:
+                ddgs_module.wait = _ddgs_wait_all
             try:
                 from ddgs import http_client2
             except ImportError:
