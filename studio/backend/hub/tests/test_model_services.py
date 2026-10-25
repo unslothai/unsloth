@@ -3007,7 +3007,6 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     result = {"cached": cache_inventory._scan_cached_models()}
 
     can_chat = {row["repo_id"]: row["capabilities"]["can_chat"] for row in result["cached"]}
-    # The picked embedder stays, as a non-chat management row (#15110).
     assert sorted(can_chat) == ["org/model", "user/model-chat"]
     assert can_chat["org/model"] is False
 
@@ -3055,7 +3054,6 @@ def test_cached_scans_keep_settings_picked_embedder_as_non_chat_rows(monkeypatch
     assert [(r["repo_id"], r["capabilities"]["can_chat"]) for r in ggufs] == [
         ("unsloth/embeddinggemma-2-GGUF", False)
     ]
-    # Still hidden from chat pickers.
     from utils.hidden_models import is_hidden_model
 
     assert is_hidden_model("unsloth/embeddinggemma-2")

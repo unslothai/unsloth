@@ -639,7 +639,7 @@ def _scan_cached_gguf(
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
                 is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
-                # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT, Decision API and Settings-picked embedder repos are still emitted as management rows.
+                # Hide infra repos unless the user downloaded a variant (variant state only exists for user downloads); curated STT, Decision API and Settings-picked embedder repos stay as management rows.
                 if (
                     is_hidden_infra
                     and not is_curated_stt
@@ -1209,7 +1209,6 @@ def _scan_cached_models(
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
-                # The non-GGUF embedder has no variant downloads: hide it unless it was picked in Settings.
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),

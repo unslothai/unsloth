@@ -185,7 +185,7 @@ def _path_basename_is_default_embedder(value: str) -> bool:
 
 
 def is_selected_embedder(repo_id: str | None) -> bool:
-    """True if *repo_id* is the embedder or GGUF repo picked in Settings, not the env/default one. Picking one is a deliberate download, so the Hub keeps it as a non-chat row it can be deleted from, like a user-downloaded infra GGUF variant."""
+    """True if *repo_id* is the Settings-picked (not env/default) embedder or its GGUF; the Hub keeps it as a deletable non-chat row."""
     if not repo_id or not _HF_REPO_ID_RE.match(repo_id):
         return False
     from core.rag import config as rag_config
