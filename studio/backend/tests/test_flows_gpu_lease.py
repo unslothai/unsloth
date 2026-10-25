@@ -151,7 +151,7 @@ class _Probe:
 def _world(monkeypatch, slots: int):
     from core.flows import engine as engine_mod
 
-    monkeypatch.setattr(engine_mod, "chat_slots", lambda: slots)
+    monkeypatch.setattr(engine_mod, "chat_slots", lambda *_a: slots)
     probe = _Probe()
     eng = _engine(
         {
