@@ -44,9 +44,7 @@ def _get_cache_key(
     weight_dtype: Optional[torch.dtype] = None,
     device_model: Optional[Tuple[Any, ...]] = None,
 ) -> str:
-    """Generate a unique cache key based on model configuration. ``device_model`` (GPU name, capability,
-    SM count) separates GPU models sharing a capability; None (properties unreadable) gives the
-    model-less key older releases wrote."""
+    """Cache key for this MoE shape on this GPU model; ``device_model=None`` gives the pre-model key."""
     key_data = {
         "num_experts": num_experts,
         "hidden_dim": hidden_dim,
@@ -216,9 +214,7 @@ def get_or_autotune_moe_kernels(
         return _kernel_config_cache[cache_key]
 
     if not force_autotune:
-        # Entries written before the key carried the GPU model are never reused: nothing records which
-        # model tuned them (a shared ~/.cache or a swapped card), so this card retunes once and saves
-        # under its own key.
+        # Pre-model-key entries are never read: nothing records which GPU model tuned them.
         cached_data = load_cached_config(cache_key, **dev_kw)
         if cached_data is not None:
             try:
@@ -306,8 +302,7 @@ _DEVICE_MODELS: Dict[int, Optional[Tuple[Any, ...]]] = {}
 
 
 def _device_model(device = None) -> Optional[Tuple[Any, ...]]:
-    """(name, major, minor, SM count) of ``device``'s card (default: current), read once per card, as
-    grouped_gemm.interface._device_model keys its tuning caches. None when the card or its properties are unreadable."""
+    """(name, major, minor, SM count) of the card, as grouped_gemm.interface keys its caches; None if unreadable."""
     try:
         index = torch.cuda.current_device() if device is None else _cuda_index(device)
     except Exception:
