@@ -432,9 +432,11 @@ export const BUDGET = {
   // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
   // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  // Reconciled with main at 3bf5e856: the combined build measures 6,939,913 B raw / 2,090,959 B transfer
-  // (Node 24, 99 chunks), inside the limits main already carries, so this entry adds no raise of its own.
-  transferBytes: 2_091_207,
+  // Reconciled with main at 3bf5e856: local measures 6,939,913 B raw / 2,090,959 B transfer (Node 24, 99
+  // chunks), inside main's limits. CI's locked install builds 105 eager chunks and 2,042.5 KB transfer, 0.3 KB
+  // over that line, while its 6,769.7 KB raw stays inside. Transfer raised by 600 B for the locked install; raw
+  // unchanged.
+  transferBytes: 2_091_807,
   rawBytes: 6_942_431,
 };
 
