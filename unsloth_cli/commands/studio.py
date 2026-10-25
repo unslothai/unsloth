@@ -185,6 +185,15 @@ def _master_root_llama_dir() -> Optional[Path]:
         return Path(master).expanduser() / "llama.cpp"
 
 
+# Set by the desktop for a system-packaged runtime (studio_home.rs, SYSTEM_RUNTIME_ENV).
+SYSTEM_RUNTIME_ENV = "UNSLOTH_DESKTOP_STUDIO_RUNTIME"
+_SYSTEM_RUNTIME_TOOLS = (
+    ("UNSLOTH_LLAMA_CPP_PATH", "llama.cpp"),
+    ("UNSLOTH_WHISPER_CPP_PATH", "whisper.cpp"),
+    ("UNSLOTH_AUDIO_CPP_PATH", "audio.cpp"),
+)
+
+
 def _ensure_studio_env_exported() -> None:
     """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
     root the resolver above declined, per subcommand rather than at import, so unrelated
@@ -197,6 +206,11 @@ def _ensure_studio_env_exported() -> None:
     # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
     # because setup runs as a subprocess and would otherwise refresh the runtimes at
     # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if _running_in_system_runtime():
+        for name, folder in _SYSTEM_RUNTIME_TOOLS:
+            tool_dir = Path(sys.prefix).parent / folder
+            if not (os.environ.get(name) or "").strip() and tool_dir.is_dir():
+                os.environ[name] = str(tool_dir)
     if not (os.environ.get("UNSLOTH_HOME") or "").strip():
         _recorded = _recorded_master_root()
         if _recorded is not None:
@@ -515,6 +529,18 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
         return False
 
 
+def _running_in_system_runtime() -> bool:
+    """An installer-made venv (e.g. /opt/unsloth-studio) serving a per-user UNSLOTH_STUDIO_HOME
+    with no venv, or one the desktop named, so a stale per-user venv cannot take over."""
+    prefix = Path(sys.prefix)
+    if not (prefix / ".unsloth-studio-owned").is_file():
+        return False
+    if _studio_venv_python() is None:
+        return True
+    named = (os.environ.get(SYSTEM_RUNTIME_ENV) or "").strip()
+    return bool(named) and _resolved_or_self(Path(named)) == _resolved_or_self(prefix.parent)
+
+
 def _managed_cli_site_packages_layout(python: Path) -> bool:
     """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
     unsloth_cli/ or an orphaned dist-info passes here."""
@@ -652,7 +678,11 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
+    _root = (
+        Path(sys.prefix)
+        if _running_in_studio_venv(_venv) or _running_in_system_runtime()
+        else _venv
+    )
     _arch = _clear_hsa_override_contradicting_install(_root)
     # Published whether or not anything was cleared here: on a desktop launch the GUI
     # environment never carried the override, so the clear above is a no-op and the
@@ -686,10 +716,8 @@ def _find_run_py() -> Optional[Path]:
 def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this root; STUDIO_HOME is an extra search root so a CLI outside
     the managed venv still inspects the venv the desktop app launches."""
-    return _studio_deps.install_state(
-        extra_roots = (STUDIO_HOME / "unsloth_studio",),
-        deep = deep,
-    )
+    venv = Path(sys.prefix) if _running_in_system_runtime() else STUDIO_HOME / "unsloth_studio"
+    return _studio_deps.install_state(extra_roots = (venv,), deep = deep)
 
 
 _RUN_MODULE = None
@@ -2118,7 +2146,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir) or _running_in_system_runtime()
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -2847,7 +2875,7 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir) or _running_in_system_runtime()
     reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
     if reexeced and not in_studio_venv:
         typer.echo(
