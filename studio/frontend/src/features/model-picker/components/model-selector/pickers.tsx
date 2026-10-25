@@ -6456,8 +6456,7 @@ export function HubModelPicker({
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
     const isLocal = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint);
-    // A loaded hub GGUF stands in for its curated row, which is hidden, so it has to open the same
-    // quant list: otherwise quants downloaded after the load stay out of reach until an eject.
+    // Its curated row is hidden while loaded, so this row must open the quant list instead.
     const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
     const expanded = expandable && expandedGguf === entry.id;
     return (
@@ -7080,8 +7079,7 @@ export function HubModelPicker({
               />
             </span>
           ) : (
-            // Says the row holds several quants: a sole quant renders its own row above, and while
-            // the probe runs the row may still collapse to one, so no chevron yet.
+            // No chevron until the probe rules out a sole quant, which renders its own row.
             <span
               aria-hidden="true"
               className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}
