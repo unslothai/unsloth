@@ -67,6 +67,6 @@ test("loading a save stops the reply still being written", async () => {
     new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(src, /signal: run\.signal,\s*\/\/ The line appears/);
+  assert.match(src, /signal: run\.signal,\s*onDelta:/);
   assert.match(src, /loads\.current \+= 1;\s*replyRun\.current\?\.abort\(\);/);
 });
