@@ -941,6 +941,10 @@ def write_streaming_safetensors(
             tensor = tensors.pop(name) if release else tensors[name]
             if tensor.numel() == 0:
                 continue
+            if isinstance(tensor, _FileSlice):
+                tensor.stream(put, cancel_check)
+                del tensor
+                continue
             if isinstance(tensor, _FlatRef):
                 tensor = tensor.tensor()
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
@@ -990,6 +994,81 @@ class _FlatRef:
 
     def tensor(self) -> Any:
         return self._get()
+
+
+class _FileSlice:
+    """A plain tensor that is a view of a mapped file (a safetensors shard the loader mmapped), held as (fd, offset,
+    size) instead of a reference: a reference keeps the whole mapping, and the shard's pages, alive for the write.
+    The bytes are read back with ``pread`` at write time from the same inode (the fd is opened at hand-off), which
+    is what the view aliased; a changed size / mtime fails the write, so nothing is published."""
+
+    __slots__ = ("fd", "offset", "nbytes", "dtype", "shape", "_numel", "_esize", "stamp")
+
+    def __init__(self, fd: int, offset: int, tensor: Any, stamp: tuple) -> None:
+        self.fd = fd
+        self.offset = int(offset)
+        self.dtype = tensor.dtype
+        self.shape = tuple(tensor.shape)
+        self._numel = int(tensor.numel())
+        self._esize = int(tensor.element_size())
+        self.nbytes = self._numel * self._esize
+        self.stamp = stamp
+
+    def numel(self) -> int:
+        return self._numel
+
+    def element_size(self) -> int:
+        return self._esize
+
+    def stream(
+        self,
+        put: Any,
+        cancel_check: Optional[Any] = None,
+    ) -> None:
+        st = os.fstat(self.fd)
+        if (st.st_size, st.st_mtime_ns) != self.stamp:
+            raise OSError("a mapped source shard changed during the cache write")
+        pos, end = self.offset, self.offset + self.nbytes
+        while pos < end:
+            if cancel_check is not None:
+                cancel_check()
+            data = os.pread(self.fd, min(_HASH_CHUNK, end - pos), pos)
+            if not data:
+                raise OSError("short read from a mapped source shard")
+            put(data)
+            pos += len(data)
+
+
+def _file_regions() -> list:
+    """File-backed mappings of this process, ``[(start, end, file_offset, dev, inode, path)]`` sorted by start;
+    empty where /proc/self/maps does not exist (the snapshot then holds every tensor by reference)."""
+    out = []
+    try:
+        with open("/proc/self/maps", "r", encoding = "utf-8", errors = "replace") as fh:
+            for line in fh:
+                parts = line.split(None, 5)
+                if len(parts) < 6:
+                    continue
+                path = parts[5].strip()
+                if not path.startswith("/") or path.endswith("(deleted)") or parts[4] == "0":
+                    continue
+                lo, hi = (int(x, 16) for x in parts[0].split("-"))
+                major, minor = (int(x, 16) for x in parts[3].split(":"))
+                out.append((lo, hi, int(parts[2], 16), (major, minor), int(parts[4]), path))
+    except (OSError, ValueError):
+        return []
+    out.sort()
+    return out
+
+
+def _region_of(regions: list, ptr: int, nbytes: int) -> Optional[tuple]:
+    import bisect
+
+    i = bisect.bisect_right(regions, (ptr, float("inf"))) - 1
+    if i < 0:
+        return None
+    region = regions[i]
+    return region if region[0] <= ptr and ptr + nbytes <= region[1] else None
 
 
 def _flatten(state_dict: dict) -> tuple[dict, dict]:
@@ -1226,15 +1305,17 @@ def save_runtime_quant(
         if defer:
             why = _defer_blocker(job)
             if why is None:
-                # The snapshot: plain host tensors, no module, no torchao wrapper, no state dict.
-                job.resolve()
+                # The snapshot (resolved by the gate): quantized outputs and file slices, no module, no torchao
+                # wrapper, no state dict, no mapping of a source shard.
                 state_dict = None
                 pending = PendingWrite(job, stack.pop_all())
                 handed_off = True
                 _log(
                     logger,
                     "info",
-                    f"writing {key} ({nbytes / 2**30:.2f} GiB) on a background thread once the load is published",
+                    f"writing {key} ({nbytes / 2**30:.2f} GiB) on a background thread once the load is published "
+                    f"(holds {job.held_bytes / 2**30:.2f} GiB, {job.file_bytes / 2**30:.2f} GiB re-read from the "
+                    f"source shards, pins {job.pinned_map_bytes / 2**30:.2f} GiB of mappings)",
                 )
                 return pending
             _log(logger, "info", f"writing {key} before the load returns ({why})")
@@ -1277,16 +1358,70 @@ class _WriteJob:
         self.t0 = t0
         self.logger = logger
         self.release = False
+        self.fds: dict = {}
+        # What the snapshot keeps alive: tensors held by reference, and whole mappings some of them pin.
+        self.held_bytes = nbytes
+        self.pinned_map_bytes = 0
+        self.file_bytes = 0
 
     def tensors(self) -> Iterable[Any]:
         return self.flat.values() if self.flat is not None else ()
 
     def resolve(self) -> None:
-        """Read every ``_FlatRef`` now: the job then holds the host tensors themselves, not the module's wrappers."""
-        self.flat = {
-            name: (t.tensor() if isinstance(t, _FlatRef) else t) for name, t in self.flat.items()
-        }
+        """Make the snapshot: every ``_FlatRef`` read now (the job holds the quantized outputs themselves, new
+        storage, not the module's wrappers), and every plain tensor that is a view of a mapped file turned into a
+        ``_FileSlice`` so the snapshot pins no mmap. Records what it still keeps alive for the RAM gate."""
+        regions = _file_regions()
+        out: dict = {}
+        held = file_bytes = 0
+        pinned: dict = {}
+        for name, t in self.flat.items():
+            if isinstance(t, _FlatRef):
+                t = t.tensor()
+            size = _tensor_bytes(t)
+            region = None
+            if regions and size and getattr(t.device, "type", None) == "cpu":
+                region = _region_of(regions, int(t.data_ptr()), size)
+            if region is not None and t.is_contiguous():
+                piece = self._slice(t, region)
+                if piece is not None:
+                    out[name] = piece
+                    file_bytes += size
+                    continue
+            if region is not None:
+                pinned[region[0]] = region[1] - region[0]
+            out[name] = t
+            held += size
+        self.flat = out
+        self.held_bytes = held
+        self.pinned_map_bytes = sum(pinned.values())
+        self.file_bytes = file_bytes
         self.release = True
+
+    def _slice(self, t: Any, region: tuple) -> Optional[_FileSlice]:
+        lo, _hi, file_offset, dev, inode, path = region
+        entry = self.fds.get(path)
+        if entry is None:
+            try:
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+            except OSError:
+                return None
+            st = os.fstat(fd)
+            if (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) != (*dev, inode):
+                # The path now names another file than the one mapped: hold the tensor instead.
+                os.close(fd)
+                return None
+            entry = self.fds[path] = (fd, (st.st_size, st.st_mtime_ns))
+        fd, stamp = entry
+        return _FileSlice(fd, file_offset + int(t.data_ptr()) - lo, t, stamp)
+
+    def close(self) -> None:
+        fds, self.fds = self.fds, {}
+        for fd, _stamp in fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def run(self, cancel_check: Optional[Any] = None) -> str:
         kdir = self.kdir
@@ -1304,6 +1439,7 @@ class _WriteJob:
             os.replace(tmp, kdir / FILE_NAME)
             tmp = None
         finally:
+            self.close()
             if tmp is not None:
                 try:
                     os.unlink(tmp)
@@ -1337,7 +1473,43 @@ _ASYNC_RESERVE_FRACTION = 0.10
 _BACKGROUND: set = set()
 
 
+def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
+    """``(limit, available)`` of the tightest cgroup v2 memory limit over this process, or ``(None, None)``.
+    Available = limit - usage + the cgroup's file pages (reclaimable page cache counts in its usage)."""
+    try:
+        with open("/proc/self/cgroup", "r", encoding = "utf-8") as fh:
+            rel = next((ln.split("::", 1)[1].strip() for ln in fh if ln.startswith("0::")), None)
+    except OSError:
+        return None, None
+    if rel is None:
+        return None, None
+    best: tuple[Optional[int], Optional[int]] = (None, None)
+    node = Path("/sys/fs/cgroup") / rel.lstrip("/")
+    root = Path("/sys/fs/cgroup")
+    while True:
+        try:
+            raw = (node / "memory.max").read_text().strip()
+            if raw != "max":
+                limit = int(raw)
+                used = int((node / "memory.current").read_text().strip())
+                stat = dict(
+                    ln.split()
+                    for ln in (node / "memory.stat").read_text().splitlines()
+                    if ln.strip()
+                )
+                avail = max(0, limit - used + int(stat.get("file", 0)))
+                if best[1] is None or avail < best[1]:
+                    best = (limit, avail)
+        except (OSError, ValueError):
+            pass
+        if node == root or node.parent == node:
+            break
+        node = node.parent
+    return best
+
+
 def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
+    """``(total, available)`` host RAM, narrowed by a cgroup memory limit when one applies."""
     try:
         from .diffusion_memory import _system_memory_mib
         total, avail = _system_memory_mib()
@@ -1345,12 +1517,17 @@ def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
         return None, None
     if total is None or avail is None:
         return None, None
-    return int(total) << 20, int(avail) << 20
+    total, avail = int(total) << 20, int(avail) << 20
+    limit, cg_avail = _cgroup_memory_bytes()
+    if limit is not None:
+        total, avail = min(total, limit), min(avail, cg_avail)
+    return total, avail
 
 
 def _defer_blocker(job: _WriteJob) -> Optional[str]:
     """Why ``job`` must be written now, or None. A deferred write keeps the build's host tensors alive after the
-    module moves to the device, so they must already be host tensors (nothing on a device to pin or race) and fit."""
+    module moves to the device, so they must already be host tensors (nothing on a device to pin or race), and what
+    the snapshot keeps alive (``resolve``: tensors held by reference plus any mapping they pin) must fit."""
     if not async_enabled():
         return f"{ENV_ASYNC}=0"
     with _lock:
@@ -1365,11 +1542,14 @@ def _defer_blocker(job: _WriteJob) -> Optional[str]:
     total, avail = _host_memory_bytes()
     if total is None:
         return "host memory unknown"
+    if not job.release:
+        job.resolve()
+    keeps = job.held_bytes + job.pinned_map_bytes
     reserve = max(_ASYNC_RESERVE_BYTES, int(total * _ASYNC_RESERVE_FRACTION))
-    if avail < job.nbytes + reserve:
+    if avail < keeps + reserve:
         return (
-            f"host RAM short for a background copy: {avail / 2**30:.1f} GiB available, need "
-            f"{(job.nbytes + reserve) / 2**30:.1f} GiB"
+            f"host RAM short for a background copy: {avail / 2**30:.1f} GiB available, the snapshot keeps "
+            f"{keeps / 2**30:.1f} GiB alive and needs {reserve / 2**30:.1f} GiB spare"
         )
     return None
 
@@ -1434,7 +1614,10 @@ class PendingWrite:
             self._close()
 
     def _close(self) -> None:
-        self._job = None
+        job, self._job = self._job, None
+        if job is not None:
+            job.close()
+        job = None
         stack, self._stack = self._stack, None
         if stack is not None:
             try:

@@ -330,3 +330,75 @@ def test_the_pipeline_load_defers_and_unload_finishes_the_write():
     assert "defer = defer" in inspect.getsource(D.DiffusionBackend._save_pipeline_quant_to_cache)
     unload = inspect.getsource(D.DiffusionBackend._unload_locked)
     assert unload.index("finish_background_writes(") < unload.index("state = self._state")
+
+
+def _mapped(path) -> bool:
+    return any(r[5] == str(path) for r in C._file_regions())
+
+
+@pytest.mark.skipif(not Path("/proc/self/maps").exists(), reason = "needs /proc/self/maps")
+def test_a_view_of_a_mapped_shard_is_re_read_not_held(env, tmp_path):
+    """Plain tensors the loader left as views of an mmapped shard become file slices: the snapshot pins no mapping,
+    holds only the new storage, and writes the same bytes as a write from the tensors."""
+    src = tmp_path / "shard.bin"
+    torch.manual_seed(0)
+    payload = torch.randn(1 << 18, dtype = torch.bfloat16)
+    src.write_bytes(b"\0" * 4096 + payload.view(torch.uint8).numpy().tobytes())
+    mapped = torch.from_file(
+        str(src), shared = False, size = 4096 + payload.numel() * 2, dtype = torch.uint8
+    )
+    view = mapped[4096:].view(torch.bfloat16).reshape(512, 512)
+    own = torch.randint(-128, 127, (256, 64), dtype = torch.int8)
+    assert _mapped(src)
+    ref = tmp_path / "ref.safetensors"
+    C.write_streaming_safetensors(ref, {"a": view, "q": own}, {"m": "1"})
+
+    job = C._WriteJob("k", env / "k", {"a": view, "q": own}, {"m": "1"}, {}, 0, 0.0, None)
+    job.resolve()
+    assert isinstance(job.flat["a"], C._FileSlice) and job.flat["q"] is own
+    assert job.held_bytes == own.numel() and job.pinned_map_bytes == 0
+    assert job.file_bytes == view.numel() * 2
+    del mapped, view
+    gc.collect()
+    assert not _mapped(src)  # the snapshot does not keep the shard mapped
+    out = tmp_path / "out.safetensors"
+    C.write_streaming_safetensors(out, job.flat, job.header, release = True)
+    job.close()
+    assert _sha(out) == _sha(ref)
+
+
+@pytest.mark.skipif(not Path("/proc/self/maps").exists(), reason = "needs /proc/self/maps")
+def test_a_shard_changed_under_a_file_slice_fails_the_write(env, tmp_path):
+    src = tmp_path / "shard.bin"
+    src.write_bytes(bytes(range(256)) * 64)
+    mapped = torch.from_file(str(src), shared = False, size = 256 * 64, dtype = torch.uint8)
+    job = C._WriteJob("k", env / "k", {"a": mapped[256:]}, {}, {}, 0, 0.0, None)
+    job.resolve()
+    assert isinstance(job.flat["a"], C._FileSlice)
+    with open(src, "ab") as fh:
+        fh.write(b"x")
+    with pytest.raises(OSError):
+        C.write_streaming_safetensors(tmp_path / "o", job.flat, {})
+    job.close()
+
+
+def test_the_gate_counts_what_the_snapshot_keeps_alive(env, monkeypatch):
+    job = C._WriteJob(
+        "k", env / "k", {"w": torch.zeros(1 << 20, dtype = torch.int8)}, {}, {}, 1 << 30, 0.0, None
+    )
+    # Total artifact 1 GiB, but the snapshot holds 1 MiB: 4.5 GiB free clears max(4 GiB, 10%) + 1 MiB.
+    monkeypatch.setattr(C, "_host_memory_bytes", lambda: (16 << 30, (4 << 30) + (512 << 20)))
+    assert C._defer_blocker(job) is None and job.held_bytes == 1 << 20
+    job2 = C._WriteJob(
+        "k", env / "k", {"w": torch.zeros(1 << 20, dtype = torch.int8)}, {}, {}, 1 << 20, 0.0, None
+    )
+    job2.resolve()
+    job2.pinned_map_bytes = 1 << 30  # a view that could not be sliced pins its whole mapping
+    monkeypatch.setattr(C, "_host_memory_bytes", lambda: (16 << 30, (4 << 30) + (512 << 20)))
+    assert "keeps 1.0 GiB alive" in C._defer_blocker(job2)
+
+
+def test_a_cgroup_limit_narrows_the_host_reading(monkeypatch):
+    monkeypatch.setattr(C, "_cgroup_memory_bytes", lambda: (20 << 30, 3 << 30))
+    total, avail = C._host_memory_bytes()
+    assert total <= 20 << 30 and avail <= 3 << 30
