@@ -54,14 +54,16 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
-# What a run reads, in order: the default, else an earlier default of the same repo already downloaded, best first.
-# An install that fetched an earlier default (Q4_K_M until the UD-Q4_K_XL switch, or Q8_0) keeps enhancing from it,
-# offline included, instead of running prompts as typed until another ~6 GB arrives. The download still fetches the
-# default, and status() keeps offering it (current_downloaded) while an earlier quant serves.
+# What a run reads, in order: the default, else another quant of the same repo already downloaded, best first.
+# An install that fetched Q4_K_M (the default until UD-Q4_K_XL) keeps enhancing from it, offline included, instead of
+# running prompts as typed until another ~6 GB arrives. The download still fetches the default, and status() keeps
+# offering it (current_downloaded) while a quant it beats serves.
 UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
 UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
     UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
 )
+# Q8_0 is closer to BF16 than the default: a complete Q8_0 pair is not offered a smaller download "for better captions".
+UPSAMPLER_SUPERSEDED_FILES = frozenset((UPSAMPLER_MODEL_FILES["Q4_K_M"],))
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
@@ -851,7 +853,11 @@ def status() -> dict:
     overridden = _overridden()
     # The current default pair at one revision. Not the unpinned _cached_download_paths, which any cached quant
     # completes so that the earlier one serves; the Download control still fetches the default.
-    current_downloaded = overridden or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
+    current_downloaded = (
+        overridden
+        or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
+        or (mmproj is not None and model_name not in UPSAMPLER_SUPERSEDED_FILES)
+    )
     # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
     missing = (
         []

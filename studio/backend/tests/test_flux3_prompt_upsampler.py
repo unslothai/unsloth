@@ -1513,6 +1513,16 @@ def test_an_earlier_quant_serving_still_offers_the_default_download(offline_upsa
     assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
 
 
+def test_a_q8_0_pair_is_not_offered_the_smaller_default(offline_upsampler_cache):
+    """Q8_0 is closer to BF16 than the default: serving it, the panel offers no download "for better captions"."""
+    put, _old = offline_upsampler_cache
+    put(_NEW_REV, pup.UPSAMPLER_MMPROJ_FILE)
+    put(_NEW_REV, pup.UPSAMPLER_MODEL_FILES["Q8_0"])
+    status = pup.status()
+    assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q8_0"] and status["mmproj_downloaded"]
+    assert status["current_downloaded"] is True and status["current_missing_bytes"] == 0
+
+
 def test_an_earlier_model_alone_reports_the_whole_default_download(offline_upsampler_cache):
     """An earlier quant with no projector serves text-only prompts, but the Download fetches the default model AND the
     projector: the status names the earlier file and prices both, which the panel reads instead of the projector size."""
