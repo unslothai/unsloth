@@ -659,7 +659,9 @@ def test_pp2_trainable_input_and_final_norms_train_on_their_owner():
     saved = {}
     results = _spawn("parity", 2, keep = saved, arch = "bloom", trainable_norms = True)
     _check_parity(results, saved, 2)
-    owned = [{n for n in r["owned"] if "word_embeddings_layernorm" in n or "ln_f" in n} for r in results]
+    owned = [
+        {n for n in r["owned"] if "word_embeddings_layernorm" in n or "ln_f" in n} for r in results
+    ]
     assert any("word_embeddings_layernorm" in n for n in owned[0]), owned
     assert any("ln_f" in n for n in owned[1]), owned
 
