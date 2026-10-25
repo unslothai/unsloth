@@ -479,7 +479,6 @@ export function createWorld3d(
       world.add(roof);
     }
   }
-  // A cottage for each region, on a tree or rock cell near its centre.
   if (houses.length) {
     const body = keep(new three.BoxGeometry(0.9, 0.75, 0.9));
     const top = keep(new three.ConeGeometry(0.78, 0.6, 4));

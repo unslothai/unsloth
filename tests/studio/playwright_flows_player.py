@@ -220,7 +220,6 @@ def play_world_3d(page: Page) -> None:
     calls = page.evaluate("window.__flowsPlayerSmoke.calls")
     assert [c["entry"] for c in calls] == ["reply", "reply"], calls
 
-    # Each time of day, from the same spot.
     for t in ("dawn", "day", "night"):
         page.goto(f"{BASE}?flow=world&render=3d&time={t}")
         arm(page)

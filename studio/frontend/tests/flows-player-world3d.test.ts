@@ -115,7 +115,6 @@ test("terrain is deterministic from the seed and dips under water", () => {
     assert.ok(a.corners.every(Number.isFinite));
     const other = V.buildTerrain(map, s.seed + 1, 1);
     assert.notDeepEqual(a.corners, other.corners, biome);
-    // Water tiles are lower than the dry ground around them.
     for (let y = 1; y < map.height - 1; y++)
       for (let x = 1; x < map.width - 1; x++) {
         if (P.kindAt(map, x, y) !== "water") continue;
@@ -126,12 +125,10 @@ test("terrain is deterministic from the seed and dips under water", () => {
         break;
       }
   }
-  // No hills: dry ground away from water is level.
   const s = spec(5, "dungeon");
   const map = P.generateMap(s);
   const flat = V.buildTerrain(map, s.seed, 0);
   assert.equal(V.heightAt(flat, map.spawn.x + 0.5, map.spawn.y + 0.5), 0);
-  // Hills scale with the terrain setting.
   const m = P.generateMap(spec(5, "meadow"));
   const lo = V.buildTerrain(m, 5, 0.5).corners;
   const hi = V.buildTerrain(m, 5, 2).corners;
@@ -197,7 +194,6 @@ test("walking slides along walls and never enters a solid tile", () => {
     [x, y] = V.slide(map, x, y, Math.cos(a) * 0.2, Math.sin(a) * 0.2);
     assert.ok(V.canStand(map, x, y), `step ${i}`);
   }
-  // Straight into the border: stops short of it.
   let [bx, by] = [map.spawn.x + 0.5, map.spawn.y + 0.5];
   for (let i = 0; i < 400; i++) [bx, by] = V.slide(map, bx, by, -0.2, 0);
   assert.ok(bx > 1 && V.canStand(map, bx, by));

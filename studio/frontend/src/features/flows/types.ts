@@ -528,7 +528,6 @@ export interface World3dView {
   walk_speed?: number;
   /** Hill height scale. */
   terrain?: number;
-  /** Looped while you play. */
   ambient?: MediaValue;
 }
 

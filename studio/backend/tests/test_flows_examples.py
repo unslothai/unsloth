@@ -102,7 +102,6 @@ def test_lantern_isle_3d_opens_in_first_person():
     assert not warnings
     assert w["render"] == "3d" and w["view3d"] == {"time_of_day": "dusk"}
     assert [n["name"] for n in w["npcs"]] == ["Bea", "Keeper Ines"]
-    # Pocket Village keeps the map.
     w, _ = resolve_world_report(_example("pocket-village"), {"art": {"world": world}})
     assert "render" not in w
 
