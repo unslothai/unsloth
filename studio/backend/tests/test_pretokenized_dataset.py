@@ -853,7 +853,7 @@ def test_cuda_training_turns_eval_packing_off_for_a_pretokenized_eval_split():
 
 def test_eval_packing_is_a_field_on_every_supported_trl():
     # eval_packing exists from TRL 0.22.2 (the floor) on, so setting it never breaks SFTConfig construction.
-    from trl import SFTConfig
+    SFTConfig = pytest.importorskip("trl").SFTConfig
     assert "eval_packing" in SFTConfig.__dataclass_fields__
 
 
