@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import {
   Tooltip,
@@ -13,11 +13,25 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 /** Small "i" affordance that reveals a styled tooltip on hover/focus. The
  *  standard inline help control across the settings UI. */
-export function InfoHint({ children }: { children: ReactNode }) {
+export function InfoHint({
+  children,
+  side = "top",
+  hoverOnly = false,
+}: {
+  children: ReactNode;
+  side?: "top" | "right" | "bottom" | "left";
+  /** Hover only, so a click cannot leave it open; pair it with sr-only text. */
+  hoverOnly?: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <Tooltip>
+    <Tooltip
+      {...(hoverOnly ? { open: hovered, onOpenChange: () => {} } : {})}
+    >
       <TooltipTrigger asChild>
         <button
+          onPointerEnter={hoverOnly ? () => setHovered(true) : undefined}
+          onPointerLeave={hoverOnly ? () => setHovered(false) : undefined}
           type="button"
           data-slot="info-hint"
           aria-label="More info"
@@ -31,7 +45,7 @@ export function InfoHint({ children }: { children: ReactNode }) {
         </button>
       </TooltipTrigger>
       <TooltipContent
-        side="top"
+        side={side}
         align="center"
         sideOffset={6}
         collisionPadding={12}

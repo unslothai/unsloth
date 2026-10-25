@@ -43,7 +43,7 @@ def _restore_fp8_integration(monkeypatch):
 def _helper():
     # Exact source, without importing unsloth (which needs an accelerator).
     path = ROOT / "unsloth" / "models" / "loader_utils.py"
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = [
         n
         for n in tree.body
@@ -143,7 +143,7 @@ def test_composite_model_keeps_every_scoped_counterpart(tmp_path):
 
 
 def _calls_and_guards(path, cls_name):
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     found = []
@@ -182,8 +182,13 @@ def test_cleanup_runs_for_every_dequantizing_route(rel, cls_name):
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
 @pytest.mark.parametrize("explicit", [True, False])
-def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
+def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit, monkeypatch):
     from transformers import LlamaConfig, LlamaForCausalLM
+
+    if not explicit and torch.cuda.is_available():
+        # transformers dequantizes by itself only without CUDA or below sm89; on an sm89+ card
+        # (L4, H100, B200) a device_map="cpu" load keeps fp8 weights. Report a pre-sm89 card.
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
 
     torch.manual_seed(0)
     src = tmp_path / "src"

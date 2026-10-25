@@ -110,6 +110,7 @@ from state.tool_approvals import (
     begin_tool_decision,
     decision_reason,
     new_approval_id,
+    note_host_access,
     wait_tool_decision,
 )
 
@@ -2022,6 +2023,8 @@ async def stream_with_studio_tools(
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
             )
+            if needs_confirmation:
+                note_host_access(approval_id, name, arguments)
 
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
@@ -2065,6 +2068,7 @@ async def stream_with_studio_tools(
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
+                    yield _sse(decision.tool_approved_event(approval_id))
                     yield _status_sse(decision.status_text)
                 if not denied:
                     decision_slot = None
