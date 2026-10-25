@@ -31,7 +31,9 @@ def _module(kind):
     pytest.importorskip("trl")
     import trl.import_utils as iu
 
-    iu._mergekit_available = False
+    iu._mergekit_available = iu._llm_blender_available = (
+        False  # broken dist-info fails the trainer import (judges.py)
+    )
     for name in (f"trl.experimental.{kind}.{kind}_trainer", f"trl.trainer.{kind}_trainer"):
         try:
             spec = importlib.util.find_spec(name)

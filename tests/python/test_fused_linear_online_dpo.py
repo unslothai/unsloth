@@ -32,7 +32,9 @@ def _odpo_module():
     pytest.importorskip("trl")
     import trl.import_utils as iu
 
-    iu._mergekit_available = False
+    iu._mergekit_available = iu._llm_blender_available = (
+        False  # broken dist-info fails the trainer import (judges.py)
+    )
     for name in (
         "trl.experimental.online_dpo.online_dpo_trainer",
         "trl.trainer.online_dpo_trainer",
