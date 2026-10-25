@@ -68,3 +68,44 @@ async def test_an_invoke_reports_its_gpu_wait_first_text_and_stop_time():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert 0 <= stopped["stop_ms"] < 1000
+
+
+def test_a_dropped_background_call_stops_within_a_fraction_of_a_second(monkeypatch):
+    import time
+
+    from fastapi import HTTPException
+
+    from routes import flows as flows_routes
+
+    left_at: list[float] = []
+    stopped_at: list[float] = []
+
+    class Engine:
+        async def invoke(self, **_):
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                stopped_at.append(time.monotonic())
+                raise
+
+    class Request:
+        app = None
+        headers: dict = {}
+
+        async def is_disconnected(self):
+            return bool(left_at)
+
+    monkeypatch.setattr(flows_routes, "get_engine", lambda: Engine())
+    monkeypatch.setattr(flows_routes, "_flow_or_404", lambda fid: {"doc": {}})
+    monkeypatch.setattr(flows_routes, "_hf_token", lambda request: None)
+    body = flows_routes.InvokeBody(entry = "r", inputs = {})
+
+    async def go():
+        call = asyncio.create_task(flows_routes.invoke(Request(), "village", body))
+        await asyncio.sleep(0.35)
+        left_at.append(time.monotonic())
+        with pytest.raises(HTTPException):
+            await asyncio.wait_for(call, 10)
+
+    asyncio.run(go())
+    assert stopped_at[0] - left_at[0] < 0.3
