@@ -3676,7 +3676,7 @@ export function ModelConfigPage({
   const modelName = modelDisplayName(configId);
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
-  // undefined: follow what is stored. Picking a set only fills the panel until Save or Load.
+  // undefined: follow what is stored.
   const [pickedSet, setPickedSet] = useState<string | null | undefined>(undefined);
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   useEffect(() => {
@@ -3813,7 +3813,6 @@ export function ModelConfigPage({
     return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
   };
 
-  // ``keep``: a named set is selected, so these settings are what the model loads with.
   const persistConfig = (next: PerModelConfig, keep = selectedSet !== null) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
     const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
@@ -3885,15 +3884,13 @@ export function ModelConfigPage({
     );
   };
 
-  // The selected set becomes what this model + quant loads with; ``into`` null is Default.
   const keepSelection = (into: string | null) => {
     setSelectedRunSettings(configId, target.ggufVariant, into);
     setPickedSet(undefined);
   };
 
-  // A set is shared by the model's quants, but each quant loads from its own record and server
-  // override: the other quants selecting it follow every save and delete, or they load stale values
-  // and a Load there writes them back over the set.
+  // Each quant loads from its own record and override, so the others sharing a set follow its saves
+  // and deletes, or a Load there writes their stale values back over it.
   const syncOtherQuants = (quants: readonly string[], stored: PerModelConfig | null) => {
     const own = (target.ggufVariant ?? "").trim().toLowerCase();
     const mirrors = (target.apiLoadable ?? target.isGguf) && !nativePathToken;
@@ -3926,12 +3923,11 @@ export function ModelConfigPage({
     return true;
   };
 
-  // From the committed config, not customName: an edit this click committed (a number blurred by
-  // the click) is not in the render that built customName yet.
+  // From the committed config: a number blurred by this very click is not in customName yet.
   const committedCustomName = (committed: PerModelConfig) =>
     isDefaultConfig(forSetStore(committed)) ? null : newRunSettingsName(savedSets, modelName);
 
-  /** Saves the panel into ``into`` (null: Default, forgetting what was remembered) without loading. */
+  /** Saves without loading; ``into`` null saves an edited Default as its custom set, else forgets. */
   const handleSave = (into: string | null = selectedSet, message?: string): boolean => {
     if (sharedVariantUnresolved) {
       return false;
@@ -3985,8 +3981,7 @@ export function ModelConfigPage({
       llamaExtraArgs: next.llamaExtraArgs ?? null,
     };
     setConfig(applied);
-    // The arguments are now stored tokens, not the typed text an objection was about. The collapsed
-    // check only tightens, so it would never lift a stale one; it re-flags invalid tokens itself.
+    // Stored tokens replace the text an objection was about; the collapsed check only ever tightens.
     setExtraArgsLoadable(true);
     return applied;
   };
@@ -4088,8 +4083,7 @@ export function ModelConfigPage({
         followGlobal: true,
       }) &&
       rememberChanged;
-    // Load saves into the selected set too (an edited Default becomes one), so the set and what
-    // loads never drift apart.
+    // Load saves into the set too (an edited Default becomes one), so the two never drift apart.
     let loadSet = selectedSet ?? committedCustomName(effectiveRuntimeConfig);
     if (loadSet !== null && !saveSharedSet(loadSet, effectiveRuntimeConfig)) {
       toast.error("Couldn't save these settings, loading with them anyway.");
@@ -4469,7 +4463,6 @@ export function ModelConfigPage({
             size="sm"
             className="text-muted-foreground"
             disabled={(atDefault && selectedSet === null) || extraArgsHydrating || budgetSettling}
-            // Back to Default settings, effective at once like picking it in the dropdown.
             onClick={() => pickSet(null)}
           >
             Reset

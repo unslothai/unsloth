@@ -183,7 +183,6 @@ export function saveRunSettings(
   return writeMap(map);
 }
 
-/** Selections of this model's quants that name ``name``, by key. */
 function selectionsNaming(
   selections: SelectionMap,
   modelId: string,
@@ -229,7 +228,7 @@ export function renameSavedRunSettings(
   return renamed.length === 0 || writeSelections(selections);
 }
 
-/** Drops the set; quants that loaded with it go back to being unchosen, so their record is adopted again. */
+/** Drops the set; quants that loaded with it go to Default. */
 export function deleteSavedRunSettings(modelId: string, name: string): boolean {
   const map = readMap();
   const key = modelKey(modelId);
@@ -358,7 +357,6 @@ export function hasLegacyRunSettings(
   );
 }
 
-/** Renames sets that still carry a name from an earlier build to "<model> custom settings". */
 export function renameLegacyRunSettings(
   modelId: string,
   modelName: string,
