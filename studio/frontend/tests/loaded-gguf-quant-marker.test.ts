@@ -64,3 +64,14 @@ test("settings opened from a loaded row use the same key as other entry points",
   );
   assert.match(picker, /onConfigure\(\.\.\.configureArgs\)/);
 });
+
+test("a loaded LoRA adapter keeps its classification in the row's metadata", () => {
+  assert.match(
+    picker,
+    /const isLoraAdapter =\s*adapter !== undefined &&\s*adapter\.source !== "local" &&\s*adapter\.exportType !== "merged" &&\s*adapter\.exportType !== "gguf";/,
+  );
+  assert.match(
+    picker,
+    /source: isLocal \? "local" : "hub",\s*isLora: isLoraAdapter,/,
+  );
+});

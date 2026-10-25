@@ -6460,9 +6460,18 @@ export function HubModelPicker({
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
     const isLocal = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint);
+    // As the adapter rows classify it: a LoRA keeps its trained precision and API auto-switch skips it.
+    const adapter = quant
+      ? undefined
+      : loraModels.find((lora) => modelIdsMatchForPicker(lora.id, checkpoint));
+    const isLoraAdapter =
+      adapter !== undefined &&
+      adapter.source !== "local" &&
+      adapter.exportType !== "merged" &&
+      adapter.exportType !== "gguf";
     const selectMeta: ModelSelectorChangeMeta = {
       source: isLocal ? "local" : "hub",
-      isLora: false,
+      isLora: isLoraAdapter,
       ggufVariant: quant ?? undefined,
       isDownloaded: true,
       isGguf: Boolean(quant),
