@@ -1640,6 +1640,7 @@ def run_safetensors_tool_loop(
                 # answered. Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
+                    yield decision.tool_approved_event(approval_id)
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None

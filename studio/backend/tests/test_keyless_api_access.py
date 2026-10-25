@@ -1200,4 +1200,18 @@ def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
     finally:
         refresher.join()
     assert held_back is False
+
+
+def test_settings_report_keyless_suspended_while_a_managed_account_exists(monkeypatch):
+    from auth import policy
+    from routes import settings as settings_routes
+
+    seed_user()
+    set_keyless_api_access("inference")
+    request = SimpleNamespace(app = SimpleNamespace(state = app_state()))
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
+    assert settings_routes._keyless_api_access_response(request).suspended_by_accounts is False
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    response = settings_routes._keyless_api_access_response(request)
+    assert (response.scope, response.suspended_by_accounts) == ("inference", True)
 # fmt: on

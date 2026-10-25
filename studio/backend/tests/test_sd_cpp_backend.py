@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 import types
 
 import pytest
@@ -1458,6 +1459,8 @@ def _run_server_load(
     device = "cpu",
     gguf_filename = "z.gguf",
     family_override = None,
+    gpu_ordinal = None,
+    asset_paths = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1474,7 +1477,10 @@ def _run_server_load(
     monkeypatch.setattr(
         b,
         "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+        lambda *a, **k: dict(
+            asset_paths
+            or {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"}
+        ),
     )
     monkeypatch.setattr(
         bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
@@ -1488,6 +1494,7 @@ def _run_server_load(
         family_override = family_override,
         hf_token = None,
         _load_token = 1,
+        gpu_ordinal = gpu_ordinal,
     )
 
 
@@ -1985,7 +1992,7 @@ def test_run_load_redacts_paths_in_progress_error(monkeypatch):
                 npl._NATIVE_PATH_REDACTIONS.remove(secret_root)
 
 
-def _fake_materialize(resolved, dest):
+def _fake_materialize(resolved, dest, **kwargs):
     """Stand-in for diffusion_lora.materialize_native_dir: write a stub file per adapter
     into ``dest`` and return the resolved list pointing at the written paths (mirroring the
     real helper's contract without touching the Hub / real weights)."""
@@ -2048,6 +2055,138 @@ def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tm
     assert payload["lora"][0]["path"].endswith("myalias.safetensors")
     assert "<lora:" not in payload["prompt"]
     assert not list(_P(tmp_path).glob("gen_*"))
+
+
+def test_generate_server_stages_loras_as_real_files_inside_the_lora_dir(monkeypatch, tmp_path):
+    # sd-server (master-982+) canonicalizes every file under --lora-model-dir and skips one resolving outside it
+    # (examples/server/runtime.cpp refresh_lora_cache / get_lora_full_path), so a symlink into the cache is dropped.
+    import os
+
+    from core.inference import diffusion_lora as dl
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    src = cache / "adapter.safetensors"
+    src.write_bytes(b"weights")
+    server_dir = tmp_path / "server_loras"
+    server_dir.mkdir()
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(server_dir)
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: True)
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **k: [dl.ResolvedLora("id1", "myalias", str(src), "safetensors", 0.7)],
+    )
+    real = dl.materialize_native_dir
+    seen = []
+
+    def _spy(resolved, dest, **kwargs):
+        out = real(resolved, dest, **kwargs)
+        for m in out:
+            seen.append(
+                (os.path.islink(m.path), os.path.realpath(m.path), Path(m.path).read_bytes())
+            )
+        return out
+
+    monkeypatch.setattr(dl, "materialize_native_dir", _spy)
+    b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    assert len(seen) == 1
+    is_link, resolved_path, data = seen[0]
+    assert not is_link
+    assert Path(resolved_path).is_relative_to(Path(os.path.realpath(server_dir)))
+    assert data == b"weights"
+    assert src.read_bytes() == b"weights"
+    assert not list(server_dir.glob("gen_*"))
+
+
+def _server_lora_run(monkeypatch, tmp_path, *, fail_first):
+    import dataclasses
+    import io
+
+    from core.inference import diffusion_lora as dl
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+    png = buf.getvalue()
+    seen = []
+
+    class _Server:
+        def __init__(self, lora_dir, fail):
+            self.lora_dir, self.fail = str(lora_dir), fail
+
+        def img_gen(self, payload, **kw):
+            # What sd-server would resolve: every payload path must exist under THIS server's lora dir.
+            seen.append(
+                (
+                    self.lora_dir,
+                    [(Path(self.lora_dir) / e["path"]).is_file() for e in payload["lora"]],
+                )
+            )
+            if self.fail:
+                raise RuntimeError("ggml unsupported op abort")
+            return [png]
+
+    @dataclasses.dataclass(frozen = True)
+    class _State:
+        family: object
+        server: object
+        sampling_method: object = None
+        flow_shift: object = None
+        sample_sigmas: object = None
+
+    src = tmp_path / "cache" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"w")
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(
+        b, "_restart_server_on_cpu_backend", lambda state, text, cancel: _Server(new_dir, False)
+    )
+    b._generate_server(
+        _State(family = detect_family("flux.1"), server = _Server(old_dir, fail_first)),
+        prompt = "p",
+        negative_prompt = None,
+        width = 64,
+        height = 64,
+        steps = 4,
+        seed = 1,
+        batch_size = 1,
+        cfg_scale = None,
+        flux_guidance = None,
+        lora_resolved = [dl.ResolvedLora("id1", "a", str(src), "safetensors", 0.5)],
+        cancel = threading.Event(),
+    )
+    return seen, old_dir, new_dir
+
+
+def test_server_cpu_restart_restages_loras_in_the_new_server_dir(monkeypatch, tmp_path):
+    seen, old_dir, new_dir = _server_lora_run(monkeypatch, tmp_path, fail_first = True)
+    assert seen == [(str(old_dir), [True]), (str(new_dir), [True])]
+    assert not list(old_dir.glob("gen_*")) and not list(new_dir.glob("gen_*"))
+
+
+def test_server_lora_staging_failure_leaves_no_partial_stage(monkeypatch, tmp_path):
+    import shutil
+
+    from core.inference import diffusion_lora as dl
+
+    def _no_link(*a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    def _partial_copy(src, dst, *a, **k):
+        Path(dst).write_bytes(b"part")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(dl.os, "link", _no_link)
+    monkeypatch.setattr(shutil, "copy2", _partial_copy)
+    with pytest.raises(OSError, match = "No space left"):
+        _server_lora_run(monkeypatch, tmp_path, fail_first = False)
+    assert not list((tmp_path / "old").iterdir())
 
 
 def test_generate_rejects_loras_on_unsupported_family(monkeypatch):
@@ -2832,3 +2971,165 @@ def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeyp
     b._set_expected_bytes(assets, None)
     assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
     assert b._loading.expected_bytes == 2_000
+
+
+@pytest.mark.parametrize(
+    "device,ccs,expected",
+    [
+        ("cuda", [(10, 0)], {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}),
+        ("cuda", [(8, 9)], None),
+        ("cuda", [], None),
+        ("cpu", [(10, 0)], None),
+    ],
+)
+def test_cuda_sd_server_gets_the_bf16_cublas_route_by_compute_capability(
+    monkeypatch, device, ccs, expected
+):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: list(ccs))
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = device)
+    assert servers and servers[-1].env == expected
+    assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize(
+    "weight_types", [frozenset({"Q4_K", "Q5_K"}), frozenset({"Q8_0", "Q4_K"}), None]
+)
+def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    seen: list = []
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod,
+        "gguf_quantized_weight_types",
+        lambda path: seen.append(path) or weight_types,
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert seen == ["/m/z.gguf"]
+    assert servers[-1].env is None
+    assert dict(b._state.child_env) == {}
+
+
+@pytest.mark.parametrize(
+    "companions,expected",
+    [
+        ({"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))}, None),
+        (
+            {
+                "llm": ("/m/llm.gguf", frozenset({"Q8_0"})),
+                "vae": ("/m/vae.gguf", frozenset({"Q5_K"})),
+            },
+            None,
+        ),
+        ({"llm": ("/m/llm.gguf", None)}, None),
+        (
+            {"llm": ("/m/llm.gguf", frozenset({"Q8_0"})), "vae": ("/m/vae.gguf", frozenset())},
+            "1024",
+        ),
+    ],
+)
+def test_a_q8_0_diffusion_gguf_with_a_k_quant_companion_keeps_mmq(
+    monkeypatch, companions, expected
+):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    types_by_path = {"/m/z.gguf": frozenset({"Q8_0"})}
+    types_by_path.update(dict(companions.values()))
+    seen: list = []
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod,
+        "gguf_quantized_weight_types",
+        lambda path: seen.append(path) or types_by_path[path],
+    )
+    paths = {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"}
+    paths.update({kind: path for kind, (path, _types) in companions.items()})
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda", asset_paths = paths)
+    want = None if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected}
+    assert servers[-1].env == want
+    assert dict(b._state.child_env) == (want or {})
+    assert "/m/llm.gguf" in seen
+
+
+def test_a_user_quant_cublas_value_reaches_sd_server_unchanged(monkeypatch):
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert servers[-1].env is None
+
+
+def test_the_capability_probe_is_bounded_when_the_driver_stalls(monkeypatch):
+    import sys
+    import time
+
+    release = threading.Event()
+    cuda = types.SimpleNamespace(is_available = lambda: release.wait(30) or True)
+    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(hip = None), cuda = cuda)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    start = time.monotonic()
+    try:
+        assert bk._torch_cuda_capabilities(None, timeout_s = 0.2) == []
+    finally:
+        release.set()
+    assert time.monotonic() - start < 5
+
+
+def test_the_cublas_route_follows_a_deferred_install_onto_cuda(monkeypatch):
+    # Placed on the CPU bundle first; the deferred upgrade lands the CUDA build, so the committed env must follow.
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    installed = {"accelerator": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed["accelerator"])
+
+    def _upgrade(self, server_binary, **_kw):
+        installed["accelerator"] = "cuda"
+        return server_binary
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "cuda")
+    )
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert b._state.device == "cuda"
+    assert servers[-1].env == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert dict(b._state.child_env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+
+
+@pytest.mark.parametrize(
+    "resolved,expected", [("CUDA1", {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}), (None, None)]
+)
+def test_an_unresolved_pin_judges_every_visible_card(monkeypatch, resolved, expected):
+    # Card 1 is an A100, card 0 (sd.cpp's default) an Ada card. Without the pin sd.cpp runs on card 0.
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    caps = {None: [(8, 9), (8, 0)], 0: [(8, 9)], 1: [(8, 0)]}
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: list(caps[ordinal]))
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    monkeypatch.setattr(bk, "sd_cpp_device_name_for_ordinal", lambda binary, ordinal: resolved)
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
+    monkeypatch.setattr(bk, "sd_cpp_device_named", lambda binary, name, position = None: None)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda", gpu_ordinal = 1)
+    assert servers[-1].env == expected
+    assert dict(b._state.child_env) == (expected or {})

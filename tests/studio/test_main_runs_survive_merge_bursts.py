@@ -42,10 +42,9 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# Allowed to keep a group per commit on main. codeql.yml analyses each main commit for code
-# scanning alerts and manages its own cache retention; it may coalesce too, so it is exempt
-# from the rule rather than required to break it.
-PER_COMMIT_ALLOWED = frozenset({"codeql.yml"})
+# Allowed to keep a group per commit on main, each with its reason. None today: codeql.yml was
+# the one entry, and it no longer runs on pushes to main.
+PER_COMMIT_ALLOWED = frozenset()
 
 # Phrasings that assert a main run is never cancelled or that main is grouped per commit.
 # Either is false for a workflow sharing one group across main commits: its PENDING run is
