@@ -14,7 +14,6 @@ import {
 
 const SHOWN = 30;
 
-/** The Unsloth notebooks: ready flows where one ships, an .ipynb import where Studio can train it, Colab otherwise. */
 export function NotebooksSection({
   onUseTemplate,
   onImport,

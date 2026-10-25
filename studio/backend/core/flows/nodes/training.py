@@ -15,10 +15,8 @@ from core.flows.nodes.data import recipe_artifact
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
-# How long a start refused as "already active" keeps retrying before it reports the other run.
 BUSY_WAIT_S = 180.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning"}
-# The same flags the Train page sets for each kind of model.
 TASK_FLAGS = {
     "vision": {"is_dataset_image": True},
     "audio": {"is_dataset_audio": True},
@@ -87,7 +85,6 @@ async def finetune(ctx: NodeContext) -> dict:
     elif dataset.get("source") == "recipe" and recipe_artifact(dataset.get("ref")):
         config["local_datasets"] = [dataset["ref"]]
     elif dataset.get("source") == "recipe":
-        # Flows saved before recipe datasets carried their parquet path name the job instead.
         from core.flows.nodes.data import recipe_rows, upload_rows
 
         rows = await recipe_rows(ctx, str(dataset["ref"]))
@@ -102,8 +99,7 @@ async def finetune(ctx: NodeContext) -> dict:
         started = await ctx.call("POST", "/api/train/start", json = config)
         if not isinstance(started, dict) or started.get("status") != "error":
             break
-        # A refused start answers 200 with the *running* job's id; polling that would report its checkpoint as ours.
-        # A run that just finished keeps the trainer busy for a few seconds while it shuts down, so wait that out.
+        # A refused start answers 200 with the running job's id (never poll it as ours); a just-finished run stays busy briefly.
         if "already active" not in str(started.get("error") or "") or waited >= BUSY_WAIT_S:
             raise FlowNodeError(
                 str(started.get("message") or started.get("error") or "Training did not start")

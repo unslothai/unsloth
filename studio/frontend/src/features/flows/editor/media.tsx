@@ -5,8 +5,7 @@ import { useEffect, useState } from "react";
 import { fetchMediaBlob, mediaPath } from "../api";
 import type { MediaValue } from "../types";
 
-// Ref-counted object URLs: many nodes and the inspector can show the same output without refetching,
-// and the URL is revoked once the last viewer unmounts.
+// Ref-counted object URLs, revoked once the last viewer unmounts.
 const cache = new Map<
   string,
   { url: Promise<string>; refs: number; resolved?: string }

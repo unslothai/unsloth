@@ -72,7 +72,6 @@ def template_vars(ctx: Any) -> dict[str, Any]:
         found[key] = value
         if isinstance(value, list) and len(value) == 1:
             found[key] = value[0]
-    # Multi inputs fed by labelled nodes are also reachable by the source node's label or id.
     return found
 
 
@@ -247,9 +246,7 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     return name
 
 
-# Studio's status names a GGUF by repo only, so the variant Flows last loaded per slot is kept here.
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
-# The load settings of the model Flows last loaded per slot, (repo, settings hash); absent = Studio's defaults.
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 
 
@@ -262,7 +259,6 @@ def options_hash(options: Optional[dict]) -> Optional[str]:
 
 
 async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
-    """The loaded variant. Studio's chat status names it, so a load from the Chat page or MCP counts too."""
     if slot != "llm":
         loaded = _LOADED_VARIANT.get(slot)
         return loaded[1] if loaded and loaded[0] == repo.lower() else None
@@ -348,7 +344,6 @@ async def _ensure_model(
     if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
         _LOADED_OPTIONS.pop(slot, None)
         loaded_with = None
-    # Without settings anything Studio loaded counts, as before; only a model Flows loaded with settings differs.
     same_settings = (
         loaded_with is None or loaded_with[0] != repo.lower()
         if settings is None
@@ -394,7 +389,6 @@ async def _ensure_model(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
-    # Another slot's model may have been evicted; read them again next time.
     ctx.resident.clear()
     ctx.resident[slot] = repo
     note_loaded(ctx, slot, repo)
@@ -543,7 +537,6 @@ async def llm_text(
                     if not isinstance(piece, str) or not piece:
                         continue
                     parts.append(piece)
-                    # Hide inline thinking from the live preview, even when a tag is split across pieces.
                     visible = visible_so_far("".join(parts))
                     if len(visible) > shown:
                         ctx.text_delta(stream_port, visible[shown:])
@@ -685,7 +678,6 @@ async def llm_json(
         body["messages"][-1]["content"],
     )
     body["cancel_id"] = f"flow-{uuid.uuid4().hex[:24]}"
-    # The retry is a new request, so Stop needs its id too.
     _register_chat_cancel(ctx, body["cancel_id"])
     if on_text is not None:
         return first_json(await _stream_text(ctx, body, on_text))
@@ -757,7 +749,6 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
     note_loaded(ctx, "image", repo)
 
 
-# (repo, adapter ids, diffusion load count) of the int8/fp8 build Flows last loaded with LoRAs baked in.
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
 QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
 
@@ -885,7 +876,6 @@ async def generate_image(
             "guidance_start": float(control.get("guidance_start", 0.0)),
             "guidance_end": float(control.get("guidance_end", 1.0)),
         }
-    # Only set fields are sent, so a node without these settings posts the default body.
     body.update(route_options(options))
 
     async def cancel() -> None:
@@ -983,7 +973,6 @@ def route_options(options: Optional[dict]) -> dict:
 
 
 def _fit_mask(mask: bytes, size: tuple[int, int]) -> tuple[bytes, Optional[tuple[int, int]]]:
-    """The mask as a grayscale PNG at ``size``; the second value is its original size when it had to be resized."""
     from PIL import Image
 
     im = Image.open(io.BytesIO(mask))
@@ -1099,7 +1088,6 @@ def _decode_data_url(value: str) -> bytes:
 
 
 def _visible(png: bytes, min_fraction: float = 0.01) -> bool:
-    """Whether at least ``min_fraction`` of a cutout's pixels are opaque enough to see."""
     from PIL import Image
 
     alpha = Image.open(io.BytesIO(png)).convert("RGBA").getchannel("A")
@@ -1193,7 +1181,6 @@ async def remove_background(
 
         cutout, mask_png = await asyncio.to_thread(cut)
         if not await asyncio.to_thread(_visible, cutout):
-            # An empty mask would leave an invisible character.
             ctx.log(
                 f"The segmenter found no {subject}; removing the border colour instead", "warning"
             )
@@ -1207,7 +1194,6 @@ async def remove_background(
         def keyed() -> tuple[bytes, bytes]:
             cut_png, mask_png = chroma_key(data)
             if not _visible(cut_png):
-                # Nothing survived the key either: keep the whole picture rather than nothing.
                 im = Image.open(io.BytesIO(data)).convert("RGBA")
                 out, mask_out = io.BytesIO(), io.BytesIO()
                 im.save(out, "PNG")

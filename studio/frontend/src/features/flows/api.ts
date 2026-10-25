@@ -28,7 +28,6 @@ export type FlowsFetch = (
 let transport: FlowsFetch = (url, init, options) =>
   authFetch(url, init, options);
 
-/** The Vite harness swaps in an in-memory backend; the app always uses authFetch. */
 export function setFlowsTransport(next: FlowsFetch | null): void {
   transport = next ?? ((url, init, options) => authFetch(url, init, options));
 }
@@ -144,7 +143,6 @@ export interface StartRunBody {
   force_nodes?: string[];
   bake?: boolean;
   doc?: FlowDocument;
-  /** Outputs pinned from a node's history: those nodes are not run. */
   pinned?: Record<string, Record<string, unknown>>;
 }
 
@@ -201,7 +199,6 @@ export interface ImportReport {
   license?: string | null;
   content_rating?: string | null;
   author?: string | null;
-  /** Notebook imports: why Studio cannot run it, and where it runs instead. */
   unsupported?: string[];
   colab_url?: string | null;
 }
@@ -218,7 +215,6 @@ export const importFlow = async (
   });
 };
 
-/** An Unsloth notebook read as data (never run). `flow` is null when Studio cannot train it. */
 export async function importNotebook(
   data: Blob | string,
   name: string,
@@ -307,7 +303,6 @@ const GALLERY_ROUTES: Record<string, string> = {
   video: "video",
 };
 
-/** Same-origin URL for a MediaValue; authenticated media is fetched as a blob by `useMediaUrl`. */
 export function mediaPath(media: MediaValue): string | null {
   if (isStudioMediaUrl(media.url)) return media.url;
   if (media.ref.startsWith("sha256:") || media.ref.startsWith("flowasset:")) {
@@ -403,7 +398,6 @@ export function isTerminalEvent(event: RunEvent): boolean {
   return false;
 }
 
-/** What a flow reaches outside itself; approvals bind to code hashes and hosts. */
 export interface FlowCapabilitySet {
   python: string[];
   hosts: string[];
@@ -422,7 +416,6 @@ export interface CapabilityReport {
 export const getCapabilities = (flowId: string) =>
   request<CapabilityReport>(`/${encodeURIComponent(flowId)}/capabilities`);
 
-/** Approves exactly what was shown; anything the flow gained since stays pending. */
 export const approveCapabilities = (flowId: string, shown: FlowCapabilitySet) =>
   request<CapabilityReport>(
     `/${encodeURIComponent(flowId)}/approve`,

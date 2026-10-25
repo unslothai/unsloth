@@ -218,7 +218,6 @@ async def _recall(
     now: float,
     k: int = RECALL_K,
 ) -> list[dict]:
-    """The top memories for `query` (recency, importance, relevance); keyword relevance when no embedder answers."""
     try:
         stream = mem.as_stream(records)
     except ValueError:
@@ -244,7 +243,6 @@ async def _recall(
                     _VECTORS.move_to_end(r["text"])
                     r["embedding"] = vec
                 else:
-                    # Another embedding model wrote it; the next call embeds it again.
                     _VECTORS.pop(r["text"], None)
     picked = _retrieve(stream, query, query_vec, now, ctx.params, k, touch = False)
     return [{"id": r["id"], "text": r["text"]} for r in picked]
@@ -280,7 +278,6 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         system, prompt = npc_prompt(state, str(ctx.params.get("rules") or ""), memories)
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
-    # The reply's text is streamed to the player as it is written; items and quests follow with the full answer.
     spoken = JsonFieldStream("text")
 
     def on_text(so_far: str) -> None:

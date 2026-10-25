@@ -26,7 +26,6 @@ def _schema(value: Any) -> dict | None:
 
 
 def _prompt(ctx: NodeContext, param: str, port: str) -> str:
-    """The node's prompt: its template filled from the inputs, else the connected text, plus any context."""
     variables = template_vars(ctx)
     template = str(ctx.params.get(param) or "")
     incoming = as_text(ctx.inputs.get(port)) if port in ctx.inputs else ""
@@ -181,7 +180,6 @@ def _separator(value: Any) -> str:
     return text.replace("\\n", "\n").replace("\\t", "\t")
 
 
-# Chunking caps: a chunk list feeds For Each and retrieval, never an unbounded fan-out.
 MAX_CHUNKS = 10_000
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n{2,}")
 

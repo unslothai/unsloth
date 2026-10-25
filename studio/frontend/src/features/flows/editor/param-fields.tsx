@@ -149,7 +149,6 @@ function ModelField({ spec, value, onChange }: FieldProps) {
 
 export const DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.html,.htm";
 
-/** The file name of an uploaded document value, or null for anything else. */
 export function documentName(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
   const v = value as { kind?: unknown; ref?: unknown; name?: unknown };
@@ -237,7 +236,6 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
     if (!source) return;
     // Per login session: routes are account-scoped, so a new sign-in never reuses the last account's answers.
     const key = `${getAuthSessionEpoch()}|${source}|${path ?? ""}`;
-    // The saved-flow list changes while you work (a helper flow made a minute ago), so it is fetched fresh.
     if (source === "/api/flows") remoteOptions.delete(key);
     let request = remoteOptions.get(key);
     if (!request) {
@@ -245,7 +243,6 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
         .then(async (r) => (r.ok ? pickOptions(await r.json(), path) : null))
         .catch(() => null);
       remoteOptions.set(key, request);
-      // A failure is retried the next time the field opens.
       void request.then((found) => {
         if (found === null) remoteOptions.delete(key);
       });
@@ -261,7 +258,6 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
   return options;
 }
 
-/** Free text with suggestions from a Studio route; with no answer it is plain text. */
 function RemoteOptionsField({ spec, value, onChange }: FieldProps) {
   const options = useRemoteOptions(spec);
   const listId = useId();
@@ -285,7 +281,6 @@ function RemoteOptionsField({ spec, value, onChange }: FieldProps) {
   );
 }
 
-/** Suggestions for a plain text field; empty without `options_from`. */
 function useRouteSuggestions(spec: ParamSpec): string[] {
   return useRemoteOptions(spec) ?? [];
 }

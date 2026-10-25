@@ -39,7 +39,6 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-/** Flow inputs: the `input.param` nodes plus any declared doc params. */
 export function collectFlowParams(): FlowParam[] {
   const { graph, meta } = useDocStore.getState();
   const params = new Map<string, FlowParam>();
@@ -209,7 +208,6 @@ export function PlanDialog({
     if (!open || !flowId) return;
     setPlan(null);
     setError(null);
-    // Plan what is on screen, not the last autosave.
     planFlow(flowId, {}, documentFromState(useDocStore.getState()))
       .then(setPlan)
       .catch((e: unknown) =>

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Deterministic map generation for the world player: the same WorldSpec (seed + biome + entities) always
-// yields the same map, so a shared world looks identical on every machine and saves stay valid.
+// Deterministic: the same WorldSpec always yields the same map, so shared worlds and saves stay valid.
 
 import { Prng, seedFrom } from "../../expr";
 import type { WorldBiome, WorldSpec } from "../../types";
@@ -39,7 +38,6 @@ export interface Point {
 export interface WorldMap {
   width: number;
   height: number;
-  /** Tile kind index (into TILE_KINDS) per cell, row-major. */
   tiles: Uint8Array;
   spawn: Point;
   npcs: Record<string, Point>;
@@ -128,7 +126,6 @@ export const isSolid = (map: WorldMap, x: number, y: number): boolean =>
 export const kindAt = (map: WorldMap, x: number, y: number): TileKind =>
   TILE_KINDS[map.tiles[y * map.width + x]];
 
-/** Smooth value noise in [0, 1): random lattice every `cell` tiles, bilinear with smoothstep. */
 function valueNoise(
   w: number,
   h: number,
@@ -178,7 +175,6 @@ function carve(
   while ((x !== to.x || y !== to.y) && guard++ < w * h) {
     const dx = Math.sign(to.x - x);
     const dy = Math.sign(to.y - y);
-    // Mostly straight with gentle wiggles so paths look walked, not ruled.
     if (dx !== 0 && (dy === 0 || rng.random() < 0.55)) x += dx;
     else if (dy !== 0) y += dy;
     set(x, y);
@@ -294,7 +290,6 @@ export function generateMap(spec: WorldSpec): WorldMap {
     }
   }
 
-  // Paths: spawn to every point of interest, then a ring between neighbours so the map has loops.
   const pathKind: TileKind = rule.rooms ? "floor" : "path";
   for (const p of taken.slice(1)) carve(tiles, w, h, spawn, p, pathKind, rng);
   for (let i = 1; i + 1 < taken.length; i++) {
@@ -319,7 +314,6 @@ export function generateMap(spec: WorldSpec): WorldMap {
   return { width: w, height: h, tiles, spawn, npcs, items };
 }
 
-/** Tiles reachable from `from` without crossing solid tiles (4-connected). */
 export function reachable(map: WorldMap, from: Point): Uint8Array {
   const seen = new Uint8Array(map.width * map.height);
   const queue: number[] = [from.y * map.width + from.x];
@@ -346,7 +340,6 @@ export function reachable(map: WorldMap, from: Point): Uint8Array {
   return seen;
 }
 
-/** Shortest 4-connected path (BFS) from `from` to the walkable tile nearest `to`; [] when unreachable. */
 export function findPath(
   map: WorldMap,
   from: Point,

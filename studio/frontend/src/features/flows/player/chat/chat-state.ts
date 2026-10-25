@@ -9,7 +9,6 @@ export interface ChatTurn {
 }
 
 export interface ChatEntry {
-  /** The Chat Output block the player invokes for each message. */
   output: string;
   welcome: string;
 }
@@ -18,7 +17,6 @@ export interface ChatEntry {
 export const HISTORY_SENT = 40;
 const SAVE_VERSION = 1;
 
-/** A flow plays as a chat when it has an enabled Chat Output block. */
 export function chatEntry(
   doc: FlowDocument | null | undefined,
 ): ChatEntry | null {
@@ -36,7 +34,6 @@ export function chatEntry(
   };
 }
 
-/** What the flow's Chat Input receives: the new message and the conversation before it. */
 export function turnParams(
   turns: ChatTurn[],
   message: string,
@@ -44,7 +41,6 @@ export function turnParams(
   return { message, history: turns.slice(-HISTORY_SENT) };
 }
 
-/** Turns kept in a save: far more than the model sees, and well under the session size limit. */
 export const SAVED_TURNS = 200;
 const SAVED_TURN_CHARS = 20000;
 
@@ -58,7 +54,6 @@ export function serializeChat(turns: ChatTurn[]): unknown {
   };
 }
 
-/** A saved conversation, or an empty one when the save is from another version or malformed. */
 export function restoreChat(saved: unknown): ChatTurn[] {
   if (!saved || typeof saved !== "object") return [];
   const s = saved as { v?: unknown; turns?: unknown };
