@@ -614,7 +614,6 @@ export function WorldPlayer({
             kind: "plan",
             run: (signal) => planDay(n.id, day, signal),
           });
-        // Followers and NPCs on an errand are walked by the conversation's action instead; their needs still drop.
         if (steered.current.has(n.id)) {
           const needs = withNeeds
             ? steeredNeeds(mind, sim.minutes_per_second)
@@ -691,7 +690,6 @@ export function WorldPlayer({
     areas,
   ]);
 
-  // Conversation actions in any world: followers walk with the player, errands run until their time is up.
   useEffect(() => {
     if (!ready || !started) return;
     const timer = window.setInterval(() => {

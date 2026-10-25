@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Sims-style needs and a fixed action vocabulary for simulated villagers. Needs decay with the game clock;
-// places advertise what they restore (named after The Sims' smart objects), and an NPC picks among the best
-// few offers, weighted towards whatever its LLM day plan says. Pure and seeded: no model call, testable.
+// Sims-style needs: decay with the game clock, places advertise what they restore. Pure and seeded.
 
 import type { WorldPlace } from "../../types";
 import type { PlanBlock } from "./world-sim";
@@ -12,7 +10,6 @@ export const NEEDS = ["energy", "hunger", "social", "fun"] as const;
 export type Need = (typeof NEEDS)[number];
 export type Needs = Record<Need, number>;
 
-/** What an NPC can do on its own; `go_to` follows the day plan's place and activity. */
 export type ActionKind =
   | "go_to"
   | "eat"
@@ -22,7 +19,7 @@ export type ActionKind =
   | "wander"
   | "idle";
 
-/** Actions a villager may take from a conversation; the backend validates the same set. */
+/** Must match the backend's allowed conversation actions. */
 export const REPLY_ACTIONS = [
   "follow_player",
   "stop_following",
@@ -33,7 +30,6 @@ export type ReplyAction = (typeof REPLY_ACTIONS)[number];
 export interface Doing {
   kind: ActionKind;
   place: string;
-  /** Game minute the action ends. */
   until: number;
   label?: string;
 }
@@ -43,7 +39,6 @@ const DECAY: Needs = { energy: 0.07, hunger: 0.3, social: 0.2, fun: 0.16 };
 
 interface ActionDef {
   minutes: number;
-  /** Points per game minute while at the place. */
   gain: Partial<Needs>;
   icon: string;
   says: string[];
@@ -84,7 +79,6 @@ export const ACTIONS: Record<ActionKind, ActionDef> = {
   idle: { minutes: 20, gain: {}, icon: "", says: [] },
 };
 
-/** Which actions a place offers, read from its name; strength 1 is a full offer. */
 const ADVERTS: [RegExp, Partial<Record<ActionKind, number>>][] = [
   [/home|house|cottage|hut|cabin|bed|tent|camp|inn|lodge|dorm/i, { sleep: 1 }],
   [
@@ -111,7 +105,7 @@ export interface Offer {
   strength: number;
 }
 
-/** Every (action, place) offer; an action no place names is offered everywhere at half strength. */
+/** An action no place names is offered everywhere at half strength. */
 export function advertisements(places: WorldPlace[]): Offer[] {
   const out: Offer[] = [];
   const seen = new Set<ActionKind>();
@@ -163,7 +157,6 @@ export function seeded(...parts: (string | number)[]): () => number {
   };
 }
 
-/** Villagers start the day reasonably fed and rested, each a little different. */
 export function initialNeeds(seed: number, npcId: string): Needs {
   const rnd = seeded(seed, npcId, "needs");
   return {
@@ -174,7 +167,6 @@ export function initialNeeds(seed: number, npcId: string): Needs {
   };
 }
 
-/** One step of game time: every need decays, and the current action restores its needs while at its place. */
 export function tickNeeds(
   needs: Needs,
   minutes: number,
@@ -217,10 +209,7 @@ function score(
   return s;
 }
 
-/**
- * The next action: score every offer (advert strength x need urgency, a bonus at the plan's place) and draw among
- * the top three in proportion to score, so villagers are not clockwork but never pick something pointless.
- */
+/** Draws among the top three offers in proportion to score, so villagers are not clockwork. */
 export function chooseAction(opts: {
   needs: Needs;
   offers: Offer[];
@@ -269,7 +258,6 @@ export function chooseAction(opts: {
   };
 }
 
-/** An action can end early once the need it serves is full. */
 export function satisfied(doing: Doing, needs: Needs): boolean {
   const served = SERVES[doing.kind];
   return served.length > 0 && served.every((n) => needs[n] >= 98);
@@ -295,7 +283,6 @@ export function parseDoing(raw: unknown): Doing | null {
   };
 }
 
-/** A small area around the player for a follower to walk to. */
 export function followArea(p: { x: number; y: number }) {
   return { x: Math.max(0, p.x - 1), y: Math.max(0, p.y - 1), w: 3, h: 3 };
 }

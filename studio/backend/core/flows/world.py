@@ -345,7 +345,6 @@ def world_schema(npcs: int, items: int) -> dict:
     }
 
 
-# The only things an NPC can do from a conversation; the world player carries them out.
 REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
 FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag along)\b")
 FOLLOW_STOP = re.compile(
@@ -571,7 +570,6 @@ def clean_summary(raw: Any) -> str:
 
 
 def world_places(world: dict) -> list[dict]:
-    """Where an NPC can be sent: simulation places, then map regions."""
     seen, out = set(), []
     for p in [
         *((world.get("simulation") or {}).get("places") or []),

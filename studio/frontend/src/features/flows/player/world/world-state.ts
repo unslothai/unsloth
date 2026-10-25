@@ -59,9 +59,9 @@ export interface WorldState {
   /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
-  /** NPCs walking with the player, from a conversation; any world. Optional so older saves load. */
+  /** Optional so older saves load. */
   following?: string[];
-  /** NPC id -> place they agreed to head to; `until` is a game minute, null where the clock does not run. */
+  /** `until` is null where the clock does not run. */
   errands?: Record<string, Errand>;
 }
 
@@ -82,7 +82,6 @@ export interface NpcReply {
   place?: string;
 }
 
-/** Ids an NPC can be sent to from a conversation: simulation places and map regions. */
 export function placeIds(spec: WorldSpec): Set<string> {
   return new Set([
     ...(spec.simulation?.places ?? []).map((p) => p.id),
@@ -90,7 +89,6 @@ export function placeIds(spec: WorldSpec): Set<string> {
   ]);
 }
 
-/** A conversation's action: follow the player, stop, or head somewhere. Unknown actions change nothing. */
 export function applyAction(
   spec: WorldSpec,
   s: WorldState,
@@ -99,7 +97,6 @@ export function applyAction(
   place: unknown,
 ): WorldState {
   if (!REPLY_ACTIONS.includes(action as ReplyAction)) return s;
-  // A villager who stays put takes no movement action.
   if (spec.npcs.find((n) => n.id === npcId)?.wander === false) return s;
   const following = (s.following ?? []).filter((id) => id !== npcId);
   const { [npcId]: _, ...errands } = s.errands ?? {};
