@@ -3558,7 +3558,7 @@ html[data-chat-font] .aui-root {
 				to bottom,
 				transparent,
 				#000 var(--composer-fade-top, 0px),
-				#000 calc(100% - var(--composer-fade-bottom, calc(0.625rem * var(--ui-space-scale, 1)))),
+				#000 calc(100% - var(--composer-fade-bottom, calc(0.375rem * var(--ui-space-scale, 1)))),
 				transparent
 			),
 			linear-gradient(#000, #000);
