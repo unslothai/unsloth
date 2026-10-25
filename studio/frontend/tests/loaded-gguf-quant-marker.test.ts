@@ -33,3 +33,13 @@ test("a loaded row is selected, picked and ejected by its checkpoint, not its la
   assert.match(picker, /onSelect\(checkpoint, \{/);
   assert.match(picker, /onEject\?\.\(checkpoint\);/);
 });
+
+test("a loaded hub GGUF row opens its quant list, so quants downloaded after the load stay reachable", () => {
+  const start = picker.indexOf("const renderLoadedRow = (");
+  const loadedRow = picker.slice(start, picker.indexOf("const renderConnectedModelRow", start));
+  // The curated row it stands in for is hidden while the model is loaded.
+  assert.match(picker, /if \(loadedRowIds\.has\(id\.toLowerCase\(\)\)\) return moreLabel;/);
+  assert.match(loadedRow, /const expandable = Boolean\(quant\) && !isLocal && isKnownGgufRepo\(entry\.id\);/);
+  assert.match(loadedRow, /expandable\s*\?\s*setExpandedGguf\(\(prev\) =>\s*prev === entry\.id \? null : entry\.id,?\s*\)/);
+  assert.match(loadedRow, /\{expanded && \(\s*<GgufVariantExpander[\s\S]*?repoId=\{entry\.id\}/);
+});

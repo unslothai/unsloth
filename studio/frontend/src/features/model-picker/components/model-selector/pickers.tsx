@@ -6455,61 +6455,104 @@ export function HubModelPicker({
     const optionKey = makeModelOptionKey("loaded", checkpoint);
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
+    const isLocal = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint);
+    // A loaded hub GGUF stands in for its curated row, which is hidden, so it has to open the same
+    // quant list: otherwise quants downloaded after the load stay out of reach until an eject.
+    const expandable = Boolean(quant) && !isLocal && isKnownGgufRepo(entry.id);
+    const expanded = expandable && expandedGguf === entry.id;
     return (
-      <div
-        key={optionKey}
-        className={downloadedRowShellClassName(isSelected)}
-      >
-        <div className="min-w-0 flex-1">
-          <ModelRow
-            label={entry.id}
-            tooltipText={entry.id}
-            hideOwner={isUnslothOwned(entry.id)}
-            alignMeta="hub"
-            meta={quant ? "GGUF" : extractParamLabel(entry.id)}
-            tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
-            selected={isSelected}
-            loaded={true}
-            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-            onClick={() =>
-              onSelect(checkpoint, {
-                source: /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint) ? "local" : "hub",
-                isLora: false,
-                ggufVariant: quant ?? undefined,
-                isDownloaded: true,
-                isGguf: Boolean(quant),
-              })
-            }
-            vramStatus={null}
-            className={downloadedRowButtonClassName}
-          />
+      <div key={optionKey}>
+        <div className={downloadedRowShellClassName(isSelected)}>
+          <div className="min-w-0 flex-1">
+            <ModelRow
+              label={entry.id}
+              tooltipText={entry.id}
+              hideOwner={isUnslothOwned(entry.id)}
+              alignMeta="hub"
+              meta={quant ? "GGUF" : extractParamLabel(entry.id)}
+              tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
+              selected={isSelected}
+              loaded={true}
+              optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+              onClick={() =>
+                expandable
+                  ? setExpandedGguf((prev) =>
+                      prev === entry.id ? null : entry.id,
+                    )
+                  : onSelect(checkpoint, {
+                      source: isLocal ? "local" : "hub",
+                      isLora: false,
+                      ggufVariant: quant ?? undefined,
+                      isDownloaded: true,
+                      isGguf: Boolean(quant),
+                    })
+              }
+              onArrowDownIntoChildren={
+                expanded ? () => focusFirstChildOption(optionKey) : undefined
+              }
+              vramStatus={null}
+              className={downloadedRowButtonClassName}
+            />
+          </div>
+          <span className={ROW_ACTIONS_CLASS}>
+            {ejectsKept ? (
+              <Tooltip delayDuration={0}>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEject?.(checkpoint);
+                    }}
+                    aria-label={`Eject ${entry.id}`}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                  >
+                    <HugeiconsIcon
+                      icon={RemoveCircleIcon}
+                      strokeWidth={1.75}
+                      className="size-3.5"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="tooltip-compact">
+                  Eject
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </span>
         </div>
-        <span className={ROW_ACTIONS_CLASS}>
-          {ejectsKept ? (
-            <Tooltip delayDuration={0}>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEject?.(checkpoint);
-                  }}
-                  aria-label={`Eject ${entry.id}`}
-                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                >
-                  <HugeiconsIcon
-                    icon={RemoveCircleIcon}
-                    strokeWidth={1.75}
-                    className="size-3.5"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="tooltip-compact">
-                Eject
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
-        </span>
+        {expanded && (
+          <GgufVariantExpander
+            diffusionLoad={diffusionLoad}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={expanderGpuCount}
+            repoId={entry.id}
+            loadedQuants={loadedQuantsFor(entry.id)}
+            pipelineTag={pipelineTagById.get(entry.id) ?? null}
+            onSelect={onSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
+            onConfigure={onConfigure}
+            hfToken={hfToken || undefined}
+            parentOptionKey={optionKey}
+            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
+            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
+            gpuGb={expanderGpuGb}
+            systemRamGb={expanderRamGb || undefined}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
+            variantActions={{
+              onDelete: async (variantQuant, cachePath) => {
+                await deleteCachedModel(
+                  entry.id,
+                  variantQuant,
+                  hfToken || undefined,
+                  cachePath ?? undefined,
+                );
+                prunePinnedQuantValidation(entry.id, variantQuant);
+                refreshCachedLists();
+              },
+            }}
+          />
+        )}
       </div>
     );
   };
