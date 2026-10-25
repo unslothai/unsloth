@@ -1186,6 +1186,11 @@ def start_text_encoder(
 
     # The worker is another process: the plan's commit travels in its config (absent when unpinned).
     client.config.update({"revision": revision} if revision else pinned_revision_kwargs(repo))
+    from .diffusion_memory import user_budget_reserve_share
+
+    share = user_budget_reserve_share()
+    if share > 0:
+        client.config["vram_reserve_share"] = share
     client.start()
     return client
 

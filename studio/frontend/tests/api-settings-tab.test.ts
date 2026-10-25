@@ -7,14 +7,31 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const TAB = readSrc("features/settings/tabs/api-keys-tab.tsx");
-const SUMMARY = readSrc("features/settings/components/remote-lan-summary.tsx");
 const LAN_API = readSrc("features/settings/api/lan-access.ts");
 
-test("the API tab shows Remote & LAN as a status line, not a second set of polling panels", () => {
-  assert.doesNotMatch(TAB, /<RemoteAccessSection|<LanAccessSection/);
-  assert.match(TAB, /<RemoteLanSummary \/>/);
-  assert.doesNotMatch(SUMMARY, /setInterval|setTimeout/);
-  assert.match(SUMMARY, /setActiveTab\("remote-lan"\)/);
+test("the API tab leaves Remote & LAN to its own tab, the next one down", () => {
+  assert.doesNotMatch(
+    TAB,
+    /<RemoteAccessSection|<LanAccessSection|<RemoteLanSummary/,
+  );
+});
+
+test("the API tab still publishes a tunnel URL that comes up after it opens", () => {
+  const hook = readSrc("features/settings/hooks/use-publish-access-urls.ts");
+  assert.match(TAB, /usePublishAccessUrls\(isOwner\);/);
+  assert.match(
+    hook,
+    /usePlatformStore\.setState\(\{ cloudflareUrl: next\.url \}\)/,
+  );
+  assert.match(
+    hook,
+    /next\.state === "starting" \|\| next\.state === "stopping"/,
+  );
+  assert.match(
+    hook,
+    /window\.setTimeout\(readRemote, remoteAccessPollDelay\(next\)\)/,
+  );
+  assert.match(hook, /publishLanUrls\(next\)/);
 });
 
 test("usage examples sit right under the keys, where a new key lands", () => {
@@ -55,6 +72,18 @@ test("LAN URLs publish only when they change", () => {
 test("the API page marks one served row as the primary, found by checkpoint first", () => {
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
   assert.match(page, /active: index === activeIndex,/);
-  assert.match(page, /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/);
+  assert.match(
+    page,
+    /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/,
+  );
   assert.match(page, /\(model\.active && !canEditSettings\)/);
+});
+
+test("the keyless note shows beside a public address too, since LAN callers stay keyless", () => {
+  const lan = readSrc("features/settings/components/lan-access-section.tsx");
+  assert.doesNotMatch(
+    lan,
+    /keylessLanEligible &&\s*status\.publicUrls\.length === 0/,
+  );
+  assert.equal(lan.match(/\{keylessNote\}/g)?.length, 2);
 });

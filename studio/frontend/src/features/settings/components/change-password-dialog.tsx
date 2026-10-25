@@ -279,7 +279,7 @@ export function ChangePasswordDialog({
       }}
     >
       <DialogTrigger asChild={true}>
-        <Button variant="outline" size="sm" className="h-8">
+        <Button variant="outline" size="sm" >
           {copy.trigger}
         </Button>
       </DialogTrigger>
@@ -372,7 +372,7 @@ export function ChangePasswordDialog({
             </div>
           </div>
           <DialogFooter className="mt-5">
-            <Button type="submit" disabled={disabled}>
+            <Button variant="dark" type="submit" disabled={disabled}>
               {submitting ? copy.submitting : copy.submit}
             </Button>
           </DialogFooter>

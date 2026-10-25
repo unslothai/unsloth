@@ -167,7 +167,7 @@ test("an over budget row dims instead of putting a pill on every line", () => {
   );
   assert.ok(
     PICKERS.includes(
-      '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+      '"opacity-55 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-50"',
     ),
   );
   assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));
@@ -191,7 +191,7 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
     2,
     "both model row slots reveal on hover",
   );
-  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
+  assert.match(PICKERS, /dimmed &&\n\s*!selected &&/);
 });
 
 test("chat and the Hub answer the fit question with one formula", () => {
@@ -400,12 +400,16 @@ test("each fit verdict is an info mark that explains itself", () => {
     ),
   );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
-  assert.ok(PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"));
   assert.ok(
-    !PICKERS.includes("GB VRAM (GPU:"),
+    PICKERS.includes(
+      "`Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`",
+    ),
+  );
+  assert.ok(
+    !PICKERS.includes("VRAM (GPU:"),
     "no VRAM wording on an overage",
   );
-  assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
+  assert.ok(PICKERS.includes("} VRAM (tight fit on ${formatGiB(gpuGb)})"));
   assert.ok(
     PICKERS.includes(
       'return status === "partial" || status === "ram" || status === "oom" || status === "exceeds";',
@@ -416,7 +420,7 @@ test("each fit verdict is an info mark that explains itself", () => {
 
 test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   assert.ok(
-    PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"),
+    PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),"),
   );
   assert.ok(!PICKERS.includes("exceedsSize"));
   assert.match(
