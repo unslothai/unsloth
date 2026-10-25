@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A released pipeline whose cache holds only some components is priced from its family's bf16 table, so a load that
-plans before ``from_pretrained`` downloads the rest never picks 'none' on a card the release cannot fit (empty
-caches, no GPU)."""
+"""Incomplete release caches are priced from the family bf16 table (CPU only)."""
 
 from __future__ import annotations
 
@@ -127,8 +125,7 @@ def test_fixture_snapshots_read_as_complete_and_incomplete(l4):
 
 @pytest.mark.parametrize("repo_id", [MIRROR, UPSTREAM])
 def test_text_encoders_only_cache_prices_the_release_from_its_table(l4, repo_id):
-    """The recheck's first load: another tool had cached text_encoder/ + text_encoder_2/ only, which priced the whole
-    pipeline at the encoders and placed it 'none'."""
+    """A cache holding only the text encoders must not price the pipeline at the encoders."""
     _snapshot(l4.hub, repo_id, ("text_encoder", "text_encoder_2"), mib = 64)
     plan = _plan(l4.target, repo_id)
     assert plan.estimates["model_dense_mib"] >= _table_total_mib(), plan.estimates

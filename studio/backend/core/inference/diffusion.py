@@ -676,14 +676,10 @@ def _incomplete_release_cache_floor(
     companion_mib: Optional[int],
     text_encoder_mib: Optional[int],
 ) -> Optional[tuple[int, int, int]]:
-    """(model, companions, text encoders) MiB floored at the bf16 table, for a released pipeline whose cache does not
-    hold it all yet; None when the cache is complete, or the repo is not a release the table describes.
+    """(model, companions, text encoders) MiB floored at the bf16 table for a mirrored release whose cache is incomplete.
 
-    A pipeline plan prices cached bytes. A load that lets ``from_pretrained`` download (``load_pipeline`` with
-    downloads allowed, rather than ``begin_load``'s prefetch) plans before those bytes land, so a cache another tool
-    had filled with only the text encoders priced FLUX.1-dev at 9.3 GB: 'none' placement, then a whole-pipeline
-    ``pipe.to`` OOM on a 22 GB card. Only a release Studio mirrors (or the family base) borrows the table; a
-    fine-tune in the same family keeps its own bytes."""
+    A downloading load plans before bytes land: a text-encoder-only cache priced FLUX.1-dev at 9.3 GB, then OOM'd on
+    a 22 GB card. Fine-tunes keep their own bytes."""
     if complete or not repo_id:
         return None
     release = canonical_base(repo_id).strip()
@@ -7601,8 +7597,7 @@ class DiffusionBackend:
     def _pipeline_source_complete(
         local_repo: Optional[Path], staged_repo: Optional[Path], cache_repo: Optional[str]
     ) -> bool:
-        """Whether any tree this pipeline load can read already holds every component its manifest names (a local
-        folder, the staged snapshot, or the snapshot ``refs/main`` names under any cache root)."""
+        """True if a local, staged or live cached snapshot holds every manifest component."""
         trees = [p for p in (local_repo, staged_repo) if p is not None]
         if cache_repo:
             trees += [
