@@ -5103,10 +5103,8 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-# gfx targets (LLVM AMDGPUUsage) that only ever shipped as discrete boards, so a card on one of them has dedicated VRAM
-# and its DRM mem_info_vram_total is the whole card. Positive list on purpose: an unlisted target may be an APU whose
-# sysfs total is only the BIOS carve-out (torch's GTT-backed total is the real one, and reading it needs a context),
-# so it reads as unknown. gfx940/941/942 are left out because MI300A (an APU) shares gfx942 with MI300X.
+# Discrete-only gfx targets: an APU's sysfs total is the BIOS carve-out, so unlisted targets read unknown. gfx942 is
+# excluded because MI300A (an APU) shares it with MI300X.
 _ROCM_DISCRETE_ONLY_ARCHES = frozenset(
     {
         "gfx803",
@@ -5132,12 +5130,9 @@ _ROCM_DISCRETE_ONLY_ARCHES = frozenset(
 
 
 def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
-    """Linux ROCm per-device VRAM with no torch call at all, for ``no_context`` callers: KFD topology for the HIP order
-    and gfx target, DRM sysfs for used / total, joined by PCI address. Empty (nothing known) under any visibility mask
-    or GPU_DEVICE_ORDINAL, since a visible ordinal then cannot be tied to a physical card without torch, and when the
-    KFD readers disagree or two ordinals share one PCI address (a partitioned card, whose sysfs speaks for the whole
-    board). A card whose target is not in _ROCM_DISCRETE_ONLY_ARCHES, or whose sysfs files are unreadable, keeps its
-    row (so the visible count stays right) with used / total None."""
+    """Linux ROCm per-device VRAM from KFD topology + DRM sysfs, joined by PCI address, with no torch call. Empty under
+    any visibility mask, a KFD reader disagreement or a shared PCI address; non-discrete targets keep their row with
+    used / total None."""
     if platform.system() != "Linux" or _rocm_visibility_mask_active():
         return []
     pci_ids = _rocm_kfd_gpu_pci_ids()
@@ -5177,9 +5172,8 @@ def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
 
 
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: never ask torch (its per-device reading leaves a resident driver context). On CUDA the devices
-    are then empty when nvidia-smi cannot answer; on ROCm they come from KFD + DRM sysfs only
-    (_rocm_context_free_visible_devices), since the amd-smi rows need torch for the APU total and the HIP mapping."""
+    """``no_context``: never ask torch (it leaves a resident driver context): CUDA devices are empty without nvidia-smi,
+    ROCm ones come from _rocm_context_free_visible_devices."""
     device = get_device()
     if no_context and IS_ROCM and device == DeviceType.CUDA:
         devices = _rocm_context_free_visible_devices()

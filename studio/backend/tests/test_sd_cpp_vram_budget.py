@@ -523,13 +523,12 @@ def _h3_telemetry(monkeypatch, *, rocm, smi):
 
     monkeypatch.setattr(hardware, "_torch_get_per_device_info", per_device)
     monkeypatch.setattr(hardware, "_overlay_system_wide_vram", lambda devices: None)
-    # No KFD topology: the context-free ROCm read (sysfs) has nothing, so only amd-smi + torch can answer.
+    # No KFD topology, so only amd-smi + torch can answer.
     monkeypatch.setattr(hardware, "_rocm_kfd_gpu_pci_ids", lambda: [])
     return touched
 
 
 def test_h3_card_probes_read_nothing_on_rocm_without_a_context(monkeypatch):
-    # The pre-spawn budget never creates a context, and without KFD / sysfs ROCm's amd-smi rows need one.
     touched = _h3_telemetry(monkeypatch, rocm = True, smi = True)
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 0
@@ -545,8 +544,7 @@ _ROCM_MASKS = (
 
 
 def _rocm_linux_host(monkeypatch, cards):
-    """Linux ROCm host with no visibility mask; ``cards`` is [(pci, gfx target, (used_gb, total_gb) or None)] in KFD
-    order. Every torch and amd-smi reader is a tripwire: the no-context probe must answer from sysfs alone."""
+    """``cards`` = [(pci, gfx target, (used_gb, total_gb) or None)] in KFD order; torch and amd-smi are tripwires."""
     from utils.hardware import amd, hardware
 
     for name in _ROCM_MASKS:
@@ -580,7 +578,6 @@ def _rocm_linux_host(monkeypatch, cards):
 
 
 def test_h3_card_probes_read_rocm_sysfs_without_a_context(monkeypatch):
-    # Discrete card: the reading comes back with no torch call (the tripwires above), where #13714 returned nothing.
     _rocm_linux_host(monkeypatch, [("0000:03:00.0", "gfx1100", (4.0, 24.0))])
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (20 * GiB, 24 * GiB)
     assert video_mod._h3_visible_card_count("cuda") == 1
@@ -593,7 +590,6 @@ def test_h3_card_probes_read_rocm_sysfs_without_a_context(monkeypatch):
 def test_h3_card_probes_on_masked_rocm_read_nothing(monkeypatch):
     _rocm_linux_host(monkeypatch, [("0000:03:00.0", "gfx1100", (4.0, 24.0))])
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (20 * GiB, 24 * GiB)
-    # Under any mask a visible ordinal cannot be tied to a physical card without torch: nothing, not a guess.
     for name in _ROCM_MASKS:
         monkeypatch.setenv(name, "0")
         assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None), name
@@ -602,8 +598,6 @@ def test_h3_card_probes_on_masked_rocm_read_nothing(monkeypatch):
 
 
 def test_h3_card_probes_never_report_an_apu_carve_out(monkeypatch):
-    # Strix Halo's sysfs total is the BIOS carve-out, not torch's GTT-backed total, and gfx942 is shared by MI300A:
-    # both read as unknown while the discrete card beside them still reads, and the visible count stays 3.
     _rocm_linux_host(
         monkeypatch,
         [
@@ -616,7 +610,7 @@ def test_h3_card_probes_never_report_an_apu_carve_out(monkeypatch):
     assert video_mod._h3_card_memory_bytes("cuda", 1, allow_context = False) == (None, None)
     assert video_mod._h3_card_memory_bytes("cuda", 2, allow_context = False) == (None, None)
     assert video_mod._h3_visible_card_count("cuda") == 3
-    # Two ordinals on one PCI address (a partitioned card) or a KFD disagreement: nothing at all.
+    # A partitioned card (two ordinals on one PCI address) reads nothing.
     _rocm_linux_host(
         monkeypatch,
         [("0000:03:00.0", "gfx950", (4.0, 24.0)), ("0000:03:00.0", "gfx950", (4.0, 24.0))],
