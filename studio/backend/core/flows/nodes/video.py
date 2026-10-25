@@ -127,7 +127,8 @@ MAX_CONCAT_FRAMES = 20_000
 
 
 def concat_clips(clips: list[bytes]) -> bytes:
-    """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped)."""
+    """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped). A clip at
+    another frame rate is resampled by time (frames repeated or skipped), so it keeps its length and speed."""
     import io
     from fractions import Fraction
 
@@ -150,20 +151,28 @@ def concat_clips(clips: list[bytes]) -> bytes:
                     stream.width = source.codec_context.width // 2 * 2
                     stream.height = source.codec_context.height // 2 * 2
                     stream.pix_fmt = "yuv420p"
-                for frame in src.decode(source):
-                    frames += 1
-                    if frames > MAX_CONCAT_FRAMES:
-                        raise FlowNodeError(
-                            f"The joined video would pass {MAX_CONCAT_FRAMES} frames"
-                        )
+                ratio = rate / Fraction(source.average_rate or rate)
+                emitted = 0
+                for index, frame in enumerate(src.decode(source)):
+                    # Output frames this clip should have reached by the end of this source frame.
+                    due = round((index + 1) * ratio)
+                    if due <= emitted:
+                        continue
                     frame = frame.reformat(
                         width = stream.width, height = stream.height, format = "yuv420p"
                     )
-                    # Frames are numbered across clips at the output rate; None would stamp them all at 0.
-                    frame.pts = frames - 1
-                    frame.time_base = step
-                    for packet in stream.encode(frame):
-                        dst.mux(packet)
+                    while emitted < due:
+                        emitted += 1
+                        frames += 1
+                        if frames > MAX_CONCAT_FRAMES:
+                            raise FlowNodeError(
+                                f"The joined video would pass {MAX_CONCAT_FRAMES} frames"
+                            )
+                        # Frames are numbered across clips at the output rate; None would stamp them all at 0.
+                        frame.pts = frames - 1
+                        frame.time_base = step
+                        for packet in stream.encode(frame):
+                            dst.mux(packet)
         if stream is not None:
             for packet in stream.encode():
                 dst.mux(packet)
