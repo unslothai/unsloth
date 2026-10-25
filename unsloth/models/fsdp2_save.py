@@ -625,9 +625,8 @@ def _restore_quant_state(model, state_dict, options):
     """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
     copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
     scales they were saved with. A saved QuantState that does not fit the live one (other shape,
-    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. Saved
-    entries whose packed weight is not in the state dict (a partial one) are not applied, as DCP keeps
-    the live bytes: strict raises, strict=False warns and keeps the live QuantState. With
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales, as
+    does one without its packed weight unless strict=False (DCP keeps the live bytes then). With
     `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
     entries = _linear4bit_entries(model)
     if not entries:
@@ -691,7 +690,6 @@ def _restore_quant_state(model, state_dict, options):
                     )
             continue
         if not loads_weight:
-            # Metadata without its packed weight: DCP leaves the live bytes, so their scales stay too.
             if strict:
                 raise ValueError(
                     f"Unsloth: the state dict has the 4-bit quantization state of `{head[:-1]}` but "
@@ -752,9 +750,7 @@ def _restore_quant_state(model, state_dict, options):
         )
 
 
-# Every state dict key suffix bitsandbytes writes for a 4-bit QuantState (`QuantState.as_dict(packed =
-# True)`), nested or not, nf4 or fp4: all are dropped, so a strict=False load whose metadata was not
-# applied never hands DCP a key it cannot resolve.
+# Every key `QuantState.as_dict(packed = True)` can write, so skipped metadata never reaches DCP.
 _QUANT_STATE_KEYS = frozenset(
     (
         "absmax",

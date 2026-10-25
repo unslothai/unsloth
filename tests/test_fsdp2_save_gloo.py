@@ -671,7 +671,6 @@ def _case_dcp_restore(rank, world_size, m):
         src, reference = model(0.1, nested)
         expected = scales(src[0].weight.quant_state)
         sd = dcp.get_model_state_dict(src, options = full)
-        # Rank 0 holds the checkpoint and broadcasts it (accelerate's FULL_STATE_DICT load).
         dst, _ = model(0.05, nested)
         dcp.set_model_state_dict(
             dst,
@@ -683,7 +682,6 @@ def _case_dcp_restore(rank, world_size, m):
             restored(dst, reference),
             scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
         )
-        # A sharded checkpoint (accelerate's SHARDED_STATE_DICT): every rank loads its own shard.
         sharded = dcp.get_model_state_dict(src)
         dst, _ = model(0.05, nested)
         dcp.set_model_state_dict(dst, sharded)
@@ -692,7 +690,6 @@ def _case_dcp_restore(rank, world_size, m):
             restored(dst, reference),
             scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
         )
-    # A checkpoint quantized with another block size cannot describe these bytes: every rank raises.
     src, _ = model(0.1, False, blocksize = 128)
     sd = dcp.get_model_state_dict(src, options = full)
     dst, _ = model(0.05, False)
@@ -764,7 +761,6 @@ def _case_dcp_restore_guard(rank, world_size, m):
     out = {}
     full = StateDictOptions(full_state_dict = True, cpu_offload = True)
     loose = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False)
-    # Metadata without its packed weight: DCP leaves the live bytes, so their scales must stay too.
     src, _ = model(0.1, False)
     for mode in ("broadcast", "sharded"):
         if mode == "broadcast":
@@ -783,7 +779,6 @@ def _case_dcp_restore_guard(rank, world_size, m):
             scales = all(torch.equal(a, b) for a, b in zip(live, expected)),
             dequant_equal = dequant_equal(dst, reference),
         )
-    # A nested checkpoint into a non-nested model: every rank raises the same clear error.
     src, _ = model(0.1, True)
     for mode in ("broadcast", "sharded"):
         dst, _ = model(0.05, False)
@@ -1274,9 +1269,7 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
 
 
 def test_full_dcp_load_restores_the_checkpoint_quant_state():
-    """The packed 4-bit bytes of a full DCP checkpoint load into the model, so their QuantState must
-    too: a model quantized from other values used to keep its own scales (`All keys matched`, every
-    dequantized weight wrong)."""
+    """Full and sharded DCP loads take the checkpoint's QuantState with its packed bytes."""
     pytest.importorskip("bitsandbytes")
     results = _run("dcp_restore")
     for rank, r in results.items():
@@ -1290,9 +1283,8 @@ def test_full_dcp_load_restores_the_checkpoint_quant_state():
 
 
 def test_full_dcp_load_skips_or_rejects_quant_state_it_cannot_apply():
-    """Metadata whose packed weight is not in a partial (strict=False) state dict leaves the live
-    scales alone, and a nested checkpoint into a non-nested model raises the same error on every rank
-    (it used to load the wrong scales, or leave the other ranks waiting for rank 0)."""
+    """QuantState without its packed weight keeps the live scales (it used to apply the checkpoint's),
+    and a nested checkpoint into a non-nested model raises on every rank."""
     pytest.importorskip("bitsandbytes")
     results = _run("dcp_restore_guard")
     for rank, r in results.items():
