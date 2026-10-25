@@ -1552,6 +1552,8 @@ class TestHubDiscovery:
         monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
         monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
         glt._REMOTE_CACHE.clear()
+        # Room for a cold gguf import under a loaded runner; the overlap is what is tested.
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 10.0)
         rows = [GgufVariantDetail(filename = "Q4/shared.gguf", quant = "Q4", size_bytes = 40 * GIB)]
 
         def listing():
@@ -1600,6 +1602,8 @@ class TestHubDiscovery:
         monkeypatch.setattr(
             glt, "remote_lookup_info", lambda *a, **k: ("qwen4exp", FLASH_NEXT_TABLE)
         )
+        # Room for a cold gguf import under a loaded runner; the overlap is what is tested.
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 10.0)
         rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 40 * GIB)]
 
         def listing():
