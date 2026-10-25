@@ -2454,18 +2454,22 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     return None
 
 
-def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
-    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
-    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
-    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
-    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
-    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
-    discrete peer answers."""
+# One `lspci -nn` answer per run: _infer_linux_amd_gfx_arch has several callers. Keyed on the
+# lspci path and the runner too, so a stubbed subprocess.run never reads another stub's answer.
+_LSPCI_MEMO: "tuple | None" = None
+
+
+def _lspci_nn_stdout() -> "str | None":
+    """`lspci -nn` output, or None when lspci is missing or fails."""
+    global _LSPCI_MEMO
     lspci = shutil.which("lspci")
     if not lspci:
         return None
+    runner = subprocess.run
+    if _LSPCI_MEMO is not None and _LSPCI_MEMO[0] == lspci and _LSPCI_MEMO[1] is runner:
+        return _LSPCI_MEMO[2]
     try:
-        result = subprocess.run(
+        result = runner(
             [lspci, "-nn"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -2477,11 +2481,25 @@ def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
     except Exception:
         return None
     if result.returncode != 0:
+        return None  # a failed query is not kept: the next caller asks again
+    _LSPCI_MEMO = (lspci, runner, result.stdout)
+    return result.stdout
+
+
+def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":
+    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
+    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
+    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
+    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
+    the 0000: PCI domain prefix. beside_krackan2 skips that APU's own iGPU line, so only a
+    discrete peer answers."""
+    stdout = _lspci_nn_stdout()
+    if stdout is None:
         return None
     # A Krackan Point 2 line (gfx1153, no Linux torch wheel) is only the fallback: a covered
     # adapter later in the list still answers, as for the CPU-name case.
     krackan2 = beside_krackan2
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
             continue
         if not re.search(r"AMD|ATI", line):
@@ -3353,12 +3371,13 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# RDNA 1, Polaris and gfx1153 (Krackan Point 2): no Linux index this installer picks carries
-# their kernels (#8529, #11815); the generic wheel loads and faults on first use. gfx1153 is
-# torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP route.
-# install.sh's get_torch_index_url holds the same list.
+# RDNA 1, Polaris, gfx1153 (Krackan Point 2) and gfx90c (Renoir-Barcelo iGPU): no Linux index
+# this installer picks carries their kernels (#8529, #11815); the generic wheel loads and faults
+# on first use. gfx1153 is torch-only here: llama.cpp's LINUX_NO_ROCM_GFX_TARGETS keeps its HIP
+# route. install.sh's get_torch_index_url holds the same list; it and setup.sh mirror the hint.
+_GFX90C_OVERRIDE_HINT = "gfx90c can run ROCm PyTorch's gfx900 kernels: export HSA_OVERRIDE_GFX_VERSION=9.0.0 (also when you start Unsloth Studio) and re-run this installer. Unsloth does not test this."
 _LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset(
-    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803"}
+    {"gfx1010", "gfx1011", "gfx1012", "gfx1153", "gfx803", "gfx90c"}
 )
 
 
@@ -3643,15 +3662,15 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
-    # Strix defers only where the discrete card's wheel can be installed and will run: a ROCm
-    # version with a generic tag (unreadable or pre-6.0 has none, so nothing would install) and
-    # no HSA override (which spoofs every agent, the dGPU included). Otherwise it keeps its own
-    # per-arch index, as before.
+    # Strix defers only to a generic tag at the per-arch floor (7.13, AMD's Strix fixes) with no HSA
+    # override (it spoofs every agent); below it the generic wheel would leave the APU broken.
     _strix_rocm = _detect_rocm_version() if runtime_gfx in _STRIX_APU_GFX else None
+    _strix_tag = _automatic_generic_pytorch_rocm_tag(_strix_rocm) if _strix_rocm else None
     _strix_first = (
         runtime_gfx in _STRIX_APU_GFX
-        and _strix_rocm is not None
-        and _generic_pytorch_rocm_tag(_strix_rocm) is not None
+        and _strix_tag is not None
+        and next((k for k, t in _ROCM_TORCH_INDEX.items() if t == _strix_tag), (0, 0))
+        >= _ROCM_ARCH_INDEX_FLOOR
         and _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION")) is None
     )
     if (runtime_gfx in _SHADOWING_INTEGRATED_GFX or _strix_first) and not _visible_devices_pinned():
@@ -6771,6 +6790,8 @@ def _ensure_rocm_torch() -> "bool | None":
                 f"   AMD {_uncovered}: no ROCm PyTorch wheel Unsloth installs carries kernels for "
                 f"this GPU -- not installing ROCm torch for it.\n"
             )
+            if _uncovered == "gfx90c":
+                _safe_print(f"   {_GFX90C_OVERRIDE_HINT}\n")
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
         _detected_strix = (

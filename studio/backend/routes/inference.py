@@ -30236,9 +30236,12 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
     import torchaudio
     import tempfile
     import os
+    from utils.media_playlist import refuse_playlist
     from utils.paths import ensure_dir, tmp_root
 
     raw = base64.b64decode(b64)
+    # torchaudio and torchcodec open the file through FFmpeg, which follows playlist entries.
+    refuse_playlist(raw)
     # torchaudio.load needs a path or file-like with a format hint; write a
     # temp file so it can auto-detect the format.
     with tempfile.NamedTemporaryFile(
@@ -31009,6 +31012,10 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
     in full ML environments, but is absent from no-torch GGUF-only installs.
     """
+    from utils.media_playlist import refuse_playlist
+
+    # Checked once up front so no decoder below, the librosa fallback included, sees a playlist.
+    refuse_playlist(raw)
     try:
         arr, sr = _decode_audio_mono_with_soundfile(raw)
     except _DecodedAudioTooLongError:
@@ -31028,11 +31035,8 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
-            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
-            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
-            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,
