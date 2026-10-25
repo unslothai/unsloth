@@ -236,6 +236,50 @@ def test_python_lspci_names_gfx1153_before_gfx1152(monkeypatch):
     assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
 
 
+def test_python_lspci_keeps_no_failed_query(monkeypatch):
+    # A failed lspci is not an answer: the next caller asks again.
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1]
+    results = [
+        subprocess.CompletedProcess([], 1, "", ""),
+        subprocess.CompletedProcess([], 0, line, ""),
+    ]
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return results.pop(0)
+
+    monkeypatch.setattr(stack_mod, "_LSPCI_MEMO", None)
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    monkeypatch.setattr(stack_mod.subprocess, "run", run)
+    assert stack_mod._linux_amd_gfx_from_lspci() is None
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert len(calls) == 2
+
+
+def test_python_lspci_runs_once_per_run(monkeypatch):
+    # _infer_linux_amd_gfx_arch has several callers in one install; lspci answers once.
+    line = "c4:00.0 VGA compatible controller [0300]: " + _KRACKAN2_TEXT[1]
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return subprocess.CompletedProcess(a, 0, line, "")
+
+    monkeypatch.setattr(stack_mod.shutil, "which", lambda _n: "/usr/bin/lspci")
+    monkeypatch.setattr(stack_mod.subprocess, "run", run)
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert stack_mod._linux_amd_gfx_from_lspci(beside_krackan2 = True) is None
+    assert stack_mod._linux_amd_gfx_from_lspci() == "gfx1153"
+    assert len(calls) == 1
+    # Another runner (a different stub) is asked afresh, never handed this answer.
+    monkeypatch.setattr(
+        stack_mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "")
+    )
+    assert stack_mod._linux_amd_gfx_from_lspci() is None
+
+
 def _sh_infer(
     tmp_path,
     cpuinfo,

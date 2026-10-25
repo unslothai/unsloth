@@ -26,6 +26,9 @@ name: Mac Unsloth UI + API + Update + Inference CI
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # The two halves Playwright drives, the backend and the React bundle, plus the
       # installer and CLI that put them on the box. Not studio/** and unsloth/**: the
@@ -151,6 +154,7 @@ permissions:
 
 jobs:
   ui-smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Chat UI, API, Update and GGUF inference
     runs-on: macos-15
     # 35 covered the UI phases alone. The absorbed API and update phases each

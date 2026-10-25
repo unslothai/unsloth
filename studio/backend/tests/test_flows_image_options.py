@@ -291,8 +291,13 @@ def test_join_videos_keeps_order_size_and_every_frame():
 
     joined = concat_clips([_clip((64, 48), 5, (250, 0, 0)), _clip((32, 32), 4, (0, 0, 250))])
     with av.open(io.BytesIO(joined)) as src:
-        frames = [f.to_ndarray(format = "rgb24") for f in src.decode(src.streams.video[0])]
+        decoded = list(src.decode(src.streams.video[0]))
+        frames = [f.to_ndarray(format = "rgb24") for f in decoded]
+        duration = src.duration / av.time_base
     assert len(frames) == 9
+    # Nine frames at 12 fps play for 0.75 s, one after another, not all at time 0.
+    assert [round(f.time * 12) for f in decoded] == list(range(9))
+    assert abs(duration - 0.75) < 0.01
     assert frames[0].shape == frames[-1].shape == (48, 64, 3)
     assert frames[0][24, 32, 0] > 200 and frames[-1][24, 32, 2] > 200
 

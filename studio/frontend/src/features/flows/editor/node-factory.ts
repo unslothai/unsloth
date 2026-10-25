@@ -32,7 +32,6 @@ export interface ConnectRequest {
   targetHandle: string;
 }
 
-/** Validate and add an edge; returns an error message when refused. */
 export function tryConnect(req: ConnectRequest): string | null {
   const doc = useDocStore.getState();
   const sourceNode = doc.graph.nodes[req.source];

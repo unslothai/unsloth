@@ -9,7 +9,6 @@ import { useRuntimeStore } from "../stores/runtime-store";
 import { outputDownload } from "./canvas-rules";
 import { runFlow } from "./run-controller";
 
-/** Run only what this node needs. */
 export function runToNode(nodeId: string): Promise<void> {
   return runFlow({ targetNodes: [nodeId] });
 }
