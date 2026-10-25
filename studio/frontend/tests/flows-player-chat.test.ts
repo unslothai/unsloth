@@ -83,3 +83,9 @@ test("a failed load keeps the chat blocked and offers Retry instead of opening a
   );
   assert.match(src, /label: "Retry", onClick: \(\) => setAttempt/);
 });
+
+test("New chat waits for the saved conversation so a late load cannot restore it", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const src = readSrc("features/flows/player/chat/chat-player.tsx");
+  assert.match(src, /onClick=\{reset\}\s*disabled=\{!loaded\}/);
+});
