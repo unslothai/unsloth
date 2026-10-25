@@ -1296,7 +1296,8 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`API example for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => setExampleModel(model)}
-        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
+        // Shown on its own row's hover or keyboard focus; always on touch, which has no hover.
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 dark:hover:bg-chat-icon-bg-hover [@media(hover:none)]:opacity-100"
       >
         <HugeiconsIcon icon={CodeIcon} strokeWidth={1.75} className="size-4" />
       </Button>
@@ -1343,9 +1344,10 @@ export function ApiMonitorPage(): ReactElement {
       return null;
     }
     return (
-      <Fact label="Context">
+      <Fact label="Context" className="gap-0">
         {/* Chat's header chip; hover, or click to pin, for the prompt and reply split. */}
-        {/* A pill in the row icons' light hover; the row icons take its dark hover in turn. */}
+        {/* A pill in the row icons' light hover (the row icons take its dark hover), flush on the label:
+            its own 10px padding is the label gap, matching Slots' gap-2.5. */}
         <ContextUsageChip
           pinOnClick={true}
           hoverClassName="rounded-full transition-colors group-hover:bg-muted dark:group-hover:bg-chat-icon-bg-hover"
@@ -1361,7 +1363,7 @@ export function ApiMonitorPage(): ReactElement {
   const slotsFact = (
     <>
       {data?.queue ? (
-        <Fact label="Slots">
+        <Fact label="Slots" className="gap-2.5">
           {canEditSlots ? (
             <ToolbarTooltip label="Change parallel slots">
               <button
@@ -1586,7 +1588,11 @@ export function ApiMonitorPage(): ReactElement {
                 </p>
                 <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
                   {served.map((model) => (
-                    <div key={model.checkpoint} className="contents">
+                    // A subgrid, not `contents`: the row needs a box (gaps included) to hover.
+                    <div
+                      key={model.checkpoint}
+                      className="group/row col-span-full grid grid-cols-subgrid items-center"
+                    >
                       <span className="flex min-w-0 items-center gap-1 text-ui-12">
                         <span
                           className="size-1.5 shrink-0 rounded-full bg-emerald-500"
