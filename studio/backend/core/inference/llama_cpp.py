@@ -7359,6 +7359,19 @@ def _extra_args_tensor_split(
     return parts
 
 
+def _pass_through_reprices_cache(extra_args: Optional[Iterable[str]], n_parallel) -> bool:
+    """Whether a pass-through llama.cpp reads last changes the cache Studio priced at
+    ``n_parallel`` slots: ``-c 0`` (llama.cpp picks the context) or a larger ``--parallel``.
+    Studio emits ``--parallel`` itself, so only the argv override counts."""
+    try:
+        if parse_ctx_override(extra_args) == 0:
+            return True
+    except ValueError:
+        return True
+    override = _extra_args_n_parallel(extra_args, {})
+    return override is not None and override > int(n_parallel or 1)
+
+
 def _extra_args_n_parallel(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
@@ -8584,6 +8597,10 @@ def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
 _GGML_GPU_BACKEND_RE = re.compile(
     r"^(?:lib)?ggml-(?:cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
     r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
+)
+# libllama the same way: a `.bak` / `.disabled` copy is not the library the child loads.
+_LLAMA_SHARED_LIB_RE = re.compile(
+    r"^(?:lib)?llama(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$", re.IGNORECASE
 )
 
 
@@ -12113,7 +12130,7 @@ class LlamaCppBackend:
             libs = sorted(
                 p
                 for p in resolved.parent.iterdir()
-                if re.match(r"^(lib)?llama\.(so|dylib|dll)", p.name) and p.is_file()
+                if _LLAMA_SHARED_LIB_RE.match(p.name) and p.is_file()
             )
             key = tuple(
                 (str(p), st.st_size, st.st_mtime_ns)
@@ -12182,6 +12199,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
         auto_resolves_off: bool = False,
         resident_fits: Callable[[int], Optional[bool]],
+        binary: Optional[str] = None,
     ) -> list[str]:
         """``[<lazy flag>, "off"]`` to keep a lazily read lookup table resident, else ``[]``."""
         caps = caps or {}
@@ -12203,7 +12221,7 @@ class LlamaCppBackend:
             return []
         scan = self._gguf_tensor_scan(model_path)
         if scan is None or (
-            scan[0] not in self._host_forced_table_archs()
+            scan[0] not in self._host_forced_table_archs(binary)
             and any(
                 _override_places_tensor_on_device(name, extra_args, source_env)
                 for name in scan[1]
@@ -12247,6 +12265,7 @@ class LlamaCppBackend:
         budget_mib: int,
         cache_ram: Optional[int],
         env: Optional[Mapping[str, str]] = None,
+        binary: Optional[str] = None,
     ) -> int:
         """The Metal embedding discount with the lazily read lookup table settled."""
         source_env = os.environ if env is None else env
@@ -12285,7 +12304,7 @@ class LlamaCppBackend:
         )
         if (
             scan is not None
-            and scan[0] not in self._host_forced_table_archs()
+            and scan[0] not in self._host_forced_table_archs(binary)
             and any(
                 _override_places_tensor_on_device(name, extra_args, source_env)
                 for name in scan[1]
@@ -12330,6 +12349,7 @@ class LlamaCppBackend:
             extra_args = extra_args,
             env = source_env,
             resident_fits = _resident_fits,
+            binary = binary,
         )
         if self._apple_lazy_flags:
             return max(0, int(probe_discount) - table)
@@ -30570,6 +30590,7 @@ class LlamaCppBackend:
                                     + _apple_cpu_draft
                                 )
                                 if effective_ctx > 0
+                                and not _pass_through_reprices_cache(extra_args, n_parallel)
                                 and (
                                     _apple_cpu_draft := self._cpu_resident_draft_bytes(
                                         effective_ctx,
@@ -30588,6 +30609,7 @@ class LlamaCppBackend:
                             ),
                             budget_mib = _apple_fit_budget_mib,
                             cache_ram = cache_ram,
+                            binary = binary,
                         )
                         _managed_lazy_flags = list(self._apple_lazy_flags)
                         _apple_model_size_fit = model_size_fit - _apple_host_embd
@@ -31784,6 +31806,8 @@ class LlamaCppBackend:
                             if (
                                 _lazy_prompt_cache is None
                                 or not _fit_load_mode_kwargs["model_size"]
+                                or effective_ctx <= 0
+                                or _pass_through_reprices_cache(_fit_extras, n_parallel)
                             ):
                                 return None
                             return (
@@ -31808,6 +31832,7 @@ class LlamaCppBackend:
                             env = _fit_env,
                             auto_resolves_off = _fit_lazy_auto_off,
                             resident_fits = _table_resident_fits,
+                            binary = binary,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
                         if _fit_load_mode_kwargs["model_size"]:

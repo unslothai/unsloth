@@ -789,3 +789,84 @@ def test_the_host_forced_probe_reads_the_builds_loader(tmp_path, marked):
         LlamaCppBackend._host_forced_table_archs(str(tmp_path / "gone" / "llama-server"))
         == frozenset()
     )
+
+
+@pytest.mark.parametrize(
+    "name, forced",
+    [
+        ("libllama.so.0.7.0", True),
+        ("libllama.0.dylib", True),
+        ("LLAMA.DLL", True),
+        ("libllama.so.0.bak", False),
+        ("llama.dll.disabled", False),
+    ],
+)
+def test_the_host_forced_probe_reads_only_a_loadable_library(tmp_path, name, forced):
+    server = tmp_path / "llama-server"
+    server.write_bytes(b"\x7fELF server")
+    (tmp_path / name).write_bytes(llama_cpp_module._HOST_FORCED_TABLE_MARKER)
+    got = LlamaCppBackend._host_forced_table_archs(str(server))
+    assert got == (frozenset({"deepseek41"}) if forced else frozenset())
+
+
+def test_the_lazy_mode_choices_probe_the_launch_binary(monkeypatch):
+    seen = []
+
+    def probe(binary = None):
+        seen.append(binary)
+        return frozenset()
+
+    monkeypatch.setattr(LlamaCppBackend, "_host_forced_table_archs", staticmethod(probe))
+    backend = _apple_backend("deepseek41", {PLE: DSV41_ENGRAM}, avail_gib = 119)
+    ot = ["-ot", "per_layer_token_embd=MTL0"]
+    backend._managed_lazy_mode_flags(
+        "/m.gguf",
+        caps = _CAPS,
+        extra_args = ot,
+        env = {},
+        resident_fits = lambda _t: True,
+        binary = "/launch/llama-server",
+    )
+    backend._apple_lookup_table_discount(
+        0,
+        "/m.gguf",
+        caps = dict(_CAPS),
+        extra_args = ot,
+        model_size_fit = DSV41_TOTAL,
+        need_at_ctx = GIB,
+        budget_mib = 96 * 1024,
+        cache_ram = None,
+        env = {},
+        binary = "/launch/llama-server",
+    )
+    assert seen and set(seen) == {"/launch/llama-server"}
+
+
+@pytest.mark.parametrize(
+    "extra_args, resident",
+    [([], True), (["--parallel", "1"], True), (["-c", "0"], False), (["--parallel", "8"], False)],
+    ids = ["none", "same_parallel", "ctx_zero", "larger_parallel"],
+)
+def test_a_pass_through_that_reprices_the_cache_keeps_the_table_streamed(
+    tmp_path, _moe_cache_host, extra_args, resident
+):
+    """-c 0 or a larger --parallel wins over the cache the resident verdict priced."""
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128, extra_args = extra_args)
+    assert (_lazy_values(cmd) == ["off"]) is resident, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, n_parallel, reprices",
+    [
+        ([], 1, False),
+        (["-c", "0"], 1, True),
+        (["--ctx-size", "8192"], 1, False),
+        (["--parallel", "4"], 4, False),
+        (["--parallel", "4"], 2, True),
+        (["--parallel", "1"], 2, False),
+    ],
+)
+def test_the_metal_resident_verdict_abstains_on_the_same_overrides(
+    extra_args, n_parallel, reprices
+):
+    assert llama_cpp_module._pass_through_reprices_cache(extra_args, n_parallel) is reprices
