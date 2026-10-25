@@ -29174,6 +29174,14 @@ class LlamaCppBackend:
                             raise _AutoSplitAbandoned("the tensor plan shortened the context")
                         use_fit = False
                         _tp_planned = True
+                        # Publish the priced ceiling like the layer cap sweep (explicit toggle unchanged).
+                        if (
+                            _auto.engaged
+                            and self._can_estimate_kv()
+                            and max_available_ctx > 0
+                            and _subset_ckpts(tp_gpus) == 0
+                        ):
+                            _vram_fit_ctx = max_available_ctx
                         if explicit_ctx and not self._can_estimate_kv():
                             # Tensor mode emits --fit off, so nothing downstream catches it.
                             _unmeasured_ctx_notice = self._unmeasured_context_notice(

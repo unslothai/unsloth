@@ -364,6 +364,25 @@ def test_wired_dense_two_gpus_launches_tensor(tmp_path, monkeypatch):
     assert backend._auto_split_decision.mode == "tensor" and backend._auto_split_decision.auto
 
 
+def test_wired_auto_tensor_publishes_the_vram_fit_context(tmp_path, monkeypatch):
+    # The layer load it replaces publishes the fitted context; the auto tensor plan prices one too.
+    backends = []
+    off, on, on_backend = _launch_off_vs_on(
+        tmp_path,
+        monkeypatch,
+        memory = TWO_T4_MEM,
+        model_gib = 6,
+        names = TWO_T4_NAMES,
+        setup = lambda backend: (backends.append(backend), _native_ctx(backend, 32768)),
+        gpu_memory_mode = "auto",
+        n_ctx = 0,
+    )
+    assert _split_flag(off["cmd"]) != "tensor" and _split_flag(on["cmd"]) == "tensor"
+    assert backends[0].vram_fit_context_length == backends[0].max_context_length > 0
+    assert on_backend._auto_tensor_live
+    assert on_backend.vram_fit_context_length == on_backend.max_context_length > 0
+
+
 def test_wired_kill_switch(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
