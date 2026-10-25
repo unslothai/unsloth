@@ -1018,10 +1018,26 @@ def _skip_free_unsharded_param():
     return None
 
 
+def _compiled_block_modules(model):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+    inside = set()
+    for module in model.modules():
+        if id(module) in inside or not getattr(type(module).forward, "_unsloth_block_compiled", False):
+            continue
+        if module.__dict__.get("_unsloth_block_mode", 1) == 0:
+            continue
+        inside.update(id(m) for m in module.modules())
+    return inside
+
+
 def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
-    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place."""
+    step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
     if not _block_cudagraphs_requested():
+        return 0
+    blocks = _compiled_block_modules(model)
+    if not blocks:
         return 0
     FSDPModule = _fsdp_module_class()
     kept, nbytes = 0, 0
@@ -1034,6 +1050,9 @@ def _keep_unsharded_for_block_cudagraphs(model):
             group = None
         for fsdp_param in getattr(group, "fsdp_params", None) or ():
             if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
+                continue
+            info = getattr(fsdp_param, "_module_info", None)
+            if id(getattr(info, "module", None)) not in blocks:
                 continue
             if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
                 return kept  # a torch without this FSDP2 internal: graphs re-record as before
