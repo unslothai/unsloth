@@ -119,7 +119,8 @@ def concat_wav(clips: list[bytes], gap_ms: int) -> bytes:
     assert params is not None
     channels, width, rate = params
     gap_ms = min(max(0, gap_ms), MAX_GAP_MS)
-    silence = b"\x00" * (int(rate * gap_ms / 1000) * channels * width)
+    # 8-bit WAV is unsigned: silence is 0x80.
+    silence = (b"\x80" if width == 1 else b"\x00") * (int(rate * gap_ms / 1000) * channels * width)
     if sum(len(f) for f in frames) + len(silence) * max(0, len(frames) - 1) > MAX_OUTPUT_BYTES:
         raise FlowNodeError("The joined audio would be over 1 GB; join fewer or shorter clips")
     out = io.BytesIO()
