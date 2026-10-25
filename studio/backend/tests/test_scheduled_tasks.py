@@ -1218,7 +1218,7 @@ def test_thinking_effort_resolves_to_the_loaded_model(monkeypatch, reasoning, ef
 
 
 def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection(monkeypatch):
-    loaded_gguf(monkeypatch, supports_reasoning = False)
+    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
     assert scheduler_module._reasoning_fields("highest", False, on_loaded_model = False) == {
         "enable_thinking": True,
         "reasoning_effort": "high",
@@ -2170,6 +2170,35 @@ def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkey
     )
     assert answer.content == "Dawn light." and producer.payload.model == SwapWorld.TASK_MODEL
     assert world.unloaded == [] and world.reloads == [] and world.loaded == SwapWorld.EARLIER
+
+
+def test_thinking_off_reaches_a_model_kept_beside_a_primary_without_reasoning(monkeypatch):
+    from core.inference import model_slots
+
+    world = SwapWorld(monkeypatch)
+    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
+    beside = object()
+    monkeypatch.setattr(model_slots, "visible", lambda: [beside])
+    monkeypatch.setattr(
+        model_slots,
+        "serving_slot",
+        lambda requested, candidates, satisfies: beside
+        if requested == SwapWorld.TASK_MODEL
+        else None,
+    )
+    producer = FakeProducer(completion("Dawn light."))
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+    task = make_task(model = SwapWorld.TASK_MODEL, reasoningEffort = "off")
+    asyncio.run(
+        generate_answer(
+            SimpleNamespace(state = SimpleNamespace()),
+            task,
+            {"id": "run-1", "source": "schedule"},
+            threading.Event(),
+        )
+    )
+    assert producer.payload.enable_thinking is False
+    assert world.unloaded == [] and world.loaded == SwapWorld.EARLIER
 
 
 def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):

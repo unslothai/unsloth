@@ -235,18 +235,22 @@ def _sole_kept_model() -> Optional[str]:
     return names[0] if len(names) == 1 else None
 
 
+def _primary_serves(model: str) -> bool:
+    from routes.inference import _loaded_identity_satisfies, _loaded_satisfies
+    return _loaded_satisfies(model) or _loaded_identity_satisfies(model)
+
+
 def _model_is_loaded(model: str) -> bool:
     """Loaded as the primary or alongside it; the producer routes to whichever serves it."""
     from core.inference import model_slots
-    from routes.inference import _loaded_identity_satisfies, _loaded_satisfies
 
-    def satisfies(requested: str) -> bool:
-        return _loaded_satisfies(requested) or _loaded_identity_satisfies(requested)
-
-    if satisfies(model):
+    if _primary_serves(model):
         return True
     candidates = model_slots.visible()
-    return bool(candidates) and model_slots.serving_slot(model, candidates, satisfies) is not None
+    return (
+        bool(candidates)
+        and model_slots.serving_slot(model, candidates, _primary_serves) is not None
+    )
 
 
 # Levels the request accepts; a template may list others, which a run never sends.
@@ -382,8 +386,6 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         _maybe_auto_switch_model,
         _unload_model_impl,
         allow_model_switch_for_request,
-        _loaded_identity_satisfies,
-        _loaded_satisfies,
         get_inference_backend,
     )
 
@@ -392,8 +394,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             return
         with unattended_activity():
             current = loaded_identity()
-            on_primary = _loaded_satisfies(swap.model) or _loaded_identity_satisfies(swap.model)
-            if not on_primary and _model_is_loaded(swap.model):
+            if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
                 # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
                 # was never replaced, so only the task model goes.
                 await _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
@@ -522,7 +523,11 @@ async def generate_answer(
                     **_reasoning_fields(
                         task.get("reasoningEffort"),
                         provider is not None,
-                        on_loaded_model = not allow_switch,
+                        # Only the primary's levels are known here: a model kept beside it gets the generic fields.
+                        on_loaded_model = not allow_switch
+                        and (
+                            not model_fields.get("model") or _primary_serves(model_fields["model"])
+                        ),
                     ),
                 }
             )
