@@ -197,6 +197,26 @@ async def test_compare_handler_reports_mean_delta():
     assert out["delta"] == pytest.approx((0 - 10 - 30 - 40) / 4)
 
 
+@run_async
+async def test_chained_compares_report_the_new_delta():
+    first = T.compare(
+        T.make_table([{"m": "a", "v": 10.0}, {"m": "b", "v": 20.0}]),
+        T.make_table([{"m": "a", "v": 0.0}, {"m": "b", "v": 0.0}]),
+        ["m"],
+        "v",
+    )
+    base = T.compare(
+        T.make_table([{"m": "a", "v": 5.0}, {"m": "b", "v": 15.0}]),
+        T.make_table([{"m": "a", "v": 0.0}, {"m": "b", "v": 0.0}]),
+        ["m"],
+        "v",
+    )
+    ctx = Ctx(inputs = {"table": first, "baseline": base}, params = {"key": ["m"], "metric": "delta"})
+    out = await load_handlers()["table.compare"](ctx)
+    # Deltas [10, 20] against [5, 15]: the new difference is 5 each, not the old deltas' mean of 15.
+    assert out["delta"] == pytest.approx(5.0)
+
+
 def test_concat_drops_settings_when_any_table_has_none():
     a = T.make_table([{"x": 1}], meta = {"settings": {"t": 0}})
     b = T.make_table([{"x": 2}])

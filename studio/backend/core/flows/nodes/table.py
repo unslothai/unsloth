@@ -316,7 +316,8 @@ def compare(
     unit = by_id[metric].get("unit")
     columns = [by_id[k] for k in key]
     columns += [
-        {**by_id[metric], "type": "number"},
+        # A metric that was a delta before is plain data here: only the new difference keeps that role.
+        {**{k: v for k, v in by_id[metric].items() if k != "role"}, "type": "number"},
         {
             "id": ids["baseline"],
             "label": "baseline",
