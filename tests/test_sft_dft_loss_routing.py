@@ -99,7 +99,6 @@ def test_dft_runs_on_the_fused_head_not_the_nll_loss():
 
 
 def test_dft_eval_outputs_carry_logits():
-    # prediction_step reads outputs.logits; the fused head has none, so they come from a plain no-grad forward.
     Trainer = _trainer_class()
     model = _FusedModel()
     loss, outputs = Trainer("dft").compute_loss(
@@ -111,7 +110,6 @@ def test_dft_eval_outputs_carry_logits():
 
 
 def test_dft_refuses_a_qat_lm_head():
-    # The fused head projects with lm_head.weight directly, so QAT's fake quantizers would be skipped.
     Trainer = _trainer_class()
     model = _FusedModel()
     head = torch.nn.Linear(4, 5, bias = False)
@@ -126,7 +124,6 @@ def test_dft_refuses_a_qat_lm_head():
 
 
 def test_dft_device_average_ignores_tensor_parallel_ranks():
-    # average_tokens_across_devices: scale by the data parallel ranks only (num_processes // tp_size), as TRL.
     Trainer = _trainer_class()
     trainer = Trainer("dft")
     trainer.args.average_tokens_across_devices = True

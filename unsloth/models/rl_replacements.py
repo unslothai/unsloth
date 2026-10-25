@@ -956,9 +956,8 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        # TRL >= 1.15 computes loss_type="dft" only in its own compute_loss, which this one replaces, so DFT would
-        # silently train as plain NLL. Run it on TRL's fused LM head (added in __init__), which returns per-token
-        # log-probabilities without building the logits. Older TRL routes DFT through compute_loss_func instead.
+        # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
+        # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
         if (
             getattr(self.args, "loss_type", None) == "dft"
             and self.compute_loss_func is None
