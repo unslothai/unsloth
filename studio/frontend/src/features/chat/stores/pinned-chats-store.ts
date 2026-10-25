@@ -2,55 +2,74 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 
-// Client-side pin state for chats, keyed by stable chat id. Kept in localStorage, not the chat DB.
-// New pins are prepended so the most recently pinned chat sorts first in the Pinned section.
-export interface PinnedChatsState {
+export type PinnedChatPlacement = "before" | "after";
+
+export interface PinnedChatsActions {
+  setPinned: (ids: string[], pinned: boolean) => void;
+  move: (id: string, targetId: string, placement: PinnedChatPlacement) => void;
+}
+
+export interface PinnedChatsState extends PinnedChatsActions {
+  /** Stable chat IDs (or pair IDs for comparisons), in manual pin order. */
   pinnedIds: string[];
   togglePin: (id: string) => void;
   unpin: (id: string) => void;
-  /** Pins or unpins a whole selection in one write. */
-  setPinned: (ids: string[], pinned: boolean) => void;
 }
 
-export const usePinnedChatsStore = create<PinnedChatsState>()(
-  persist(
-    (set) => ({
-      pinnedIds: [],
-      togglePin: (id) =>
-        set((state) => ({
-          pinnedIds: state.pinnedIds.includes(id)
-            ? state.pinnedIds.filter((x) => x !== id)
-            : [id, ...state.pinnedIds],
-        })),
-      unpin: (id) =>
-        set((state) => ({
-          pinnedIds: state.pinnedIds.filter((x) => x !== id),
-        })),
-      setPinned: (ids, pinned) =>
-        set((state) => {
-          if (!pinned) {
-            const dropping = new Set(ids);
-            return {
-              pinnedIds: state.pinnedIds.filter((id) => !dropping.has(id)),
-            };
-          }
-          // Already pinned chats keep their place; the rest lead, as one pin does.
-          const additions = ids.filter((id) => !state.pinnedIds.includes(id));
-          if (additions.length === 0) return state;
-          return { pinnedIds: [...additions, ...state.pinnedIds] };
-        }),
-    }),
-    {
-      name: "unsloth_pinned_chats",
-      merge: (persisted, current) => {
-        const saved = persisted as Partial<PinnedChatsState> | undefined;
-        return {
-          ...current,
-          pinnedIds: Array.isArray(saved?.pinnedIds) ? saved.pinnedIds : [],
-        };
-      },
-    },
-  ),
-);
+let actions: PinnedChatsActions | null = null;
+
+/** Bind persistence at runtime without pulling API/auth modules into this state store. */
+export function setPinnedChatsActions(next: PinnedChatsActions | null): void {
+  actions = next;
+}
+
+export const usePinnedChatsStore = create<PinnedChatsState>((set, get) => ({
+  pinnedIds: [],
+  togglePin: (id) => get().setPinned([id], !get().pinnedIds.includes(id)),
+  unpin: (id) => get().setPinned([id], false),
+  setPinned: (ids, pinned) => {
+    if (actions) {
+      actions.setPinned(ids, pinned);
+      return;
+    }
+    set((state) => {
+      if (!pinned) {
+        const dropping = new Set(ids);
+        const next = state.pinnedIds.filter((id) => !dropping.has(id));
+        return next.length === state.pinnedIds.length
+          ? state
+          : { pinnedIds: next };
+      }
+      const additions = [...new Set(ids)].filter(
+        (id) => !state.pinnedIds.includes(id),
+      );
+      return additions.length === 0
+        ? state
+        : { pinnedIds: [...additions, ...state.pinnedIds] };
+    });
+  },
+  move: (id, targetId, placement) => {
+    if (actions) {
+      actions.move(id, targetId, placement);
+      return;
+    }
+    set((state) => {
+      if (
+        id === targetId ||
+        !state.pinnedIds.includes(id) ||
+        !state.pinnedIds.includes(targetId)
+      )
+        return state;
+      const next = state.pinnedIds.filter((entry) => entry !== id);
+      next.splice(
+        next.indexOf(targetId) + (placement === "after" ? 1 : 0),
+        0,
+        id,
+      );
+      return next.every((entry, index) => entry === state.pinnedIds[index])
+        ? state
+        : { pinnedIds: next };
+    });
+  },
+}));

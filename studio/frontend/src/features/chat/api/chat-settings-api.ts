@@ -15,10 +15,7 @@ import type {
   ResearchMcpSource,
   ResearchWebsitePolicy,
 } from "../types/research";
-import type {
-  InferenceParams,
-  PersistedInferenceParams,
-} from "../types/runtime";
+import type { PersistedInferenceParams } from "../types/runtime";
 import {
   ChatSettingsRequestError,
   isUnderKeepaliveBudget,
@@ -33,6 +30,8 @@ export interface PersistedChatPreset {
 }
 
 export interface PersistedChatSettings {
+  /** Ordered sidebar chat/pair IDs, shared by clients of this installation. */
+  pinnedChatIds?: string[];
   inferenceParams?: PersistedInferenceParams;
   /** Last-used params per checkpoint id, replayed on model switch. */
   inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
@@ -141,8 +140,10 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function getChatSettings(): Promise<PersistedChatSettings> {
-  const response = await authFetch("/api/chat/settings");
+export async function getChatSettings(
+  options: { signal?: AbortSignal } = {},
+): Promise<PersistedChatSettings> {
+  const response = await authFetch("/api/chat/settings", options);
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;
 }
@@ -172,8 +173,15 @@ export async function saveChatSettingsPatchIfCurrent(
   patch: PersistedChatSettings,
   expectedAbsent: Array<keyof PersistedChatSettings> = [],
   expectedAbsentPaths: ChatSettingsPath[] = [],
+  options: {
+    signal?: AbortSignal;
+    requireSupport?: boolean;
+    operationId?: string;
+    unpinnedChatIds?: string[];
+  } = {},
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const response = await authFetch("/api/chat/settings/compare-and-set", {
+    signal: options.signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -181,12 +189,21 @@ export async function saveChatSettingsPatchIfCurrent(
       expectedAbsent,
       expectedAbsentPaths,
       patch,
+      ...(options.operationId ? { operationId: options.operationId } : {}),
+      ...(options.unpinnedChatIds
+        ? { unpinnedChatIds: options.unpinnedChatIds }
+        : {}),
     }),
   });
-  // A backend without this route answers 404 (--api-only) or 405 (the browser build's GET-only SPA
-  // catch-all). The desktop app adopts any backend above a version floor, so that pairing is
-  // supported, not a bug. Report "not applied" so the caller leaves the server alone.
-  if (response.status === 404 || response.status === 405) {
+  // A backend without this route answers 404 (--api-only) or 405 (the browser
+  // build's GET-only SPA catch-all). The desktop app adopts any backend above a
+  // version floor, so that pairing is supported, not a bug. Report "not
+  // applied" so the caller leaves the server alone.
+  // Callers with an explicit compatibility path can request the original error.
+  if (
+    !options.requireSupport &&
+    (response.status === 404 || response.status === 405)
+  ) {
     return { settings: expected, applied: false };
   }
   return parseJsonOrThrow<ConditionalChatSettingsResponse>(response);

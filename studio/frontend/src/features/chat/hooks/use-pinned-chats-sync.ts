@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useEffect } from "react";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+  AUTH_SESSION_MARK_KEY,
+  AUTH_TOKEN_KEY,
+  hasAuthToken,
+} from "@/features/auth";
+import { refreshPinnedChats, resetPinnedChats } from "../sync-pinned-chats";
+import { PIN_JOURNAL_PREFIX } from "../utils/pinned-chats-journal";
+
+/** Keep pins current across clients, and discard in-flight work at session boundaries. */
+export function usePinnedChatsSync(): void {
+  useEffect(() => {
+    let sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
+    const refresh = () => {
+      if (hasAuthToken() && document.visibilityState === "visible") {
+        void refreshPinnedChats().catch(() => undefined);
+        sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
+      }
+    };
+    const reconcileSession = () => {
+      resetPinnedChats({ clearPending: true });
+      sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
+      refresh();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.startsWith(PIN_JOURNAL_PREFIX)) refresh();
+      if (
+        event.key === null ||
+        event.key === AUTH_SESSION_MARK_KEY ||
+        event.key === AUTH_TOKEN_KEY
+      ) {
+        const nextMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
+        if (nextMark !== sessionMark || !hasAuthToken()) reconcileSession();
+      }
+    };
+    window.addEventListener(AUTH_SESSION_CLEARED_EVENT, reconcileSession);
+    window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcileSession);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = window.setInterval(refresh, 30_000);
+    refresh();
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcileSession);
+      window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcileSession);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      resetPinnedChats({
+        clearPending:
+          !hasAuthToken() ||
+          localStorage.getItem(AUTH_SESSION_MARK_KEY) !== sessionMark,
+      });
+    };
+  }, []);
+}

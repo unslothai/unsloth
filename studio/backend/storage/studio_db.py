@@ -752,6 +752,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Remember explicit unpins independently of browser migration. These are sidebar
+    # IDs, including comparison pair IDs, so they cannot reference one thread row.
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_tombstones (id TEXT NOT NULL PRIMARY KEY)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_deletions (id TEXT NOT NULL PRIMARY KEY)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_operations (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -2860,6 +2865,26 @@ def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
 
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
+    thread_ids = set(thread_ids)
+    # Comparison sidebar rows use pair IDs. Remember their deletion separately
+    # from unpins so a queued pin cannot wait forever for a deleted comparison.
+    pairs = {
+        row["pair_id"]
+        for row in conn.execute("SELECT id, pair_id FROM chat_threads WHERE pair_id IS NOT NULL")
+        if row["id"] in thread_ids and row["pair_id"]
+    }
+    deleted_pairs = {
+        pair
+        for pair in pairs
+        if all(
+            row["id"] in thread_ids
+            for row in conn.execute("SELECT id FROM chat_threads WHERE pair_id = ?", (pair,))
+        )
+    }
+    conn.executemany(
+        "INSERT OR IGNORE INTO chat_pin_deletions (id) VALUES (?)",
+        [(id,) for id in thread_ids | deleted_pairs],
+    )
     deleted_at = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn.executemany(
         """
@@ -2964,6 +2989,7 @@ def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], lis
     try:
         conn.execute("BEGIN IMMEDIATE")
         active = delete_chat_threads_in(conn, ids)
+        _load_chat_pins_in_conn(conn, repair = True, remember_removed = True)
         conn.commit()
         return active
     except Exception:
@@ -3135,6 +3161,7 @@ def clear_chat_history_with_replay_status(
         _tombstone_chat_threads(conn, sorted(set(additional_thread_ids) | set(removed)))
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
+        _load_chat_pins_in_conn(conn, repair = True, remember_removed = True)
         _mark_chat_attachment_inventory_clean(conn)
         if operation_id is not None:
             conn.execute(
@@ -3451,6 +3478,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         _tombstone_chat_threads(conn, thread_ids)
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
+        _load_chat_pins_in_conn(conn, repair = True, remember_removed = True)
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
         if delete_files:
@@ -5683,6 +5711,160 @@ def upsert_app_setting_map_entry(
         conn.close()
 
 
+_CHAT_PINS_KEY = "pinnedChatIds"
+MAX_PINNED_CHAT_IDS = 10_000
+MAX_PINNED_CHAT_ID_LENGTH = 512
+
+
+def _normalized_chat_pin_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(
+        dict.fromkeys(
+            item
+            for item in value
+            if isinstance(item, str)
+            and 0 < len(item) <= MAX_PINNED_CHAT_ID_LENGTH
+            and not any(0xD800 <= ord(character) <= 0xDFFF for character in item)
+        )
+    )
+
+
+def _existing_chat_pin_ids(conn: sqlite3.Connection, ids: list[str]) -> list[str]:
+    """Keep sidebar IDs that still have a thread, including archived comparisons."""
+    present: set[str] = set()
+    chunk_size = _SQLITE_IN_CHUNK_SIZE // 2
+    for start in range(0, len(ids), chunk_size):
+        chunk = ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""SELECT id FROM chat_threads
+                WHERE id IN ({placeholders}) AND (pair_id IS NULL OR pair_id = '')
+                UNION SELECT pair_id AS id FROM chat_threads WHERE pair_id IN ({placeholders})""",
+            (*chunk, *chunk),
+        ).fetchall()
+        present.update(row["id"] for row in rows)
+    return [id for id in ids if id in present][:MAX_PINNED_CHAT_IDS]
+
+
+def _store_chat_pins_in_conn(conn: sqlite3.Connection, ids: list[str]) -> None:
+    conn.execute(
+        """INSERT INTO chat_settings (key, value_json, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+               value_json = excluded.value_json, updated_at = excluded.updated_at""",
+        (_CHAT_PINS_KEY, json.dumps(ids), datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _load_chat_pins_in_conn(
+    conn: sqlite3.Connection,
+    *,
+    repair: bool = False,
+    remember_removed: bool = False,
+) -> tuple[Optional[list[str]], bool]:
+    """None means genuinely absent; malformed data becomes a recoverable empty list."""
+    row = conn.execute(
+        "SELECT value_json FROM chat_settings WHERE key = ?", (_CHAT_PINS_KEY,)
+    ).fetchone()
+    if row is None:
+        return None, False
+    value = _json_loads(row["value_json"], None)
+    normalized = _normalized_chat_pin_ids(value)
+    pins = _existing_chat_pin_ids(conn, normalized)
+    dirty = value != pins
+    if repair and dirty:
+        if value != normalized:
+            # Retain the damaged value for recovery; never quarantine an ordinary orphan.
+            conn.execute(
+                """INSERT INTO chat_settings_quarantine
+                   (key, value_json, reason, quarantined_at) VALUES (?, ?, ?, ?)""",
+                (
+                    _CHAT_PINS_KEY,
+                    row["value_json"],
+                    "invalid_chat_pins",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        if remember_removed:
+            remaining = set(pins)
+            conn.executemany(
+                "INSERT OR IGNORE INTO chat_pin_tombstones (id) VALUES (?)",
+                [(id,) for id in normalized if id not in remaining],
+            )
+        _store_chat_pins_in_conn(conn, pins)
+    return pins, dirty
+
+
+def get_chat_pins() -> Optional[list[str]]:
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+    try:
+        pins, dirty = _load_chat_pins_in_conn(conn)
+        if dirty:
+            # Healthy polling is read-only. Re-read under the write lock before repairing
+            # so a pin committed since the initial read is never overwritten.
+            conn.execute("BEGIN IMMEDIATE")
+            pins, _ = _load_chat_pins_in_conn(conn, repair = True)
+            conn.commit()
+        return pins
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def migrate_chat_pins(ids: list[str]) -> Optional[list[str]]:
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current, _ = _load_chat_pins_in_conn(conn, repair = True)
+        incoming = _existing_chat_pin_ids(conn, _normalized_chat_pin_ids(ids))
+        blocked: set[str] = set()
+        for start in range(0, len(incoming), _SQLITE_IN_CHUNK_SIZE):
+            chunk = incoming[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            blocked.update(
+                row["id"]
+                for row in conn.execute(
+                    f"SELECT id FROM chat_pin_tombstones WHERE id IN ({placeholders})", chunk
+                )
+            )
+        present = set(current or [])
+        additions = [id for id in incoming if id not in present and id not in blocked]
+        pins = [*(current or []), *additions][:MAX_PINNED_CHAT_IDS]
+        if pins != (current or []):
+            _store_chat_pins_in_conn(conn, pins)
+            current = pins
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _record_chat_pin_change(
+    conn: sqlite3.Connection,
+    previous: Any,
+    ids: list[str],
+    explicit_unpins: Iterable[str] = (),
+) -> None:
+    old = set(_normalized_chat_pin_ids(previous))
+    present = set(ids)
+    # A browser may unpin before legacy chat import creates the server row. Record
+    # that intent even though it removes nothing from today's canonical pin list.
+    removed = (old - present) | set(explicit_unpins)
+    conn.executemany(
+        "INSERT OR IGNORE INTO chat_pin_tombstones (id) VALUES (?)",
+        [(id,) for id in removed],
+    )
+    # Only an explicit pin write clears an unpin; migration never calls this helper.
+    conn.executemany(
+        "DELETE FROM chat_pin_tombstones WHERE id = ?", [(id,) for id in ids if id not in old]
+    )
+
+
 def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
@@ -5770,6 +5952,8 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if _CHAT_PINS_KEY in updates:
+            _load_chat_pins_in_conn(conn, repair = True)
         current, corrupt = _load_chat_settings_for_merge(conn)
         # An atomic key carries its whole value, so it repairs a quarantined row
         # rather than patching a base that is no longer there.
@@ -5784,6 +5968,12 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             raise CorruptSettingsError(
                 f"Cannot apply partial settings patch to corrupt key(s): {keys}"
             )
+        if _CHAT_PINS_KEY in updates:
+            updates = {
+                **updates,
+                _CHAT_PINS_KEY: _existing_chat_pin_ids(conn, updates[_CHAT_PINS_KEY]),
+            }
+            _record_chat_pin_change(conn, current.get(_CHAT_PINS_KEY), updates[_CHAT_PINS_KEY])
         merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -5834,6 +6024,8 @@ def upsert_chat_settings_merge_if_current(
     updates: dict[str, Any],
     expected_absent: Iterable[str] = (),
     expected_absent_paths: Iterable[Iterable[str]] = (),
+    operation_id: Optional[str] = None,
+    unpinned_chat_ids: Iterable[str] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Atomically merge ``updates`` only if ``expected`` still matches. Expected is a recursive subset
     so legacy keys omitted by the current client do not prevent a guarded migration. Any field the
@@ -5844,7 +6036,20 @@ def upsert_chat_settings_merge_if_current(
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if _CHAT_PINS_KEY in updates:
+            _load_chat_pins_in_conn(conn, repair = True)
         current, corrupt = _load_chat_settings_for_merge(conn)
+        if (
+            operation_id is not None
+            and conn.execute(
+                "SELECT 1 FROM chat_pin_operations WHERE id = ?", (operation_id,)
+            ).fetchone()
+            is not None
+        ):
+            # The earlier response may have been lost. Acknowledging its operation
+            # must not replay it over another browser's more recent unpin.
+            conn.commit()
+            return current, True
         matches_expected = _chat_settings_match_expected(current, expected)
         has_new_expected_field = any(key in current for key in expected_absent)
         has_new_expected_path = any(
@@ -5870,6 +6075,35 @@ def upsert_chat_settings_merge_if_current(
             # those timestamps reads as a settings change.
             conn.commit()
             return current, True
+        if _CHAT_PINS_KEY in updates:
+            requested = updates[_CHAT_PINS_KEY]
+            existing = _existing_chat_pin_ids(conn, requested)
+            missing = set(requested) - set(existing)
+            # A visible browser-only chat may still be waiting for legacy import.
+            # Leave its operation unacknowledged so the durable client journal retries.
+            deleted = set()
+            chunk_size = _SQLITE_IN_CHUNK_SIZE // 2
+            for start in range(0, len(requested), chunk_size):
+                chunk = requested[start : start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                deleted.update(
+                    row["id"]
+                    for row in conn.execute(
+                        f"SELECT id FROM chat_pin_deletions WHERE id IN ({placeholders}) "
+                        f"UNION SELECT id FROM chat_thread_tombstones WHERE id IN ({placeholders})",
+                        (*chunk, *chunk),
+                    )
+                )
+            if missing - deleted:
+                conn.commit()
+                return current, False
+            updates = {
+                **updates,
+                _CHAT_PINS_KEY: existing,
+            }
+            _record_chat_pin_change(
+                conn, current.get(_CHAT_PINS_KEY), updates[_CHAT_PINS_KEY], unpinned_chat_ids
+            )
         merged = _merge_settings_updates(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -5882,6 +6116,8 @@ def upsert_chat_settings_merge_if_current(
             """,
             [(key, json.dumps(value), now) for key, value in merged.items()],
         )
+        if operation_id is not None:
+            conn.execute("INSERT INTO chat_pin_operations (id) VALUES (?)", (operation_id,))
         conn.commit()
         return merged, True
     except CorruptSettingsError:

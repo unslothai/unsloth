@@ -28,6 +28,7 @@ import {
   StopRunningChatsDialog,
   useOpeningFolder,
   useChatRuntimeStore,
+  usePinnedChatsSync,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
@@ -205,6 +206,7 @@ function HubSourceNoticeMount() {
 // The chat settings are the installation's, and the Models page and the model
 // picker read them too, so hydration cannot wait for ChatPage to mount.
 function ChatSettingsHydrationMount() {
+  usePinnedChatsSync();
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
