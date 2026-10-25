@@ -10632,7 +10632,6 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
-                    # the encoder pins overlap the rest of the load
                     start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)

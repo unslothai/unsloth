@@ -7130,7 +7130,6 @@ def _apply_group_offload(
             # pinning would copy the small-host route's memory-mapped bytes back into host RAM
             pin_streamed = (False, False)
             gkwargs["low_cpu_mem_usage"] = True
-        # Encoders that do not fit whole pin the prefix of their groups the budget leaves (deferred pinner only).
         encoder_cap_mib = 0
         if encoders_defer and stream_text_encoders and not pin_streamed[1] and not small_host:
             encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0])
@@ -7906,7 +7905,6 @@ def _apply_streaming_offload(
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
-        # Image loads: the streamed text encoders alone defer (registered pins); see _apply_group_offload.
         encoders_defer = not defer and prefetch and _encoder_background_pin_wanted(pipe)
 
         def _encoder_defers(name: Any, module: Any, offload_type: str) -> bool:
