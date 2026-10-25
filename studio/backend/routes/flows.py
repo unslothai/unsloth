@@ -154,7 +154,20 @@ def _example_summary(doc: dict) -> dict:
         "nodeCount": len(doc.get("nodes") or []),
         "example": True,
         "tags": meta.get("tags") or [],
+        "needs": _example_needs(doc),
     }
+
+
+def _example_needs(doc: dict) -> list[str]:
+    """The model kinds an example needs, in first-use order, plus "training" when it fine-tunes."""
+    needs: list[str] = []
+    for model in (doc.get("requirements") or {}).get("models") or []:
+        kind = model.get("kind") if isinstance(model, dict) else None
+        if kind and not model.get("optional") and kind not in needs:
+            needs.append(kind)
+    if any(str(n.get("type", "")).startswith("train.") for n in doc.get("nodes") or []):
+        needs.append("training")
+    return needs
 
 
 @router.get("/examples")

@@ -43,6 +43,12 @@ import {
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
+import {
+  type GalleryCategory,
+  categoriesOf,
+  needsLine,
+  visibleCategories,
+} from "../ux-rules";
 import { NotebooksSection } from "./notebooks-section";
 import { notebookName } from "./notebooks";
 import { templateDocument } from "./templates";
@@ -148,6 +154,14 @@ function FlowCard({
               {flow.description}
             </p>
           )}
+          {flow.example && needsLine(flow.needs) && (
+            <p
+              className="text-[11px] text-foreground/70"
+              data-testid="flows-card-needs"
+            >
+              {needsLine(flow.needs)}
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground">
             {flow.nodeCount} nodes
             {flow.updatedAt && !flow.example
@@ -177,6 +191,7 @@ function FlowCard({
         <button
           type="button"
           aria-label={`Delete ${flow.name}`}
+          title="Delete"
           onClick={onDelete}
           className="absolute top-2 right-2 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
         >
@@ -388,6 +403,7 @@ export function FlowsGalleryPage(): ReactElement {
   const [flows, setFlows] = useState<FlowSummary[] | null>(null);
   const [examples, setExamples] = useState<FlowSummary[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  const [category, setCategory] = useState<GalleryCategory | null>(null);
   const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(() => {
@@ -533,25 +549,56 @@ export function FlowsGalleryPage(): ReactElement {
       {examples.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="font-semibold text-sm">Examples</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {examples.map((example) => (
-              <FlowCard
-                key={example.id}
-                flow={example}
-                action="Use this"
-                onOpen={() => {
-                  copyExample(example.id)
-                    .then((record) => open(record.id))
-                    .catch((e: unknown) =>
-                      toast.error(
-                        e instanceof Error
-                          ? e.message
-                          : "Could not copy the example",
-                      ),
-                    );
-                }}
-              />
+          <div
+            className="flex flex-wrap gap-1.5"
+            role="tablist"
+            aria-label="Example categories"
+          >
+            {[
+              { id: null, label: "All", count: examples.length },
+              ...visibleCategories(examples),
+            ].map((chip) => (
+              <button
+                key={chip.id ?? "all"}
+                type="button"
+                role="tab"
+                aria-selected={category === chip.id}
+                onClick={() => setCategory(chip.id)}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                  category === chip.id
+                    ? "border-foreground/30 bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-muted"
+                }`}
+                data-testid="flows-category"
+              >
+                {chip.label} <span className="opacity-60">{chip.count}</span>
+              </button>
             ))}
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {examples
+              .filter(
+                (example) =>
+                  category === null || categoriesOf(example).includes(category),
+              )
+              .map((example) => (
+                <FlowCard
+                  key={example.id}
+                  flow={example}
+                  action="Use this"
+                  onOpen={() => {
+                    copyExample(example.id)
+                      .then((record) => open(record.id))
+                      .catch((e: unknown) =>
+                        toast.error(
+                          e instanceof Error
+                            ? e.message
+                            : "Could not copy the example",
+                        ),
+                      );
+                  }}
+                />
+              ))}
           </div>
         </section>
       )}
