@@ -443,9 +443,7 @@ class GroupPrefetcher:
             from .diffusion_memory import _storage_nbytes
             staged = sum(sum(_storage_nbytes(cpu[t])) for t, p in zip(tensors, pinned) if not p)
             self._bound_staging(staged)
-        # Outside inference mode, like the load's resident placement: compiled blocks guard on each parameter's
-        # dispatch keys, so a streamed block's weights copied under the render's inference_mode compiled a second
-        # graph per block function beside the resident blocks' (FLUX.1: two per block in the background compile).
+        # compiled blocks guard on dispatch keys: inference-mode copies would recompile every block (FLUX.1)
         with _normal_tensors(), torch.cuda.stream(stream):
             # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
             # to these copies (the allocator orders reuse per stream)

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streamed weights are normal tensors, like resident ones, even when a render copies them under inference_mode.
-
-Compiled blocks guard on each parameter's dispatch keys. A streamed block whose weights were copied under the
-render's ``torch.inference_mode()`` (an inference tensor) next to a resident block placed at load (a normal tensor)
-compiled a second graph per block function: FLUX.1's background compile traced every block twice."""
+"""Streamed weights stay normal tensors under a render's inference_mode, else compiled blocks recompile."""
 
 from __future__ import annotations
 
@@ -21,8 +17,6 @@ import core.inference.diffusion_offload_prefetch as op
 
 
 class _HostTensor:
-    """A pinned host copy whose device move makes a real tensor in whatever mode the copy runs under."""
-
     def __init__(self, n: int):
         self.n = n
 
@@ -106,8 +100,6 @@ def test_normal_tensors_restores_the_callers_modes():
 
 
 class _Block(torch.nn.Linear):
-    """Records, inside its forward (below the offload hook, after the onload), what its weight is."""
-
     seen: list = []
 
     def forward(self, x):
@@ -163,5 +155,4 @@ def test_resident_and_streamed_blocks_carry_the_same_dispatch_keys_under_inferen
     streamed = len(net.blocks) - resident
     assert resident > 0 and streamed > 0, (resident, streamed)
     assert {dev for _, _, dev in _Block.seen} == {"cuda"}
-    # One dispatch-key set across resident and streamed blocks: a compiled block function guards on it.
     assert {inf for _, inf, _ in _Block.seen} == {False}
