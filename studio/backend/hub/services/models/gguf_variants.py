@@ -1381,20 +1381,23 @@ async def _lookup_thread(fn, /, *args):
     return await loop.run_in_executor(_LOOKUP_POOL, call)
 
 
-def _claim_lookup(key) -> Optional[threading.Event]:
-    """None once ``key`` is claimed here, else the done event of the read already holding it."""
+def _claim_lookup(key) -> tuple[Optional[threading.Event], Optional[threading.Event]]:
+    """``(None, own)`` once ``key`` is claimed here, else ``(held, None)``: the done event
+    of the read already holding it."""
     with _lookup_arch_lock:
         held = _lookup_inflight.get(key)
-        if held is None:
-            _lookup_inflight[key] = threading.Event()
-        return held
+        if held is not None:
+            return held, None
+        own = _lookup_inflight[key] = threading.Event()
+        return None, own
 
 
-def _release_lookup(key) -> None:
+def _release_lookup(key, own: threading.Event) -> None:
+    """Release ``key`` if ``own`` still holds it: a late worker never drops a newer claim."""
     with _lookup_arch_lock:
-        done = _lookup_inflight.pop(key, None)
-    if done is not None:
-        done.set()
+        if _lookup_inflight.get(key) is own:
+            del _lookup_inflight[key]
+    own.set()
 
 
 async def _wait_for_lookup(done: threading.Event, deadline: float) -> bool:
@@ -1407,16 +1410,20 @@ async def _wait_for_lookup(done: threading.Event, deadline: float) -> bool:
     return True
 
 
-def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
+def _release_unrun_lookup(started: list, key, own, task: "asyncio.Future") -> None:
     """Release the inflight key of a read that never ran."""
     if not started and (task.cancelled() or task.exception() is not None):
-        _release_lookup(key)
+        _release_lookup(key, own)
 
 
 async def _lookup_await_once(key, deadline: float, fn, /, *args):
     """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time). A call
-    already in flight under ``key`` is waited for, then ``fn`` reruns on its cached answer."""
-    while (held := _claim_lookup(key)) is not None:
+    already in flight under ``key`` is waited for, then ``fn`` reruns on its cached answer
+    (or retries, when that call left none)."""
+    while True:
+        held, own = _claim_lookup(key)
+        if own is not None:
+            break
         if not await _wait_for_lookup(held, deadline):
             return None
 
@@ -1429,10 +1436,10 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
         try:
             return None if expired.is_set() else fn(*args)
         finally:
-            _release_lookup(key)
+            _release_lookup(key, own)
 
     task = asyncio.ensure_future(_lookup_thread(_run))
-    task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
+    task.add_done_callback(functools.partial(_release_unrun_lookup, started, key, own))
     loop = asyncio.get_running_loop()
     done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
     if task not in done:
@@ -1594,6 +1601,9 @@ async def _with_lookup_tables(
         )
 
         variants = list(answer.response.variants or ())
+        # A host that reads the tables resident lists no discount: no header is worth reading.
+        if not variants or not await listing_thread(True, _host_streams_lookup_tables):
+            return answer
         mode = await listing_thread(True, _listing_lazy_mode)
         found: dict[int, int] = {}
         arch: Optional[str] = None
@@ -1613,9 +1623,11 @@ async def _with_lookup_tables(
                 # Only a lazy one speaks for the repo: a repo can hold several families.
                 if lazy_architecture(local_arch):
                     arch = arch or local_arch
-                found[index] = table
-            else:
-                unresolved.append((index, v))
+                if local_arch is not None:
+                    found[index] = table
+                    continue
+            # Not on disk, or unreadable there (a shard still downloading): the Hub's header.
+            unresolved.append((index, v))
         remote_ok = (
             unresolved
             and not offline
@@ -1623,7 +1635,6 @@ async def _with_lookup_tables(
             and _lookup_remote_enabled()
             and not is_local_path(repo_id)
             and _is_valid_repo_id(repo_id)
-            and await listing_thread(True, _host_streams_lookup_tables)
         )
         if remote_ok:
             # Its own try: a Hub failure must not drop the local answers above.
@@ -1647,7 +1658,6 @@ async def _with_lookup_tables(
                         )
                 if lazy_architecture(arch):
                     _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
-                    expired = threading.Event()
                     tasks = {}
                     for index, v in unresolved:
                         identity = int(v.size_bytes or 0)
@@ -1658,60 +1668,26 @@ async def _with_lookup_tables(
                         if cached is not None:
                             found[index] = cached[1]
                             continue
-                        key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
-                        held = _claim_lookup(key)
-                        if held is not None:
-                            # Another listing is reading this header: take its cached answer.
-                            async def _shared(
-                                done = held,
-                                name = v.filename,
-                                ident = identity,
-                            ):
-                                if not await _wait_for_lookup(done, deadline):
-                                    return 0
-                                hit = remote_cached(repo_id, name, None, ident, mode = mode)
-                                return hit[1] if hit is not None else 0
-
-                            tasks[asyncio.ensure_future(_shared())] = index
-                            continue
-
-                        started: list = []
-
-                        def _read(
-                            name = v.filename,
-                            ident = identity,
-                            k = key,
-                            ran = started,
-                        ):
-                            ran.append(True)
-                            try:
-                                if expired.is_set():
-                                    return 0
-                                return _remote_lookup_bytes(
-                                    repo_id, name, hf_token, ident, mode, arch
-                                )
-                            finally:
-                                _release_lookup(k)
-
-                        task = asyncio.ensure_future(_lookup_thread(_read))
-                        task.add_done_callback(
-                            functools.partial(_release_unrun_lookup, started, key)
+                        key = ("table", repo_id.lower(), v.filename, identity, mode, _fingerprint)
+                        task = asyncio.ensure_future(
+                            _lookup_await_once(
+                                key,
+                                deadline,
+                                _remote_lookup_bytes,
+                                repo_id,
+                                v.filename,
+                                hf_token,
+                                identity,
+                                mode,
+                                arch,
+                            )
                         )
                         tasks[task] = index
-                    if tasks:
-                        done, pending = await asyncio.wait(
-                            tasks,
-                            timeout = max(0.0, deadline - asyncio.get_running_loop().time()),
-                        )
-                        expired.set()
-                        for task in pending:
-                            task.cancel()
-                        for task in done:
-                            if not task.cancelled() and task.exception() is None:
-                                found[tasks[task]] = int(task.result() or 0)
+                    for task, value in zip(tasks, await asyncio.gather(*tasks)):
+                        found[tasks[task]] = int(value or 0)
             except Exception as exc:  # noqa: BLE001 -- keep the local answers
                 logger.debug("lookup tables: Hub reads skipped for %s (%s)", repo_id, exc)
-        if not any(found.values()) or not await listing_thread(True, _host_streams_lookup_tables):
+        if not any(found.values()):
             return answer
         updated = [
             v.model_copy(update = {"lookup_table_bytes": int(found.get(i, 0) or 0)})

@@ -37,11 +37,13 @@ def lazy_architecture(arch: Optional[str]) -> bool:
 
 
 def parse_header(
-    buf: bytes, file_size: Optional[int] = None
+    buf: bytes,
+    file_size: Optional[int] = None,
+    arch_only: bool = False,
 ) -> tuple[Optional[str], dict[str, int]]:
     """(architecture, {lazy-candidate tensor name: bytes}) from a GGUF v2/v3 header. A quant
     type gguf predates is sized from the next tensor's offset (or ``file_size``), as the
-    launch scanner does."""
+    launch scanner does. ``arch_only`` stops at the architecture key."""
     from gguf.constants import GGML_QUANT_SIZES
 
     pos = 0
@@ -66,7 +68,9 @@ def parse_header(
             raise ValueError("implausible string length")
         return take(n)
 
-    def skip_value(vtype: int) -> None:
+    def skip_value(vtype: int, depth: int = 0) -> None:
+        if depth > 8:
+            raise ValueError("implausible array nesting")
         if vtype in _SCALAR_SIZES:
             take(_SCALAR_SIZES[vtype])
         elif vtype == _STRING:
@@ -80,7 +84,8 @@ def parse_header(
                 for _ in range(count):
                     string()
             else:
-                raise ValueError(f"unsupported array item type {item}")
+                for _ in range(count):
+                    skip_value(item, depth + 1)
         else:
             raise ValueError(f"unknown value type {vtype}")
 
@@ -99,10 +104,14 @@ def parse_header(
         vtype = u32()
         if key == b"general.architecture" and vtype == _STRING:
             arch = string().decode("utf-8", "replace")
+            if arch_only:
+                return arch, {}
         elif key == b"general.alignment" and vtype == _UINT32:
             alignment = max(1, u32())
         else:
             skip_value(vtype)
+    if arch_only:
+        return arch, {}
     named: dict[str, int] = {}
     offsets: list[int] = []
     unsized: list[tuple[str, int]] = []
@@ -143,12 +152,15 @@ def _read_growing(
     *,
     first_read: int = _FIRST_READ,
     file_size: Optional[Callable[[], Optional[int]]] = None,
+    arch_only: bool = False,
 ):
     want = min(first_read, cap)
     while True:
         buf = read(want)
         try:
-            return parse_header(buf, file_size() if file_size is not None else None)
+            return parse_header(
+                buf, file_size() if file_size is not None else None, arch_only = arch_only
+            )
         except _NeedMore:
             if len(buf) < want or want >= cap:
                 raise ValueError("GGUF header unreadable within the cap")
@@ -205,15 +217,20 @@ def _scan_shards(
 ):
     """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first shard that carries the table.
 
-    With the architecture already known the small later-shard headers go first and the
-    first shard, which carries the tokenizer, last."""
+    A lazy ``known_arch`` (the repo's) only orders the reads: the small later-shard headers
+    first, the first shard, which carries the tokenizer, last. The variant's own first-shard
+    metadata still names its architecture, since a repo can hold several families."""
     arch: Optional[str] = None
     order = names[:max_shards]
-    if lazy_architecture(known_arch) and len(names) > 1:
-        arch = known_arch
+    hinted = lazy_architecture(known_arch) and len(names) > 1
+    if hinted:
         order = names[1:max_shards] + names[:1]
     for name in order:
         part_arch, named = read_header(name)
+        if hinted and not arch and not part_arch:
+            if not named:
+                continue
+            arch = read_header(names[0], True)[0]
         arch = part_arch or arch
         if not lazy_architecture(arch):
             return arch, 0
@@ -261,7 +278,7 @@ def remote_cached(
 ):
     """The cached remote answer under lazy ``mode``, keyed on the file's identity (its listed size by default), so a re-upload under the same name is read again."""
     with _lock:
-        hit = _REMOTE_CACHE.get((repo_id, filename, revision or "", identity, mode))
+        hit = _REMOTE_CACHE.get((repo_id.lower(), filename, revision or "", identity, mode))
     if hit is None or hit[1] <= time.monotonic():
         return None
     return hit[0]
@@ -279,7 +296,8 @@ def remote_lookup_info(
     known_arch: Optional[str] = None,
 ) -> tuple[Optional[str], int]:
     """(architecture, lazily read table bytes) from Range reads of a Hub GGUF's header(s)."""
-    key = (repo_id, filename, revision or "", identity, mode)
+    # Hub repo ids are case-insensitive.
+    key = (repo_id.lower(), filename, revision or "", identity, mode)
     hit = remote_cached(repo_id, filename, revision, identity, mode = mode)
     if hit is not None:
         return hit
@@ -288,7 +306,7 @@ def remote_lookup_info(
 
     names = shard_names(filename)
 
-    def read_header(name: str):
+    def read_header(name: str, arch_only: bool = False):
         fetch = fetcher_fn(repo_id, name, token, revision = revision)
         buf = b""
 
@@ -300,8 +318,11 @@ def remote_lookup_info(
 
         return _read_growing(
             read,
-            first_read = _FIRST_READ if name == names[0] else _SPLIT_SHARD_FIRST_READ,
+            first_read = (
+                _FIRST_READ if name == names[0] and not arch_only else _SPLIT_SHARD_FIRST_READ
+            ),
             file_size = lambda: getattr(fetch, "file_size", None),
+            arch_only = arch_only,
         )
 
     try:

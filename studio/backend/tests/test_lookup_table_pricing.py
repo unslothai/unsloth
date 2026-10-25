@@ -1464,7 +1464,9 @@ class TestHubDiscovery:
             known_arch = "qwen4exp",
         )
         assert got == ("qwen4exp", FLASH_NEXT_TABLE)
-        assert [name for name, _s, _e in calls] == [names[1]]
+        # The table's shard, then only the first shard's metadata for its architecture.
+        assert [name for name, _s, _e in calls] == [names[1], names[0]]
+        assert calls[1][2] + 1 <= 64 << 10, calls
 
     def test_the_listing_forwards_the_known_architecture(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail
@@ -1623,3 +1625,211 @@ class TestHubDiscovery:
         outs = asyncio.run(both())
         assert [o.response.variants[0].lookup_table_bytes for o in outs] == [FLASH_NEXT_TABLE] * 2
         assert asked == ["o/shared-arch"]
+
+
+class TestListingFollowups:
+    """Hub discovery edge cases: per-variant architecture, retries, ownership, case."""
+
+    def test_a_repo_hint_never_names_another_familys_split_variant(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        names = [f"BF16/gemma-3n-{i:05d}-of-00002.gguf" for i in (1, 2)]
+        blobs = {
+            names[0]: (
+                _header("gemma3n", [("token_embd.weight", [2048, 262144], IQ4_NL)]),
+                40 * GIB,
+            ),
+            names[1]: (
+                _header("", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)]),
+                40 * GIB,
+            ),
+        }
+        got = glt.remote_lookup_info(
+            "o/mixed-families",
+            names[0],
+            identity = 1,
+            fetcher_fn = _blob_fetcher(blobs, []),
+            known_arch = "qwen4exp",
+        )
+        assert got == ("gemma3n", 0)
+
+    def test_the_remote_cache_ignores_repo_id_case(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        blob = _header(
+            "qwen4exp", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)], _ATTN
+        )
+        calls = []
+        fetcher = _blob_fetcher({"Q4/case.gguf": (blob, 40 * GIB)}, calls)
+        glt.remote_lookup_info("Unsloth/Case-GGUF", "Q4/case.gguf", identity = 3, fetcher_fn = fetcher)
+        assert glt.remote_cached("unsloth/case-gguf", "Q4/case.gguf", None, 3) == (
+            "qwen4exp",
+            FLASH_NEXT_TABLE,
+        )
+
+    def test_nested_metadata_arrays_are_skipped(self):
+        from hub.utils.gguf_lookup_tables import parse_header
+
+        blob = _header(
+            "qwen4exp", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)], _ATTN
+        )
+        # Splice one array-of-uint32-arrays KV in after the header's counts.
+        n_tensors, n_kv = struct.unpack_from("<QQ", blob, 8)
+        key = b"x.nested"
+        inner = struct.pack("<IQ", 4, 3) + struct.pack("<3I", 1, 2, 3)
+        kv = struct.pack("<Q", len(key)) + key + struct.pack("<IIQ", 9, 9, 2) + inner * 2
+        spliced = blob[:8] + struct.pack("<QQ", n_tensors, n_kv + 1) + kv + blob[24:]
+        assert parse_header(spliced) == (
+            "qwen4exp",
+            {"per_layer_token_embd.weight": FLASH_NEXT_TABLE},
+        )
+
+    def test_a_late_release_keeps_a_newer_claim(self):
+        from hub.services.models import gguf_variants as gv
+
+        key = ("table", "o/owner")
+        _held, first = gv._claim_lookup(key)
+        gv._release_lookup(key, first)
+        _held, second = gv._claim_lookup(key)
+        gv._release_lookup(key, first)  # the cancelled worker, running late
+        assert gv._lookup_inflight.get(key) is second
+        gv._release_lookup(key, second)
+        assert key not in gv._lookup_inflight
+
+    def _listing(self, gv, rows, repo, **kw):
+        return gv._with_lookup_tables(
+            _answer(rows), repo, hf_token = None, offline = False, prefer_local_cache = False, **kw
+        )
+
+    def test_a_listing_retries_a_read_that_failed_while_it_waited(self, monkeypatch):
+        import threading
+        import time
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        attempts = []
+        lock = threading.Lock()
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            with lock:
+                attempts.append(name)
+                first = len(attempts) == 1
+            time.sleep(0.3)
+            if first:
+                raise OSError("transient")
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 10.0)
+        rows = [GgufVariantDetail(filename = "Q4/retry.gguf", quant = "Q4", size_bytes = 40 * GIB)]
+
+        async def both():
+            first = asyncio.ensure_future(self._listing(gv, rows, "o/retry"))
+            await asyncio.sleep(0.1)
+            return await asyncio.gather(first, self._listing(gv, rows, "o/retry"))
+
+        outs = asyncio.run(both())
+        assert [o.response.variants[0].lookup_table_bytes for o in outs] == [0, FLASH_NEXT_TABLE]
+        assert len(attempts) == 2
+
+    def test_an_unreadable_local_copy_falls_back_to_the_hub_header(self, tmp_path, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        # The first shard is on disk, the second still downloading.
+        first = _write(
+            tmp_path / "m-00001-of-00002.gguf",
+            _header("qwen4exp", [("token_embd.weight", [2048, 151936], IQ4_NL)], _ATTN),
+        )
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_local_variant_gguf", lambda *a, **k: first)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(
+            glt, "remote_lookup_info", lambda *a, **k: ("qwen4exp", FLASH_NEXT_TABLE)
+        )
+        rows = [
+            GgufVariantDetail(filename = "m-00001-of-00002.gguf", quant = "Q4", size_bytes = 40 * GIB)
+        ]
+        out = asyncio.run(self._listing(gv, rows, "o/partial"))
+        assert out.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
+
+    def test_a_host_that_reads_tables_resident_reads_no_header(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+
+        looked = []
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: False)
+        monkeypatch.setattr(gv, "_local_variant_gguf", lambda *a, **k: looked.append(a) or None)
+        rows = [GgufVariantDetail(filename = "Q4/m.gguf", quant = "Q4", size_bytes = 40 * GIB)]
+        answer = _answer(rows)
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                answer, "o/resident", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        assert out is answer and looked == []
+
+    def test_a_cpu_build_streams_the_tables_beside_an_empty_gpu_inventory(self, monkeypatch):
+        """No model device on a CPU-only build, so lazy auto stays on whatever the GPU probe says."""
+        from core.inference import llama_cpp as lc
+
+        backend = lc.LlamaCppBackend.__new__(lc.LlamaCppBackend)
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: "/fake/llama-server")
+        monkeypatch.setattr(
+            backend,
+            "probe_server_capabilities",
+            lambda binary = None: {"supports_lazy_mode": True, "lazy_mode_flag": "--lazy-mode"},
+        )
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda binary = None: False)
+        monkeypatch.setattr(backend, "_get_gpu_memory", lambda *a, **k: [])
+        monkeypatch.setattr(lc, "_gpu_device_node_present", lambda: True)
+        monkeypatch.setattr(
+            lc.LlamaCppBackend, "_binary_ships_no_gpu_backend", staticmethod(lambda *a, **k: True)
+        )
+        assert backend.lookup_tables_stream_by_default(None, {}) is True
+        monkeypatch.setattr(
+            lc.LlamaCppBackend, "_binary_ships_no_gpu_backend", staticmethod(lambda *a, **k: False)
+        )
+        assert backend.lookup_tables_stream_by_default(["--device", "none"], {}) is True
+        assert backend.lookup_tables_stream_by_default(None, {}) is False
+
+    def test_differently_cased_listings_share_one_header_read(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_header_delta
+        from hub.utils import gguf_lookup_tables as glt
+
+        blob = _header(
+            "qwen4exp", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)], _ATTN
+        )
+        calls = []
+        monkeypatch.setattr(
+            gguf_header_delta,
+            "hub_range_fetcher",
+            _blob_fetcher({"Q4/cased.gguf": (blob, 40 * GIB)}, calls, delay = 0.3),
+        )
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 10.0)
+        glt._REMOTE_CACHE.clear()
+        rows = [GgufVariantDetail(filename = "Q4/cased.gguf", quant = "Q4", size_bytes = 40 * GIB)]
+
+        async def both():
+            first = asyncio.ensure_future(self._listing(gv, rows, "O/Cased-GGUF"))
+            await asyncio.sleep(0.1)
+            return await asyncio.gather(first, self._listing(gv, rows, "o/cased-gguf"))
+
+        outs = asyncio.run(both())
+        assert [o.response.variants[0].lookup_table_bytes for o in outs] == [FLASH_NEXT_TABLE] * 2
+        assert len(calls) == 1
