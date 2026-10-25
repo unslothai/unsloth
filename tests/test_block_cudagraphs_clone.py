@@ -239,3 +239,41 @@ def test_param_grads_hooked_only_with_graphs(monkeypatch):
         y = layer(y)
     y.sum().backward()
     assert not any(l.__dict__.get("_unsloth_block_grad_hooks") for l in layers)
+
+
+def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
+    """Non-reentrant checkpointing frees recomputed inputs while the backward graph records:
+    cudagraph trees raise "observed an input tensor deallocate during graph recording". Its
+    forward and its recompute both take the graph-free compile; reentrant keeps graphs."""
+    from torch.utils.checkpoint import checkpoint
+
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class CkptDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    bc._wrap(CkptDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = CkptDecoderLayer().train()
+    for reentrant, want in ((False, {"plain"}), (True, {"graphs"})):
+        seen.clear()
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        checkpoint(layer, x, use_reentrant = reentrant).sum().backward()
+        assert len(seen) == 2 and set(seen) == want  # forward and recompute
+        assert x.grad is not None
+    assert not bc._in_nonreentrant_checkpoint()

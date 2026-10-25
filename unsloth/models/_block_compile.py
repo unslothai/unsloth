@@ -75,6 +75,16 @@ def _param_grads_out_of_pool(layer):
             param.register_hook(hook_for(param))
 
 
+def _in_nonreentrant_checkpoint():
+    """torch.utils.checkpoint(use_reentrant=False) forward or recompute: its saved tensor hooks
+    free recomputed inputs while a backward graph records, which cudagraph trees refuse."""
+    try:
+        hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
+    except Exception:
+        return False
+    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+
+
 def _isolate_supported():
     # torch 2.13+: per-call recompile_limit and isolate_recompiles (own cache bucket per region).
     try:
@@ -829,7 +839,7 @@ def _wrap(
                     if shape not in graph_shapes:
                         graph_shapes.add(shape)
                         graphs_off[0] = len(graph_shapes) > _CUDAGRAPH_MAX_SHAPES
-                if graphs and graphs_off[0]:
+                if graphs and (graphs_off[0] or _in_nonreentrant_checkpoint()):
                     return plain(self, hidden_states, *args, **kwargs)
                 if graphs:
                     _param_grads_out_of_pool(self)
