@@ -8917,7 +8917,7 @@ const DeleteMessageButton: FC = () => {
 };
 
 const MORE_MENU_CONTENT_CLASS =
-  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
