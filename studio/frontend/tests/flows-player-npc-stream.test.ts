@@ -72,7 +72,6 @@ test("with no chat model a villager answers offline in their own words", () => {
     L.isNoChatModelError("Could not load org/m: We couldn't connect to 'https://huggingface.co' to load the files"),
     true,
   );
-  // A real failure (timeout, bad JSON, a load that ran out of memory) still shows as an error.
   assert.equal(L.isNoChatModelError("The reply was not valid JSON"), false);
   assert.equal(L.isNoChatModelError("Could not load org/m: CUDA out of memory. Tried to allocate 2.00 GiB"), false);
   assert.equal(L.offlineLine("Welcome to the village!", 0), "Welcome to the village!");

@@ -41,7 +41,6 @@ const OFFLINE_LINES = [
   "Lovely day for a walk, isn't it?",
 ];
 
-/** What a villager says when no chat model can answer: their greeting first, then stock lines. */
 export function offlineLine(greeting: string | undefined, npcTurnsSoFar: number): string {
   if (npcTurnsSoFar === 0 && greeting?.trim()) return greeting.trim();
   return OFFLINE_LINES[npcTurnsSoFar % OFFLINE_LINES.length];

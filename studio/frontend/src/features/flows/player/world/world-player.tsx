@@ -386,7 +386,6 @@ export function WorldPlayer({
 
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
-  // "Talking needs a chat model" is said once per session, not after every line.
   const offlineNoted = useRef(false);
 
   // Village life: no new background call while the player talks, and the one in flight is dropped.

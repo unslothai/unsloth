@@ -63,7 +63,6 @@ def test_pins_carry_the_cached_revision_and_gguf_file_but_never_a_local_path(tmp
         "revision": SHA_A,
         "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
     }
-    # Not downloaded here: named, with no revision to claim.
     assert by_repo[FLUX] == {"repo": FLUX}
     assert not any("secret" in json.dumps(m) for m in pins["models"])
 
@@ -72,13 +71,11 @@ def test_import_notices_name_a_different_revision_and_studio_version(tmp_path):
     made = _cache(tmp_path / "a", QWEN, SHA_A, ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])
     d = _flow()
     replication.stamp(d, made, "2026.10.1")
-    # Same cache, same version: nothing to say.
     assert replication.notices(d, made, "2026.10.1") == []
     other = _cache(tmp_path / "b", QWEN, SHA_B, ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])
     notes = replication.notices(d, other, "2026.11.0")
     assert notes[0] == "Made with Unsloth Studio 2026.10.1; you have 2026.11.0."
     assert notes[1].startswith(f"Made with {QWEN} revision {SHA_A[:12]}; you have {SHA_B[:12]}")
-    # A model the importer has not downloaded is the plan's job (missing models), not a notice.
     assert replication.notices(d, tmp_path / "empty", "2026.10.1") == []
 
 
@@ -92,7 +89,6 @@ def test_malformed_replication_metadata_imports_without_notices(tmp_path):
     for models in ({"a": 1}, 7, "junk", [None, 3]):
         d = {"meta": {"replication": {"models": models}}}
         assert replication.notices(d, cache, "x") == []
-    # Same revision, so the file is compared: a variant that is not text names no file.
     d = {
         "meta": {
             "replication": {

@@ -237,7 +237,6 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     ).json()
     assert imported["flow"]["id"] != "withimg" and imported["flow"]["name"] == "Copy"
     assert imported["report"]["baked_nodes"] == ["i"]
-    # Exported and imported by the same Studio: nothing differs, and no model runs at play time.
     assert imported["report"]["replication"] == [] and "live_note" not in imported["report"]
     world = doc(
         [node("r", "world.npc_reply"), node("i", "input.image", asset = uploaded)],

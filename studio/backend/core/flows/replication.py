@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Export stamp in `meta.replication` (older Studios ignore it): Studio version and per-model Hub revision and
-GGUF file, read from the local cache only, never the network."""
+"""Export stamp in `meta.replication`: Studio version, per-model Hub revision and GGUF file, from the local cache only."""
 
 from __future__ import annotations
 
@@ -40,7 +39,6 @@ def _studio_version() -> Optional[str]:
 
 
 def _choices(value: Any) -> Iterable[dict]:
-    """Model choices ({repo, variant}) anywhere in a node's params."""
     if isinstance(value, dict):
         if isinstance(value.get("repo"), str) and value["repo"].strip():
             yield value
@@ -53,7 +51,6 @@ def _choices(value: Any) -> Iterable[dict]:
 
 
 def models_used(doc: dict) -> list[dict]:
-    """Distinct (repo, variant) the flow names: its requirements, then any model picked on a node."""
     seen: dict[tuple[str, str], dict] = {}
     found = list((doc.get("requirements") or {}).get("models") or [])
     for node in doc.get("nodes") or []:
@@ -85,7 +82,6 @@ def _repo_dir(cache: Path, repo: str) -> Path:
 
 
 def cached_revision(cache: Optional[Path], repo: str) -> Optional[str]:
-    """The commit the local cache's `main` points at, or None when the model is not downloaded here."""
     if cache is None or "/" not in repo or ".." in repo:
         return None
     try:
@@ -98,7 +94,6 @@ def cached_revision(cache: Optional[Path], repo: str) -> Optional[str]:
 def cached_gguf(
     cache: Optional[Path], repo: str, revision: Optional[str], variant: Optional[str]
 ) -> Optional[str]:
-    """The GGUF file of `variant` in that snapshot (first shard when split)."""
     if cache is None or not revision or not variant:
         return None
     root = _repo_dir(cache, repo) / "snapshots" / revision
@@ -143,7 +138,6 @@ def stamp(
     cache: Optional[Path] = None,
     studio_version: Optional[str] = None,
 ) -> None:
-    """Record what made this export in `doc["meta"]["replication"]` (replaces an older stamp)."""
     doc.setdefault("meta", {})["replication"] = pins(doc, cache, studio_version)
 
 
@@ -152,7 +146,6 @@ def notices(
     cache: Optional[Path] = None,
     studio_version: Optional[str] = None,
 ) -> list[str]:
-    """Where this Studio differs from the one that made the file. Empty when the file carries no stamp."""
     stamp_ = (doc.get("meta") or {}).get("replication")
     if not isinstance(stamp_, dict):
         return []
@@ -162,7 +155,6 @@ def notices(
     ours = studio_version if studio_version is not None else _studio_version()
     if isinstance(theirs, str) and ours and theirs != ours:
         out.append(f"Made with Unsloth Studio {theirs[:40]}; you have {ours[:40]}.")
-    # Imported metadata is free-form: anything but a list of objects names no models.
     models = stamp_.get("models")
     for model in (models if isinstance(models, list) else [])[:MAX_PINS]:
         if not isinstance(model, dict) or not isinstance(model.get("repo"), str):
@@ -185,7 +177,6 @@ def notices(
 
 
 def live_conversations(doc: dict) -> bool:
-    """Players of this flow call a model at play time (NPC replies, the village sim, live scenes), even when baked."""
     return any(
         (SPECS_BY_TYPE.get(n.get("type")) or {}).get("entrypoint")
         and (SPECS_BY_TYPE.get(n.get("type")) or {}).get("lane") == "gpu"

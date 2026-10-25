@@ -194,9 +194,7 @@ export interface ImportReport {
   license?: string | null;
   content_rating?: string | null;
   author?: string | null;
-  /** Where this Studio differs from the one that exported the file (Studio version, model revisions). */
   replication?: string[];
-  /** A playable file whose players still call a model while playing (NPC replies, live scenes). */
   live_note?: string | null;
   /** Notebook imports: why Studio cannot run it, and where it runs instead. */
   unsupported?: string[];
