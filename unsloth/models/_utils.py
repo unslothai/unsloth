@@ -3114,43 +3114,6 @@ def _st_weighted_subfolder_paths(
         return ()
 
 
-def _root_index_weight_subfolders(
-    model_name,
-    *,
-    token = None,
-    revision = None,
-    cache_dir = None,
-):
-    """Subfolders the root safetensors index maps weights into (Cosmos3 keeps every shard under transformer/), else ()."""
-    try:
-        import json as _json
-
-        from huggingface_hub import hf_hub_download
-
-        path = hf_hub_download(
-            model_name,
-            "model.safetensors.index.json",
-            token = token,
-            revision = revision,
-            cache_dir = cache_dir,
-        )
-        with open(path, "r", encoding = "utf-8") as f:
-            index = _json.load(f)
-        weight_map = index.get("weight_map") if isinstance(index, dict) else None
-        if not isinstance(weight_map, dict):
-            return ()
-        folders = set()
-        for filename in weight_map.values():
-            if not isinstance(filename, str):
-                continue
-            filename = filename.strip().replace("\\", "/").strip("/")
-            if "/" in filename:
-                folders.add(filename.rsplit("/", 1)[0])
-        return tuple(sorted(folders))
-    except Exception:
-        return ()
-
-
 def _repo_has_weighted_st_subfolders(
     model_name,
     *,
@@ -3337,19 +3300,12 @@ def maybe_prefetch_hf_snapshot(
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
-    index_subfolders = ()
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         st_module_paths = _st_weighted_subfolder_paths(
-            model_name,
-            token = token,
-            revision = revision,
-            cache_dir = cache_dir,
-        )
-        index_subfolders = _root_index_weight_subfolders(
             model_name,
             token = token,
             revision = revision,
@@ -3402,8 +3358,8 @@ def maybe_prefetch_hf_snapshot(
         # subfolder=X: the load resolves every weight under X/, so warm that subfolder plus root aux.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     elif weights_at_root:
-        # A bare load reads only root weights, so drop subdir weights and keep subdir configs, except ST module subfolders and subfolders a root index maps into.
-        if not st_module_paths and not index_subfolders:
+        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads.
+        if not st_module_paths:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         if snapshot_download_with_xet_fallback is not None:
@@ -5742,6 +5698,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            _refuse_tensor_parallel_for_trainer(model)
             from ..fsdp2_launch import unsloth_fsdp2_native_requested
 
             # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
@@ -5816,6 +5773,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # model_init rebuilds the model when training starts: the new instance needs the same
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
+            _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
             return model
 
@@ -5824,6 +5782,54 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
+
+
+def _unsloth_model_parallel_marker(model, flag):
+    """Walk the wrapper levels for an apply_*_parallel marker (dict lookups, no tp / pp import)."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get(flag):
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = modules.get("base_model") or modules.get("model"), depth + 1
+    return False
+
+
+def _is_unsloth_tensor_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_tp")
+
+
+def _is_unsloth_pipeline_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_pp")
+
+
+def _refuse_tensor_parallel_for_trainer(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a tensor parallel model (apply_tensor_parallel) cannot be trained by the "
+            "Trainer yet: accelerate would wrap the tensor parallel ranks in DDP. Use a custom "
+            "training loop (unsloth/models/tp_native.py)."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
+            "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
+            "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
+        )
+
+
+def _refuse_tensor_parallel_for_inference(model):
+    if _is_unsloth_tensor_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
+            "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
+            "save the adapter (save_tp_adapter) and generate on one GPU."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "
+            "one stage); save the adapter (PipelineParallel.save_adapter) and generate on one GPU."
+        )
 
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
