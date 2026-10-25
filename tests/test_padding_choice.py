@@ -3,8 +3,8 @@
 
 """unsloth/utils/padding_choice.py: the padded vs padding-free rule, on CPU.
 
-The measured table is real data (Colab A100 / L4, Kaggle T4, Qwen3 0.6B / 4B LoRA r16, 16 bit and
-4 bit, torch 2.14.1): padded + block compile throughput relative to padding-free. The rule must
+The measured table is real data (Colab A100 / L4, Kaggle T4, Qwen3 0.6B / 4B LoRA r16 16 bit, 3 reps,
+torch 2.14.1; 4 bit agreed within the A/A band): padded + block compile throughput relative to padding-free. The rule must
 never pick padded where padded lost.
 """
 
@@ -47,7 +47,10 @@ MEASURED = [
     ("L4", Q06, LONG2, -15.8), ("L4", Q06, LONG8, -34.2),
     ("L4", Q4, ALP2, +3.0), ("L4", Q4, ALP8, -44.4), ("L4", Q4, ALP16, -57.3),
     ("L4", Q4, LONG2, -14.4), ("L4", Q4, LONG8, -32.5),
-    ("T4", Q06, (424, 6.4e4), +25.0), ("T4", Q4, (424, 6.4e4), -14.0),
+    ("T4", Q06, ALP2, +31.2), ("T4", Q06, ALP8, -15.8), ("T4", Q06, ALP16, -44.3),
+    ("T4", Q06, LONG2, -12.6), ("T4", Q06, LONG8, -31.0),
+    ("T4", Q4, ALP2, -20.8), ("T4", Q4, ALP8, -38.4), ("T4", Q4, ALP16, -53.8),
+    ("T4", Q4, LONG2, -13.9), ("T4", Q4, LONG8, -32.1),
 ]  # fmt: skip
 
 
