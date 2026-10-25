@@ -248,8 +248,13 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
     if not model_dir:
         return False
     try:
-        from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
-        return detect_mtp_splitter(Path(model_dir)) is not None
+        try:
+            # Also finds heads MLX conversions keep under the language model (``language_model.mtp.*``).
+            from unsloth_zoo.mlx.speculative import has_native_mtp_head
+        except ImportError:
+            from mlx_vlm.speculative.drafters.mtp_split import detect_mtp_splitter
+            return detect_mtp_splitter(Path(model_dir)) is not None
+        return has_native_mtp_head(model_dir)
     except Exception as exc:
         logger.debug("MLX speculative: no MTP splitter check for %s: %s", model_dir, exc)
         return False

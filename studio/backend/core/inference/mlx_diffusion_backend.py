@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in MLX (mflux) image engine for Apple Silicon (``UNSLOTH_DIFFUSION_MLX=1``) on Studio's GGUF.
+"""MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
 Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -55,6 +56,8 @@ BASE_ALLOW_PATTERNS = (
     "tokenizer/*",
     "vae/*.safetensors",
     "vae/*.json",
+    "scheduler/*.json",
+    "model_index.json",
 )
 _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
@@ -132,6 +135,183 @@ def dense_bits(ram_bytes: Optional[int] = None) -> int:
     return 4 if 0 < ram <= _LOW_RAM_BYTES else 0
 
 
+# Unified-memory plan. Rungs in order of accuracy cost, measured on Z-Image-Turbo (16 renders at 1024, LPIPS vs the
+# all-bf16 MLX render, paired bootstrap): an 8-bit text encoder is within noise of bf16 (+0.002), a 4-bit one is not
+# (+0.029, 13 of 16 images worse); re-quantizing the GGUF's own BF16 tensors to 4 bits costs +0.008. So the 4-bit
+# text encoder is the last rung, taken only when nothing above it fits the Metal working set.
+_TE_BIT_OPTIONS = (8, 4)
+_DENSE_BIT_OPTIONS = (0, 8, 4)
+# Group-64 affine: one bf16 scale and one bf16 bias per 64 weights.
+_TE_GROUP_OVERHEAD_BITS = 2 * 16 / _TE_GROUP_SIZE
+# Live activations above the weights during a step, and the VAE decode at 1024x1024 when it is tiled (512 px tiles).
+ACTIVATION_HEADROOM_BYTES = 2 * 1024**3
+# The untiled VAE decode at 1024x1024 above the weights (mflux Z-Image VAE, bf16, Apple M1 Metal): 6.64 GiB. Reserved
+# whenever the runtime cannot tile the decode.
+UNTILED_DECODE_HEADROOM_BYTES = int(6.64 * 1024**3)
+_VAE_TILING_OFF = ("0", "off", "false", "no")
+
+
+def decode_headroom_bytes(runtime: Any) -> int:
+    """Headroom for the decode path ``runtime`` takes: the tiled peak only when it can tile (``vae_tiled``) and tiling
+    is not forced off, else the untiled 1024x1024 peak."""
+    can_tile = callable(getattr(runtime, "vae_tiled", None))
+    forced_off = (
+        os.environ.get("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "").strip().lower() in _VAE_TILING_OFF
+    )
+    if can_tile and not forced_off:
+        return ACTIVATION_HEADROOM_BYTES
+    return max(ACTIVATION_HEADROOM_BYTES, UNTILED_DECODE_HEADROOM_BYTES)
+
+
+@dataclass(frozen = True)
+class QuantPlan:
+    te_bits: Optional[int]
+    dense_bits: int
+    planned_bytes: int = 0
+    budget_bytes: int = 0
+    fits: bool = True
+    source: str = "plan"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "te_bits": self.te_bits,
+            "dense_bits": self.dense_bits,
+            "planned_bytes": self.planned_bytes,
+            "budget_bytes": self.budget_bytes,
+            "fits": self.fits,
+            "source": self.source,
+        }
+
+
+def text_encoder_resident_bytes(
+    bf16_bytes: int,
+    bits: Optional[int],
+    retained_bytes: int = 0,
+) -> int:
+    """``bf16_bytes`` of quantizable weights at ``bits`` plus ``retained_bytes`` (norms, biases, weights whose last
+    dimension is not a multiple of the group size) left as they are."""
+    if not bits:
+        return int(bf16_bytes) + int(retained_bytes)
+    return int(bf16_bytes * (bits + _TE_GROUP_OVERHEAD_BITS) / 16) + int(retained_bytes)
+
+
+def working_set_bytes(ram_bytes: Optional[int] = None) -> int:
+    """Metal's recommendedMaxWorkingSetSize: what one process can keep resident before macOS starts paging it."""
+    try:
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+        recommended = int(_metal_recommended_working_set_bytes() or 0)
+    except Exception:  # noqa: BLE001 -- unreadable: estimate from RAM below
+        recommended = 0
+    if recommended > 0:
+        return recommended
+    ram = _total_ram_bytes() if ram_bytes is None else ram_bytes
+    # Metal's own figure is about two thirds of RAM on 8-32 GB Macs.
+    return int(ram * 2 / 3) if ram > 0 else 0
+
+
+def plan_quantization(
+    *,
+    budget_bytes: int,
+    transformer_bytes: dict[int, int],
+    text_encoder_bf16_bytes: int,
+    vae_bytes: int = 0,
+    headroom_bytes: int = ACTIVATION_HEADROOM_BYTES,
+    text_encoder_retained_bytes: int = 0,
+) -> QuantPlan:
+    """The most accurate (text encoder bits, dense bits) whose resident set fits ``budget_bytes``; the smallest when
+    none does. ``UNSLOTH_DIFFUSION_MLX_TE_BITS`` / ``_DENSE_BITS`` pin their axis."""
+    forced_te = _env_int("UNSLOTH_DIFFUSION_MLX_TE_BITS", (4, 8, 16))
+    forced_dense = _env_int("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", (0, 4, 8))
+    te_options = (forced_te,) if forced_te is not None else _TE_BIT_OPTIONS
+    dense_options = (forced_dense,) if forced_dense is not None else _DENSE_BIT_OPTIONS
+    rungs = [
+        (None if te == 16 else te, dense)
+        for te in te_options
+        for dense in dense_options
+        if dense in transformer_bytes
+    ]
+    if not rungs:
+        raise ValueError("no converted transformer size for the requested dense bits")
+    planned = None
+    for te, dense in rungs:
+        total = (
+            transformer_bytes[dense]
+            + text_encoder_resident_bytes(text_encoder_bf16_bytes, te, text_encoder_retained_bytes)
+            + int(vae_bytes)
+            + int(headroom_bytes)
+        )
+        planned = QuantPlan(te, dense, total, int(budget_bytes), total <= budget_bytes)
+        if planned.fits:
+            return planned
+    return planned
+
+
+def _safetensors_numel(folder: Path) -> int:
+    """Element count of every tensor in ``folder``'s safetensors, from the headers alone."""
+    return sum(_safetensors_numel_split(folder))
+
+
+def _safetensors_numel_split(folder: Path) -> tuple[int, int]:
+    """(quantizable, retained) element counts of ``folder``'s safetensors, from the headers alone. Quantizable is what
+    ``MfluxRuntime.build`` can quantize: matrices whose last dimension is a multiple of the group size. Everything else
+    (norms, biases, odd-width weights) stays at full precision."""
+    import struct
+
+    quantizable = 0
+    retained = 0
+    for path in sorted(Path(folder).glob("*.safetensors")):
+        with open(path, "rb") as fh:
+            (n,) = struct.unpack("<Q", fh.read(8))
+            if n > 100_000_000:
+                raise ValueError(f"{path.name}: implausible safetensors header")
+            header = json.loads(fh.read(n))
+        for name, info in header.items():
+            if name == "__metadata__":
+                continue
+            shape = [int(dim) for dim in info.get("shape", ())]
+            count = 1
+            for dim in shape:
+                count *= dim
+            if len(shape) >= 2 and shape[-1] % _TE_GROUP_SIZE == 0:
+                quantizable += count
+            else:
+                retained += count
+    return quantizable, retained
+
+
+def plan_for_load(
+    gguf_path: str,
+    base_dir: str,
+    *,
+    headroom_bytes: int = ACTIVATION_HEADROOM_BYTES,
+) -> QuantPlan:
+    """The load's plan: header sizes of the GGUF and the base repo's text encoder / VAE against the working set.
+    Any unreadable input falls back to the RAM-size rule (``text_encoder_bits`` / ``dense_bits``)."""
+    try:
+        sizes = convert.planned_output_bytes(gguf_path)
+        # mflux holds the text encoder and VAE in bf16 (2 bytes per element) before any quantization.
+        te_quantizable, te_retained = _safetensors_numel_split(Path(base_dir) / "text_encoder")
+        te_bf16 = 2 * te_quantizable
+        te_retained_bytes = 2 * te_retained
+        vae = 2 * _safetensors_numel(Path(base_dir) / "vae")
+        if te_bf16 + te_retained_bytes <= 0:
+            raise ValueError("no text encoder weights found")
+        budget = working_set_bytes()
+        if budget <= 0:
+            raise ValueError("Metal working set unknown")
+        return plan_quantization(
+            budget_bytes = budget,
+            transformer_bytes = sizes,
+            text_encoder_bf16_bytes = te_bf16,
+            vae_bytes = vae,
+            headroom_bytes = headroom_bytes,
+            text_encoder_retained_bytes = te_retained_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the size-free rule below still loads
+        logger.info("mlx_diffusion.quant_plan_fallback: %s", exc)
+        return QuantPlan(text_encoder_bits(), dense_bits(), source = "ram_rule")
+
+
 def _chip_name() -> str:
     try:
         out = subprocess.run(
@@ -156,6 +336,45 @@ def compute_precision_name(chip: Optional[str] = None) -> str:
         return "bfloat16"
     name = (chip if chip is not None else _chip_name()).lower()
     return "float16" if ("apple m1" in name or "apple m2" in name) else "bfloat16"
+
+
+# Untiled VAE decode working set above the weights (mflux Z-Image VAE, bf16, Apple M1 Metal): 1.99 GiB at 512x512 and
+# 6.64 GiB at 1024x1024, i.e. about 0.44 GiB plus 6.35 KB per output pixel. Tiled (mflux's 512 px tiles) it stays at
+# 2.0 GiB at 1024x1024; a 512x512 image is a single tile, so tiling changes nothing there.
+_VAE_DECODE_FIXED_BYTES = int(0.44 * 1024**3)
+_VAE_DECODE_BYTES_PER_PIXEL = 6350
+VAE_TILING_ENV = "UNSLOTH_DIFFUSION_MLX_VAE_TILING"
+
+
+def untiled_decode_bytes(width: int, height: int) -> int:
+    return _VAE_DECODE_FIXED_BYTES + _VAE_DECODE_BYTES_PER_PIXEL * int(width) * int(height)
+
+
+def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> bool:
+    """Tile the decode only when the untiled one would not fit what the working set has left, as ComfyUI tiles only
+    after an out-of-memory decode; unified memory pages instead of failing, so the check comes first.
+    ``UNSLOTH_DIFFUSION_MLX_VAE_TILING=1`` / ``0`` forces it on / off."""
+    raw = os.environ.get(VAE_TILING_ENV, "").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    if raw in ("0", "off", "false", "no"):
+        return False
+    if free_bytes is None:
+        return False
+    return untiled_decode_bytes(width, height) > free_bytes
+
+
+def release_buffer_cache(mx: Any) -> None:
+    """Synchronize, then clear MLX's buffer cache (clearing with work in flight can free buffers the GPU still writes).
+    Best effort: runs in cleanup paths and must not mask the caller's exception."""
+    try:
+        mx.synchronize()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.drain_skipped: %s", exc)
+    try:
+        mx.clear_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.clear_cache_skipped: %s", exc)
 
 
 class MfluxRuntime:
@@ -226,11 +445,13 @@ class MfluxRuntime:
                 except MlxCancelled as exc:
                     raise StopImageGenerationException(str(exc)) from exc
 
+        self._plan_vae_tiling(model, width, height)
         callback = _StepCallback()
         model.callbacks.register(callback)
         cancelled = False
+        image = None
         try:
-            result = model.generate_image(
+            image = model.generate_image(
                 seed = int(seed),
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -238,7 +459,7 @@ class MfluxRuntime:
                 width = int(width),
                 height = int(height),
                 guidance = guidance,
-            )
+            ).image
         except StopImageGenerationException as exc:
             # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
@@ -252,9 +473,36 @@ class MfluxRuntime:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
+            # Cached activations are idle system RAM on unified memory; live weights are untouched.
+            release_buffer_cache(mx)
         if cancelled:
             raise MlxCancelled("cancelled")
-        return result.image
+        return image
+
+    def free_working_set_bytes(self) -> Optional[int]:
+        """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
+        import mlx.core as mx
+
+        try:
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            budget = int(info.get("max_recommended_working_set_size") or 0)
+        except Exception:  # noqa: BLE001 -- no Metal reading: leave the decode untiled
+            return None
+        if budget <= 0:
+            return None
+        return budget - int(mx.get_active_memory())
+
+    def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
+        from mflux.models.common.vae.tiling_config import TilingConfig
+
+        tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
+            width, height, self.free_working_set_bytes()
+        )
+        model.tiling_config = TilingConfig() if tiled else None
+        self.last_vae_tiled = tiled
+
+    def vae_tiled(self) -> bool:
+        return bool(getattr(self, "last_vae_tiled", False))
 
     def cache_text_encodings(
         self,
@@ -282,9 +530,9 @@ class MfluxRuntime:
         gc.collect()
         try:
             import mlx.core as mx
-            mx.clear_cache()
         except Exception:  # noqa: BLE001
-            pass
+            return
+        release_buffer_cache(mx)
 
     def supports_guidance(self, model: Any) -> bool:
         return bool(getattr(getattr(model, "model_config", None), "supports_guidance", False))
@@ -304,6 +552,7 @@ class _MlxState:
     dense_bits: int
     convert_dir: str
     timings: dict = field(default_factory = dict)
+    gguf_path: Optional[str] = None
 
 
 @dataclass
@@ -635,6 +884,7 @@ class MlxDiffusionBackend:
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -786,7 +1036,20 @@ class MlxDiffusionBackend:
             timings["fetch_s"] = round(time.perf_counter() - t0, 3)
             if _cancel_event.is_set():
                 return
-            bits = dense_bits()
+            plan = plan_for_load(
+                gguf_path, base_dir, headroom_bytes = decode_headroom_bytes(self._rt())
+            )
+            bits = plan.dense_bits
+            timings["quant_plan"] = plan.as_dict()
+            if not plan.fits:
+                logger.warning(
+                    "mlx_diffusion.quant_plan_over_budget: planned %.2f GiB > working set %.2f GiB "
+                    "even at te_bits=%s dense_bits=%s",
+                    plan.planned_bytes / 1024**3,
+                    plan.budget_bytes / 1024**3,
+                    plan.te_bits,
+                    plan.dense_bits,
+                )
             revision = _snapshot_revision(gguf_path)
             if revision is None:
                 st = os.stat(gguf_path)
@@ -820,7 +1083,7 @@ class MlxDiffusionBackend:
             if _cancel_event.is_set():
                 return
             precision = compute_precision_name()
-            te_bits = text_encoder_bits()
+            te_bits = plan.te_bits
             t2 = time.perf_counter()
             runtime = self._rt()
             # Free the replaced model first: two resident DiTs do not fit a small Mac.
@@ -836,6 +1099,9 @@ class MlxDiffusionBackend:
             if _cancel_event.is_set():
                 return
             building = True
+            # The runtime outlives its models: the last decode's tiling belongs to the model it ran on.
+            if hasattr(runtime, "last_vae_tiled"):
+                runtime.last_vae_tiled = False
             model = runtime.build(
                 str(out_dir),
                 model_config = model_config,
@@ -857,6 +1123,7 @@ class MlxDiffusionBackend:
                 dense_bits = bits,
                 convert_dir = str(out_dir),
                 timings = timings,
+                gguf_path = str(gguf_path),
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -887,10 +1154,11 @@ class MlxDiffusionBackend:
                 return
             logger.error("mlx_diffusion.load_failed: %s", exc, exc_info = True)
             if self._state is not None:
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata("diffusion")
             from utils.native_path_leases import redact_native_paths
 
@@ -973,6 +1241,7 @@ class MlxDiffusionBackend:
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
+    @holds_inference
     def generate(
         self,
         *,
@@ -998,7 +1267,11 @@ class MlxDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # Interface parity with the other engines; status advertises no Hires fix here, so a request is refused.
+        hires: Any = None,
     ) -> dict[str, Any]:
+        if hires is not None:
+            raise ValueError("Hires fix is not available on the MLX engine.")
         if (
             init_image is not None
             or mask_image is not None
@@ -1009,8 +1282,8 @@ class MlxDiffusionBackend:
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
-                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX for "
-                "img2img / inpaint / edit / reference / upscale."
+                "The MLX engine runs text-to-image only; unset UNSLOTH_DIFFUSION_MLX (or set it to "
+                "auto) for img2img / inpaint / edit / reference / upscale."
             )
         if prompts is not None or seeds is not None:
             raise ValueError(
@@ -1094,6 +1367,9 @@ class MlxDiffusionBackend:
                     )
                     total = time.perf_counter() - started
                     timing = {"total_s": round(total, 3)}
+                    vae_tiled = getattr(runtime, "vae_tiled", None)
+                    if callable(vae_tiled):
+                        timing["vae_tiled"] = bool(vae_tiled())
                     if len(marks) >= 2:
                         # Exclude the first step: it includes prompt encoding.
                         timing["s_per_step"] = round((marks[-1] - marks[0]) / (len(marks) - 1), 4)
@@ -1184,8 +1460,16 @@ class MlxDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("mlx diffusion unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # Rechecked under the load worker's lock, so a load that ended since costs nothing.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
@@ -1298,7 +1582,8 @@ class MlxDiffusionBackend:
             "gguf_variant": extract_quant_token(state.gguf_filename),
             "cpu_offload": False,
             "offload_policy": "none",
-            "vae_tiling": False,
+            # Decided per generation from its size and the free working set; this is the last one's.
+            "vae_tiling": bool(getattr(self._runtime, "last_vae_tiled", False)),
             "memory_mode": None,
             "speed_mode": None,
             "speed_optims": [],

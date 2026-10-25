@@ -154,7 +154,7 @@ export function ImageLoraExportCard({ preselect }: { preselect?: string }) {
         >
           {result?.text ?? "A plain file copy: no model load or GPU needed."}
         </p>
-        <Button disabled={!canExport} onClick={handleExport}>
+        <Button variant="dark" disabled={!canExport} onClick={handleExport}>
           {running && <Spinner />}
           Export
         </Button>

@@ -257,6 +257,12 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
+# No accelerator at all: zoo chose its CPU backend and skipped every GPU patch. Stop here, before
+# any CUDA/Triton work, and let __init__ load the CPU backend instead (as the MLX branch does).
+if unsloth_zoo.__dict__.get("_IS_CPU_BACKEND", False):
+    from . import _CPUBackendSelected
+    raise _CPUBackendSelected()
+
 try:
     import torch
 except ModuleNotFoundError:
@@ -377,6 +383,7 @@ from .import_fixes import (
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
+    fix_inductor_reduction_readback_race,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -399,6 +406,7 @@ from .import_fixes import (
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
     patch_peft_float8_adapter_upcast,
+    patch_peft_shared_active_adapter,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -474,6 +482,7 @@ fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
+fix_inductor_reduction_readback_race()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -500,6 +509,7 @@ fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 patch_peft_float8_adapter_upcast()
+patch_peft_shared_active_adapter()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -537,6 +547,7 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
+del fix_inductor_reduction_readback_race
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
@@ -557,6 +568,7 @@ del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 del patch_peft_float8_adapter_upcast
+del patch_peft_shared_active_adapter
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply
@@ -806,6 +818,9 @@ from .trainer import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
+from .dataprep import ebooks as _ebooks
+
+load_ebook_dataset = _ebooks.load_ebook_dataset
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,
