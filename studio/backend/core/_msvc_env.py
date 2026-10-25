@@ -256,8 +256,9 @@ def _crt_headers_reachable() -> bool:
 def _triton_windows_spec() -> str:
     """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
 
-    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.13
-    pins triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
+    2.13 pin triton 3.7 (2.12.0 exactly 3.7.0) and 2.14 pins 3.8; anything older (or unreadable)
+    keeps the long-standing <3.7.
     A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
     import platform  # noqa: PLC0415
@@ -265,11 +266,18 @@ def _triton_windows_spec() -> str:
     if platform.machine().lower() == "arm64":
         return "triton-windows>=3.8.0.post28"
     try:
+        import re  # noqa: PLC0415
         from importlib.metadata import version  # noqa: PLC0415
-        major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
+
+        # A dev build's patch ("2.13.0a0+git...") still has the major and minor.
+        match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version("torch"))
+        major, minor = int(match.group(1)), int(match.group(2))
+        patch = int(match.group(3)) if match.group(3) is not None else None
     except Exception:  # noqa: BLE001 -- a hint must never raise
         return "triton-windows<3.7"
-    if (major, minor) == (2, 13):
+    if (major, minor, patch) == (2, 12, 0):
+        return "triton-windows>=3.7,<3.7.1"
+    if (major, minor) in ((2, 12), (2, 13)):
         return "triton-windows>=3.7,<3.8"
     if (major, minor) == (2, 14):
         return "triton-windows>=3.8,<3.9"
@@ -304,6 +312,11 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
             f'Install for better performance: pip install "{_triton_windows_spec()}"'
         )
         return
+
+    # Intel's XPU Triton picks its compiler differently from triton-windows and needs cl set up for it (#14807).
+    from ._xpu_triton_toolchain import prepare_xpu_triton_compiler  # noqa: PLC0415
+
+    prepare_xpu_triton_compiler(log)
 
     try:
         reachable = crt_headers_reachable()

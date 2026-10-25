@@ -254,6 +254,188 @@ def _normalize_safe_serialization(safe_serialization):
     return True if safe_serialization is None else safe_serialization
 
 
+@contextmanager
+def _save_bare_params4bit_quant_state(model):
+    """Write the bitsandbytes quant state of bare `Params4bit` parameters (fused MoE experts).
+
+    bitsandbytes only serializes a QuantState from `Linear4bit._save_to_state_dict`, so a
+    fused expert stack quantized in place (gpt-oss `experts.gate_up_proj`) is saved as
+    packed bytes alone and cannot be reloaded. This adds the same `<name>.absmax`,
+    `<name>.quant_map`, `<name>.quant_state.bitsandbytes__nf4`, ... entries Linear4bit
+    writes, for the duration of one save. Models without such parameters are untouched.
+    """
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        yield
+        return
+    if not callable(getattr(model, "modules", None)):
+        yield
+        return
+    handles = []
+    try:
+        for module in model.modules():
+            if isinstance(module, Linear4bit):
+                continue
+            names = [
+                name
+                for name, param in module.named_parameters(recurse = False)
+                if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None
+            ]
+            if not names:
+                continue
+
+            def _hook(
+                module,
+                state_dict,
+                prefix,
+                local_metadata,
+                _names = tuple(names),
+            ):
+                for name in _names:
+                    if prefix + name not in state_dict:
+                        continue
+                    quant_state = getattr(module, name).quant_state
+                    for key, value in quant_state.as_dict(packed = True).items():
+                        state_dict[f"{prefix}{name}.{key}"] = value.detach()
+
+            handles.append(module._register_state_dict_hook(_hook))
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def _add_bare_params4bit_quant_state(model, state_dict):
+    """A caller-supplied `state_dict` (`save_pretrained(path, state_dict = model.state_dict())`, the
+    Trainer's saves) was built before `_save_bare_params4bit_quant_state` installed its hooks, and
+    transformers writes it as given. Returns a copy with the same quant state entries added next to
+    each bare `Params4bit` it holds, or the dict itself when there is nothing to add. The live quant
+    state is only attached to the live parameter's own packed bytes; other packed bytes need their
+    quant state in the dict (or on a `Params4bit` value), else this raises."""
+    if not isinstance(state_dict, dict) or not callable(getattr(model, "named_modules", None)):
+        return state_dict
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        return state_dict
+    added = {}
+    for module_name, module in model.named_modules():
+        if isinstance(module, Linear4bit):
+            continue
+        for name, param in module.named_parameters(recurse = False):
+            if not isinstance(param, Params4bit) or getattr(param, "quant_state", None) is None:
+                continue
+            key = f"{module_name}.{name}" if module_name else name
+            if key not in state_dict:
+                continue
+            supplied = state_dict[key]
+            quant_state = _supplied_params4bit_quant_state(param, supplied)
+            if quant_state is None:
+                continue
+            missing = {
+                f"{key}.{entry}": value
+                for entry, value in quant_state.as_dict(packed = True).items()
+                if f"{key}.{entry}" not in state_dict
+            }
+            if not missing:
+                continue
+            if quant_state is param.quant_state and not _is_live_params4bit_data(param, supplied):
+                # Packed bytes from elsewhere (an EMA snapshot, another checkpoint): the live
+                # parameter's absmax would describe different codes and silently corrupt the save.
+                raise ValueError(
+                    f"Unsloth: the `state_dict` passed to `save_pretrained` holds 4-bit packed "
+                    f"`{key}` that is not this model's parameter, and has no quantization state "
+                    f"for it ({', '.join(sorted(missing))}). Include those entries in the "
+                    f"`state_dict`, or save without passing one."
+                )
+            added.update({k: v.detach() for k, v in missing.items()})
+    if not added:
+        return state_dict
+    out = dict(state_dict)
+    out.update(added)
+    return out
+
+
+_PARAMS4BIT_COMPARE_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+def _is_live_params4bit_data(param, value):
+    """True when `value` is `param`'s packed data: the same storage, or equal bytes. The byte
+    comparison moves bounded slices of the live data to `value`'s device (a CPU-offloaded
+    `state_dict` never pulls a full fused expert tensor back onto the GPU) and stops at the first
+    differing slice. Errors during the comparison (OOM, device faults) propagate."""
+    if not isinstance(value, torch.Tensor):
+        return False
+    if value.shape != param.shape or value.dtype != param.dtype:
+        return False
+    live = param.data.detach()
+    value = value.detach()
+    if value.device == live.device and value.data_ptr() == live.data_ptr():
+        return True
+    if value.device.type == "meta" or live.device.type == "meta":
+        return False
+    if value.numel() == 0:
+        return True
+    chunk_bytes = _PARAMS4BIT_COMPARE_CHUNK_BYTES
+    if live.is_contiguous() and value.is_contiguous():
+        live_flat, value_flat = live.reshape(-1), value.reshape(-1)
+        step = max(1, chunk_bytes // max(1, live.element_size()))
+        for start in range(0, live_flat.numel(), step):
+            live_chunk = live_flat[start : start + step].to(value.device)
+            if not torch.equal(live_chunk, value_flat[start : start + step]):
+                return False
+        return True
+    # Non-contiguous: slice along dim 0 (each slice copies at most its own rows).
+    if live.dim() == 0:
+        return bool(torch.equal(live.to(value.device), value))
+    row_bytes = max(1, live[0].numel() * live.element_size())
+    step = max(1, chunk_bytes // row_bytes)
+    for start in range(0, live.shape[0], step):
+        live_chunk = live[start : start + step].to(value.device)
+        if not torch.equal(live_chunk, value[start : start + step]):
+            return False
+    return True
+
+
+def _supplied_params4bit_quant_state(param, value):
+    """The QuantState describing a supplied `value` for the bare `Params4bit` `param`: the value's
+    own (a `Params4bit` from another model), else the live one when `value` is packed like `param`
+    (whether it is the live data is checked by the caller), else None (not 4-bit packed: leave it)."""
+    own = getattr(value, "quant_state", None)
+    if own is not None and hasattr(own, "as_dict"):
+        return own
+    if not isinstance(value, torch.Tensor):
+        return None
+    if value.shape != param.shape or value.dtype != param.dtype:
+        return None
+    return param.quant_state
+
+
+def _with_bare_params4bit_state_dict(model, original, args, kwargs):
+    """`args`, `kwargs` of a full save, with a caller-supplied `state_dict` (keyword or positional,
+    located by binding `original`'s signature) given its bare `Params4bit` quant state."""
+    if "state_dict" in kwargs:
+        kwargs = dict(
+            kwargs, state_dict = _add_bare_params4bit_quant_state(model, kwargs["state_dict"])
+        )
+        return args, kwargs
+    if not args:
+        return args, kwargs
+    import inspect
+
+    try:
+        bound = inspect.signature(original).bind_partial(*args, **kwargs)
+    except (TypeError, ValueError):
+        return args, kwargs
+    if bound.arguments.get("state_dict") is None:
+        return args, kwargs
+    bound.arguments["state_dict"] = _add_bare_params4bit_quant_state(
+        model, bound.arguments["state_dict"]
+    )
+    return bound.args, bound.kwargs
+
+
 def _filter_push_to_hub_kwargs(push_fn, kwargs):
     """Keep only the keywords `push_fn` actually accepts.
 
@@ -6088,6 +6270,17 @@ def _cast_state_dict_16bit(model, state_dict, target_dtype):
     }
 
 
+@contextmanager
+def _unmerge_flags_on_error(streamed):
+    try:
+        yield
+    except BaseException:
+        if streamed:
+            from .models.fsdp2_save import unmerge_flags
+            unmerge_flags(streamed)
+        raise
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -6328,7 +6521,14 @@ def unsloth_generic_save(
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
-        with nullcontext() if in_place else lora_relative_to_original_base(model):
+        # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
+        # its GPU first, so the merge below only unloads those layers.
+        streamed = []
+        if in_place and getattr(model.config, "quantization_config", None):
+            from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
+            streamed = merge_4bit_lora_layer_by_layer(model)
+        relative = nullcontext() if in_place else lora_relative_to_original_base(model)
+        with relative, _unmerge_flags_on_error(streamed):
             merge_and_overwrite_lora(
                 _modelscope_base_model_name
                 if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
@@ -6420,12 +6620,14 @@ def _fsdp2_collective_save(
     trainable_only,
     offload_to_cpu = None,
     offload_4bit = False,
+    gather_options = None,
 ):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough;
     `offload_to_cpu(self, args, kwargs)` (default True) whether gathered weights go to the CPU.
     `offload_4bit`: the save only writes packed 4-bit weights (never merges them), so they go to
-    the CPU too.
+    the CPU too. `gather_options(self, args, kwargs)`, when given, returns the `offload_to_cpu` /
+    `offload_4bit` options for `fsdp2_gathered` instead (merged saves).
     A model FSDP2 does not shard, or a call that brings its own `state_dict`, is passed through."""
 
     def decorate(fn):
@@ -6447,12 +6649,14 @@ def _fsdp2_collective_save(
                     + " weights to rank 0, which writes. Every rank must make this call."
                 )
             offload = True if offload_to_cpu is None else offload_to_cpu(self, args, kwargs)
+            options = dict(offload_to_cpu = offload, offload_4bit = offload_4bit)
+            if gather_options is not None and not only:
+                options.update(gather_options(self, args, kwargs))
             with fsdp2_gathered(
                 self,
                 trainable_only = only,
                 include = include,
-                offload_to_cpu = offload,
-                offload_4bit = offload_4bit,
+                **options,
             ) as writer:
                 if writer is False:
                     return None
@@ -6486,12 +6690,19 @@ def _fsdp2_merged_offload(model, args, kwargs):
     return offload_all_but_4bit_merge_operands(model)
 
 
+def _fsdp2_merged_gather_options(model, args, kwargs):
+    from .models.fsdp2_save import merged_save_gather_options
+    return merged_save_gather_options(model, _merged_save_method(args, kwargs))
+
+
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # merged_4bit merges with PEFT where the packed 4-bit weights stay (on the GPU), so those layers'
-    # LoRA weights stay on that device too; every other gathered weight still goes to the CPU.
+    # Packed 4-bit weights are staged on the CPU as they are gathered. merged_4bit merges with PEFT
+    # one layer at a time on the GPU the packed weight came from, so those layers' LoRA weights stay
+    # on that device; every other gathered weight goes to the CPU.
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
+    gather_options = _fsdp2_merged_gather_options,
 )
 def unsloth_generic_save_pretrained_merged(
     self,
@@ -6656,6 +6867,7 @@ def unsloth_generic_save_pretrained_merged(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
+    gather_options = _fsdp2_merged_gather_options,
 )
 def unsloth_generic_push_to_hub_merged(
     self,
@@ -8450,6 +8662,12 @@ def patch_saving_functions(model, vision = False):
         import inspect
 
         original = self.original_model_save_pretrained
+        # Adapter saves never write base weights; full saves also need fused 4-bit experts' quant state.
+        if isinstance(self, PeftModel):
+            quant_state = nullcontext()
+        else:
+            quant_state = _save_bare_params4bit_quant_state(self)
+            args, kwargs = _with_bare_params4bit_state_dict(self, original, args, kwargs)
         if kwargs.get("safe_serialization", True) is None:
             kwargs["safe_serialization"] = _normalize_safe_serialization(None)
         elif args:
@@ -8459,8 +8677,10 @@ def patch_saving_functions(model, vision = False):
                 bound = None
             if bound is not None and bound.arguments.get("safe_serialization", True) is None:
                 bound.arguments["safe_serialization"] = _normalize_safe_serialization(None)
-                return original(*bound.args, **bound.kwargs)
-        return original(*args, **kwargs)
+                with quant_state:
+                    return original(*bound.args, **bound.kwargs)
+        with quant_state:
+            return original(*args, **kwargs)
 
     if isinstance(model, PreTrainedTokenizerBase):
         if model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained":

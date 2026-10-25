@@ -71,7 +71,7 @@ function PythonToolImage({
       src={state.status === "loaded" ? state.url : undefined}
       alt={filename}
       loading="lazy"
-      className="max-w-full rounded border border-border"
+      className="max-w-full rounded-lg border border-border"
     />
   );
 }
