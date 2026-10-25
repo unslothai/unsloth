@@ -349,7 +349,9 @@ class SdCppServer:
                 logger.error("sd-server exited early during load (code %s)", code)
                 return False
             try:
-                if self._client.get(url, timeout = 2.0).status_code == 200 and self._port_is_ours():
+                # Connection: close keeps a probe answered by a squatter out of the generation pool.
+                resp = self._client.get(url, headers = {"Connection": "close"}, timeout = 2.0)
+                if resp.status_code == 200 and self._port_is_ours():
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
@@ -373,10 +375,41 @@ class SdCppServer:
         proc = self._process
         if proc is None or proc.pid is None:
             return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(proc, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
         try:
             import psutil
         except Exception:  # noqa: BLE001 -- optional dependency
             return True
+        # Another user's socket shows no pid on Linux/macOS: our readable tree not listening = foreign.
+        tree_says_foreign = False
+        try:
+            if not isinstance(proc, subprocess.Popen):
+                raise TypeError("not a child we spawned")
+            root = psutil.Process(proc.pid)
+            tree = [root, *root.children(recursive = True)]
+            readable = True
+            for member in tree:
+                try:
+                    read = getattr(member, "net_connections", None) or member.connections
+                    for conn in read(kind = "inet"):
+                        laddr = getattr(conn, "laddr", None)
+                        if (
+                            laddr
+                            and getattr(laddr, "port", None) == self.port
+                            and conn.status == psutil.CONN_LISTEN
+                        ):
+                            return True
+                except psutil.NoSuchProcess:
+                    continue
+                except Exception:  # noqa: BLE001 -- access denied / platform quirk
+                    readable = False
+            tree_says_foreign = readable
+        except Exception as exc:  # noqa: BLE001 -- platform quirk: fall back below
+            if isinstance(exc, getattr(psutil, "NoSuchProcess", ())):
+                return False
         try:
             for conn in psutil.net_connections(kind = "inet"):
                 laddr = getattr(conn, "laddr", None)
@@ -399,6 +432,14 @@ class SdCppServer:
                 return False
         except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
             logger.debug("sd-server port ownership check unavailable: %s", exc)
+        if tree_says_foreign:
+            logger.error(
+                "sd-server readiness port %s answered but our child %s is not listening on it; "
+                "refusing to use it",
+                self.port,
+                proc.pid,
+            )
+            return False
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:

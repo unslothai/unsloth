@@ -38,7 +38,7 @@ import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any, Callable, Iterator, Optional
 
@@ -161,6 +161,20 @@ def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
             cudnn.benchmark = (
                 _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
             )
+
+
+def family_render_cudnn_scope(family: Any, device: Any) -> Any:
+    """Hold ``cudnn.benchmark`` off for a render of a family that opts out of it. The flag is process-wide, so a
+    co-resident or earlier load can have left it on, leaving the VAE convs on a per-process pick."""
+    if getattr(family, "cudnn_benchmark", True) or not str(device or "").startswith("cuda"):
+        return nullcontext()
+    try:
+        import torch
+        if getattr(getattr(torch, "backends", None), "cudnn", None) is None:
+            return nullcontext()
+    except Exception:  # noqa: BLE001 - no torch: nothing to hold
+        return nullcontext()
+    return cudnn_benchmark_scope(False)
 
 
 def snapshot_backend_flags() -> Optional[dict]:
@@ -549,7 +563,7 @@ def apply_speed_optims(
         "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    if getattr(target, "backend", None) == "rocm":
+    if getattr(target, "backend", None) in ("rocm", "mps"):
         # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
         try:
             from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks
@@ -1374,13 +1388,27 @@ def _carries_torchao_weights(module: Any) -> bool:
     the same two representations ``transformer_is_quantised`` covers. Only torchao's own types count, so a GGUF or
     bitsandbytes parameter subclass keeps its existing compile policy."""
 
+    return any(True for _ in torchao_weight_tensors(module))
+
+
+def torchao_weight_tensors(module: Any) -> Iterator[Any]:
+    """Each torchao tensor subclass holding a parameter of ``module``: the parameter itself, or its ``.data`` when a
+    plain ``nn.Parameter`` wraps the subclass. Yields nothing for a module that cannot be read (tests/fakes)."""
+
     def _torchao(t: Any) -> bool:
         return t is not None and type(t).__module__.startswith("torchao")
 
     try:
-        return any(_torchao(p) or _torchao(getattr(p, "data", None)) for p in module.parameters())
+        parameters = list(module.parameters())
     except Exception:  # noqa: BLE001 - not a torch module (tests/fakes)
-        return False
+        return
+    for p in parameters:
+        if _torchao(p):
+            yield p
+        else:
+            data = getattr(p, "data", None)
+            if _torchao(data):
+                yield data
 
 
 def is_compile_failure(exc: BaseException) -> bool:

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
+import { readGenerationProgress } from "../lib/generation-progress";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
@@ -2777,12 +2778,22 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxPleOffload",
+  "mlxExpertOffload",
+  "loadedMlxPleOffloadRequested",
+  "loadedMlxExpertOffloadRequested",
+  "loadedMlxPleOffload",
+  "loadedMlxExpertOffload",
+  "mlxPleOffloadReason",
+  "mlxExpertOffloadReason",
+  "loadedMlxOffloadDiskBytes",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
   "loadedSpeculativeType",
   "specFallbackReason",
+  "loadedPlacement",
   "specDraftNMax",
   "loadedSpecDraftNMax",
   "specDraftModel",
@@ -3859,6 +3870,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ple_offload: config.mlxPleOffload ?? null,
+      mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       ...mlxDrafter,
@@ -5873,6 +5886,7 @@ export function createOpenAIStreamAdapter(
       let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
+      let lastFinishReason: string | null = null;
       let resolveFirstToken: (() => void) | null = null;
       let rejectFirstToken: ((err: unknown) => void) | null = null;
       const firstTokenPromise = new Promise<void>((resolve, reject) => {
@@ -7491,6 +7505,20 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
+              // Transient like the diffusion canvas: never transcript text, never a first token.
+              const generationProgress = (
+                chunk as unknown as { _generationProgress?: unknown }
+              )._generationProgress;
+              if (generationProgress !== undefined) {
+                const update = readGenerationProgress(generationProgress);
+                if (update?.phase === "prefill") {
+                  runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
+                } else if (update?.phase === "decode") {
+                  runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                }
+                continue;
+              }
+
               // Diffusion frame: a transient canvas snapshot routed to the transient store and skipped; it
               // has no assistant text, so it never enters the transcript.
               const diffusionFrame = (
@@ -7531,6 +7559,25 @@ export function createOpenAIStreamAdapter(
                   readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
                 ) {
                   if (deepResearchHandoff.question !== null) break;
+                  continue;
+                }
+                // Answered in another tab or device: clear the prompt now, not at tool_end.
+                if (toolEvent.type === "tool_approved") {
+                  const approvedBackendId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvedId = toolEvent.approval_id;
+                  const confirmationId =
+                    toolConfirmationIdsByBackendId.get(approvedBackendId) ??
+                    (typeof approvedId === "string" && approvedId
+                      ? toolCallParts.find(
+                          (p) => p.toolApprovalId === approvedId,
+                        )?.toolCallId
+                      : undefined);
+                  if (confirmationId) {
+                    useChatRuntimeStore
+                      .getState()
+                      .clearToolConfirmation(confirmationId);
+                  }
                   continue;
                 }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
@@ -7834,6 +7881,8 @@ export function createOpenAIStreamAdapter(
                     } as PositionedToolCallPart);
                   }
                   if (awaitingConfirmation) {
+                    // The run's key now, not at send: a first turn adopted mid-run files its calls under the chat.
+                    const confirmationThreadKey = liveThreadKey(serverCancel);
                     useChatRuntimeStore
                       .getState()
                       .setToolConfirmation(
@@ -7841,6 +7890,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }
@@ -8058,6 +8108,10 @@ export function createOpenAIStreamAdapter(
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
+              }
+              const chunkFinishReason = chunk.choices?.[0]?.finish_reason;
+              if (typeof chunkFinishReason === "string" && chunkFinishReason) {
+                lastFinishReason = chunkFinishReason;
               }
               // Latch the chunk's `model` field so the openrouter/free chip shows the underlying model.
               if (
@@ -8996,7 +9050,8 @@ export function createOpenAIStreamAdapter(
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
-          serverPromptEvalTime ?? firstTokenTime,
+          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+          firstTokenTime ?? serverPromptEvalTime,
           finishedAt - streamStartTime,
           finalTokenCount,
           toolCallParts.length,
@@ -9045,6 +9100,7 @@ export function createOpenAIStreamAdapter(
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
+              stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
@@ -9293,6 +9349,7 @@ export function createOpenAIStreamAdapter(
         // Drop the transient denoising canvas so the finished bubble shows only the committed answer;
         // scoped, since a global clear wiped another chat's frame.
         runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
+        runtime.clearLiveGenerationForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {

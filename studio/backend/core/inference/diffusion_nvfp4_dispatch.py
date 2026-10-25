@@ -97,8 +97,11 @@ def _run_verify(device: Any) -> tuple:
     try:
         import flashinfer
         with torch.cuda.device(device):
-            x = torch.randn(256, 512, device = device, dtype = torch.bfloat16) * 0.05
-            w = torch.randn(128, 512, device = device, dtype = torch.bfloat16) * 0.02
+            # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+            # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+            gen = torch.Generator().manual_seed(0)
+            x = torch.randn(256, 512, dtype = torch.bfloat16, generator = gen).to(device) * 0.05
+            w = torch.randn(128, 512, dtype = torch.bfloat16, generator = gen).to(device) * 0.02
             a_gsf = _global_scale(x)
             w_gsf = _global_scale(w)
             alpha = (1.0 / (a_gsf * w_gsf)).float()
@@ -142,7 +145,9 @@ def _run_verify(device: Any) -> tuple:
                 ],
                 tactic = tactic,
             )
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             if not torch.equal(want, got):
                 return False, "the cached GEMM is not bit-identical to mm_fp4"
     except Exception as exc:  # noqa: BLE001 - a raise is a failed verify

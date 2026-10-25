@@ -991,6 +991,20 @@ fn macos_at_least(major: isize) -> bool {
     })
 }
 
+/// WebKit's default names no browser version, which sites such as Gmail refuse as outdated.
+#[cfg(target_os = "macos")]
+fn page_user_agent() -> Option<String> {
+    use objc2_foundation::{ns_string, NSBundle, NSString};
+    let safari = NSBundle::bundleWithPath(ns_string!("/Applications/Safari.app"))?;
+    let version = safari
+        .objectForInfoDictionaryKey(ns_string!("CFBundleShortVersionString"))?
+        .downcast::<NSString>()
+        .ok()?;
+    Some(format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version} Safari/605.1.15"
+    ))
+}
+
 /// Pages ask before using a capture device. With no handler wry grants every WKWebView capture
 /// request on macOS without a prompt, so any page could open the microphone the app holds for
 /// dictation. `Default` is WebKit's own per-site prompt there and the platform default elsewhere
@@ -1018,10 +1032,14 @@ fn with_page_profile<R: Runtime>(
         if !browser_view_supported() {
             return Err("native pages need macOS 14".into());
         }
-        Ok(if local.is_some() {
+        let builder = if local.is_some() {
             builder.incognito(true)
         } else {
             builder.data_store_identifier(PAGE_DATA_STORE)
+        };
+        Ok(match page_user_agent() {
+            Some(agent) => builder.user_agent(&agent),
+            None => builder,
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -2865,6 +2883,27 @@ mod tests {
         assert!(!args.contains("SmartScreen"), "{args}");
         assert!(args.contains("--proxy-server=http://127.0.0.1:9"), "{args}");
         assert!(args.contains("--proxy-bypass-list=<-loopback>"), "{args}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_pages_send_the_installed_safaris_user_agent() {
+        // plutil reads binary and XML plists alike.
+        let out = std::process::Command::new("/usr/bin/plutil")
+            .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+            .arg("/Applications/Safari.app/Contents/Info.plist")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let version = String::from_utf8(out.stdout).unwrap();
+        let version = version.trim();
+        assert!(!version.is_empty());
+        assert_eq!(
+            page_user_agent().unwrap(),
+            format!(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version} Safari/605.1.15"
+            )
+        );
     }
 
     #[test]

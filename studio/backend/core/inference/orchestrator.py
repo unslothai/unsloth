@@ -14,6 +14,7 @@ import contextlib
 import os
 import signal
 from loggers import get_logger
+from core.inference.inference_gate import holds_inference
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import multiprocessing as mp
 import queue
@@ -275,6 +276,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -1742,6 +1744,7 @@ class InferenceOrchestrator:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
 
+    @holds_inference
     def _generate_dispatched(
         self,
         messages: list = None,
@@ -2067,6 +2070,7 @@ class InferenceOrchestrator:
     load_generation: int = 0
 
     @_invalidates_gpu_memory("inference load")
+    @holds_inference
     def load_model(
         self,
         config,
@@ -2082,6 +2086,7 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         spec_draft_model: Optional[str] = None,
@@ -2159,6 +2164,7 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
                 "spec_draft_model": spec_draft_model,
@@ -2672,6 +2678,7 @@ class InferenceOrchestrator:
     # Dictation models run in the STT sidecars (whisper-server, llama-server, and the Transformers spawn child), not
     # the chat worker. Their lifecycle goes through here all the same, so one object knows everything that is resident
     # and Voice settings and Model Hub cannot report different things about one model.
+    @holds_inference
     def load_stt_model(
         self,
         model: Optional[str],
@@ -3038,6 +3045,7 @@ class InferenceOrchestrator:
                     reply_returns = calls_tools,
                 ),
                 count_tokens = _count,
+                cancel_check = lambda: bool(cancel_event is not None and cancel_event.is_set()),
             )
             fitted = recall["conversation"]
             truncation = {**truncation, **recall["counts"]}
@@ -3589,6 +3597,7 @@ class InferenceOrchestrator:
             if callable(close):
                 close()
 
+    @holds_inference
     def _generate_inner(
         self,
         messages: list = None,
@@ -3891,6 +3900,7 @@ class InferenceOrchestrator:
         )
         return outputs
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,
@@ -4142,6 +4152,7 @@ class InferenceOrchestrator:
                     self._release_worker(cancel_event)
                     release_mailbox()
 
+    @holds_inference
     def generate_whisper_response(
         self,
         audio_array,
@@ -4162,6 +4173,7 @@ class InferenceOrchestrator:
             extra_audio_arrays = extra_audio_arrays,
         )
 
+    @holds_inference
     def generate_audio_input_response(
         self,
         messages,
