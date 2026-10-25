@@ -438,8 +438,7 @@ def apply_pre_volta_compile_workaround(
 
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
 # (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-# The current device decides here; a load placing layers on another gfx906 is checked after loading.
-# A distributed launch keeps every visible card, as for bf16: ranks import before set_device.
+# Current device (every visible card when distributed); placements on another gfx906 are checked after loading.
 # Same switch as pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
 def arch_breaks_compile(arch):
     return str(arch or "").split(":")[0].strip().lower() == "gfx906"
@@ -461,8 +460,7 @@ if DEVICE_TYPE == "hip":
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    # The current device; a load placing layers on an older card is checked after loading, and again
-    # when training starts. A distributed launch keeps the weakest visible card, the same rule as bf16.
+    # Same rule as bf16; layers placed on an older card are caught by check_mixed_gpu_placement.
     _cuda_major = (cuda_bf16_capability() or (None,))[0]
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(

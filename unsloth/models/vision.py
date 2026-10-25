@@ -4134,8 +4134,7 @@ class FastBaseModel:
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
-                # After extraction: a discarded vision / audio sibling on an older card must not decide
-                # for the retained decoder. The core has no hf_device_map, so its parameters are walked.
+                # After extraction, so a discarded vision / audio tower on an older card does not count.
                 check_mixed_gpu_placement(model, dtype)
                 # Save the standalone decoder under its own names, not the composite prefix it was read from.
                 _drop_text_only_key_mapping(model, _text_key_mapping)

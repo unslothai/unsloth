@@ -135,7 +135,6 @@ def _maybe_upcast_force_float32_inference(st_model):
     if inner is None or not _is_force_float32_config(getattr(inner, "config", None)):
         return False
     params = list(st_model.parameters())
-    # The current device's answer, not the import-time constant: set_device may have moved since.
     SUPPORTS_BFLOAT16 = is_bfloat16_supported()
     if SUPPORTS_BFLOAT16:
         if any(p.dtype == torch.float16 for p in params):
@@ -2519,7 +2518,6 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # bf16 for the current device at call time, not the import-time constant.
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         # Remote-class probes must use this load's trust, revision and hub options.
         _remote_class_probe_kwargs = dict(
@@ -2761,7 +2759,6 @@ class FastSentenceTransformer(FastModel):
                 **({"config_kwargs": config_kwargs} if config_kwargs else {}),
             )
 
-            # The fast encoder path loads and compiles without the other loaders, so it checks the placement itself.
             check_mixed_gpu_placement(getattr(st_model[0], "auto_model", st_model), dtype)
             st_model._unsloth_fast_encoder = True
             _apply_max_seq_length(st_model, max_seq_length)
@@ -3382,8 +3379,7 @@ def _patch_sentence_transformer_trainer():
     _original_train = SentenceTransformerTrainer.train
 
     def _check_live_placement(trainer):
-        # A model loaded on CPU (or moved since) reaches its card only here, after the load-time
-        # check ran: check before the deferred torch.compile's first forward. No-op on one GPU.
+        # A CPU-loaded model reaches its card only here: check before the deferred compile's first forward.
         try:
             check_mixed_gpu_placement(getattr(trainer, "model", None), live = True)
         except Exception:
@@ -3460,7 +3456,6 @@ def _patch_sentence_transformer_trainer():
 
     @wraps(_original_train)
     def _patched_train(self, *args, **kwargs):
-        # The model may have moved since __init__ (.to(), accelerate placement).
         _check_live_placement(self)
         return _original_train(self, *args, **kwargs)
 

@@ -441,8 +441,7 @@ def _unsloth_reset_stray_compile_cache(self):
     model = getattr(self, "model", None)
     if model is None:
         return
-    # Once per train(): a model loaded on CPU or on another card and moved since (.to("cuda:1"),
-    # Trainer placement) was not on that card when the load-time check ran. No-op on one GPU.
+    # The model may have moved (.to(), Trainer placement) since the load-time check.
     try:
         check_mixed_gpu_placement(model, live = True)
     except Exception:
@@ -4179,8 +4178,7 @@ def _cache_device_capability(get_device_capability):
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
 
-    # One visible device, or several with one capability: every spelling of a CUDA device gets the
-    # same answer, so the plain C-level cache is exact and fastest.
+    # One device, or several with one capability: every spelling gets the same answer.
     try:
         count = torch.cuda.device_count()
         scanned = {i: get_device_capability(i) for i in range(count)} if count > 1 else {}
@@ -4232,17 +4230,12 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
-    # The current device, as torch.cuda.is_bf16_supported() answers: an idle older card beside it must
-    # not take bf16 from a model that runs here. A load placing layers there is checked after loading.
-    # Distributed launches keep the weakest visible card so every rank agrees on the dtype.
     _bf16_cap = cuda_bf16_capability()
     SUPPORTS_BFLOAT16 = _bf16_cap is not None and _bf16_cap[0] >= 8
     del _bf16_cap
-    # One process on cards that differ: is_bfloat16_supported() answers for the current device at call
-    # time, so torch.cuda.set_device after import is followed. Distributed launches keep the weakest card.
+    # Cards that differ: is_bfloat16_supported() follows a set_device after import.
     if not distributed_launch():
-        # Each card is read on its own: an unreadable peer drops out (and falls back to
-        # SUPPORTS_BFLOAT16) instead of discarding the cards that were read.
+        # Per card, so an unreadable peer drops out instead of discarding the rest.
         _bf16_caps = {}
         try:
             _bf16_count = torch.cuda.device_count()
@@ -5185,7 +5178,6 @@ def is_bfloat16_supported():
     # unsloth_zoo probe sees it. Cheap (device properties only).
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
-    # One GPU, identical cards, distributed launches: the import-time answer, no per-call work.
     if _BF16_BY_DEVICE is None:
         return SUPPORTS_BFLOAT16
     try:

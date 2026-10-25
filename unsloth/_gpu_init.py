@@ -581,15 +581,12 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
-    # The current device, as torch answers: an idle older card beside it must not take bf16 from a
-    # model that runs here. A load placing layers on such a card is checked after loading.
-    # Distributed launches keep the weakest visible card so every rank agrees on the dtype.
+    # Current device, as torch answers; distributed launches keep the weakest card so ranks agree.
     _cuda_cap = cuda_bf16_capability()
     SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
     del _cuda_cap
 
-    # The public probe gives the same answer: dynamic for one process, the weakest card for a
-    # distributed launch, else e.g. a merged 16-bit save would pick bf16 for an fp16 run.
+    # Same rule for the public probe, else a merged 16-bit save picks bf16 for an fp16 distributed run.
     _bf16_from_weakest = distributed_launch()
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
