@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An int8 cache read-back keys its compile cache like the runtime quantize it copies, even where the fp8 dispatcher
-qualifies (forced via ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=1``); fp8 read-backs still install it."""
+"""An int8 read-back keys its compile cache like the runtime quantize; fp8 read-backs still install the dispatcher."""
 
 from __future__ import annotations
 

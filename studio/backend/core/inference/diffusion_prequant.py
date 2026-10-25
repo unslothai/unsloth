@@ -355,8 +355,7 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
 
 def _int8_only(ckpt: Any) -> bool:
-    """True if every quantized tensor is torchao int8. The fp8 dispatcher tags torch's compile cache key, so installing
-    it for an int8 read-back misses the runtime-quantize cache entry; anything else keeps the install."""
+    """True if every quantized tensor is int8: the fp8 dispatcher's compile cache tag would miss the runtime entry."""
     try:
         state_dict = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
         if not isinstance(state_dict, dict):
