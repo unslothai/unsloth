@@ -125,10 +125,17 @@ def test_a_loaded_segmenter_keeps_its_memory_reading(monkeypatch):
     at load is reused, so a bf16 model is not swapped for int8 (or back) on every call."""
     seen = []
     plan = seg.WeightsPlan("bf16", "/m")
-    monkeypatch.setattr(seg, "plan_weights", lambda *a, memory_tight, **k: seen.append(memory_tight) or plan)
+    monkeypatch.setattr(
+        seg, "plan_weights", lambda *a, memory_tight, **k: seen.append(memory_tight) or plan
+    )
     monkeypatch.setattr(seg, "auto_memory_tight", lambda device: True)
     segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
-    segmenter._model, segmenter._path, segmenter.device, segmenter._dtype = object(), "/m", "cuda:0", "bf16"
+    segmenter._model, segmenter._path, segmenter.device, segmenter._dtype = (
+        object(),
+        "/m",
+        "cuda:0",
+        "bf16",
+    )
     segmenter._weights_key, segmenter._memory_tight = ("/m", None, False), False
     segmenter._load("/m", "cuda:0", "bf16")
     assert seen == [False]
