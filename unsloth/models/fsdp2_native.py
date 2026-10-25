@@ -1323,6 +1323,18 @@ def _content_fingerprint(p):
     return out
 
 
+def _is_strided_shard(placement):
+    return any(c.__name__ in ("_StridedShard", "StridedShard") for c in type(placement).__mro__)
+
+
+def _tp_local_view(p):
+    """The local tensor of an Unsloth tensor parallel DTensor parameter; anything else unchanged."""
+    to_local = getattr(p, "to_local", None)
+    if to_local is not None and getattr(p, "device_mesh", None) is not None:
+        return to_local()
+    return p
+
+
 def _sync_trainable_from_first_rank(
     model,
     dist,
@@ -1344,6 +1356,9 @@ def _sync_trainable_from_first_rank(
         return 0
     from .fsdp2_save import mesh_all_reduce
 
+    # Unsloth tensor parallel DTensors: the ranks of this (data parallel) mesh hold the same tp slice,
+    # so their local tensors are compared and broadcast.
+    params = [_tp_local_view(p) for p in params]
     with torch.no_grad():
         local = torch.stack([_content_fingerprint(p).to(device) for p in params])
         first = local.clone()
@@ -1424,7 +1439,20 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.units is not None:
         # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
         check_shard_units(model, list(config.units), ignored_params = None)
-    _refuse_tensor_parallel_model(model)
+    if _refuse_tensor_parallel_model(model, config.mesh, compose = True):
+        # Unsloth tensor parallel x FSDP2 data parallel: the frozen weights are this rank's tp slices,
+        # replicated over the data parallel mesh; FSDP2 shards only the trainable (LoRA) DTensors over it.
+        if config.shard_frozen or config.cpu_offload:
+            raise RuntimeError(
+                "Unsloth: native FSDP2 over a tensor parallel model keeps the frozen tp shards replicated "
+                "over the data parallel mesh; shard_frozen = True and cpu_offload are not supported there."
+            )
+        if not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: tensor parallel x native FSDP2 data parallel keeps the frozen tp shards out of FSDP2 "
+                f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
+            )
+        config = dataclasses.replace(config, shard_frozen = False)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
@@ -1655,7 +1683,11 @@ def native_clip_grad_norm_(
             local = getattr(g, "_local_tensor", None)
             if local is None:
                 local = g.to_local()
-            dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard())
+            # FSDP2 over a tensor parallel DTensor shards it as (_)StridedShard, which newer torch does not
+            # report as is_shard().
+            dims = tuple(
+                i for i, pl in enumerate(g.placements) if pl.is_shard() or _is_strided_shard(pl)
+            )
             groups.setdefault((g.device_mesh, dims), []).append(local)
             sharded.append(local)
             device = device or local.device
@@ -3508,12 +3540,18 @@ def _expert_parallel_requested(model):
     return False
 
 
-def _refuse_tensor_parallel_model(model):
+def _refuse_tensor_parallel_model(
+    model,
+    mesh = None,
+    compose = False,
+):
     """A model loaded with tp_plan or expert parallelism already holds DTensor / per-rank expert
     parameters on its own mesh, and the Trainer would build a ParallelismConfig from its tp_size.
-    Native FSDP2 cannot shard it again."""
+    Native FSDP2 cannot shard it again. An Unsloth tensor parallel model (apply_tensor_parallel) composes
+    with shard_model over the data parallel dimension of the same 2-D (dp, tp) mesh (compose = True and
+    mesh = that dp mesh): returns True then."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
-        return
+        return False
     tp_size = getattr(model, "tp_size", None)
     try:
         tp_size = int(tp_size) if tp_size is not None else None
@@ -3538,10 +3576,15 @@ def _refuse_tensor_parallel_model(model):
         m.__dict__.get("_unsloth_tp") or m.__dict__.get("_unsloth_tp_style")
         for m in model.modules()
     ):
+        if compose and mesh is not None:
+            from .tp_native import check_tp_dp_composition
+            check_tp_dp_composition(model, mesh)
+            return True
         raise RuntimeError(
             "Unsloth: native FSDP2 does not compose with Unsloth tensor parallelism "
-            "(apply_tensor_parallel) yet; train a tensor parallel model with a custom loop over the tp "
-            "ranks only (data parallel size 1)."
+            "(apply_tensor_parallel) here; for data parallel x tensor parallel call "
+            "shard_model(model, FSDP2Config(mesh = mesh['dp'])) on a model sharded with "
+            "apply_tensor_parallel(model, mesh['tp']) over the same 2-D (dp, tp) mesh."
         )
     if any(m.__dict__.get("_unsloth_pp") for m in model.modules()):
         raise RuntimeError(

@@ -666,7 +666,9 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             except Exception:
                 pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
-        if "model" in locals() and hasattr(model, "for_inference"):
+        # A tensor parallel model (tp_native.tp_trainer_setup) stays on its training path: for_inference would
+        # route the decoder layers onto decode paths outside the tensor parallel regions.
+        if "model" in locals() and hasattr(model, "for_inference") and not getattr(self, "_unsloth_tensor_parallel", False):
             model.for_inference()
 {RLTrainer_post}
 pass
