@@ -31,7 +31,6 @@ WORLD = 2
 def _load_module():
     native = _load_native()
     import importlib
-
     return native, importlib.import_module("unsloth.models.fsdp2_load")
 
 
@@ -40,17 +39,26 @@ VLM = "trl-internal-testing/tiny-Qwen2_5_VLForConditionalGeneration"
 
 def _auto(arch):
     import transformers
+    return (
+        transformers.AutoModelForImageTextToText
+        if arch == "qwen2_5_vl"
+        else transformers.AutoModelForCausalLM
+    )
 
-    return transformers.AutoModelForImageTextToText if arch == "qwen2_5_vl" else transformers.AutoModelForCausalLM
 
-
-def _save(arch, directory, overrides = None):
+def _save(
+    arch,
+    directory,
+    overrides = None,
+):
     if arch == "qwen2_5_vl":
         import transformers
 
         config = transformers.AutoConfig.from_pretrained(VLM)
         torch.manual_seed(0)
-        model = transformers.AutoModelForImageTextToText.from_config(config, torch_dtype = torch.float32)
+        model = transformers.AutoModelForImageTextToText.from_config(
+            config, torch_dtype = torch.float32
+        )
     else:
         repo, base = ARCHS[arch]
         model = build(repo, {**base, **(overrides or {})}, lora = False)
@@ -99,7 +107,12 @@ def _shards(model):
     }
 
 
-def _train(native, model, ids, steps = 3):
+def _train(
+    native,
+    model,
+    ids,
+    steps = 3,
+):
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
     losses, norms = [], []
     for _ in range(steps):
@@ -149,7 +162,9 @@ def _case(rank, world, tmp, ckpt, mode, fit, arch, ignore = None):
         model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
     stats = dict(model._unsloth_fsdp2_load_stats)
     loaded_numel = sum(p.numel() for p in model.parameters())
-    full_numel = sum(p.numel() for p in AutoModelForCausalLM.from_pretrained(ckpt, **kw).parameters())
+    full_numel = sum(
+        p.numel() for p in AutoModelForCausalLM.from_pretrained(ckpt, **kw).parameters()
+    )
     expect_sliced = 0
     for p in model.parameters():
         info = getattr(p, loading._PRELOAD, None)
@@ -201,12 +216,16 @@ def _case_refusals(rank, world, tmp, ckpt):
     kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
     out = {}
     with loading.fsdp2_sharded_loading():
-        out["4bit"] = _raised(lambda: AutoModelForCausalLM.from_pretrained(ckpt, load_in_4bit = True, **kw))
+        out["4bit"] = _raised(
+            lambda: AutoModelForCausalLM.from_pretrained(ckpt, load_in_4bit = True, **kw)
+        )
     with loading.fsdp2_sharded_loading():
         model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
     mesh = init_device_mesh("cpu", (1, world), mesh_dim_names = ("r", "s"))
     out["2d"] = _raised(
-        lambda: native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh, device = "cpu"))
+        lambda: native.shard_model(
+            model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh, device = "cpu")
+        )
     )
     out["offload"] = _raised(
         lambda: native.shard_model(
@@ -251,7 +270,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 120)
+    )
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -259,25 +280,45 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = WORLD, **kwargs):
+def _spawn(
+    case,
+    world = WORLD,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        procs = [ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs)) for r in range(world)]
+        procs = [
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs))
+            for r in range(world)
+        ]
         for p in procs:
             p.start()
         for p in procs:
             p.join(600)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        return [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        return [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
 
 
 @pytest.mark.parametrize(
     "arch,overrides,mode,fit",
     [
-        ("llama", {"intermediate_size": 37}, "lora", False),  # odd rows: uneven chunks, FSDP2 padding
-        ("llama", {"intermediate_size": 37}, "lora", True),  # fit layout: frozen chunks gathered back
+        (
+            "llama",
+            {"intermediate_size": 37},
+            "lora",
+            False,
+        ),  # odd rows: uneven chunks, FSDP2 padding
+        (
+            "llama",
+            {"intermediate_size": 37},
+            "lora",
+            True,
+        ),  # fit layout: frozen chunks gathered back
         ("llama", {"intermediate_size": 37}, "full", False),
         ("qwen3", None, "lora", False),
         ("qwen3", None, "full", False),
@@ -342,7 +383,11 @@ def test_chunk_rows_match_fully_shard():
             chunks += [torch.empty(0, dtype = torch.long)] * (world - len(chunks))
             for rank in range(world):
                 start, stop = loading._chunk_rows(rows, world, rank)
-                assert torch.equal(torch.arange(rows)[start:stop], chunks[rank]), (rows, world, rank)
+                assert torch.equal(torch.arange(rows)[start:stop], chunks[rank]), (
+                    rows,
+                    world,
+                    rank,
+                )
 
 
 def test_env_wrapper_is_inert_without_the_flag(monkeypatch):

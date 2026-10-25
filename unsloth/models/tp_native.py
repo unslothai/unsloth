@@ -1514,9 +1514,7 @@ def save_tp_adapter(model, save_directory, **kwargs):
 # load-time peak is the replicated parts plus 1 / tp of the attention / MLP weights, never the whole model.
 
 _PRELOADED = "_unsloth_tp_preloaded"
-_TP_QUANTIZED_HINT = (
-    "Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, or pass load_in_4bit = False."
-)
+_TP_QUANTIZED_HINT = "Load 4-bit / 8-bit / quantized models in full and call apply_tensor_parallel, or pass load_in_4bit = False."
 _UNSUPPORTED_LOAD_KWARGS = (
     "load_in_4bit",
     "load_in_8bit",
@@ -1730,7 +1728,11 @@ def _checkpoint_aliases(model, index):
     renamings = converters = None
     try:
         from transformers.conversion_mapping import get_model_conversion_mapping
-        from transformers.core_model_loading import WeightConverter, WeightRenaming, rename_source_key
+        from transformers.core_model_loading import (
+            WeightConverter,
+            WeightRenaming,
+            rename_source_key,
+        )
 
         transforms = get_model_conversion_mapping(model)
         renamings = [t for t in transforms if isinstance(t, WeightRenaming)]
@@ -1894,7 +1896,9 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
         return new
 
-    reader, sharded_numel, full_numel = _fill_from_checkpoint(model, name, kwargs, device, read_local)
+    reader, sharded_numel, full_numel = _fill_from_checkpoint(
+        model, name, kwargs, device, read_local
+    )
     for region in tp_plan.regions:
         for proj in region.projs:
             base = _weight(proj.module)[1]
@@ -1942,7 +1946,11 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             )
     mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
     if mesh.ndim != 1:
-        raise ValueError(state.get("mesh_hint", "Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp'])."))
+        raise ValueError(
+            state.get(
+                "mesh_hint", "Unsloth: sharded_loading takes a 1-D tp mesh (pass mesh['tp'])."
+            )
+        )
     device = _load_device(kwargs.get("device_map"), mesh)
     kwargs = dict(kwargs, device_map = "meta")
     state["active"] = True
