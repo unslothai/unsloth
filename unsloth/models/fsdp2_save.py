@@ -93,25 +93,35 @@ def _unit_mesh(unit):
         return None
 
 
+def _mesh_ranks(mesh):
+    try:
+        return set(mesh.mesh.flatten().tolist())
+    except Exception:
+        return set()
+
+
 def mesh_writer_rank(model):
-    """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
+    """Lowest global rank holding any of the model's parameters: a sub-mesh without rank 0 never
+    gathers there. Every parameter's mesh counts: under tensor parallel x FSDP2 a frozen weight's
+    mesh is this rank's tp group alone, so its first rank differs between groups while the LoRA
+    weights' dp x tp mesh names the one writer."""
     dist = _dist()
     if dist is None:
         return 0
     DTensor = _dtensor_class()
-    mesh = None
+    ranks = set()
     if isinstance(model, torch.nn.Module):
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
-        if mesh is None:
+            for p in model.parameters():
+                if isinstance(p, DTensor):
+                    ranks |= _mesh_ranks(p.device_mesh)
+        if not ranks:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
-            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
-        if mesh is None:
-            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
-    try:
-        return int(mesh.mesh.min()) if mesh is not None else 0
-    except Exception:
-        return 0
+            for mesh in filter(None, map(_unit_mesh, fsdp2_units(model))):
+                ranks |= _mesh_ranks(mesh)
+        if not ranks:
+            ranks = _mesh_ranks(model.__dict__.get("_unsloth_fsdp2_mesh", None))
+    return min(ranks) if ranks else 0
 
 
 @contextlib.contextmanager

@@ -612,6 +612,27 @@ def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
     }
 
 
+def _case_tp_fsdp2_writer(rank, world, tmp):
+    """dp 2 x tp 2: the collective saves name one writer for the model, not one per tp group."""
+    import importlib
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    save = importlib.import_module("unsloth.models.fsdp2_save")
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    model = build(*ARCHS["llama"])
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    if not native._supports_ignored_params(native._fsdp_api()[2]):
+        return {"unsupported": "torch 2.7+"}
+    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    res = {"writer_rank": save.mesh_writer_rank(model)}
+    with save.fsdp2_gathered(model) as writer:
+        res["writer"] = writer
+    res["full_keys"] = len(native.native_full_state_dict(model))
+    return res
+
+
 class _Rows(torch.utils.data.Dataset):
     def __init__(self, ids):
         self.ids = ids
@@ -782,6 +803,7 @@ CASES = {
     "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
+    "tp_fsdp2_writer": _case_tp_fsdp2_writer,
     "trainer": _case_trainer,
 }
 
@@ -1126,6 +1148,18 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
 def test_tp_x_fsdp2_refuses_trainable_head_norms():
     for res in _spawn("tp_fsdp2_trainable_norms", 4):
         assert res["error"] and "trainable per-head norms" in res["error"], res
+
+
+def test_tp2_x_fsdp2_dp2_saves_from_one_writer():
+    """A frozen tp weight's mesh is its own tp group: the writer must not follow it (two writers,
+    two concurrent writes of the same optimizer.pt / scheduler.pt and two Hub pushes)."""
+    skip_unsupported("llama")
+    results = _spawn("tp_fsdp2_writer", 4)
+    if "unsupported" in results[0]:
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
+    assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results
+    assert [r["writer"] for r in results] == [True, False, False, False], results
+    assert [r["full_keys"] > 0 for r in results] == [True, False, False, False], results
 
 
 def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
