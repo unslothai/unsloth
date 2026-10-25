@@ -5592,9 +5592,7 @@ async def _aiter_llama_stream_items(
     if first_token_deadline is None:
         first_token_deadline = start_first_token_wait(_first_token_timeout_s())
     try:
-        renewed = (getattr(response, "extensions", None) or {}).pop(
-            _HEADER_PARK_DEADLINE_EXT, None
-        )
+        renewed = (getattr(response, "extensions", None) or {}).pop(_HEADER_PARK_DEADLINE_EXT, None)
     except Exception:
         renewed = None
     if isinstance(renewed, (int, float)):

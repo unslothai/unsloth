@@ -49,9 +49,9 @@ def test_residency_growth_counts_as_progress():
     try:
         before = controller.progress_signature()
         controller.note_resident(1100)
-        assert controller.progress_signature() != before, (
-            "a raw holder filling the cache is progress the waiter must see"
-        )
+        assert (
+            controller.progress_signature() != before
+        ), "a raw holder filling the cache is progress the waiter must see"
         steady = controller.progress_signature()
         controller.note_resident(1100)
         assert controller.progress_signature() == steady, "an unchanged reading is not progress"
@@ -89,9 +89,9 @@ def test_a_paused_chat_outwaits_a_raw_holder_that_is_still_filling():
         loop.call_soon_threadsafe(loop.stop)
 
     assert grew["steps"] >= 3, "the raw holder never grew; the test proves nothing"
-    assert resumed is True, (
-        f"gave up after {elapsed:.2f}s while the raw holder's residency kept growing"
-    )
+    assert (
+        resumed is True
+    ), f"gave up after {elapsed:.2f}s while the raw holder's residency kept growing"
     assert elapsed > timeout * 2
 
 
@@ -116,4 +116,6 @@ def test_a_genuinely_stalled_cache_still_times_out():
         worker.join(timeout = 5)
         loop.call_soon_threadsafe(loop.stop)
     assert resumed is False
-    assert elapsed < timeout * 4, f"a stalled cache must still end near the timeout, took {elapsed}s"
+    assert (
+        elapsed < timeout * 4
+    ), f"a stalled cache must still end near the timeout, took {elapsed}s"

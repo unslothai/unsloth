@@ -82,7 +82,11 @@ class _Probe:
 # ── async: the raw relays (/v1/responses, /v1/messages, /v1/chat/completions passthrough) ──
 
 
-async def _relay(port: int, probe: _Probe, cancel_after_s = None):
+async def _relay(
+    port: int,
+    probe: _Probe,
+    cancel_after_s = None,
+):
     cancel = threading.Event()
     if cancel_after_s is not None:
         threading.Timer(cancel_after_s, cancel.set).start()
@@ -148,7 +152,11 @@ class _Backend:
         self._server_park_grace = probe
 
 
-def _relay_sync(port: int, probe: _Probe, cancel_after_s = None) -> str:
+def _relay_sync(
+    port: int,
+    probe: _Probe,
+    cancel_after_s = None,
+) -> str:
     cancel = threading.Event()
     if cancel_after_s is not None:
         threading.Timer(cancel_after_s, cancel.set).start()

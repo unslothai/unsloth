@@ -42455,7 +42455,11 @@ class LlamaCppBackend:
                 prefill_read_timeout = min(prefill_read_timeout, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             header_read_timeout = socket_timeout(prefill_read_timeout)
             header_watchdog = None
-            if stall_grace is not None and header_read_timeout is not None and sys.platform != "win32":
+            if (
+                stall_grace is not None
+                and header_read_timeout is not None
+                and sys.platform != "win32"
+            ):
                 header_watchdog = threading.Thread(
                     target = _header_park_watchdog,
                     args = (header_read_timeout,),
