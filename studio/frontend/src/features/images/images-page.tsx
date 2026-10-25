@@ -32,7 +32,7 @@ import {
   ImageCropIcon,
   InformationCircleIcon,
   PlusSignIcon,
-  Refresh01Icon,
+  ReloadIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -1487,7 +1487,7 @@ function RecipePopover({
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
-            <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+            <HugeiconsIcon icon={ReloadIcon} className="size-4" />
             Restore these settings
           </Button>
           {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
@@ -7376,7 +7376,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
@@ -7563,7 +7563,7 @@ export function ImagesPage({
                         title="Full-resolution download failed. Retry downloading."
                         onClick={() => void ensureSrc(selected)}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="size-4" />
                         Retry download
                       </Button>
                     </>

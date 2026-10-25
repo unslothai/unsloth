@@ -54,7 +54,7 @@ import {
   FolderSearchIcon,
   InformationCircleIcon,
   PlusSignIcon,
-  Refresh01Icon,
+  ReloadIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -458,7 +458,7 @@ export function OnDeviceFoldersDialog({
                       className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
                       <HugeiconsIcon
-                        icon={Refresh01Icon}
+                        icon={ReloadIcon}
                         strokeWidth={1.75}
                         className={cn("size-3.5", loading && "animate-spin")}
                       />

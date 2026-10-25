@@ -46,7 +46,7 @@ import {
   Download01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
-  Refresh01Icon,
+  ReloadIcon,
   Scroll01Icon,
   Search01Icon,
   Upload01Icon,
@@ -507,7 +507,7 @@ export function ChatSkillsDialog({
                 aria-label={t("skills.refresh")}
                 title={t("skills.refresh")}
               >
-                {loading ? <Spinner /> : <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} />}
+                {loading ? <Spinner /> : <HugeiconsIcon icon={ReloadIcon} strokeWidth={2} />}
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>

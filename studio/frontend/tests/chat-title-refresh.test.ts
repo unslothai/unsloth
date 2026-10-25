@@ -290,7 +290,7 @@ test("the chat header menu offers Regenerate title like the Library, off while g
   );
   assert.match(
     menu,
-    /icon=\{Refresh01Icon\}\s*onSelect=\{\(\) => void regenerateChatTitleWithToast\(menu\.item\)\}\s*disabled=\{generating\}/,
+    /icon=\{ReloadIcon\}\s*onSelect=\{\(\) => void regenerateChatTitleWithToast\(menu\.item\)\}\s*disabled=\{generating\}/,
   );
   assert.match(menu, /t\("library\.menu\.regenerateTitle"\)/);
   assert.match(

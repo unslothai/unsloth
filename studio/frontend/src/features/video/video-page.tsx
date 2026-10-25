@@ -8,7 +8,7 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
+  ReloadIcon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -4635,7 +4635,7 @@ function VideoGenerator({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={Refresh01Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>

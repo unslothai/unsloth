@@ -35,7 +35,7 @@ import {
   Download01Icon,
   FolderOpenIcon,
   InformationCircleIcon,
-  Refresh01Icon,
+  ReloadIcon,
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
@@ -699,7 +699,7 @@ export function DebuggingTab() {
                 void poll();
               }}
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={ReloadIcon} />
               {t("settings.debugging.refreshNow")}
             </Button>
           </div>

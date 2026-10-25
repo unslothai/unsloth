@@ -53,7 +53,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  Refresh01Icon,
+  ReloadIcon,
   Settings02Icon,
   Upload01Icon,
   ViewIcon,
@@ -357,7 +357,7 @@ function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
   );
   return (
     <MenuItem
-      icon={Refresh01Icon}
+      icon={ReloadIcon}
       label={t("library.menu.regenerateTitle")}
       disabled={generating}
       onSelect={() => actions.regenerateTitle(chat)}

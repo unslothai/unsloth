@@ -37,7 +37,7 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
-  Refresh01Icon,
+  ReloadIcon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
@@ -223,7 +223,7 @@ export function TabMenuItems({
         </Row>
       ) : null,
       tab && kind !== "newtab" ? (
-        <Row key="reload" P={P} icon={Refresh01Icon} onSelect={() => reloadTab(tab)}>
+        <Row key="reload" P={P} icon={ReloadIcon} onSelect={() => reloadTab(tab)}>
           {t("browser.reload")}
         </Row>
       ) : null,

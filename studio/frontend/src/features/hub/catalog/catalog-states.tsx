@@ -5,7 +5,7 @@ import {
   CloudOffIcon,
   CubeIcon,
   FilterIcon,
-  Refresh01Icon,
+  ReloadIcon,
   WifiDisconnected02Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -200,7 +200,7 @@ export function NetworkErrorState({
           className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
-            icon={Refresh01Icon}
+            icon={ReloadIcon}
             strokeWidth={1.75}
             className="size-3.5"
           />
@@ -250,7 +250,7 @@ export function HubFailureHint({
           className="h-8 rounded-full"
         >
           <HugeiconsIcon
-            icon={Refresh01Icon}
+            icon={ReloadIcon}
             strokeWidth={1.75}
             className="size-3.5"
           />
@@ -306,7 +306,7 @@ export function DiscoverFetchMoreState({
           className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
-            icon={Refresh01Icon}
+            icon={ReloadIcon}
             strokeWidth={1.75}
             className="size-3.5"
           />
@@ -359,7 +359,7 @@ export function DiscoverFetchMoreFooter({
         className="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 py-2 text-ui-12 [&_svg]:-my-2 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
       >
         <HugeiconsIcon
-          icon={Refresh01Icon}
+          icon={ReloadIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -396,7 +396,7 @@ export function InventoryErrorState({
         onClick={onRetry}
         className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
       >
-        <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
+        <HugeiconsIcon icon={ReloadIcon} strokeWidth={1.75} className="size-3.5" />
         Try again
       </button>
     </div>

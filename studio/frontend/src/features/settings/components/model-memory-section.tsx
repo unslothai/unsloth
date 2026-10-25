@@ -78,7 +78,12 @@ const MULTI_MODEL_DESCRIPTION = {
   always: "settings.resources.modelMemory.multiModelDescriptionAlways",
 } as const;
 
-export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
+// `api`: the API tab's copy, only the rows that decide which models a server can answer for.
+export function ModelMemorySection({
+  ref,
+  variant = "full",
+}: { ref?: Ref<HTMLElement>; variant?: "full" | "api" }) {
+  const full = variant === "full";
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -200,7 +205,10 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
       : null;
 
   return (
-    <SettingsSection title={t("settings.resources.modelMemory.title")} ref={ref}>
+    <SettingsSection
+      title={t("settings.resources.modelMemory.title")}
+      ref={ref}
+    >
       <SettingsRow
         label={t("settings.resources.modelMemory.keepResident")}
         description={t(
@@ -215,20 +223,22 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           onCheckedChange={(keepResident) => void persist({ keepResident })}
         />
       </SettingsRow>
-      <SettingsRow
-        label={t("settings.resources.modelMemory.noRamReserve")}
-        description={t(
-          "settings.resources.modelMemory.noRamReserveDescription",
-        )}
-        hint={t("settings.resources.modelMemory.noRamReserveHint")}
-      >
-        <Switch
-          aria-label={t("settings.resources.modelMemory.noRamReserve")}
-          checked={settings?.noRamReserve ?? false}
-          disabled={!settings || isSaving}
-          onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
-        />
-      </SettingsRow>
+      {full ? (
+        <SettingsRow
+          label={t("settings.resources.modelMemory.noRamReserve")}
+          description={t(
+            "settings.resources.modelMemory.noRamReserveDescription",
+          )}
+          hint={t("settings.resources.modelMemory.noRamReserveHint")}
+        >
+          <Switch
+            aria-label={t("settings.resources.modelMemory.noRamReserve")}
+            checked={settings?.noRamReserve ?? false}
+            disabled={!settings || isSaving}
+            onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
+          />
+        </SettingsRow>
+      ) : null}
       <SettingsRow
         label={t("settings.resources.modelMemory.multiModel")}
         description={t(MULTI_MODEL_DESCRIPTION[mode])}
@@ -264,20 +274,22 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           </SelectContent>
         </Select>
       </SettingsRow>
-      <SettingsRow
-        label={t("settings.resources.modelMemory.allowOversizedLoad")}
-        description={t(
-          "settings.resources.modelMemory.allowOversizedLoadDescription",
-        )}
-        hint={t("settings.resources.modelMemory.allowOversizedLoadHint")}
-      >
-        <Switch
-          aria-label={t("settings.resources.modelMemory.allowOversizedLoad")}
-          checked={allowOversizedLoad}
-          onCheckedChange={setAllowOversizedLoad}
-          data-testid="allow-oversized-load-switch"
-        />
-      </SettingsRow>
+      {full ? (
+        <SettingsRow
+          label={t("settings.resources.modelMemory.allowOversizedLoad")}
+          description={t(
+            "settings.resources.modelMemory.allowOversizedLoadDescription",
+          )}
+          hint={t("settings.resources.modelMemory.allowOversizedLoadHint")}
+        >
+          <Switch
+            aria-label={t("settings.resources.modelMemory.allowOversizedLoad")}
+            checked={allowOversizedLoad}
+            onCheckedChange={setAllowOversizedLoad}
+            data-testid="allow-oversized-load-switch"
+          />
+        </SettingsRow>
+      ) : null}
       {error ? (
         <p className="pb-3 text-xs text-destructive">{error}</p>
       ) : (
@@ -302,7 +314,9 @@ export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
           ) : null}
         </>
       )}
-      <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
+      {full ? (
+        <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
+      ) : null}
     </SettingsSection>
   );
 }

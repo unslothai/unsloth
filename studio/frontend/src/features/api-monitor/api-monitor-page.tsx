@@ -54,7 +54,6 @@ import {
   PauseIcon,
   PlayIcon,
   PlusSignIcon,
-  Refresh01Icon,
   ReloadIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -1414,6 +1413,11 @@ export function ApiMonitorPage(): ReactElement {
             onLastLoadChanged={reload.refreshLastLoad}
           />
         </div>
+        {/* Chat's header fade, so the page dissolves into the bar instead of cutting off under it. */}
+        <div
+          aria-hidden={true}
+          className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
+        />
       </div>
       <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-4 max-sm:px-4 max-sm:pt-2 sm:px-10">
         <GuidedTour {...tour.tourProps} />
@@ -1783,7 +1787,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full"
                 >
                   <HugeiconsIcon
-                    icon={Refresh01Icon}
+                    icon={ReloadIcon}
                     strokeWidth={1.75}
                     className={cn("size-4", refreshing && "animate-spin")}
                   />

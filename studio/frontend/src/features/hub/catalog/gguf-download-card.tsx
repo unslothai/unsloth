@@ -37,7 +37,7 @@ import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Refresh01Icon,
+  ReloadIcon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
@@ -1323,7 +1323,7 @@ export function GgufDownloadCard({
             className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
           >
             <HugeiconsIcon
-              icon={Refresh01Icon}
+              icon={ReloadIcon}
               strokeWidth={1.75}
             />
             Update
