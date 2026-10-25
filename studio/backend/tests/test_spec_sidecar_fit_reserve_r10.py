@@ -37,16 +37,7 @@ def _studio_home(tmp_path, monkeypatch):
     monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
 
 
-def _spy_fit_sized(backend):
-    seen = {}
-    build = backend._build_speculative_flags
-
-    def spy(**kw):
-        seen["fit_sized"] = kw.get("dspark_fit_sized")
-        return build(**kw)
-
-    backend._build_speculative_flags = spy
-    return seen
+_spy_fit_sized = _r2._spy_fit_sized  # planning plus the spawn's report
 
 
 def test_device_extras_a_gpu_ids_pin_strips_do_not_block_the_report(tmp_path, monkeypatch):

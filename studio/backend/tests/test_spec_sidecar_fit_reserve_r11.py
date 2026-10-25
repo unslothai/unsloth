@@ -35,30 +35,29 @@ def _studio_home(tmp_path, monkeypatch):
     monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
 
 
-def _spy_fit_sized(backend):
-    seen = {}
-    build = backend._build_speculative_flags
-
-    def spy(**kw):
-        seen["fit_sized"] = kw.get("dspark_fit_sized")
-        return build(**kw)
-
-    backend._build_speculative_flags = spy
-    return seen
+_spy_fit_sized = _r2._spy_fit_sized  # planning plus the spawn's report
 
 
 @pytest.mark.parametrize(
-    "embedding, extras",
+    "embedding, extras, route, field",
     [
-        # --rerank sets embedding mode with RANK pooling: /completion 501s before compute.
-        (False, ("--rerank",)),
-        (False, ("--reranking",)),
+        # --rerank sets embedding mode with RANK pooling: /completion 501s before compute,
+        # and send_embedding would read n_embd_out floats out of RANK's n_cls_out.
+        (False, ("--rerank",), "/rerank", "documents"),
+        (False, ("--reranking",), "/rerank", "documents"),
+        (False, ("--embeddings", "--pooling", "rank"), "/rerank", "documents"),
+        # A later --pooling replaces --rerank's RANK, as in common/arg.cpp.
+        (False, ("--rerank", "--pooling", "mean"), "/embedding", "content"),
         # /v1/embeddings 400s on NONE pooling, explicit or the model's default.
-        (False, ("--embeddings", "--pooling", "none")),
-        (True, ()),
+        (False, ("--embeddings", "--pooling", "none"), "/embedding", "content"),
+        (True, (), "/embedding", "content"),
     ],
 )
-def test_embedding_and_rerank_servers_are_probed_where_they_compute(monkeypatch, embedding, extras):
+def test_embedding_and_rerank_servers_are_probed_where_they_compute(
+    monkeypatch, embedding, extras, route, field
+):
+    monkeypatch.delenv("LLAMA_ARG_POOLING", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_RERANKING", raising = False)
     backend = _lc.LlamaCppBackend()
     backend._port = 1
     backend._extra_args = list(extras)
@@ -70,8 +69,22 @@ def test_embedding_and_rerank_servers_are_probed_where_they_compute(monkeypatch,
     )()
     with patch.object(_lc.httpx, "post", return_value = resp, create = True) as post:
         assert backend._metal_compute_failure_confirmed() is True
-    assert post.call_args.args[0].endswith("/embedding")
-    assert "content" in post.call_args.kwargs["json"]
+    assert post.call_args.args[0].endswith(route)
+    assert field in post.call_args.kwargs["json"]
+
+
+def test_a_reranker_by_gguf_default_alone_is_not_probed(monkeypatch):
+    """--embeddings on a RANK-pooling GGUF: /rerank refuses (no --rerank) and /embedding would
+    over-read RANK's buffer, so nothing is sent and the server is not retired."""
+    monkeypatch.delenv("LLAMA_ARG_POOLING", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_RERANKING", raising = False)
+    backend = _lc.LlamaCppBackend()
+    backend._port = 1
+    backend._pooling_type = 4
+    backend._extra_args = ["--embeddings"]
+    with patch.object(_lc.httpx, "post", create = True) as post:
+        assert backend._metal_compute_failure_confirmed() is False
+    post.assert_not_called()
 
 
 def _mig_two_cards(tmp_path, monkeypatch):

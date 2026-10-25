@@ -244,14 +244,7 @@ def test_fit_sized_is_reported_only_where_the_spawn_can_price(
     backend._arch_gate_survivors = lambda binary = None: []
     caps = dict(_r2._CAPS, supports_fit_target = caps_fit_target)
     backend.probe_server_capabilities = lambda _binary = None: dict(caps)
-    seen = {}
-    build = backend._build_speculative_flags
-
-    def spy(**kw):
-        seen["fit_sized"] = kw.get("dspark_fit_sized")
-        return build(**kw)
-
-    backend._build_speculative_flags = spy
+    seen = _r2._spy_fit_sized(backend)
     _r7._dspark(backend, gguf, tmp_path, extra_args = extras)
     assert seen["fit_sized"] is fit_sized
 

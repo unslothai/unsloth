@@ -46,16 +46,7 @@ def _studio_home(tmp_path, monkeypatch):
     )
 
 
-def _spy_fit_sized(backend):
-    seen = {}
-    build = backend._build_speculative_flags
-
-    def spy(**kw):
-        seen["fit_sized"] = kw.get("dspark_fit_sized")
-        return build(**kw)
-
-    backend._build_speculative_flags = spy
-    return seen
+_spy_fit_sized = _r2._spy_fit_sized  # planning plus the spawn's report
 
 
 def _two_cards(
@@ -185,6 +176,13 @@ def _nkvo_margins(
                 lambda gpu_indices = None: gpu_indices is None or apu in gpu_indices
             )
         backend._integrated_cuda_unified_memory = lambda gpu_indices = None: False
+        # What --list-devices reports: a --device the build never enumerated is not followed.
+        names = [f"{'Vulkan' if vulkan else 'CUDA'}{idx}" for idx, _f, _t in memory]
+        monkeypatch.setattr(
+            _lc.LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None, _n = names: list(_n)),
+        )
         extra = list(kw.get("extra_args", [])) + extras
         args = {k: v for k, v in kw.items() if k != "extra_args"}
         out.append(_r4._margin(_r7._dspark(backend, gguf, d, extra_args = extra, **args)))

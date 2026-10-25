@@ -49,6 +49,42 @@ def _studio_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
 
 
+class _ReserveReport:
+    """Whether the user is told the sidecar is reserved: planning's verdict, then the
+    spawn's report off the argv it launched (the last outcome a retry logged)."""
+
+    def __init__(self):
+        self.planned = None
+        self.spawned: list = []
+
+    def __getitem__(self, key):
+        assert key == "fit_sized"
+        if self.planned is not True:
+            return self.planned
+        return self.spawned[-1] if self.spawned else True
+
+
+def _spy_fit_sized(backend):
+    seen = _ReserveReport()
+    build = backend._build_speculative_flags
+    report = getattr(backend, "_log_sidecar_fit_reserve", None)
+
+    def spy(**kw):
+        seen.planned = kw.get("dspark_fit_sized")
+        return build(**kw)
+
+    def log(run_cmd, env, kind, path, reserved_mib, logged):
+        before = len(logged)
+        report(run_cmd, env, kind, path, reserved_mib, logged)
+        if len(logged) > before:
+            seen.spawned.append(logged[-1][1])
+
+    backend._build_speculative_flags = spy
+    if report is not None:
+        backend._log_sidecar_fit_reserve = log
+    return seen
+
+
 def _last(cmd, name):
     """Last-wins value of ``name``, in either the spaced or the ``=`` spelling."""
     value = None
