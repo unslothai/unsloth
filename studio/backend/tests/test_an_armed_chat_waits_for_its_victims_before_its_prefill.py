@@ -241,3 +241,86 @@ def test_every_arm_site_answers_a_refusal_as_an_admission_timeout():
                 handled = handled and ok
         assert handled, f"the arm at line {node.lineno} lets a refusal escape as a 500"
     assert sites >= 6
+
+
+def _stop_after(seconds):
+    stop = threading.Event()
+    timer = threading.Timer(seconds, stop.set)
+    timer.daemon = True
+    timer.start()
+    return stop
+
+
+def test_stop_ends_the_async_arm_waiting_on_a_victim(armed, monkeypatch):
+    """A victim mid-prefill can hold its cells for the whole wait; Stop must not wait it out and
+    then end on a 503."""
+    fake, controller = armed
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 3.0)
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 3.0)
+    stop = _stop_after(0.2)
+    started = time.monotonic()
+    with pytest.raises(inference.LlamaAdmissionCancelled):
+        asyncio.run(
+            inference._openai_llama_preemption_arm_async(
+                llama_backend = fake, gen_id = "new", signal = PreemptSignal(), cancel_event = stop
+            )
+        )
+    assert time.monotonic() - started < 1.5, "Stop waited for the victim"
+    assert controller.participant("new") is None, "a stopped chat stayed counted"
+
+
+def test_stop_ends_the_sync_arm_waiting_on_a_victim(armed, monkeypatch):
+    fake, controller = armed
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 3.0)
+    monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 3.0)
+    stop = _stop_after(0.2)
+    started = time.monotonic()
+    with pytest.raises(inference.LlamaAdmissionCancelled):
+        inference._openai_llama_preemption_arm(
+            llama_backend = fake, gen_id = "new", signal = PreemptSignal(), cancel_event = stop
+        )
+    assert time.monotonic() - started < 1.5, "Stop waited for the victim"
+    assert controller.participant("new") is None
+
+
+def test_every_arm_given_stop_answers_it_as_a_cancellation():
+    """An arm handed the cancel event raises LlamaAdmissionCancelled on Stop: each such site must
+    sit in a try that answers it as the admission cancellation, not a generic 500."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(inference))
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def _names(handler):
+        kind = handler.type
+        items = kind.elts if isinstance(kind, ast.Tuple) else [kind]
+        return {getattr(item, "id", getattr(item, "attr", None)) for item in items}
+
+    sites = 0
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "_openai_llama_preemption_arm_async"
+            and any(kw.arg == "cancel_event" for kw in node.keywords)
+        ):
+            continue
+        sites += 1
+        handled = False
+        child, parent = node, parents.get(node)
+        while parent is not None and not isinstance(
+            parent, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            if isinstance(parent, ast.Try) and child in parent.body:
+                if any(
+                    h.type is not None and "LlamaAdmissionCancelled" in _names(h)
+                    for h in parent.handlers
+                ):
+                    handled = True
+                    break
+            child, parent = parent, parents.get(parent)
+        assert handled, f"the arm at line {node.lineno} lets a Stop escape as a 500"
+    assert sites >= 5, "the chat arms are not handed the cancel event"

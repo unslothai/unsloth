@@ -3390,12 +3390,32 @@ def _plan_for_unpausable_holder(
 
 _UNPAUSABLE_VICTIM_WAIT_S = 2.0
 _UNPAUSABLE_VICTIM_HARD_WAIT_S = 60.0
+_VICTIM_WAIT_STOP_POLL_S = 0.05
 
 
-def _openai_llama_wait_for_victims(controller, gen_id: str) -> bool:
-    """True once the victims let go, the cache has room anyway, or the holder is gone."""
+def _openai_llama_victims_released(controller, victims, timeout: float, cancel_event) -> bool:
+    """``controller.wait_released`` in short slices, so a Stop is seen within one: the wait can
+    run a minute while a victim finishes a prefill it cannot pause."""
+    if cancel_event is None:
+        return controller.wait_released(victims, timeout)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if cancel_event.is_set():
+            raise LlamaAdmissionCancelled("stopped while waiting for cache room")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        if controller.wait_released(victims, min(_VICTIM_WAIT_STOP_POLL_S, left)):
+            return True
+
+
+def _openai_llama_wait_for_victims(controller, gen_id: str, cancel_event = None) -> bool:
+    """True once the victims let go, the cache has room anyway, or the holder is gone. A set
+    ``cancel_event`` ends the wait with ``LlamaAdmissionCancelled``."""
     victims = controller.take_awaited_victims(gen_id)
-    if not victims or controller.wait_released(victims, _UNPAUSABLE_VICTIM_WAIT_S):
+    if not victims or _openai_llama_victims_released(
+        controller, victims, _UNPAUSABLE_VICTIM_WAIT_S, cancel_event
+    ):
         return True
     _llama_preemption_log(
         "raw-holder-victims-late", level = "debug", gen_id = gen_id, victims = ",".join(victims)
@@ -3416,7 +3436,9 @@ def _openai_llama_wait_for_victims(controller, gen_id: str) -> bool:
                 victims = ",".join(victims),
             )
             return False
-        if controller.wait_released(victims, min(_UNPAUSABLE_VICTIM_WAIT_S, left)):
+        if _openai_llama_victims_released(
+            controller, victims, min(_UNPAUSABLE_VICTIM_WAIT_S, left), cancel_event
+        ):
             return True
 
 
@@ -3425,13 +3447,13 @@ def _openai_llama_armed_victims_pending(controller, gen_id: str) -> bool:
     return participant is not None and bool(participant.awaiting_victims)
 
 
-def _openai_llama_wait_for_armed_victims(controller, gen_id: str) -> None:
+def _openai_llama_wait_for_armed_victims(controller, gen_id: str, cancel_event = None) -> None:
     """Blocking: hold an armed chat's prefill until the chats its plan paused let go. A victim
     still decoding when the wait runs out still holds the cells the prefill needs, so the chat is
     refused with ``LlamaAdmissionTimeout`` as an unpausable holder is, not sent beside it."""
     if not _openai_llama_armed_victims_pending(controller, gen_id):
         return
-    if not _openai_llama_wait_for_victims(controller, gen_id):
+    if not _openai_llama_wait_for_victims(controller, gen_id, cancel_event):
         _llama_preemption_log("armed-victims-late", level = "warning", gen_id = gen_id)
         raise LlamaAdmissionTimeout(
             "Timed out waiting for the local llama-server cache to free room for this request"
@@ -3570,18 +3592,20 @@ def _openai_llama_preemption_arm(
     gen_id: str,
     signal,
     loop = None,
+    cancel_event = None,
     **kwargs,
 ):
     """Enrol a generation with the preemptor, and pause whoever must make room. Returns the policy
     the stream calls back on, or None when preemption cannot apply, as before preemption existed.
-    For a caller off the event loop; one on it awaits ``_openai_llama_preemption_arm_async``."""
+    For a caller off the event loop; one on it awaits ``_openai_llama_preemption_arm_async``.
+    A set ``cancel_event`` (Stop) ends the wait for the victims with ``LlamaAdmissionCancelled``."""
     controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
     if controller is None:
         return None
     try:
         _refresh_residency_before_planning(controller)
         policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
-        _openai_llama_wait_for_armed_victims(controller, gen_id)
+        _openai_llama_wait_for_armed_victims(controller, gen_id, cancel_event)
     except BaseException:
         # Refused or interrupted mid-arm, the stream never starts, so no disarm would drop it.
         controller.unregister(gen_id)
@@ -3594,6 +3618,7 @@ async def _openai_llama_preemption_arm_async(
     gen_id: str,
     signal,
     loop = None,
+    cancel_event = None,
     **kwargs,
 ):
     """``_openai_llama_preemption_arm`` with the cache read awaited in a worker, so arming one chat
@@ -3605,7 +3630,9 @@ async def _openai_llama_preemption_arm_async(
         await _refresh_residency_before_planning_async(controller)
         policy = _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
         if _openai_llama_armed_victims_pending(controller, gen_id):
-            await asyncio.to_thread(_openai_llama_wait_for_armed_victims, controller, gen_id)
+            await asyncio.to_thread(
+                _openai_llama_wait_for_armed_victims, controller, gen_id, cancel_event
+            )
         return policy
     except BaseException:
         # Cancelled mid-arm, the stream never starts, so no disarm would drop the enrolment.
@@ -36703,6 +36730,11 @@ async def produce_openai_chat_completions(
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
+            # Registered before the arm: its wait for the chats it paused can run a minute, and a
+            # Stop sent meanwhile has to reach this request rather than be answered `cancelled: 0`.
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+            _tracker.__enter__()
             reservation = None
             try:
                 reservation, admission_config = await _reserve_counted_gguf_chat(
@@ -36743,9 +36775,11 @@ async def produce_openai_chat_completions(
                         payload = payload,
                         conversation = gguf_messages,
                         injected_tools = tools_to_use,
+                        cancel_event = cancel_event,
                     )
                 )
             except LlamaAdmissionQueueFull as exc:
+                _tracker.__exit__(None, None, None)
                 _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
@@ -36757,6 +36791,7 @@ async def produce_openai_chat_completions(
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
             except LlamaAdmissionTimeout as exc:
+                _tracker.__exit__(None, None, None)
                 # The arm's victims never let go of the cells this prompt needs.
                 _llama_admission_log(
                     "timeout",
@@ -36770,7 +36805,23 @@ async def produce_openai_chat_completions(
                     reservation.cancel()
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 503)
+            except LlamaAdmissionCancelled as exc:
+                # Stopped while the arm waited for its victims; nothing went upstream.
+                _tracker.__exit__(None, None, None)
+                _llama_admission_log(
+                    "cancelled-before-upstream",
+                    reservation,
+                    request = request,
+                    mode = _tool_admission_mode,
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+                if reservation is not None:
+                    reservation.cancel()
+                api_monitor.finish(monitor_id, "cancelled")
+                raise _openai_admission_http_exception(exc, status_code = 499)
             except BaseException as exc:
+                _tracker.__exit__(None, None, None)
                 if reservation is not None:
                     reservation.cancel()
                     if isinstance(exc, asyncio.CancelledError):
@@ -36780,10 +36831,6 @@ async def produce_openai_chat_completions(
             _tool_sentinel = object()
             # True only once the sync generator returned on its own; see _gguf_decode_finished.
             _tool_decode_finished = False
-
-            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
-            _tracker.__enter__()
 
             async def gguf_tool_stream():
                 nonlocal _tool_decode_finished
@@ -37315,6 +37362,7 @@ async def produce_openai_chat_completions(
                                     payload = payload,
                                     conversation = gguf_messages,
                                     injected_tools = tools_to_use,
+                                    cancel_event = cancel_event,
                                 )
                             )
                         iterator = gguf_tool_stream()
@@ -37522,6 +37570,7 @@ async def produce_openai_chat_completions(
                             payload = payload,
                             conversation = gguf_messages,
                             injected_tools = tools_to_use,
+                            cancel_event = cancel_event,
                         )
                     )
                 # In the request's own context: the task and thread below each get a
@@ -38111,6 +38160,7 @@ async def produce_openai_chat_completions(
                             # What the ledger must keep apart from the output it reserved.
                             payload = payload,
                             conversation = gguf_messages,
+                            cancel_event = cancel_event,
                         )
                     )
                     iterator = gguf_stream_chunks()
@@ -38348,6 +38398,7 @@ async def produce_openai_chat_completions(
                         # What the ledger must keep apart from the output it reserved.
                         payload = payload,
                         conversation = gguf_messages,
+                        cancel_event = cancel_event,
                     )
                 )
 
@@ -38525,6 +38576,18 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 503)
+            except LlamaAdmissionCancelled as exc:
+                # Stopped while the arm waited for its victims; nothing went upstream.
+                _llama_admission_log(
+                    "cancelled-before-upstream",
+                    reservation,
+                    request = request,
+                    mode = "chat_standard_nonstream",
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+                api_monitor.finish(monitor_id, "cancelled")
+                raise _openai_admission_http_exception(exc, status_code = 499)
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
