@@ -1348,7 +1348,7 @@ export function ApiMonitorPage(): ReactElement {
                     : "stroke-control-accent"
               }
             />
-            {formatCount(used)} / {formatCount(windowSize)}
+            {formatCount(used)}{"\u2009/\u2009"}{formatCount(windowSize)}
           </span>
         </ToolbarTooltip>
       </Fact>
