@@ -1059,7 +1059,8 @@ export function WorldPlayer({
 
   const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
   const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
-  const shooterOn = baseSpec.action?.shooter === true;
+  // Combat runs only in the 3D view; the map view keeps the usual hostile encounters.
+  const shooterOn = baseSpec.action?.shooter === true && view === "3d";
   // Safe places for the 3D shooter: refreshed by each village beat (none without autonomy).
   const safeRef = useRef<(p: Point) => boolean>(() => false);
   const autoSteered = useRef(new Set<string>());
@@ -1126,7 +1127,7 @@ export function WorldPlayer({
       events.current = [...events.current, ...out.notes].slice(-6);
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [autoOn, ready, started, map, areas, toast]);
+  }, [autoOn, ready, started, map, areas, toast, shooterOn]);
 
   const deal = (
     fn: (st: WorldState) => { state: WorldState; note: string } | null,

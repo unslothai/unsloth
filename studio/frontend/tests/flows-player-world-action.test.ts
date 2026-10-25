@@ -350,3 +350,19 @@ test("a knocked-out hostile is never the interaction target", () => {
   assert.match(src, /if \(!n\.group\.visible\) continue;\s*const d = Math\.hypot\(n\.pos\.x - me\.x/);
   assert.match(src, /npcs\.filter\(\(n\) => n\.group\.visible\)\.map\(\(n\) => n\.group\)/);
 });
+
+test("a fast sprint cannot pass through a thin fence between two steps", () => {
+  const fence = world([{ ...crate(5, 5), kind: "fence", rot: 90 }]);
+  // Walk speed 20, sprinting: about 0.58 tiles a step, so one step would go from just before to just past it.
+  const b = A.newBody(fence, 4.709, 5);
+  for (let i = 0; i < 30; i++) A.advance(fence, b, { ...east, sprint: true }, A.STEP_S, 20);
+  assert.ok(b.x < 5, `${b.x}`);
+});
+
+test("hostile encounters give way to combat only in the 3D view", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/player/world/world-player.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /const shooterOn = baseSpec\.action\?\.shooter === true && view === "3d";/);
+});

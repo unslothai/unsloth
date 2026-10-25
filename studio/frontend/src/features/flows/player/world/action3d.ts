@@ -216,6 +216,9 @@ export const newBody = (w: ActionWorld, x: number, y: number): Body => ({
 
 export const bodyHeight = (b: Body) => (b.crouched ? CROUCH_H : STAND_H);
 
+/** Thinner than the thinnest collider (a fence, 0.1) plus the body's diameter. */
+const SUB_MOVE = 0.2;
+
 function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): void {
   const dt = STEP_S;
   // Standing up needs room overhead.
@@ -227,27 +230,37 @@ function step(w: ActionWorld, b: Body, input: MoveInput, walk: number): void {
   const len = Math.hypot(input.dx, input.dy);
   const mx = len > 0 ? (input.dx / len) * speed * dt : 0;
   const my = len > 0 ? (input.dy / len) * speed * dt : 0;
+  // Sub-moves no longer than SUB_MOVE, so a fast sprint cannot pass through a thin prop between two steps.
+  const subs = Math.max(
+    1,
+    Math.ceil(Math.max(Math.abs(mx), Math.abs(my)) / SUB_MOVE),
+  );
   // One axis at a time: a wall stops that axis only, so the body slides along it.
-  for (const [ax, ay] of [
-    [mx, 0],
-    [0, my],
-  ] as const) {
-    if (!ax && !ay) continue;
-    const nx = b.x + ax;
-    const ny = b.y + ay;
-    if (!blocked(w, nx, ny, b.z, h)) {
-      const floor = floorAt(w, nx, ny, b.z + STEP_UP);
-      const rise = floor - b.z;
-      // Steep ground is a wall unless the rise is a short step.
-      if (b.grounded && rise > STEP_UP && rise > MAX_SLOPE * Math.hypot(ax, ay))
-        continue;
-      b.x = nx;
-      b.y = ny;
-      // Up a step at once (also mid-jump, onto a ledge); down one by falling, but stay on a gentle slope.
-      if (rise > 0 && rise <= STEP_UP) b.z = floor;
-      else if (b.grounded && rise < 0 && rise > -STEP_UP) b.z = floor;
+  for (let i = 0; i < subs; i++)
+    for (const [ax, ay] of [
+      [mx / subs, 0],
+      [0, my / subs],
+    ] as const) {
+      if (!ax && !ay) continue;
+      const nx = b.x + ax;
+      const ny = b.y + ay;
+      if (!blocked(w, nx, ny, b.z, h)) {
+        const floor = floorAt(w, nx, ny, b.z + STEP_UP);
+        const rise = floor - b.z;
+        // Steep ground is a wall unless the rise is a short step.
+        if (
+          b.grounded &&
+          rise > STEP_UP &&
+          rise > MAX_SLOPE * Math.hypot(ax, ay)
+        )
+          continue;
+        b.x = nx;
+        b.y = ny;
+        // Up a step at once (also mid-jump, onto a ledge); down one by falling, but stay on a gentle slope.
+        if (rise > 0 && rise <= STEP_UP) b.z = floor;
+        else if (b.grounded && rise < 0 && rise > -STEP_UP) b.z = floor;
+      }
     }
-  }
   b.jumpBuffer = input.jump ? JUMP_BUFFER_S : Math.max(0, b.jumpBuffer - dt);
   if (b.jumpBuffer > 0 && (b.grounded || b.coyote > 0) && !b.crouched) {
     b.vz = JUMP_V;
