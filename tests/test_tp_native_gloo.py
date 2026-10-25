@@ -31,6 +31,8 @@ from test_tp_native_oracle import (  # noqa: E402
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Small next to a typical trained-weight gradient (~6e-6 on the tiny llama lm_head), so Adam still moves it.
+_ADAM_EPS = 1e-6
 
 
 def _free_port():
@@ -540,8 +542,11 @@ def _case_tp_fsdp2(
     layouts = tpn._param_layouts(model)
     params = [p for p in model.parameters() if p.requires_grad]
     ref_params = [p for p in ref.parameters() if p.requires_grad]
-    opt = torch.optim.AdamW(params, lr = 1e-2, foreach = False)
-    ref_opt = torch.optim.AdamW(ref_params, lr = 1e-2, foreach = False)
+    # Adam's g / (sqrt(v) + eps) has slope lr / eps at g = 0. A full lm_head copy (modules_to_save) holds
+    # hundreds of entries with |g| ~ 1e-9, where the default eps = 1e-8 turns ~1e-12 of reduction-order
+    # noise into ~5e-6 of weight, half the saved-weight tolerance, and over it on some CI CPUs.
+    opt = torch.optim.AdamW(params, lr = 1e-2, eps = _ADAM_EPS, foreach = False)
+    ref_opt = torch.optim.AdamW(ref_params, lr = 1e-2, eps = _ADAM_EPS, foreach = False)
     losses, ref_losses, norms, native_norms, ref_norms = [], [], [], [], []
     for step in range(3):
         out = model(input_ids = mine, labels = mine, use_cache = False)
@@ -1120,7 +1125,13 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
     saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
     assert set(saved_tp) == set(saved_ref)
     for key in saved_ref:
-        torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-4, atol = 1e-5, msg = key)
+        torch.testing.assert_close(
+            saved_tp[key],
+            saved_ref[key],
+            rtol = 1e-4,
+            atol = 1e-5,
+            msg = lambda m, key = key: f"{key}: {m}",
+        )
 
 
 def test_tp_x_fsdp2_refuses_trainable_head_norms():
