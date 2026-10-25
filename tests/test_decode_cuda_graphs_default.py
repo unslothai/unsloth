@@ -29,6 +29,7 @@ def runtime(monkeypatch):
 
 
 def test_enabled_decision(runtime):
+    runtime.setattr(G, "_DEFAULT_OK", True)
     assert G.enabled() is False
     with G.rl_generation():
         assert G.enabled() is True
@@ -45,9 +46,20 @@ def test_enabled_decision(runtime):
     assert G.enabled() is False
 
 
+def test_rl_default_is_nvidia_cuda_only(runtime):
+    runtime.setattr(G, "_DEFAULT_OK", False)  # ROCm / HIP, or no CUDA device
+    with G.rl_generation():
+        assert G.enabled() is False
+        runtime.setenv(ENV, "1")
+        assert G.enabled() is True
+    runtime.setattr(torch.version, "hip", "6.4.0", raising = False)
+    assert G._default_ok() is False
+
+
 def test_rl_scope_is_per_thread(runtime):
     import threading
 
+    runtime.setattr(G, "_DEFAULT_OK", True)
     seen = []
     with G.rl_generation():
         t = threading.Thread(target = lambda: seen.append(G.enabled()))

@@ -5,7 +5,8 @@
 
 When it runs (decided per call, enabled()): UNSLOTH_DECODE_CUDA_GRAPHS=1 everywhere, =0 nowhere; unset,
 only for the generate() calls an RL trainer makes on the training model (GRPO / RLOO / online DPO /
-GKD ... through rl.py's unwrap_model_for_generation, rl_generation()), not for plain model.generate().
+GKD ... through rl.py's unwrap_model_for_generation, rl_generation()) on NVIDIA CUDA, not for plain
+model.generate() and not on ROCm / HIP (graph replay there is not verified bitwise; =1 still forces it).
 The decode buffers and graphs of such a call are released when it returns to training: the next
 optimizer step invalidates the graphs anyway, and training gets the memory back.
 
@@ -83,7 +84,19 @@ def enabled():
         return True
     if flag == "0":
         return False
-    return getattr(_TLS, "rl_depth", 0) > 0
+    return _DEFAULT_OK and getattr(_TLS, "rl_depth", 0) > 0
+
+
+def _default_ok():
+    # The RL default is NVIDIA CUDA only: HIP graph replay is not verified bitwise against the eager
+    # step on ROCm (=1 still forces it), and XPU / MPS / CPU never take the graphed step.
+    try:
+        return torch.version.hip is None and torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+_DEFAULT_OK = _default_ok()
 
 
 class rl_generation:
