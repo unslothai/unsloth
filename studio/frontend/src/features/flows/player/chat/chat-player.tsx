@@ -148,7 +148,8 @@ export function ChatPlayer({
         <button
           type="button"
           onClick={reset}
-          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-white/60 hover:bg-white/10 hover:text-white"
+          disabled={!loaded}
+          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-40"
           data-testid="chat-reset"
         >
           <RotateCcwIcon className="size-3.5" /> New chat
