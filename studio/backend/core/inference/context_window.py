@@ -40,8 +40,7 @@ def _message_without_unpriced_media(message: dict) -> dict:
 
 
 _IMAGE_PART_TYPES = frozenset(("image_url", "input_image"))
-# One token on the tokenizers Studio serves, so a stand-in of N repeats renders as N tokens through
-# `/apply-template` and `/tokenize` (#14968).
+# One token per repeat on the tokenizers Studio serves, so N repeats count as N tokens (#14968).
 _IMAGE_STAND_IN_TOKEN = " the"
 
 
@@ -50,8 +49,7 @@ def _image_stand_in(tokens: int) -> dict:
 
 
 def _message_with_priced_images(message: dict, price_image: Callable[[dict], int]) -> dict:
-    """The counting copy: each image becomes a text stand-in of what it will cost, and the media
-    that stays unpriced (audio, video) is dropped as before. The request still sends the image."""
+    """Counting copy only: images become stand-ins of their price, audio and video are dropped."""
     content = message.get("content")
     if not isinstance(content, list):
         return message
@@ -76,9 +74,7 @@ def _message_with_priced_images(message: dict, price_image: Callable[[dict], int
 def messages_with_priced_images(
     messages: list[dict], price_image: Callable[[dict], int]
 ) -> list[dict]:
-    """``messages_without_unpriced_media`` with images charged instead of dropped. Images can outgrow
-    the reply reserve that absorbed them (ten screenshots are ~20k tokens), and a count that leaves
-    them out lets the fitter keep a chat llama-server then refuses."""
+    """``messages_without_unpriced_media`` with images charged instead of dropped."""
     priced = [_message_with_priced_images(message, price_image) for message in messages]
     return messages if all(before is after for before, after in zip(messages, priced)) else priced
 

@@ -2555,12 +2555,8 @@ _FIXED_IMAGE_TOKENS = {"gemma3": 256}
 
 
 def _image_token_price(backend, part: dict) -> int:
-    """What one image adds to the prompt, for the fit and the tool-result sizing (#14968).
-
-    The admission ceiling, except on a fixed-resolution projector, whose cost is known, and on a
-    Qwen-VL projector, where the image's own size gives a close count: charging every screenshot
-    the 4096-token ceiling would evict history that fits. Never above the ceiling, and the
-    ceiling whenever the size cannot be read."""
+    """One image's prompt cost for the fit and tool-result sizing (#14968): the admission ceiling,
+    unless a known projector gives a closer upper bound (the ceiling evicts history that fits)."""
     ceiling = _mcp_image_tokens(backend)
     if ceiling <= 0:
         return 0
