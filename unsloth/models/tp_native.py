@@ -256,7 +256,11 @@ def _decoder_layers(model):
             prefix = name
             break
     for name, module in decoder.named_modules():
-        if isinstance(module, nn.ModuleList) and len(module) and (n is None or len(module) in counts):
+        if (
+            isinstance(module, nn.ModuleList)
+            and len(module)
+            and (n is None or len(module) in counts)
+        ):
             path = ".".join(x for x in (prefix, name) if x)
             return path, module
     raise ValueError(
@@ -511,7 +515,9 @@ def _region(path, module, kind, compiled, text, tp):
         _check_divisible("num_key_value_heads", kv_heads, tp, path)
         for name, norm in norms:
             weight = norm._parameters.get("weight")
-            numel = weight.numel() if weight is not None else sum(p.numel() for p in norm.parameters())
+            numel = (
+                weight.numel() if weight is not None else sum(p.numel() for p in norm.parameters())
+            )
             if numel != head_dim:
                 raise ValueError(
                     f"Unsloth: '{path}.{name}' normalizes {numel} features, not one head ({head_dim}): a norm "
@@ -607,7 +613,9 @@ def _input_width_names(source, module):
     names = set()
     for x in {_input_name(module), "hidden_states"}:
         x = re.escape(x)
-        for m in re.finditer(r"\b\w+\s*,\s*\w+\s*,\s*(\w+)\s*=\s*" + x + r"\.(?:size\(\)|shape\b)", source):
+        for m in re.finditer(
+            r"\b\w+\s*,\s*\w+\s*,\s*(\w+)\s*=\s*" + x + r"\.(?:size\(\)|shape\b)", source
+        ):
             names.add(m.group(1))
         for m in re.finditer(
             r"\b(\w+)\s*=\s*" + x + r"\.(?:shape\[(?:-1|2)\]|size\((?:-1|2)\))", source

@@ -196,7 +196,11 @@ def _find_parts(model) -> _Parts:
             layers_name, source = lists[0], "transformers"
     if layers_name is None:
         for name, child in named.items():
-            if isinstance(child, nn.ModuleList) and len(child) and (n is None or len(child) in counts):
+            if (
+                isinstance(child, nn.ModuleList)
+                and len(child)
+                and (n is None or len(child) in counts)
+            ):
                 layers_name = name
                 break
     if layers_name is None:
@@ -281,7 +285,9 @@ def _refuse_shared_across_stages(parts, bounds):
     owners = {}
     for i, layer in enumerate(parts.layers):
         for name, p in layer.named_parameters():
-            stages, first, param = owners.setdefault(id(p), (set(), f"{parts.layers_name}.{i}.{name}", p))
+            stages, first, param = owners.setdefault(
+                id(p), (set(), f"{parts.layers_name}.{i}.{name}", p)
+            )
             stages.add(stage_of[i])
     shared = [first for stages, first, p in owners.values() if len(stages) > 1 and p.requires_grad]
     if shared:
