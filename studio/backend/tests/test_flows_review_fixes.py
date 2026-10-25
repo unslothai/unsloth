@@ -845,3 +845,22 @@ async def test_a_baked_chat_answers_the_new_message_not_the_exported_one():
         app = None, flow_id = "f1", doc = parsed, entry = "o", params = {"message": "new question"}
     )
     assert out == {"reply": "new question"}
+
+
+def test_an_8_bit_wav_gap_is_silence_not_full_negative():
+    import io
+    import wave
+
+    from core.flows.nodes.audio import concat_wav
+
+    def clip():
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(1)
+            w.setframerate(1000)
+            w.writeframes(b"\x80" * 10)
+        return buf.getvalue()
+
+    with wave.open(io.BytesIO(concat_wav([clip(), clip()], 5))) as w:
+        assert set(w.readframes(w.getnframes())) == {0x80}
