@@ -50,6 +50,9 @@ export interface ThreadRecord {
   forkBoundaryMessageId?: string | null;
   forkTitleBase?: string | null;
   modifiedAt?: number | null;
+  /** The scheduled task whose run made this chat (server-set). */
+  scheduledTaskId?: string | null;
+  /** this chat's own settings, applied when it is opened; absent means the global ones. */
   settings?:
     | import("./utils/thread-scoped-settings").ThreadScopedSettings
     | null;
