@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The compiled W8A8 linear an eager CUDA forward takes (``UNSLOTH_NATIVE_INT8_FUSED``): gates, fallback, and
-bit-equality with the eager kernels."""
+"""Compiled W8A8 linear: gates, fallback, and bit-equality with the eager kernels."""
 
 from __future__ import annotations
 
@@ -90,7 +89,7 @@ def test_a_failing_compile_falls_back_once_and_stays_eager(monkeypatch):
     assert layer._forward_fused(torch.randn(64, 512, dtype = torch.bfloat16)) is None
     state = nq.fused_w8a8_state()
     assert "inductor exploded" in state["failed"]
-    assert nq._fused_w8a8() is None  # never retried in this process
+    assert nq._fused_w8a8() is None
 
 
 def test_an_oom_propagates_and_keeps_the_compiled_linear(monkeypatch):
@@ -106,7 +105,6 @@ def test_an_oom_propagates_and_keeps_the_compiled_linear(monkeypatch):
 
 
 def test_compiled_linear_gets_detached_non_parameter_inputs(monkeypatch):
-    # A view's base and a Parameter's shape are guarded: either would recompile per layer / caller layout.
     layer = _layer()
     seen = []
 
@@ -143,8 +141,7 @@ def test_large_inputs_are_chunked_on_the_accumulator(monkeypatch):
 @pytest.mark.parametrize("rot", [256, 0])
 @pytest.mark.parametrize("bias", [True, False])
 def test_fused_maths_tracks_the_eager_kernels(rot, bias):
-    # On CPU the eager scale divides (CUDA multiplies by the reciprocal), so only ulp-level agreement here; the
-    # CUDA test below checks bit-equality.
+    # CPU eager divides, so only ulp-level agreement; the CUDA test checks bit-equality.
     layer = _layer(rot = rot, bias = bias)
     x = torch.randn(48, 512, dtype = torch.bfloat16)
     x_rot = layer._rotate(x) if rot else x
