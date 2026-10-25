@@ -3197,6 +3197,7 @@ export const fr = {
       tokenNamePlaceholder: "Nom du jeton (par ex. production)",
       newAccessTokenName: "Nom du nouveau jeton d’accès",
       createToken: "Créer un jeton",
+      defaultTokenName: "Nouveau jeton {n}",
       creating: "Création...",
       newTokenCreated: "Nouveau jeton d’accès créé",
       accessTokenCopied: "Jeton d’accès copié",

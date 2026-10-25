@@ -3098,6 +3098,7 @@ export const it = {
       tokenNamePlaceholder: "Nome del token (es. produzione)",
       newAccessTokenName: "Nome del nuovo token di accesso",
       createToken: "Crea token",
+      defaultTokenName: "Nuovo token {n}",
       creating: "Creazione...",
       newTokenCreated: "Nuovo token di accesso creato",
       accessTokenCopied: "Token di accesso copiato",

@@ -3166,6 +3166,7 @@ export const ru = {
       tokenNamePlaceholder: "Имя токена (например, production)",
       newAccessTokenName: "Имя нового токена доступа",
       createToken: "Создать токен",
+      defaultTokenName: "Новый токен {n}",
       creating: "Создание...",
       newTokenCreated: "Новый токен доступа создан",
       accessTokenCopied: "Токен доступа скопирован",

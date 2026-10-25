@@ -3169,6 +3169,7 @@ export const ptBR = {
       tokenNamePlaceholder: "Nome do token (ex.: produção)",
       newAccessTokenName: "Nome do novo token de acesso",
       createToken: "Criar token",
+      defaultTokenName: "Novo token {n}",
       creating: "Criando...",
       newTokenCreated: "Novo token de acesso criado",
       accessTokenCopied: "Token de acesso copiado",

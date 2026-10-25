@@ -158,6 +158,7 @@ export function ApiKeysTab() {
                 void load();
               }}
               onError={setActionError}
+              existingNames={keys.map((k) => k.name)}
             />
           </motion.div>
         )}

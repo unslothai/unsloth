@@ -3138,6 +3138,7 @@ export const ko = {
       tokenNamePlaceholder: "토큰 이름(예: production)",
       newAccessTokenName: "새 액세스 토큰 이름",
       createToken: "토큰 생성",
+      defaultTokenName: "새 토큰 {n}",
       creating: "생성 중...",
       newTokenCreated: "새 액세스 토큰이 생성되었습니다",
       accessTokenCopied: "액세스 토큰이 복사되었습니다",

@@ -3150,6 +3150,7 @@ export const ar = {
       tokenNamePlaceholder: "اسم التوكن (مثل production)",
       newAccessTokenName: "اسم توكن الوصول الجديد",
       createToken: "إنشاء توكن",
+      defaultTokenName: "توكن جديد {n}",
       creating: "جارٍ الإنشاء...",
       newTokenCreated: "تم إنشاء توكن وصول جديد",
       accessTokenCopied: "تم نسخ توكن الوصول",

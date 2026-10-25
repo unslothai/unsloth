@@ -19,27 +19,50 @@ const EXPIRY_PRESETS = [
   { label: "90d", value: 90 },
 ];
 
+/** The next "New Token N" after every N in use, so an unnamed token never repeats a name. */
+export function nextDefaultTokenNumber(names: readonly string[], pattern: RegExp): number {
+  let highest = 0;
+  for (const existing of names) {
+    const match = pattern.exec(existing.trim());
+    if (match) highest = Math.max(highest, Number(match[1]));
+  }
+  return highest + 1;
+}
+
 export function CreateKeyForm({
   onCreated,
   onError,
+  existingNames,
 }: {
   onCreated: (rawKey: string) => void;
   /** null clears an earlier failure */
   onError: (message: string | null) => void;
+  existingNames: readonly string[];
 }) {
   const t = useT();
   const pillId = useId();
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  // Matched in the current language: "{n}" in the message marks the number.
+  const [prefix, suffix] = t("settings.apiKeys.defaultTokenName").split("{n}");
+  const escape = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const defaultName = t("settings.apiKeys.defaultTokenName", {
+    n: String(
+      nextDefaultTokenNumber(
+        existingNames,
+        new RegExp(`^${escape(prefix)}(\\d+)${escape(suffix)}$`),
+      ),
+    ),
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || loading) return;
+    if (loading) return;
     setLoading(true);
     onError(null);
     try {
-      const result = await createApiKey(name.trim(), expiry);
+      const result = await createApiKey(name.trim() || defaultName, expiry);
       onCreated(result.key);
       setName("");
     } catch (cause) {
@@ -55,7 +78,7 @@ export function CreateKeyForm({
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
+          placeholder={defaultName}
           className="h-control min-w-[calc(200px*var(--ui-space-scale,1))] flex-1 text-sm"
           aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
@@ -81,7 +104,12 @@ export function CreateKeyForm({
             );
           })}
         </div>
-        <Button variant="secondary" type="submit" size="sm" disabled={loading || !name.trim()}>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={loading}
+          className="bg-foreground text-background hover:bg-foreground/85"
+        >
           {!loading && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
           {loading
             ? t("settings.apiKeys.creating")

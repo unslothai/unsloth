@@ -3159,6 +3159,7 @@ export const hi = {
       tokenNamePlaceholder: "टोकन का नाम (जैसे, production)",
       newAccessTokenName: "नए एक्सेस टोकन का नाम",
       createToken: "टोकन बनाएँ",
+      defaultTokenName: "नया टोकन {n}",
       creating: "बनाया जा रहा है...",
       newTokenCreated: "नया एक्सेस टोकन बनाया गया",
       accessTokenCopied: "एक्सेस टोकन कॉपी किया गया",

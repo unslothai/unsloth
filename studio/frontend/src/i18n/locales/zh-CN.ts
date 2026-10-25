@@ -3096,6 +3096,7 @@ export const zhCN = {
       tokenNamePlaceholder: "Token 名称（例如 production）",
       newAccessTokenName: "新的访问 token 名称",
       createToken: "创建 token",
+      defaultTokenName: "新 token {n}",
       creating: "创建中...",
       newTokenCreated: "新的访问 token 已创建",
       accessTokenCopied: "访问 token 已复制",

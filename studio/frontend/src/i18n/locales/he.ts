@@ -3268,6 +3268,7 @@ export const he = {
       tokenNamePlaceholder: "שם הטוקן (למשל production)",
       newAccessTokenName: "שם טוקן גישה חדש",
       createToken: "צור טוקן",
+      defaultTokenName: "טוקן חדש {n}",
       creating: "יוצר...",
       newTokenCreated: "טוקן גישה חדש נוצר",
       accessTokenCopied: "טוקן הגישה הועתק",

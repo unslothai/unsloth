@@ -3367,6 +3367,7 @@ export const sv = {
       tokenNamePlaceholder: "Tokennamn (t.ex. produktion)",
       newAccessTokenName: "Namn på ny åtkomsttoken",
       createToken: "Skapa token",
+      defaultTokenName: "Ny token {n}",
       creating: "Skapar ...",
       newTokenCreated: "Ny åtkomsttoken har skapats",
       accessTokenCopied: "Åtkomsttoken har kopierats",

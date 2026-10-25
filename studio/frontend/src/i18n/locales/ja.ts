@@ -3125,6 +3125,7 @@ export const ja = {
       tokenNamePlaceholder: "トークン名 (例: production)",
       newAccessTokenName: "新規アクセストークン名",
       createToken: "トークンを作成",
+      defaultTokenName: "新しいトークン {n}",
       creating: "作成中...",
       newTokenCreated: "新規アクセストークンが作成されました",
       accessTokenCopied: "アクセストークンをコピーしました",
