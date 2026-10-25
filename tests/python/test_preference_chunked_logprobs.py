@@ -334,6 +334,15 @@ def test_declines_without_kernel_or_on_unsupported_setups(monkeypatch):
     for hook in ("get_batch_loss_metrics", "get_batch_logps", "concatenated_forward"):
         sub = type("Sub", (cls,), {hook: lambda self, *a, **k: None})
         assert rl._unsloth_pref_chunked_head(_trainer(sub, "orpo"), model) is None, hook
+    # A global module hook (register_module_forward_hook) fires for the head only when it is called.
+    from torch.nn.modules import module as module_hooks
+
+    handle = module_hooks.register_module_forward_hook(lambda m, i, o: None)
+    try:
+        assert rl._unsloth_pref_chunked_head(_trainer(cls, "orpo"), model) is None
+    finally:
+        handle.remove()
+    assert rl._unsloth_pref_chunked_head(_trainer(cls, "orpo"), model) is not None
     monkeypatch.setenv("UNSLOTH_PREFERENCE_CHUNKED", "0")
     assert rl._unsloth_pref_chunked_head(_trainer(cls, "orpo"), model) is None
     monkeypatch.delenv("UNSLOTH_PREFERENCE_CHUNKED")
@@ -360,6 +369,7 @@ def test_generated_items_are_self_contained():
             "_unsloth_pref_chunked_forward",
             "_unsloth_pref_logit_transforms",
             "_unsloth_gkd_dense_head",
+            "_unsloth_global_module_hooks",
             "_unsloth_grpo_returns_hidden_states",
             "_unsloth_grpo_hidden_states_signal",
             "_unsloth_pref_returns_hidden_states",

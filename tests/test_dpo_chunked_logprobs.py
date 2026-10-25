@@ -38,6 +38,7 @@ HELPERS = (
     "_unsloth_grpo_hidden_states_signal",
     "_unsloth_pref_returns_hidden_states",
     "_unsloth_gkd_dense_head",
+    "_unsloth_global_module_hooks",
     "_unsloth_gkd_logit_transforms",
     "_unsloth_pref_logit_transforms",
     "_unsloth_stock_logps_hook",
@@ -325,6 +326,22 @@ def test_use_weighting_falls_back(env):
     trainer, loss, _, _ = _run(dpo_mod, forward, {"use_weighting": True}, chunked = True)
     assert getattr(trainer, "_unsloth_dpo_chunked_calls", 0) == 0
     assert "use_weighting needs full-vocabulary log-probs" in trainer._unsloth_dpo_chunked_fallbacks
+    assert torch.allclose(loss, base_loss, atol = 1e-6)
+
+
+def test_global_module_hook_falls_back(env):
+    # register_module_forward_hook applies to every module: the fused path never calls the head.
+    from torch.nn.modules import module as module_hooks
+
+    dpo_mod, forward = env
+    _, base_loss, _, _ = _run(dpo_mod, forward, {}, chunked = False)
+    handle = module_hooks.register_module_forward_hook(lambda m, i, o: None)
+    try:
+        trainer, loss, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    finally:
+        handle.remove()
+    assert getattr(trainer, "_unsloth_dpo_chunked_calls", 0) == 0
+    assert "output head has hooks or a patched forward" in trainer._unsloth_dpo_chunked_fallbacks
     assert torch.allclose(loss, base_loss, atol = 1e-6)
 
 
