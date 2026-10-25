@@ -33,9 +33,14 @@ Prompt = Annotated[str, Field(max_length = 20_000), AfterValidator(_not_blank)]
 TimeZoneName = Annotated[str, Field(max_length = 64)]
 # Which finished runs get a toast and system notification; every run's chat still shows unread in Recents.
 Notify = Literal["all", "failures", "none"]
+TaskModel = Annotated[str, Field(max_length = 512), AfterValidator(_not_blank)]
+# lowest/highest are relative and resolved per run (local levels are known only once loaded); null = model default.
+ReasoningEffort = Literal[
+    "off", "lowest", "highest", "minimal", "low", "medium", "high", "xhigh", "max"
+]
 ProjectId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
 # Fields an update may set back to null, unlike the rest, where null means unchanged.
-_CLEARABLE = ("projectId",)
+_CLEARABLE = ("model", "reasoningEffort", "projectId")
 
 
 class ScheduledTaskCreate(BaseModel):
@@ -48,6 +53,9 @@ class ScheduledTaskCreate(BaseModel):
     enabled: bool = True
     notify: Notify = "all"
     named: bool = True
+    model: Optional[TaskModel] = None
+    reasoningEffort: Optional[ReasoningEffort] = None
+    allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
 
@@ -62,8 +70,17 @@ class ScheduledTaskUpdate(BaseModel):
     enabled: Optional[bool] = None
     notify: Optional[Notify] = None
     named: Optional[bool] = None
+    model: Optional[TaskModel] = None
+    reasoningEffort: Optional[ReasoningEffort] = None
+    allowModelLoad: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
+
+
+class RunNowRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    loadModel: bool = False
 
 
 class ScheduledTaskRun(BaseModel):
@@ -77,7 +94,7 @@ class ScheduledTaskRun(BaseModel):
     finishedAt: Optional[int] = None
     threadId: Optional[str] = None
     model: Optional[str] = None
-    # no_model, timeout, cancelled, interrupted or empty.
+    # no_model, model_not_loaded, model_load_failed, connection_unavailable, timeout, cancelled, interrupted or empty.
     errorCode: Optional[str] = None
     error: Optional[str] = None
 
@@ -85,6 +102,7 @@ class ScheduledTaskRun(BaseModel):
 class FinishedScheduledTaskRun(ScheduledTaskRun):
     taskTitle: str
     taskNotify: Notify
+    taskModel: Optional[str] = None
 
 
 class ScheduledTask(BaseModel):
@@ -96,6 +114,9 @@ class ScheduledTask(BaseModel):
     enabled: bool
     notify: Notify
     named: bool
+    model: Optional[str] = None
+    reasoningEffort: Optional[ReasoningEffort] = None
+    allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
     status: Literal["active", "paused", "completed"]
@@ -144,7 +165,7 @@ def _next_run(task: dict, now: int) -> Optional[int]:
 
 
 def _require_ui_session(via_api_key: bool) -> None:
-    """Tasks run as the account: signed-in users only, never API keys."""
+    """Tasks run as the account and may load models or spend saved keys: signed-in users only, never API keys."""
     if via_api_key:
         raise HTTPException(
             status_code = 403,
@@ -182,6 +203,9 @@ def create_scheduled_task(
         "enabled": payload.enabled,
         "notify": payload.notify,
         "named": payload.named,
+        "model": payload.model,
+        "reasoningEffort": payload.reasoningEffort,
+        "allowModelLoad": payload.allowModelLoad,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
         "createdAt": now,
@@ -261,13 +285,14 @@ def delete_scheduled_task(
 def run_scheduled_task_now(
     task_id: str,
     request: Request,
+    payload: Optional[RunNowRequest] = None,
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Queue a run outside the schedule; the next scheduled run is unaffected."""
     _require_ui_session(via_api_key)
     try:
-        run = db.request_run(task_id)
+        run = db.request_run(task_id, allow_model_load = payload is not None and payload.loadModel)
     except db.TaskRunActive:
         raise HTTPException(status_code = 409, detail = "This task is already running.") from None
     if run is None:

@@ -10588,6 +10588,29 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+_ALLOW_MODEL_SWITCH_SCOPE_KEY = "unsloth.allow_model_switch"
+
+
+def allow_model_switch_for_request(scope) -> None:
+    """Let one in-process request load its named model with auto-switch off; a scope key, so no HTTP client can set it."""
+    if isinstance(scope, dict):
+        scope[_ALLOW_MODEL_SWITCH_SCOPE_KEY] = True
+
+
+def _model_switch_allowed_for_request(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
+
+
+_NO_AUTO_DOWNLOAD_SCOPE_KEY = "unsloth.no_auto_download"
+
+
+def disable_auto_download_for_request(scope) -> None:
+    """Stop an in-process scheduled run from auto-downloading; a model gone from disk fails the run."""
+    if isinstance(scope, dict):
+        scope[_NO_AUTO_DOWNLOAD_SCOPE_KEY] = True
+
+
 async def _keyless_caller_held_back(fastapi_request) -> bool:
     """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
     from auth.authentication import request_admitted_without_credential
@@ -10855,6 +10878,9 @@ async def _maybe_auto_download_model(
     )
 
     if not requested_model or not get_openai_auto_download_enabled():
+        return
+    scope = getattr(fastapi_request, "scope", None)
+    if isinstance(scope, dict) and scope.get(_NO_AUTO_DOWNLOAD_SCOPE_KEY):
         return
     if not is_downloadable_ref(requested_model):
         return
@@ -11972,7 +11998,9 @@ async def _maybe_auto_switch_model(
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
-    auto_switch_on = get_openai_auto_switch_enabled()
+    auto_switch_on = get_openai_auto_switch_enabled() or _model_switch_allowed_for_request(
+        fastapi_request
+    )
 
     def _refuse_non_gguf_endpoint() -> None:
         """Refuse a switch target this endpoint cannot serve.
