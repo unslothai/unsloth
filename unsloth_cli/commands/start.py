@@ -87,6 +87,10 @@ _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
 # dsh's pi-ai provider sends max_tokens = contextWindow - its prompt estimate - 4,096 (pi-ai CONTEXT_SAFETY_TOKENS), floored at 1, and dsh's own instructions and tools are about 6,500 tokens: at 8,192 every reply is cut after one token (#14315).
 _DSH_MIN_CONTEXT = 16384
+# First request of a stock install (system prompt + tool schemas) before any user text, measured on Claude Code 2.1 and OpenCode 1.19 / 2.1. MCP servers and project instructions add to it.
+_CLAUDE_PROMPT_TOKENS = 16_000
+_OPENCODE_PROMPT_TOKENS = 7_500
+_OPENCODE_V2_PROMPT_TOKENS = 5_500
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -205,6 +209,10 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
 _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
+# Claude Code 2.1.307-2.1.309 compact one token past window - min(max output, 20k) - 3k, in the TUI and -p alike.
+_CLAUDE_COMPACT_BUFFER = 3_000
+# claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
+_CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -258,6 +266,7 @@ _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
 # (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+_OPENCLAW_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
 
 # Shared by every agent command; only the config/env/command differ. Help is grouped into rich panels so `--help` reads as Model / Server / Session instead of one long unaligned list.
 _PANEL_MODEL = "Model"
@@ -1933,11 +1942,15 @@ def _agent_api_key(
             "or set UNSLOTH_API_KEY."
         )
     # Older releases could mint for a managed account, which cannot see the owner's model.
+    listed = _http_json(
+        "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+    ).get("api_keys", [])
+    # A server reporting purposes only lets stamped keys reach saved Connections: re-mint unstamped ones.
+    stamped = any("purpose" in entry for entry in listed)
     owned = {
         entry.get("key_prefix")
-        for entry in _http_json(
-            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
-        ).get("api_keys", [])
+        for entry in listed
+        if not stamped or entry.get("purpose") == "unsloth_start"
     }
     for key in _cached_keys(cache, base, "minted"):
         if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
@@ -2135,6 +2148,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "tensor_parallel": "tensor_parallel",
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
+    "requested_reasoning_budget": "reasoning_budget",
+    "requested_reasoning_budget_message": "reasoning_budget_message",
     # The applied value is null when the runtime refused the request.
     # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
     "mlx_kv_quant_requested": "mlx_kv_quant",
@@ -2167,6 +2182,11 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
         if value is None:
             continue
         carried[load_field] = value
+    offload = status.get("mlx_offload") or {}
+    for part, load_field in (("ple", "mlx_ple_offload"), ("experts", "mlx_expert_offload")):
+        requested = (offload.get(part) or {}).get("requested")
+        if load_field not in payload and requested is not None:
+            carried[load_field] = requested
     return carried
 
 
@@ -2248,6 +2268,7 @@ def _resolve_model(
     status_snapshot = None
     # Whether the inferred settings can restart the resident. Computed once: the preload gate, the warning, the consent refusal and force_reload must all agree, and asking twice against a snapshot taken at different times is how they drift apart.
     inferred_differs = False
+    same_checkpoint = True
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
@@ -2265,6 +2286,25 @@ def _resolve_model(
     match = None if requested and load_has_overrides else loaded_match
     if requested and match is None:
         load_requested = True
+        if attach_public_id is None and loaded_match is not None:
+            # A full load resets omitted settings, so read the named resident's own slot to carry them.
+            status_snapshot = _inference_status(base, key, loaded_match["id"])
+            # The listing shows a local checkpoint by basename, so ./foo matches a resident old/foo: inherit only from the checkpoint this load resolves to.
+            wanted_path = os.path.abspath(os.path.expanduser(requested))
+            # A snapshot naming another model (replaced since the listing, or a server ignoring ?model=) describes nothing of this one.
+            same_checkpoint = _model_id_matches(
+                status_snapshot.get("active_model"),
+                loaded_match["id"],
+                allow_casefold = allow_casefold,
+            ) and (
+                _is_hub_model_id(requested)
+                or any(
+                    os.path.abspath(os.path.expanduser(str(status_snapshot.get(field))))
+                    == wanted_path
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status_snapshot.get(field)
+                )
+            )
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2414,12 +2454,8 @@ def _resolve_model(
                 payload["gguf_variant"] = resident_variant
         elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
             # Same for a named model already served, read from the slot serving it.
-            try:
-                status = _model_status(base, key, loaded_match["id"])
-            except Exception:
-                status = {}
-            if status.get("is_gguf") and status.get("gguf_variant"):
-                payload["gguf_variant"] = status["gguf_variant"]
+            if status_snapshot.get("is_gguf") and status_snapshot.get("gguf_variant"):
+                payload["gguf_variant"] = status_snapshot["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
         if "load_in_4bit" in overrides:
@@ -2430,7 +2466,9 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             # -1 means "pick the layers", which is right when the user is switching INTO manual, but on an inferred attach to a resident already in manual it would throw away the layer count it was pinned to. Leave it for the round-trip.
             already_manual = (
-                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
+                same_checkpoint
+                and bool(status_snapshot)
+                and status_snapshot.get("gpu_memory_mode") == "manual"
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
@@ -2444,11 +2482,22 @@ def _resolve_model(
                 f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
                 "cannot re-authorize. Re-run with --model naming it to apply these settings."
             )
-        if attach_public_id is not None:
-            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies every defaulted LoadRequest field into the new intent, so a knob we leave out is reset rather than kept. Carry the resident's own values for the ones the user did not name, or changing the context alone would drop their KV dtype, slot count, batch sizes and GPU placement.
-            payload.update(_resident_runtime_payload(status_snapshot, payload))
+        if attach_public_id is not None or loaded_match is not None:
+            # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
+            carried = _resident_runtime_payload(status_snapshot, payload)
+            if attach_public_id is None:
+                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
+                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
+                    carried = {}
+                carried.pop("llama_extra_args", None)
+                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+                    carried.pop("tensor_split", None)
+                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+                carried.pop("n_parallel", None)
+            payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
-            if status_snapshot and inferred_differs:
+            if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
@@ -2546,8 +2595,8 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     return [n for n in ggufs if not _is_auxiliary_gguf(n)]
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+# Keep in sync with utils/gguf_names.py; the remote CLI cannot require backend imports.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -3254,9 +3303,12 @@ def _claude_local_env(
     if window:
         # claude assumes 200k for a model id it does not recognize, and clamps AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
-        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
+        # Blank, not omitted, below the floor so an inherited value cannot apply; MAX_CONTEXT_TOKENS still bounds compaction there.
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = (
+            str(int(window)) if int(window) >= _CLAUDE_MIN_AUTO_COMPACT_WINDOW else ""
+        )
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
-        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
+        # claude reserves min(max output, 20k) + 3k before compacting, so its 32k default output would take 20k of a 32k window; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
@@ -5356,6 +5408,167 @@ def opencode_compaction_reserved(window: int, output: int) -> int:
     return max(1, min(output, max(window // 10, 8192)))
 
 
+def _agent_compacts_at(
+    agent: str,
+    window: int,
+    max_tokens: Optional[int] = None,
+) -> int:
+    if agent == "claude":
+        output = min(opencode_output_limit(window), _CLAUDE_COMPACT_OUTPUT_RESERVE)
+        return min(window * 9 // 10, window - output - _CLAUDE_COMPACT_BUFFER)
+    return window - opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
+
+
+_CLAUDE_RESUME_ARGS = ({"-c", "--continue", "--fork-session"}, {"-r", "--resume", "--session-id"})
+_OPENCODE_RESUME_ARGS = ({"-c", "--continue", "--fork", "--no-replay"}, {"-s", "--session"})
+
+
+def _only_resumes(args: list, resume_args: tuple) -> bool:
+    """True when the forwarded args only reopen an interactive session, which keeps the stock prompt."""
+    flags, valued = resume_args
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        name = arg.split("=", 1)[0]
+        if name in flags:
+            continue
+        if name not in valued:
+            return False
+        if "=" not in arg and rest and not rest[0].startswith("-"):
+            rest.pop(0)
+    return True
+
+
+def _early_context_check(model: Optional[str], check):
+    """Run check now, or return it for _before_load when a running Studio could resolve model to a Connection."""
+    # A Connection is only known once _connect asks that server, and it never loads; an auto-started one serves no Connections.
+    if model and find_studio_server() is not None:
+        return check
+    check()
+    return None
+
+
+def _before_load(context_check, preload = None):
+    if context_check is None:
+        return preload
+
+    def check(base, key, requested, gguf_variant):
+        context_check()
+        if preload is not None:
+            preload(base, key, requested, gguf_variant)
+
+    return check
+
+
+def _command_line_options(ctx, quote) -> Optional[list]:
+    """The options typed on this command line, minus --max-seq-length and --api-key."""
+    # Duck-typed: typer may vendor its own click, so isinstance / enum identity against ours fails.
+    if ctx is None:
+        return None
+    parts = []
+    for param in ctx.command.params:
+        if param.param_type_name != "option" or param.name in ("max_seq_length", "api_key"):
+            continue
+        if getattr(ctx.get_parameter_source(param.name), "name", None) != "COMMANDLINE":
+            continue
+        value = ctx.params.get(param.name)
+        if param.is_flag:
+            if value:
+                parts.append(param.opts[0])
+            elif param.secondary_opts:
+                parts.append(param.secondary_opts[0])
+            continue
+        for item in value if param.multiple else [value]:
+            if item is not None:
+                item = getattr(item, "value", item)
+                parts += [param.opts[0], quote(str(item))]
+    return parts
+
+
+def _check_agent_context(
+    agent: str,
+    name: str,
+    entry: dict,
+    prompt_tokens: int,
+    max_tokens: Optional[int] = None,
+    loaded: bool = True,
+    refuse: bool = True,
+    model: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
+    ctx = None,
+) -> None:
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if not window:
+        return
+    window = int(window)
+    roomy = 2 * prompt_tokens
+    compacts_at = _agent_compacts_at(agent, window, max_tokens)
+    # Before the load only refuse; the window Studio actually fits is checked again after it.
+    if compacts_at >= roomy or (not loaded and (compacts_at >= prompt_tokens or not refuse)):
+        return
+    suggested = next(
+        (
+            size
+            for size in (1 << bits for bits in range(14, 21))
+            if _agent_compacts_at(agent, size, max_tokens) >= roomy
+        ),
+        1 << 20,
+    )
+    native = int(entry.get("native_context_length") or 0)
+    if native:
+        suggested = min(suggested, native)
+    if entry.get("connection"):
+        # --max-seq-length only labels a Connection's window; it cannot grow the provider's.
+        hint = "A Connection's context is set by its provider, so pick a model with a longer one."
+    elif native and (
+        native <= window or _agent_compacts_at(agent, native, max_tokens) < prompt_tokens
+    ):
+        hint = f"Its full context is {native:,} tokens, so pick a model with a longer one."
+    else:
+        quote = _powershell_quote if os.name == "nt" else shlex.quote
+        given = _command_line_options(ctx, quote) or []
+        # A positional org/name (or none at all, outside a command) never reaches the option sources.
+        if model and not {"--model", "-m"} & set(given):
+            given = ["--model", quote(model), *given]
+        if gguf_variant and "--gguf-variant" not in given:
+            given += ["--gguf-variant", quote(gguf_variant)]
+        if max_tokens and "--max-tokens" not in given:
+            given += ["--max-tokens", str(int(max_tokens))]
+        if ctx is not None and ctx.get_parameter_source("api_key").name == "COMMANDLINE":
+            # Not remembered yet before the load; never echo the key itself.
+            given += ["--api-key", "<your key>"]
+        forwarded = list(ctx.args) if ctx is not None else []
+        target = "".join(f" {part}" for part in given)
+        # Only a refused launch's args (none, or resume flags) are echoed: scripted ones can carry a prompt.
+        if refuse:
+            tail = "".join(f" {quote(arg)}" for arg in forwarded)
+        else:
+            tail = " plus your other arguments" if forwarded else ""
+        hint = (
+            f"Run unsloth start {agent}{target} --max-seq-length {suggested}{tail} "
+            "(a smaller quant if that does not fit in memory"
+            + ("" if loaded else "; for a Connection, a model with a longer context")
+            + ")."
+        )
+    state = "is loaded" if loaded else "would load"
+    if compacts_at < prompt_tokens:
+        message = (
+            f"{entry['id']} {state} with {window:,} tokens of context, too few for {name}: "
+            f"its own instructions and tools take about {prompt_tokens:,}, so it would compact "
+            f"on every message. {hint}"
+        )
+        if refuse:
+            _fail(message)
+        typer.echo(f"Warning: {message}", err = True)
+        return
+    typer.echo(
+        f"Warning: {entry['id']} {state} with {window:,} tokens of context, and {name}'s "
+        f"instructions and tools take about {prompt_tokens:,} of it (more with MCP servers), "
+        f"so it will compact often. {hint}",
+        err = True,
+    )
+
+
 def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
     """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
     window = model.get("context_length") or model.get("max_context_length")
@@ -6056,10 +6269,21 @@ _JSONC_COMMENT = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', re.S)
 _JSONC_TRAILING_COMMA = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[\]}])')
 
 
-def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _load_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     if text is None or not text.strip():
         return {}
-    if path.suffix == ".toml":
+    if allow_json5:
+        import json5
+
+        # Raw text: the JSONC stripper below misreads // inside single-quoted JSON5 strings.
+        # The json round trip joins surrogate pairs json5 leaves split (UTF-8 can't write them).
+        data = json.loads(json.dumps(json5.loads(text)))
+    elif path.suffix == ".toml":
         try:
             import tomllib  # novermin
         except ImportError:
@@ -6072,7 +6296,6 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         import yaml
         data = yaml.safe_load(text)
     else:
-        # OpenCode reads JSONC and OpenClaw JSON5, so accept comments and trailing commas in either.
         text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
         data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
     if not isinstance(data, dict):
@@ -6080,9 +6303,14 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     return data
 
 
-def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _parse_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     try:
-        return _load_app_config(path, text)
+        return _load_app_config(path, text, allow_json5 = allow_json5)
     except Exception:
         _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
 
@@ -6137,8 +6365,14 @@ def _splice_jsonc(text: str, keys: tuple, value) -> str:
     return text[:last] + f"\n{indent}{member}\n" + "  " * depth + text[close:]
 
 
-def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
-    config = _parse_app_config(path, text)
+def _set_app_values(
+    text: Optional[str],
+    path: Path,
+    updates: list,
+    *,
+    allow_json5: bool = False,
+) -> Optional[str]:
+    config = _parse_app_config(path, text, allow_json5 = allow_json5)
     before = json.dumps(config, sort_keys = True)
     for keys, value in updates:
         if value is _APP_DELETE:
@@ -6162,13 +6396,13 @@ def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[
         parent[keys[-1]] = value
     if json.dumps(config, sort_keys = True) == before:
         return text
-    if path.suffix != ".yaml":
+    if allow_json5 or path.suffix != ".yaml":
         candidate = text
         with contextlib.suppress(Exception):
             if candidate and candidate.strip():
                 for keys, value in updates:
                     candidate = _splice_jsonc(candidate, keys, value)
-                if _load_app_config(path, candidate) == config:
+                if _load_app_config(path, candidate, allow_json5 = allow_json5) == config:
                     return candidate
         return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
     import yaml
@@ -6275,6 +6509,8 @@ def _open_app_config(
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
+    if target.agent == "openclaw":
+        parse = functools.partial(_parse_app_config, allow_json5 = True)
     parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
@@ -6321,7 +6557,10 @@ def _add_app_provider(
     try:
         state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
         new_text = _set_app_values(
-            text, target.path, target.updates(text, target.path, base, key, entry)
+            text,
+            target.path,
+            target.updates(text, target.path, base, key, entry),
+            allow_json5 = target.agent == "openclaw",
         )
         new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
         _save_app_config(target, state_path, state, new_state, text, new_text)
@@ -6597,7 +6836,7 @@ def _openclaw_app_updates(
     entry,
     max_tokens = None,
 ) -> list:
-    config = _parse_app_config(path, text) or {}
+    config = _parse_app_config(path, text, allow_json5 = True) or {}
     agents = config.get("agents")
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}
@@ -6621,8 +6860,51 @@ def _openclaw_app_updates(
     return changes
 
 
+def _openclaw_config_file() -> Optional[str]:
+    executable = _which_with_install_dirs("openclaw")
+    if executable is None:
+        return None
+    try:
+        output = subprocess.check_output(
+            [executable, "config", "file"],
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+            stderr = subprocess.DEVNULL,
+            env = _probe_env(),
+        )
+    except Exception:
+        return None
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines and os.path.isabs(lines[-1]) else None
+
+
 def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
-    path = Path.home() / ".openclaw" / "openclaw.json"
+    home = Path.home()
+
+    def user_path(value: str) -> Path:
+        # Only a leading ~ expands (against OPENCLAW_HOME); abspath keeps symlinks for _read_app_file to refuse.
+        if value == "~":
+            value = str(home)
+        elif value.startswith(("~/", "~\\")):
+            value = os.path.join(str(home), value[2:])
+        return Path(os.path.abspath(value))
+
+    override = os.environ.get("OPENCLAW_HOME", "").strip()
+    if override and override not in ("null", "undefined"):
+        home = user_path(override)
+    if override := os.environ.get("OPENCLAW_CONFIG_PATH", "").strip():
+        path = user_path(override)
+    elif override := os.environ.get("OPENCLAW_STATE_DIR", "").strip():
+        path = user_path(override) / "openclaw.json"
+    else:
+        path = home / ".openclaw" / "openclaw.json"
+        profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
+        # Whether a named profile alone moves the config depends on the build (openclaw#133252, after 2026.10.10-beta.3), so ask OpenClaw.
+        if _OPENCLAW_PROFILE_RE.fullmatch(profile) and profile.lower() != "default":
+            if (active := _openclaw_config_file()) is not None:
+                path = Path(active)
     updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
     return _AppTarget("openclaw", "OpenClaw app", path, updates)
 
@@ -6972,6 +7254,34 @@ def claude(
     )
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
+    # Only a bare or resumed interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Other forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
+    # CLAUDE_CODE_SIMPLE is the env form of --bare: a minimal prompt that may fit, so it only warns too.
+    simple = os.environ.get("CLAUDE_CODE_SIMPLE", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    refuse_small_context = launch and not simple and _only_resumes(ctx.args, _CLAUDE_RESUME_ARGS)
+    context_check = None
+    if max_seq_length > 0 and not as_subagent:
+        # Before the load, which would evict the resident model only for this to refuse.
+        context_check = _early_context_check(
+            model,
+            functools.partial(
+                _check_agent_context,
+                "claude",
+                "Claude Code",
+                {"id": model or "The loaded model", "context_length": max_seq_length},
+                _CLAUDE_PROMPT_TOKENS,
+                loaded = False,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+                refuse = refuse_small_context,
+            ),
+        )
     _require_agent_for_launch("claude", install_hint, launch)
     server_options = ServerOptions(
         enable_tools = enable_tools,
@@ -6995,7 +7305,9 @@ def claude(
         ),
         serve = serve,
         launch = launch,
-        preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
+        preload_check = _before_load(
+            context_check, functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT)
+        ),
         server_options = server_options,
         connections = True,
     )
@@ -7003,6 +7315,17 @@ def claude(
     try:
         if not entry.get("connection"):
             _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
+        if not as_subagent:
+            _check_agent_context(
+                "claude",
+                "Claude Code",
+                entry,
+                _CLAUDE_PROMPT_TOKENS,
+                refuse = refuse_small_context,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+            )
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -7368,6 +7691,26 @@ def opencode(
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
+    opencode_prompt_tokens = _OPENCODE_V2_PROMPT_TOKENS if opencode_v2 else _OPENCODE_PROMPT_TOKENS
+    refuse_small_context = launch and _only_resumes(ctx.args, _OPENCODE_RESUME_ARGS)
+    context_check = None
+    if max_seq_length > 0 and not as_subagent and not app:
+        context_check = _early_context_check(
+            model,
+            functools.partial(
+                _check_agent_context,
+                "opencode",
+                "OpenCode",
+                {"id": model or "The loaded model", "context_length": max_seq_length},
+                opencode_prompt_tokens,
+                max_tokens,
+                loaded = False,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+                refuse = refuse_small_context,
+            ),
+        )
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
@@ -7391,6 +7734,7 @@ def opencode(
         ),
         serve = serve,
         launch = launch,
+        preload_check = _before_load(context_check),
         server_options = server_options,
         connections = True,
     )
@@ -7401,6 +7745,22 @@ def opencode(
     if app:
         target = _opencode_app_target(max_tokens, server_options.request_body())
         return _add_app_provider(target, base, api_key, entry)
+    if not as_subagent:
+        try:
+            _check_agent_context(
+                "opencode",
+                "OpenCode",
+                entry,
+                opencode_prompt_tokens,
+                max_tokens,
+                refuse = refuse_small_context,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+            )
+        except BaseException:
+            _shutdown_auto_served()
+            raise
     if opencode_v2:
         typer.echo(
             f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
