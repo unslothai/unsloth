@@ -66,6 +66,7 @@ from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
     fp8_storage_wanted,
+    fp8_widen_chosen,
     pipe_fp8_stored_layers,
     comfy_resident_mib,
     load_comfy_quant_transformer,
@@ -508,13 +509,21 @@ def _video_comfy_backends(
     DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
-        return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
+        return {
+            "int8_backend": None,
+            "fp8_backend": None,
+            "fp8_storage": False,
+            "fp8_widen_chosen": False,
+        }
     offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
+    storage = _video_fp8_storage(fam, target, offload, widened_mib = widened_mib)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
-        "fp8_storage": _video_fp8_storage(fam, target, offload, widened_mib = widened_mib),
+        "fp8_storage": storage,
+        "fp8_widen_chosen": not storage
+        and _video_fp8_storage(fam, target, offload, widened_mib = widened_mib, widen_chosen = True),
     }
 
 
@@ -538,18 +547,19 @@ def _video_fp8_storage(
     offload: bool,
     *,
     widened_mib: Optional[int] = None,
+    widen_chosen: bool = False,
 ) -> bool:
     """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
-    known. H3 is excluded: its pin / stream / residency path is built on torchao weights."""
+    known. H3 is excluded: its pin / stream / residency path is built on torchao weights. ``widen_chosen``: answer
+    ``fp8_widen_chosen`` instead (the rule had the choice and widened)."""
     if getattr(fam, "name", None) == "minimax-h3":
         return False
     available = None
     if widened_mib is not None and not offload:
         from .diffusion_small_host import host_ram_mib
         available = host_ram_mib()[1]
-    return fp8_storage_wanted(
-        target, offload = offload, widened_mib = widened_mib, host_available_mib = available
-    )
+    rule = fp8_widen_chosen if widen_chosen else fp8_storage_wanted
+    return rule(target, offload = offload, widened_mib = widened_mib, host_available_mib = available)
 
 
 def _video_comfy_resident_mib(
