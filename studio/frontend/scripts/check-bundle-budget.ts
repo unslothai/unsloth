@@ -415,11 +415,18 @@ export const BUDGET = {
   // Language and platform tabs on the API page examples (#15084) add 138 B raw / 53 B transfer: Vite's preload map
   // in the entry and settings chunks naming the example box, now a lazy chunk shared by the API page and Settings
   // (6,932,829 -> 6,932,967 B raw, 2,088,616 -> 2,088,669 B transfer against cfc593f0bd, Node 26, 99 chunks).
-  // Scheduled tasks (#13871): the results poll, unseen dots and strings (page and dialog lazy) measure
-  // 6,779.2 KB raw / 2,043.2 KB transfer merged with main ec6e383f1 (Node 24, 99 chunks). Set to that plus
-  // about 300 B raw / 150 B transfer.
-  transferBytes: 2_092_400,
-  rawBytes: 6_942_250,
+  // Per-account chat preferences (#15025): +338 B raw / +93 B transfer over the line above (Node 22.23.2, 99 chunks).
+  // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
+  // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
+  // chunk, +8,585 B raw / +2,268 B transfer over main (6,932,829 -> 6,941,414 B raw, 2,088,586 ->
+  // 2,090,854 B transfer against 1492952a09, Node 22, 99 chunks). Raised by that on top of #15084 and #15025.
+  // The pinned Run settings footer adds 25 B raw / 49 B transfer to the eager model picker (6,932,829 -> 6,932,854 B
+  // raw, 2,088,616 -> 2,088,665 B transfer against 2c2e04474b, Node 26, unchanged at 99 chunks). Raised by that.
+  // Scheduled tasks (#13871): the results poll, unseen dots and strings (page and dialog lazy) measure 6,789.7 KB
+  // raw / 2,046.0 KB transfer merged with main b143b37d5 (Node 24, 99 chunks). Set to that plus about 300 B raw /
+  // 150 B transfer.
+  transferBytes: 2_095_250,
+  rawBytes: 6_952_950,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
