@@ -380,12 +380,10 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   if (!raw || typeof raw !== "object" || (v !== 1 && v !== WORLD_SAVE_VERSION))
     return null;
   const r = raw as Partial<WorldState>;
-  // Added quests and items come back before anything is checked against the world.
   const additions = additionsOf(r.additions, spec);
   const played = withAdditions(spec, additions);
   const itemIds = new Set(played.items.map((i) => i.id));
   const questIds = new Set(played.quests.map((q) => q.id));
-  // Villagers added while playing have minds too: start from the world as played.
   const fresh = initialWorldState(played);
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))

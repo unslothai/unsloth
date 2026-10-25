@@ -398,7 +398,6 @@ SUMMARY_SCHEMA = {
 }
 
 
-# A world keeps growing while it is played: one new quest at a time, maybe with a new item or villager.
 DIRECTOR_SCHEMA = {
     "type": "object",
     "properties": {
@@ -599,7 +598,6 @@ def clean_summary(raw: Any) -> str:
 
 
 def _used_items(world: dict, state: dict) -> set:
-    """Items a new quest cannot ask for: already asked for by a quest, carried, or picked up."""
     return (
         {q.get("requires_item") for q in world.get("quests") or []}
         | set(state.get("inventory") or [])
@@ -608,13 +606,11 @@ def _used_items(world: dict, state: dict) -> set:
 
 
 def director_prompt(state: dict) -> tuple[str, str]:
-    """Ask for the next quest of a world in play, built from what is already there."""
     world = state.get("world") if isinstance(state.get("world"), dict) else None
     if world is None:
         raise WorldError("the director needs the world in its state")
     done = set(state.get("completed_quests") or [])
     npcs = "\n".join(f"- {n['id']}: {n['name']}" for n in world.get("npcs") or [])
-    # Only items a new quest may still ask for, so the model is not tempted by ones already used.
     used = _used_items(world, state)
     items = "\n".join(
         f"- {i['id']}: {i['name']}" for i in world.get("items") or [] if i["id"] not in used
@@ -657,7 +653,6 @@ def director_prompt(state: dict) -> tuple[str, str]:
 
 
 def validate_director(raw: Any, state: dict) -> dict:
-    """A patch that only adds: one quest, at most one new item and one new villager, every reference resolved."""
     world = state.get("world") if isinstance(state.get("world"), dict) else None
     if world is None or not isinstance(raw, dict):
         raise WorldError("the director did not return a quest")
@@ -717,7 +712,6 @@ def validate_director(raw: Any, state: dict) -> dict:
         asked[:60] if asked and find(items, asked) is None else ""
     )
     if re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)+", new_item_name):
-        # An id-like name ("wind_chime") reads as a name ("Wind chime").
         new_item_name = new_item_name.replace("_", " ").capitalize()
     if need is None and new_item_name and state.get("allow_item"):
         need = _unique(slug(new_item_name, "item"), taken)

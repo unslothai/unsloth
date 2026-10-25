@@ -63,7 +63,6 @@ def test_new_npc_and_item_get_fresh_ids():
     new_ids = [patch["quest"]["id"], *(i["id"] for i in patch["items"])]
     assert not existing & set(new_ids) and len(set(new_ids)) == len(new_ids)
     assert patch["items"][0]["region"] == "market"
-    # The giver resolved to an existing villager, so no new one is added.
     assert patch["npcs"] == [] and patch["quest"]["giver"] == "old_tom"
     patch = validate_director(
         {"title": "Help", "giver": "Pond Keeper", "item": "bell", "new_npc_name": "Pond Keeper"},
@@ -86,7 +85,6 @@ def test_dangling_references_are_rejected():
 
 
 def test_items_already_used_or_held_are_not_asked_for_again():
-    # The rod is what The Lost Rod asks for; the bell is carried, or was picked up and given away.
     for item, state in (
         ("rod", _state()),
         ("bell", _state(inventory = ["bell"])),
@@ -94,13 +92,11 @@ def test_items_already_used_or_held_are_not_asked_for_again():
     ):
         with pytest.raises(WorldError):
             validate_director({"title": "Again", "giver": "mira", "item": item}, state)
-    # Without a usable item a new one is made when allowed, and dropped when not.
     patch = validate_director(
         {"title": "Again", "giver": "mira", "item": "rod", "new_item_name": "Lantern"},
         _state(allow_item = True),
     )
     assert patch["quest"]["requires_item"] == "lantern"
-    # A fresh item named in `item` (small models skip `new_item_name`) becomes the new item when allowed.
     patch = validate_director(
         {"title": "Tea", "giver": "mira", "item": "Teapot"}, _state(allow_item = True)
     )
@@ -112,7 +108,6 @@ def test_items_already_used_or_held_are_not_asked_for_again():
         patch["items"][0]["name"] == "Wind chime"
         and patch["quest"]["requires_item"] == "wind_chime"
     )
-    # A used item named in `item` is never turned into a new one.
     with pytest.raises(WorldError):
         validate_director(
             {"title": "Again", "giver": "mira", "item": "rod"}, _state(allow_item = True)

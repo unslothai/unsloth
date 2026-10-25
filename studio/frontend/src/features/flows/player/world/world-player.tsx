@@ -319,7 +319,6 @@ export function WorldPlayer({
           import("./phaser-game"),
         ]);
         if (!live || !host.current) return;
-        // Things added while playing (from a save) stand where they were placed.
         const added = wsRef.current.additions ?? noAdditions();
         handle = mod.createWorldGame(
           host.current,
@@ -474,8 +473,6 @@ export function WorldPlayer({
     [api, flowId, replyEntry, spec, summarising],
   );
 
-  // The world keeps growing: once a quest is finished (or none is left) the NPC Reply node writes the next one in
-  // the background, one at a time; a message from the player or a load cancels it.
   const growing = baseSpec.new_quests !== false;
   const directorRun = useRef<AbortController | null>(null);
   const events = useRef<string[]>([]);
@@ -526,14 +523,12 @@ export function WorldPlayer({
           `New quest: ${patch.quest.title}${giver ? ` · ask ${giver.name}` : ""}`,
         );
       } catch {
-        // No new quest this time; the next finished quest tries again.
       } finally {
         if (directorRun.current === run) directorRun.current = null;
       }
     },
     [api, baseSpec, flowId, growing, map, replyEntry, toast],
   );
-  // A world with no quest left (or none at all) gets one as soon as play starts.
   useEffect(() => {
     if (ready && started) void direct(false);
   }, [ready, started, direct]);
