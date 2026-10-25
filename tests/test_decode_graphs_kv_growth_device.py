@@ -8,11 +8,12 @@ import pytest
 import unsloth  # noqa: F401  (must precede transformers)
 from unsloth import FastLanguageModel
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 import unsloth.models._decode_graphs as G
 
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+cuda = pytest.mark.skipif(not has_real_cuda(), reason = "CUDA only")
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 PROMPTS = ["Once upon a time there was", "The capital of France is Paris and"] * 4
 
@@ -124,7 +125,7 @@ def test_prealloc_kill_switch(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs 2 CUDA GPUs"
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs 2 CUDA GPUs"
 )
 def test_model_on_a_non_current_gpu_replays(monkeypatch):
     torch.cuda.set_device(0)
