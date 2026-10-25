@@ -1577,6 +1577,18 @@ def test_studios_own_runs_do_not_count_as_someone_using_it(monkeypatch):
     assert not keepwarm.idle_for(300)
 
 
+def test_the_idle_loop_noticing_a_swap_does_not_count_as_someone_using_studio(monkeypatch):
+    import inspect
+    import time
+
+    keepwarm = keepwarm_module()
+    monkeypatch.setattr(keepwarm, "_last_attended", time.monotonic() - 3600)
+    # The loop runs in its own long-lived context, outside the run's unattended_activity().
+    keepwarm._note_activity(attended = False)
+    assert keepwarm.idle_for(300)
+    assert "_note_activity(attended = False)" in inspect.getsource(keepwarm.idle_unload_loop)
+
+
 def test_a_run_answered_by_another_model_than_its_own_fails(monkeypatch):
     from utils import openai_auto_switch_settings
 

@@ -266,10 +266,14 @@ def unattended_activity():
         _unattended.reset(token)
 
 
-def _note_activity() -> None:
+def _note_activity(attended: bool = True) -> None:
     """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
+    global _last_active
     with _lock:
-        _stamp_active()
+        if attended:
+            _stamp_active()
+        else:
+            _last_active = time.monotonic()
 
 
 def other_inference_request_count(
@@ -954,7 +958,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if current != seen_model:
                     seen_model = current
                     if current is not None:
-                        _note_activity()
+                        # The loop's own context: whoever loaded it already stamped whether it was attended.
+                        _note_activity(attended = False)
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and await asyncio.to_thread(_user_pinned, backend):
                     # loaded from the UI, so the user wants it resident; only models the API loaded are freed
