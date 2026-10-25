@@ -75,6 +75,7 @@ from .diffusion_families import (
     assert_flux3_checkpoint_matches_family,
     assert_pipeline_class_available,
     _is_local_path,
+    _MIRROR_UPSTREAM,
     canonical_base,
     cache_holds_files,
     comfy_flow_shift_for,
@@ -666,6 +667,45 @@ def _listing_extra(listing_repo: str, rfilename: str) -> bool:
     return mirror_hosts_artifacts(listing_repo) and rfilename.split("/", 1)[0] in (
         "samples",
         "assets",
+    )
+
+
+_GB_TO_MIB = (1000.0**3) / (1024.0 * 1024.0)
+# Upstream releases Studio keeps a byte mirror of: their size is the family table's, not a fine-tune's.
+_MIRRORED_UPSTREAMS: frozenset[str] = frozenset(
+    u.strip().lower() for u in _MIRROR_UPSTREAM.values()
+)
+
+
+def _incomplete_release_cache_floor(
+    fam: Any,
+    repo_id: Optional[str],
+    complete: bool,
+    model_dense_mib: Optional[int],
+    companion_mib: Optional[int],
+    text_encoder_mib: Optional[int],
+) -> Optional[tuple[int, int, int]]:
+    """(model, companions, text encoders) MiB floored at the bf16 table for a mirrored release whose cache is incomplete.
+
+    A downloading load plans before bytes land: a text-encoder-only cache priced FLUX.1-dev at 9.3 GB, then OOM'd on
+    a 22 GB card. Fine-tunes keep their own bytes."""
+    if complete or not repo_id:
+        return None
+    release = canonical_base(repo_id).strip()
+    key = release.lower()
+    if not (
+        key == str(getattr(fam, "base_repo", "") or "").strip().lower()
+        or key in _MIRRORED_UPSTREAMS
+        or base_repo_bf16_components_gb(release) is not None
+    ):
+        return None
+    table = family_bf16_components_gb(fam, release)
+    if table is None:
+        return None
+    return (
+        max(model_dense_mib or 0, int(sum(table) * _GB_TO_MIB)),
+        max(companion_mib or 0, int(sum(table[1:]) * _GB_TO_MIB)),
+        max(text_encoder_mib or 0, int(table[1] * _GB_TO_MIB)),
     )
 
 
@@ -7584,6 +7624,29 @@ class DiffusionBackend:
         return [live, Path(other) / folder]
 
     @staticmethod
+    def _pipeline_source_complete(
+        local_repo: Optional[Path], staged_repo: Optional[Path], cache_repo: Optional[str]
+    ) -> bool:
+        """True if a local, staged or live cached snapshot holds every manifest component."""
+        trees = [p for p in (local_repo, staged_repo) if p is not None]
+        if cache_repo:
+            trees += [
+                DiffusionBackend._live_snapshot_dir(d)
+                for d in DiffusionBackend._hub_cache_repo_dirs(cache_repo)
+            ]
+        for tree in trees:
+            if tree is None:
+                continue
+            try:
+                if tree.is_dir() and local_pipeline_components_are_complete(
+                    tree, "model_index.json"
+                ):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
     def _live_snapshot_dir(repo_dir: Path) -> Optional[Path]:
         """The snapshot ``refs/main`` names: the ONE revision a load reads out of this root.
         ``try_to_load_from_cache`` defaults to ``main`` and resolves it through ``refs/main``, so
@@ -12647,6 +12710,18 @@ class DiffusionBackend:
                 text_encoder_mib = int(table[1] * (1000.0**3) / (1024.0 * 1024.0))
                 # Already the dense bf16 encoders, an upper bound on any pre-cast one: swapping would add it on top.
                 companions_from_cache = False
+            elif table is None:
+                floored = _incomplete_release_cache_floor(
+                    fam,
+                    repo_id,
+                    self._pipeline_source_complete(local_repo, staged_repo, cache_repo),
+                    model_dense_mib,
+                    companion_mib,
+                    text_encoder_mib,
+                )
+                if floored is not None:
+                    model_dense_mib, companion_mib, text_encoder_mib = floored
+                    companions_from_cache = False
             if companion_mib is not None and model_dense_mib is not None:
                 # The two terms come from different merges over the cache roots, so a repo only one of them can see
                 # must not report companions larger than the model.
