@@ -471,11 +471,6 @@ export function ApiModelLoadControls({
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
         className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
-        // Not leading-none: the truncated label would crop descenders.
-        triggerLabelClassName={cn(
-          "text-sm leading-5",
-          !activeModel && "font-sans",
-        )}
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>

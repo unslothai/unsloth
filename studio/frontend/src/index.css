@@ -3572,7 +3572,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-input[data-fade-bottom] {
-		--composer-fade-bottom: calc(1.75rem * var(--ui-space-scale, 1));
+		--composer-fade-bottom: calc(1rem * var(--ui-space-scale, 1));
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
