@@ -14952,6 +14952,16 @@ class LlamaCppBackend:
         if not rates:
             return None
         wanted = None if gpu_indices is None else {int(i) for i in gpu_indices}
+        mig_rows = LlamaCppBackend._mig_snapshot_rows()
+        if wanted is not None and mig_rows is not None:
+            # MIG ids are CUDA ids; a slice rides its card's link (physical_index).
+            try:
+                by_id = {int(r["index"]): int(r["physical_index"]) for r in mig_rows}
+            except (KeyError, TypeError, ValueError):
+                return None
+            if not wanted <= set(by_id):
+                return None
+            wanted = {by_id[i] for i in wanted}
         credited = [v for idx, v in rates.items() if wanted is None or idx in wanted]
         return min(credited) if credited else None
 
@@ -32030,6 +32040,11 @@ class LlamaCppBackend:
                             or not _planner_owns_fit
                             or not _link_indices
                             or self._host_torch_is_rocm()
+                            # Torch-fallback CUDA ordinals are not nvidia-smi rows.
+                            or (
+                                LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                                and self._mig_snapshot_rows() is None
+                            )
                             else self._nvidia_link_gib_s(_link_indices)
                         ),
                     }
@@ -33612,76 +33627,6 @@ class LlamaCppBackend:
                 _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
                     [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
                 )
-                spec_flags = self._build_speculative_flags(
-                    speculative_type = speculative_type,
-                    spec_draft_n_max = spec_draft_n_max,
-                    extra_args = extra_args,
-                    model_identifier = model_identifier,
-                    model_path = model_path,
-                    gpus = bool(_detected_gpus),
-                    binary = binary,
-                    mtp_draft_path = (
-                        None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
-                    ),
-                    dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_sized = not use_fit,
-                    dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit,
-                    # So the fallback says unopenable, not missing. DSpark/DFlash never
-                    # reach the drop.
-                    mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
-                    drafter_no_vram = _spec_dropped_no_vram,
-                    drafter_dropped_reason = (
-                        "drafter_planner" if _spec_dropped_by_planner else "drafter_no_vram"
-                    ),
-                    embedded_mtp_partial_offload = bool(
-                        _spec_canon == "auto"
-                        and self._nextn_predict_layers
-                        and self._ssm_inner_size is not None
-                        and self._full_attention_interval is not None
-                        and not launch_mtp_draft_path
-                        and not _extra_args_set_spec_type(extra_args)
-                        # No GPU, nothing to partially offload TO. `--fit on` is also
-                        # what a CPU-only box and a Metal Mac emit (use_fit starts True
-                        # and only the planner lowers it), and there the rollback copies
-                        # cost no VRAM at all -- same reason the helper treats -ngl 0 as
-                        # CPU-only rather than partial. Those keep the CPU MTP policy.
-                        # gpu_indices counts too: an explicit pick the VRAM probe could
-                        # not enumerate still pins the child to those devices, so the
-                        # launch offloads to them whatever the probe returned. So does
-                        # a device named in the extras, which is the same flag
-                        # _device_selection_is_cpu reads for the CPU answer: a failed
-                        # probe is not evidence of no GPU when the child is pointed at
-                        # one by hand.
-                        and (_detected_gpus or gpu_indices or _spec_extras_pick_a_gpu)
-                        and self._partially_offloads_layers(
-                            [*cmd, *(_spec_placement_extras or [])],
-                            _spec_placement_env,
-                            # Manual mode skips Unsloth's placement planner (gpus is
-                            # emptied above), so its --fit on is the default this
-                            # function starts at, not a finding that the model does
-                            # not fit. Only Auto's fitter carries that evidence --
-                            # and only when it actually ran and actually failed to
-                            # fit, which is what _placement_verdict_partial records.
-                            # Auto alone is not enough: an empty VRAM probe with a
-                            # hand-pinned device (Metal0, Vulkan0) satisfies the GPU
-                            # guard above while every planner branch stayed gated on
-                            # the empty `gpus`, and the except path restores --fit on
-                            # having priced nothing. A concrete --gpu-layers count is
-                            # unaffected; it is independent evidence inside the helper.
-                            fit_implies_partial = (
-                                gpu_memory_mode != "manual" and _placement_verdict_partial
-                            ),
-                        )
-                    ),
-                    draft_device = _draft_device,
-                )
-                # _build_speculative_flags judged the stripped list, so a user
-                # --spec-type the drop removed left the requested mode reading "auto"
-                # while the caller's extras still mean "the user owns it" (None).
-                # Restore the requested view, or the spec-mode compare never matches.
-                if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
-                    self._requested_spec_mode = None
                 # The draft KV cache dtype sizes the DRAFT context, so it means
                 # nothing without --model-draft. Judged on the flags actually built,
                 # not the requested mode: a mode that fell back to no drafter emits
@@ -33698,28 +33643,111 @@ class LlamaCppBackend:
                         "Ignoring unsupported draft KV cache type %r", spec_draft_cache_type
                     )
                     _draft_cache_type = None
-                if _draft_cache_type and any(
-                    _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in spec_flags
-                ):
-                    _draft_k_flag = server_caps.get("spec_draft_cache_k_flag")
-                    _draft_v_flag = server_caps.get("spec_draft_cache_v_flag")
-                    if _draft_k_flag and _draft_v_flag:
-                        # Both axes together: llama.cpp refuses K != V on an MLA
-                        # draft context, and the control is one dtype for the pair.
-                        spec_flags.extend(
-                            [
-                                str(_draft_k_flag),
+
+                def _spec_slice(placement_cmd, *, no_vram, by_planner):
+                    """The speculative block for a launch placed by ``placement_cmd``; rebuilt
+                    when a revoked plan hands the drafter it dropped back."""
+                    built = self._build_speculative_flags(
+                        speculative_type = speculative_type,
+                        spec_draft_n_max = spec_draft_n_max,
+                        extra_args = extra_args,
+                        model_identifier = model_identifier,
+                        model_path = model_path,
+                        gpus = bool(_detected_gpus),
+                        binary = binary,
+                        mtp_draft_path = (
+                            None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
+                        ),
+                        dspark_draft_path = (
+                            launch_mtp_draft_path if _spec_canon == "dspark" else None
+                        ),
+                        dspark_fit_sized = not use_fit,
+                        dflash_draft_path = (
+                            launch_mtp_draft_path if _spec_canon == "dflash" else None
+                        ),
+                        dflash_fit_sized = not use_fit,
+                        # So the fallback says unopenable, not missing. DSpark/DFlash never
+                        # reach the drop.
+                        mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
+                        drafter_no_vram = no_vram,
+                        drafter_dropped_reason = "drafter_planner"
+                        if by_planner
+                        else "drafter_no_vram",
+                        embedded_mtp_partial_offload = bool(
+                            _spec_canon == "auto"
+                            and self._nextn_predict_layers
+                            and self._ssm_inner_size is not None
+                            and self._full_attention_interval is not None
+                            and not launch_mtp_draft_path
+                            and not _extra_args_set_spec_type(extra_args)
+                            # No GPU, nothing to partially offload TO. `--fit on` is also
+                            # what a CPU-only box and a Metal Mac emit (use_fit starts True
+                            # and only the planner lowers it), and there the rollback copies
+                            # cost no VRAM at all -- same reason the helper treats -ngl 0 as
+                            # CPU-only rather than partial. Those keep the CPU MTP policy.
+                            # gpu_indices counts too: an explicit pick the VRAM probe could
+                            # not enumerate still pins the child to those devices, so the
+                            # launch offloads to them whatever the probe returned. So does
+                            # a device named in the extras, which is the same flag
+                            # _device_selection_is_cpu reads for the CPU answer: a failed
+                            # probe is not evidence of no GPU when the child is pointed at
+                            # one by hand.
+                            and (_detected_gpus or gpu_indices or _spec_extras_pick_a_gpu)
+                            and self._partially_offloads_layers(
+                                [*placement_cmd, *(_spec_placement_extras or [])],
+                                _spec_placement_env,
+                                # Manual mode skips Unsloth's placement planner (gpus is
+                                # emptied above), so its --fit on is the default this
+                                # function starts at, not a finding that the model does
+                                # not fit. Only Auto's fitter carries that evidence --
+                                # and only when it actually ran and actually failed to
+                                # fit, which is what _placement_verdict_partial records.
+                                # Auto alone is not enough: an empty VRAM probe with a
+                                # hand-pinned device (Metal0, Vulkan0) satisfies the GPU
+                                # guard above while every planner branch stayed gated on
+                                # the empty `gpus`, and the except path restores --fit on
+                                # having priced nothing. A concrete --gpu-layers count is
+                                # unaffected; it is independent evidence inside the helper.
+                                fit_implies_partial = (
+                                    gpu_memory_mode != "manual" and _placement_verdict_partial
+                                ),
+                            )
+                        ),
+                        draft_device = _draft_device,
+                    )
+                    # _build_speculative_flags judged the stripped list, so a user
+                    # --spec-type the drop removed left the requested mode reading "auto"
+                    # while the caller's extras still mean "the user owns it" (None).
+                    # Restore the requested view, or the spec-mode compare never matches.
+                    if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
+                        self._requested_spec_mode = None
+                    if _draft_cache_type and any(
+                        _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in built
+                    ):
+                        _draft_k_flag = server_caps.get("spec_draft_cache_k_flag")
+                        _draft_v_flag = server_caps.get("spec_draft_cache_v_flag")
+                        if _draft_k_flag and _draft_v_flag:
+                            # Both axes together: llama.cpp refuses K != V on an MLA
+                            # draft context, and the control is one dtype for the pair.
+                            built.extend(
+                                [
+                                    str(_draft_k_flag),
+                                    _draft_cache_type,
+                                    str(_draft_v_flag),
+                                    _draft_cache_type,
+                                ]
+                            )
+                            logger.info("Draft KV cache dtype: %s", _draft_cache_type)
+                        else:
+                            logger.info(
+                                "llama-server has no draft KV cache flags; skipping the requested %s.",
                                 _draft_cache_type,
-                                str(_draft_v_flag),
-                                _draft_cache_type,
-                            ]
-                        )
-                        logger.info("Draft KV cache dtype: %s", _draft_cache_type)
-                    else:
-                        logger.info(
-                            "llama-server has no draft KV cache flags; skipping the requested %s.",
-                            _draft_cache_type,
-                        )
+                            )
+                    return built
+
+                spec_flags = _spec_slice(
+                    cmd, no_vram = _spec_dropped_no_vram, by_planner = _spec_dropped_by_planner
+                )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
@@ -35011,6 +35039,10 @@ class LlamaCppBackend:
 
                 _plan_kept_every_layer_at_launch = _spill_keeps_every_layer_on_gpu
                 _plan_ckpt_emitted_at_launch = list(_auto_ckpt_emitted)
+                # The drafterless block a rung-2 plan launched with, and (built on the first
+                # revoke) the one the same load gets without the plan.
+                _plan_spec_flags_at_launch = list(spec_flags) if _spec_dropped_by_planner else None
+                _unplanned_spec_flags: Optional[List[str]] = None
 
                 def _revoke_spill_plan(
                     run_cmd,
@@ -35023,9 +35055,32 @@ class LlamaCppBackend:
                     nonlocal effective_ctx, max_available_ctx
                     nonlocal kv_cache_unified, _auto_ctx_checkpoints, _auto_ckpt_emitted
                     nonlocal _mem_host_resident
+                    nonlocal spec_flags, _spec_start, _unplanned_spec_flags
+                    nonlocal _spec_dropped_no_vram, _spec_dropped_by_planner, _mtp_will_engage
                     reverted = self._drop_tensor_spill(run_cmd, why)
                     if reverted is run_cmd:
                         return run_cmd
+                    # The drafter the plan dropped comes back with the rest of what it changed.
+                    if _plan_spec_flags_at_launch is not None:
+                        if _unplanned_spec_flags is None:
+                            _unplanned_spec_flags = _spec_slice(
+                                reverted, no_vram = False, by_planner = False
+                            )
+                            _spec_dropped_no_vram = _spec_dropped_by_planner = False
+                            _mtp_will_engage = True
+                        _n = len(_plan_spec_flags_at_launch)
+                        _at = _subsequence_index(reverted, _plan_spec_flags_at_launch, _spec_start)
+                        if _n and reverted[_at : _at + _n] == _plan_spec_flags_at_launch:
+                            reverted = [
+                                *reverted[:_at],
+                                *_unplanned_spec_flags,
+                                *reverted[_at + _n :],
+                            ]
+                        elif not _n and _unplanned_spec_flags:
+                            # Nothing marks where an empty block sat; the flags are order-free.
+                            _at = len(reverted)
+                            reverted = [*reverted, *_unplanned_spec_flags]
+                        spec_flags, _spec_start = list(_unplanned_spec_flags), _at
                     _plan_kept_every_layer = _plan_kept_every_layer_at_launch
                     _spill_keeps_every_layer_on_gpu = False
                     # Re-arm the page-lock and DirectIO like the --fit on crash retry: the fallback may leave
