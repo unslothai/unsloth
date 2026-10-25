@@ -380,6 +380,7 @@ class WorldSimulation(_Strict):
     places: list[WorldPlace] = Field(default_factory = list)
     chat_cooldown_min: int = 120  # game minutes per NPC pair
     calls_per_minute: int = 4  # background LLM calls per real minute, across every NPC
+    needs: bool = True  # Sims-style needs pick what villagers do between plan blocks
 
 
 class WorldSpec(_Strict):

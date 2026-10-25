@@ -5,6 +5,7 @@
 // daily plans and NPC to NPC chats. Pure state here; world-player.tsx drives it and phaser-game.ts shows it.
 
 import type { WorldPlace, WorldSimulation, WorldSpec } from "../../types";
+import { type Doing, type Needs, initialNeeds } from "./needs";
 
 export const MAX_MEMORIES = 120;
 export const MEET_TILES = 2;
@@ -33,6 +34,9 @@ export interface NpcMind {
   planDay: number;
   /** Other NPC id -> game minute of their last chat. */
   lastChat: Record<string, number>;
+  /** Sims-style needs and the current action; absent when the world turns needs off. */
+  needs?: Needs;
+  doing?: Doing | null;
 }
 
 export interface Note {
@@ -45,6 +49,9 @@ export function simOf(spec: WorldSpec): WorldSimulation | null {
   return sim?.enabled && sim.places.length ? sim : null;
 }
 
+export const needsOn = (spec: WorldSpec) =>
+  !!simOf(spec) && spec.simulation?.needs !== false;
+
 export function emptyMind(): NpcMind {
   return { memory: [], nextId: 0, plan: [], planDay: -1, lastChat: {} };
 }
@@ -54,8 +61,11 @@ export function initialMinds(
   clock: number,
 ): Record<string, NpcMind> {
   const minds: Record<string, NpcMind> = {};
-  for (const n of spec.npcs)
+  for (const n of spec.npcs) {
     minds[n.id] = remember(emptyMind(), n.seed_memories ?? [], clock);
+    if (needsOn(spec))
+      minds[n.id] = { ...minds[n.id], needs: initialNeeds(spec.seed, n.id) };
+  }
   return minds;
 }
 

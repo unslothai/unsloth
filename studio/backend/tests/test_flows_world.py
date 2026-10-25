@@ -136,6 +136,44 @@ def test_npc_reply_validation_only_allows_known_effects():
         validate_npc_reply({"text": "x"}, _state(npc_id = "ghost"))
 
 
+def test_npc_reply_actions_are_a_fixed_validated_set():
+    s = _state()
+    assert validate_npc_reply({"text": "Lead on!", "action": "follow_player"}, s) == {
+        "text": "Lead on!",
+        "action": "follow_player",
+    }
+    assert (
+        validate_npc_reply({"text": "Bye", "action": "stop_following"}, s)["action"]
+        == "stop_following"
+    )
+    assert validate_npc_reply({"text": "See you there", "action": "go_to", "place": "pond"}, s) == {
+        "text": "See you there",
+        "action": "go_to",
+        "place": "pond",
+    }
+    # Unknown actions and places are dropped like unknown items; the reply text survives.
+    for bad in (
+        {"action": "burn_down_the_mill"},
+        {"action": "go_to", "place": "the_moon"},
+        {"action": "go_to"},
+        {"action": "Follow_Player"},
+    ):
+        out = validate_npc_reply({"text": "Hm.", **bad}, s)
+        assert out == {"text": "Hm."}, bad
+    system, prompt = npc_prompt(_state(following = True), "")
+    assert "follow_player" in system and "Pond (id pond)" in system
+    assert "You are walking with the player." in prompt
+    assert "walking with" not in npc_prompt(_state(), "")[1]
+
+
+def test_simulation_needs_flag_defaults_on():
+    w = normalize_world({**RAW, "simulation": True}, seed = 1)
+    assert w["simulation"]["needs"] is True
+    w = normalize_world({**RAW, "simulation": {"needs": False}}, seed = 1)
+    assert w["simulation"]["needs"] is False
+    assert "simulation" not in normalize_world(RAW, seed = 1)
+
+
 def test_npc_prompt_mentions_quest_and_inventory():
     system, prompt = npc_prompt(
         _state(inventory = ["rod"], history = [{"role": "player", "text": "yo"}]), "Be brief."

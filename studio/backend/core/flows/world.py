@@ -286,6 +286,7 @@ def _simulation(raw: Any, width: int, height: int, regions: list[dict]) -> Optio
         "places": places[:16],
         "chat_cooldown_min": _clamp_int(raw.get("chat_cooldown_min"), 0, 7 * 24 * 60, 120),
         "calls_per_minute": _clamp_int(raw.get("calls_per_minute"), 0, 30, 4),
+        "needs": raw.get("needs", True) is not False,
     }
 
 
@@ -344,6 +345,9 @@ def world_schema(npcs: int, items: int) -> dict:
     }
 
 
+# The only things an NPC can do from a conversation; the world player carries them out.
+REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
+
 NPC_REPLY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -351,6 +355,8 @@ NPC_REPLY_SCHEMA = {
         "give_item": {"type": "string"},
         "take_item": {"type": "string"},
         "complete_quest": {"type": "string"},
+        "action": {"type": "string", "enum": ["", *REPLY_ACTIONS]},
+        "place": {"type": "string"},
         "set": {
             "type": "array",
             "maxItems": 3,
@@ -488,6 +494,12 @@ def validate_npc_reply(raw: Any, state: dict) -> dict:
                 sets[s["var"]] = v
     if sets:
         out["set"] = sets
+    action = str(raw.get("action") or "").strip()
+    place = str(raw.get("place") or "").strip()
+    if action == "go_to" and place in {p["id"] for p in world_places(world)}:
+        out["action"], out["place"] = action, place
+    elif action in ("follow_player", "stop_following"):
+        out["action"] = action
     if has_memory(state):
         out["remember"] = clean_notes(raw.get("remember"))
     return out
@@ -537,6 +549,33 @@ def clean_summary(raw: Any) -> str:
     return text
 
 
+def world_places(world: dict) -> list[dict]:
+    """Where an NPC can be sent: simulation places, then map regions."""
+    seen, out = set(), []
+    for p in [
+        *((world.get("simulation") or {}).get("places") or []),
+        *(world.get("regions") or []),
+    ]:
+        if isinstance(p, dict) and p.get("id") and p["id"] not in seen:
+            seen.add(p["id"])
+            out.append(p)
+    return out
+
+
+def action_rules(world: dict) -> str:
+    places = ", ".join(f"{p['name']} (id {p['id']})" for p in world_places(world)[:12])
+    return (
+        "\nSet `action` to follow_player when you agree to come along with the player, stop_following when you "
+        "part ways"
+        + (
+            f", or go_to with a `place` id when you agree to head somewhere: {places}"
+            if places
+            else ""
+        )
+        + ". Leave it empty otherwise."
+    )
+
+
 def npc_prompt(
     state: dict,
     rules: str,
@@ -568,6 +607,7 @@ def npc_prompt(
         "earned it (they carry the needed item). Use `give_item` only for an item id from the world list that fits the "
         "story; use empty strings when nothing happens."
     )
+    system += action_rules(world)
     # Turns already folded into the summary are left out; the summary sits in the system prompt, which changes
     # only when turns are folded, so llama-server keeps reusing the cached prefix.
     history = [
@@ -586,7 +626,8 @@ def npc_prompt(
         f"World items: {item_list or 'none'}\n"
         f"Player ({(world.get('player') or {}).get('name', 'Player')}) carries: {', '.join(inv) or 'nothing'}\n"
         f"Variables: {state.get('vars') or {}}\n"
-        f"Conversation so far:\n{convo or '(just met)'}\n"
+        + ("You are walking with the player.\n" if state.get("following") else "")
+        + f"Conversation so far:\n{convo or '(just met)'}\n"
     )
     turn = f"Player: {str(state.get('player_message') or '')[:600]}\n{npc['name']}:"
     if memories is None:

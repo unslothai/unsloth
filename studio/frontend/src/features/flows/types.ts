@@ -446,6 +446,8 @@ export interface WorldSimulation {
   places: WorldPlace[];
   chat_cooldown_min: number;
   calls_per_minute: number;
+  /** Sims-style needs drive what villagers do between plan blocks; on unless false. */
+  needs?: boolean;
 }
 
 export interface WorldSpec {

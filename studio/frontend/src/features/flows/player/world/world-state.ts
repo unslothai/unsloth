@@ -6,6 +6,12 @@
 
 import { applySets } from "../../expr";
 import type { WorldSpec } from "../../types";
+import {
+  REPLY_ACTIONS,
+  type ReplyAction,
+  clampNeeds,
+  parseDoing,
+} from "./needs";
 import type { Point } from "./procgen";
 import {
   type MemoryRecord,
@@ -53,6 +59,15 @@ export interface WorldState {
   /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
+  /** NPCs walking with the player, from a conversation; any world. Optional so older saves load. */
+  following?: string[];
+  /** NPC id -> place they agreed to head to; `until` is a game minute, null where the clock does not run. */
+  errands?: Record<string, Errand>;
+}
+
+export interface Errand {
+  place: string;
+  until: number | null;
 }
 
 export interface NpcReply {
@@ -63,6 +78,39 @@ export interface NpcReply {
   set?: Record<string, unknown>;
   remember?: { text: string; importance: number }[];
   recalled?: string[];
+  action?: ReplyAction;
+  place?: string;
+}
+
+/** Ids an NPC can be sent to from a conversation: simulation places and map regions. */
+export function placeIds(spec: WorldSpec): Set<string> {
+  return new Set([
+    ...(spec.simulation?.places ?? []).map((p) => p.id),
+    ...(spec.regions ?? []).map((r) => r.id),
+  ]);
+}
+
+/** A conversation's action: follow the player, stop, or head somewhere. Unknown actions change nothing. */
+export function applyAction(
+  spec: WorldSpec,
+  s: WorldState,
+  npcId: string,
+  action: unknown,
+  place: unknown,
+): WorldState {
+  if (!REPLY_ACTIONS.includes(action as ReplyAction)) return s;
+  const following = (s.following ?? []).filter((id) => id !== npcId);
+  const { [npcId]: _, ...errands } = s.errands ?? {};
+  if (action === "follow_player")
+    return { ...s, following: [...following, npcId], errands };
+  if (action === "stop_following") return { ...s, following, errands };
+  if (typeof place !== "string" || !placeIds(spec).has(place)) return s;
+  const until = simOf(spec) ? s.clock + 120 : null;
+  return {
+    ...s,
+    following,
+    errands: { ...errands, [npcId]: { place, until } },
+  };
 }
 
 export function initialWorldState(spec: WorldSpec): WorldState {
@@ -79,6 +127,8 @@ export function initialWorldState(spec: WorldSpec): WorldState {
     summaries: {},
     clock,
     npc: simOf(spec) ? initialMinds(spec, clock) : {},
+    following: [],
+    errands: {},
   };
 }
 
@@ -257,6 +307,15 @@ export function applyReply(
     }
     st = { ...st, vars };
   }
+  if (reply.action) {
+    const before = st;
+    st = applyAction(spec, st, npcId, reply.action, reply.place);
+    const name = spec.npcs.find((n) => n.id === npcId)?.name ?? npcId;
+    if (st !== before && reply.action === "follow_player")
+      notes.push(`${name} is following you`);
+    else if (st !== before && reply.action === "stop_following")
+      notes.push(`${name} stopped following you`);
+  }
   return { state: st, notes };
 }
 
@@ -267,7 +326,7 @@ export function serialize(s: WorldState): WorldState {
 const num = (v: unknown, d: number) =>
   typeof v === "number" && Number.isFinite(v) ? v : d;
 
-function mindOf(raw: unknown): NpcMind {
+function mindOf(raw: unknown, fresh: NpcMind): NpcMind {
   const r = (raw ?? {}) as Partial<NpcMind>;
   const memory = (Array.isArray(r.memory) ? r.memory : []).filter(
     (m): m is MemoryRecord =>
@@ -285,6 +344,10 @@ function mindOf(raw: unknown): NpcMind {
     planDay: num(r.planDay, -1),
     lastChat:
       r.lastChat && typeof r.lastChat === "object" ? { ...r.lastChat } : {},
+    ...(fresh.needs ? { needs: clampNeeds(r.needs, fresh.needs) } : {}),
+    ...(fresh.needs && parseDoing(r.doing)
+      ? { doing: parseDoing(r.doing) }
+      : {}),
   };
 }
 
@@ -309,7 +372,18 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   const fresh = initialWorldState(spec);
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))
-    npc[id] = r.npc?.[id] ? mindOf(r.npc[id]) : fresh.npc[id];
+    npc[id] = r.npc?.[id] ? mindOf(r.npc[id], fresh.npc[id]) : fresh.npc[id];
+  const npcIds = new Set(spec.npcs.map((n) => n.id));
+  const places = placeIds(spec);
+  const errands: Record<string, Errand> = {};
+  for (const [id, e] of Object.entries(
+    r.errands && typeof r.errands === "object" ? r.errands : {},
+  ))
+    if (npcIds.has(id) && e && places.has(e.place))
+      errands[id] = {
+        place: e.place,
+        until: typeof e.until === "number" ? e.until : null,
+      };
   return {
     v: WORLD_SAVE_VERSION,
     player:
@@ -325,5 +399,9 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
     summaries: summariesOf(r.summaries),
     clock: num(r.clock, fresh.clock),
     npc,
+    following: (Array.isArray(r.following) ? r.following : []).filter((id) =>
+      npcIds.has(id),
+    ),
+    errands,
   };
 }
