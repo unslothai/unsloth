@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The compat /api/models/local path tags Ollama rows with their real source.
-
-The chat and training pickers group and label rows by ``source``, and the
-frontend branches on ``"ollama"`` explicitly. The legacy scanner in
-routes/models.py stamped its rows ``"custom"`` — and the legacy LocalModelInfo
-schema did not even admit ``"ollama"``, so correcting the stamp alone 500'd the
-route. The custom-folder merge then re-stamped every row from a registered
-folder, so a user who registered ``~/.ollama/models`` (Studio's own recommended
-folder) lost the attribution a second way. (#9986)
-"""
+"""Ollama rows keep source ollama on the compat models route, even from a registered custom folder."""
 
 from __future__ import annotations
 

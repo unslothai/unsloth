@@ -122,6 +122,11 @@ def fresh_reads() -> Iterator[None]:
         _fresh_mode.reset(token)
 
 
+def display_cache_allowed() -> bool:
+    """Gate for Studio's other display-only CLI caches (amd-smi, Vulkan probe): same rules as nvidia-smi."""
+    return enabled() and _display_mode.get() is not None and not _fresh_mode.get()
+
+
 def classify(argv: Sequence[str]) -> str:
     args = list(argv[1:])
     if args and args[0] in _STATIC_SUBCOMMANDS:
@@ -199,6 +204,11 @@ def invalidate_static(reason: str = "") -> None:
         _static_gen += 1
     if reason:
         logger.debug("GPU inventory readings invalidated: %s", reason)
+
+
+def static_generation() -> int:
+    """Bumped by invalidate_static() and reset(): an inventory read before the bump may describe a different host."""
+    return _static_gen
 
 
 def reset() -> None:

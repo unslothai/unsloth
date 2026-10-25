@@ -18,10 +18,9 @@ import {
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
-import { cn } from "@/lib/utils";
 import { LaptopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 type PendingGrant = Exclude<KeylessApiAccessScope, "off"> | "tools";
@@ -83,6 +82,16 @@ export function KeylessApiAccessSection({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [pending, setPending] = useState<PendingGrant | null>(null);
+  // the examples follow what the server admits, not the saved choice
+  const notify = useCallback(
+    (next: KeylessApiAccessSettings) =>
+      onSettingsChange?.({
+        scope: next.suspendedByAccounts ? "off" : next.scope,
+        tools: next.tools,
+        exposure: next.exposure,
+      }),
+    [onSettingsChange],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input -- exposure is recomputed by the backend when a tunnel appears or goes away
   useEffect(() => {
@@ -92,11 +101,7 @@ export function KeylessApiAccessSection({
         if (!cancelled) {
           setSettings(next);
           setError(null);
-          onSettingsChange?.({
-            scope: next.scope,
-            tools: next.tools,
-            exposure: next.exposure,
-          });
+          notify(next);
         }
       })
       .catch((cause: unknown) => {
@@ -111,7 +116,7 @@ export function KeylessApiAccessSection({
     return () => {
       cancelled = true;
     };
-  }, [cloudflareUrl, onSettingsChange]);
+  }, [cloudflareUrl, notify]);
 
   const save = async (next: KeylessApiAccessScope, tools?: boolean) => {
     setSaving(true);
@@ -119,11 +124,7 @@ export function KeylessApiAccessSection({
     try {
       const saved = await updateKeylessApiAccess(next, tools);
       setSettings(saved);
-      onSettingsChange?.({
-        scope: saved.scope,
-        tools: saved.tools,
-        exposure: saved.exposure,
-      });
+      notify(saved);
     } catch (cause: unknown) {
       setError(
         cause instanceof Error
@@ -142,11 +143,7 @@ export function KeylessApiAccessSection({
     try {
       const refreshed = await loadKeylessApiAccess();
       setSettings(refreshed);
-      onSettingsChange?.({
-        scope: refreshed.scope,
-        tools: refreshed.tools,
-        exposure: refreshed.exposure,
-      });
+      notify(refreshed);
     } catch {
       // keep the exposure already on screen; the dialog still states the scope
     } finally {
@@ -188,7 +185,7 @@ export function KeylessApiAccessSection({
   return (
     <section
       data-settings-label="Keyless API access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
@@ -209,6 +206,12 @@ export function KeylessApiAccessSection({
           </div>
         </div>
       </div>
+
+      {settings?.suspendedByAccounts ? (
+        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-muted-foreground">
+          Off while this install has other accounts: every request needs a key.
+        </p>
+      ) : null}
 
       {error ? (
         <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
@@ -276,11 +279,12 @@ export function KeylessApiAccessSection({
               Cancel
             </Button>
             <Button
+              variant={
+                pending === "full" || pending === "tools"
+                  ? "destructive"
+                  : "dark"
+              }
               disabled={saving}
-              className={cn(
-                (pending === "full" || pending === "tools") &&
-                  "bg-destructive hover:bg-destructive/90 text-destructive-foreground",
-              )}
               onClick={applyPending}
             >
               {pending ? CONFIRM_COPY[pending].action : ""}

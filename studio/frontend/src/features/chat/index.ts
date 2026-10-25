@@ -90,7 +90,14 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
-export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export {
+  formatLiveDecode,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "./lib/generation-progress";
+export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -324,6 +331,7 @@ export {
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";

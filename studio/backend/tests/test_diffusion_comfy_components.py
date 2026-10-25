@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate ComfyUI text-encoder / VAE files beside a single-file DiT (``diffusion_comfy_components.py``).
-
-Everything runs on CPU against tiny models and tiny synthetic safetensors files written in the ComfyUI
-layout: the key rules must load STRICTLY (nothing missing, nothing extra beyond the known-dead tensors),
-quantized layers must dequantize (scaled fp8) or stay int8 (ConvRot), unsupported formats must be refused
-by name, and the request / planner wiring must drop and re-price the replaced components.
-"""
+"""ComfyUI encoder and VAE files beside a single-file DiT; key rules must load strictly on CPU."""
 
 from __future__ import annotations
 
@@ -57,6 +51,24 @@ def test_parse_local_absolute_relative_and_bare(tmp_path):
     assert rel.local_path == str(Path(te).resolve())
     bare = C.parse_component_file("vae_here.safetensors", model_path = str(dit_dir))
     assert bare.local_path.endswith("vae_here.safetensors")
+
+
+def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tmp_path):
+    blob = _save(tmp_path / "blobs" / "0123abcdef", {"x": torch.zeros(1)})
+    snap = tmp_path / "snapshots" / "rev" / "ae.safetensors"
+    snap.parent.mkdir(parents = True)
+    try:
+        snap.symlink_to(blob)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    ref = C.parse_component_file(str(snap), what = "vae_file")
+    assert ref.local_path == str(Path(blob).resolve())  # loads still read the real file
+    assert ref.name == "ae.safetensors"
+    assert C.ComponentOverrides(files = {"vae": ref}).summary() == {"vae": "ae.safetensors"}
+    rel = C.parse_component_file(
+        "../snapshots/rev/ae.safetensors", model_path = str(tmp_path / "blobs")
+    )
+    assert rel.name == "ae.safetensors"
 
 
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):

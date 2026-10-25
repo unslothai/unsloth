@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
-import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
+import {
+  normalizeMlxKvQuant,
+  normalizeMlxOffload,
+} from "@/features/model-picker/model-config/per-model-config";
 
 import {
   parseGpuLayersOverride,
@@ -17,6 +20,7 @@ import {
 } from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
+import { isCpuFallbackReason } from "./gpu-placement";
 
 /** The resident load's own invocation, as `/api/inference/status` echoes it. */
 type ResidentRuntime = Pick<
@@ -33,6 +37,7 @@ type ResidentRuntime = Pick<
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
   | "mlx_int8_prefill_requested"
+  | "mlx_offload"
   | "speculative_type"
   | "spec_draft_n_max"
   | "spec_draft_model"
@@ -290,6 +295,19 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
+  },
+  {
+    // The request, not the applied fraction: Auto stays Auto whatever it picked.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.mlxPleOffload ?? null) === normalizeMlxOffload(s.mlx_offload?.ple?.requested),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.mlxExpertOffload ?? null) === normalizeMlxOffload(s.mlx_offload?.experts?.requested),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
@@ -569,15 +587,15 @@ function diffusionManualNgl(
 }
 
 /** Whether the backend would rewrite this request into the resident CPU fallback.
- *  `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after a
- *  Vulkan startup crash an Auto request becomes the resident manual/zero-layer intent and
+ *  `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after any
+ *  Vulkan CPU fallback an Auto request becomes the resident manual/zero-layer intent and
  *  dedupes. Mirrors `_cpu_fallback_request_eligible` minus its environment terms. */
 function cpuFallbackPlacementPreserved(
   config: PerModelConfig,
   status: ResidentRuntime,
   standing: StandingConfigDefaults,
 ): boolean {
-  if (status.cpu_fallback_reason !== "vulkan_startup_crash") {
+  if (!isCpuFallbackReason(status.cpu_fallback_reason)) {
     return false;
   }
   const mode = config.gpuMemoryMode ?? standing.gpuMemoryMode;

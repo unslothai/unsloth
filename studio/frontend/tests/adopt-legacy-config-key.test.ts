@@ -21,8 +21,7 @@ const {
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
-// A snapshot path is what an older release keyed a repo cached outside the active HF cache
-// by; the repo id is what it is keyed by now.
+// Older releases keyed repos cached outside the active HF cache by snapshot path.
 const LEGACY_ID = "/home/u/.cache/models/snapshots/2f1c9ab";
 const MODEL_ID = "unsloth/Repo-GGUF";
 
@@ -48,16 +47,13 @@ function config(
   };
 }
 
-// MAX_ENTRIES in per-model-config.ts, which does not export it.
+// Mirrors MAX_ENTRIES in per-model-config.ts, which does not export it.
 const MAX_ENTRIES = 500;
-// MAX_PER_MODEL_CONFIG_STORAGE_BYTES is 1 MiB, so a handful of models carrying a large
-// chat template override sits against the byte budget well before the entry budget.
+// Large templates hit MAX_PER_MODEL_CONFIG_STORAGE_BYTES (1 MiB) before the entry budget.
 const BIG_TEMPLATE = "x".repeat(60_000);
 const TEMPLATE_MODELS = 16;
 
-// The values have to be asserted, not just the key. Passing the config where the quant goes
-// writes an all-defaults record and reports success, after which the legacy record is dropped
-// anyway, so a key-count or source-substring check still reads as a successful move.
+// Assert values, not just the key: a wrong-argument save writes all defaults and still succeeds.
 test("a legacy-keyed config moves to the current id with its values", () => {
   store.clear();
   savePerModelConfig(LEGACY_ID, "Q4_K_M", config(32768, "q8_0"));
@@ -68,7 +64,6 @@ test("a legacy-keyed config moves to the current id with its values", () => {
   assert.equal(adopted.remembered, true);
   assert.equal(adopted.config.maxSeqLength, 32768);
   assert.equal(adopted.config.kvCacheDtype, "q8_0");
-  // The stale record goes, so exactly one survives and nothing reads the old key.
   assert.equal(listPerModelConfigs().length, 1);
   assert.equal(resolveInitialConfig(LEGACY_ID, "Q4_K_M").remembered, false);
 });
@@ -108,12 +103,9 @@ test("adopting one quant leaves another quant of the same model alone", () => {
 
 test("nothing to move is not a move", () => {
   store.clear();
-  // No legacy record at all.
   assert.equal(adoptLegacyConfigKey(MODEL_ID, LEGACY_ID, "Q4_K_M"), false);
 
   savePerModelConfig(MODEL_ID, "Q4_K_M", config(32768));
-  // The two ids are the same, or there is no older id to move from, so the record the
-  // caller is about to read must be left exactly where it is.
   assert.equal(adoptLegacyConfigKey(MODEL_ID, MODEL_ID, "Q4_K_M"), false);
   assert.equal(adoptLegacyConfigKey(MODEL_ID, "", "Q4_K_M"), false);
   assert.equal(
@@ -123,13 +115,10 @@ test("nothing to move is not a move", () => {
   assert.equal(listPerModelConfigs().length, 1);
 });
 
-// A save before the delete holds two copies at once, one entry over a full map, and
-// savePerModelConfig then evicts the oldest unrelated model silently. This path passes no
-// eviction list, so that model's server override outlives anything the UI could forget.
+// Saving before deleting briefly holds two copies and silently evicts an unrelated model.
 test("moving a legacy key at the entry budget keeps every other model", () => {
   store.clear();
-  // A full map, with the stale record saved partway through so it is not the oldest entry
-  // and so cannot be the one eviction happens to take.
+  // The stale record is saved mid-map so it cannot be the eviction victim.
   const half = Math.floor(MAX_ENTRIES / 2);
   for (let i = 0; i < half; i += 1) {
     savePerModelConfig(`org/unrelated-${i}`, "Q4_K_M", config(4096 + i * 128));
@@ -146,8 +135,6 @@ test("moving a legacy key at the entry budget keeps every other model", () => {
   assert.equal(adopted.remembered, true);
   assert.equal(adopted.config.maxSeqLength, 32768);
   assert.equal(adopted.config.kvCacheDtype, "q8_0");
-  // The oldest entry is the first eviction would take, and every model is still there: the
-  // move traded one key for another rather than adding a second copy.
   assert.equal(
     resolveInitialConfig("org/unrelated-0", "Q4_K_M").remembered,
     true,
