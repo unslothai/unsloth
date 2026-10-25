@@ -3,16 +3,9 @@
 
 """Serve a hosted int8 video denoiser to an OFFLOADED load as torchao-free native W8A8 layers.
 
-The hosted INT8 checkpoints are torchao W8A8 (symmetric per-row int8 weights, dynamic per-token int8
-activations, no rotation). Their torchao tensors do not survive the offload hooks' ``Module.to()``, so an
-offloaded load used to decline them and quantise the dense experts at runtime. The codes and scales are
-plain tensors, though: ``NativeWeightOnlyLinear`` holds them as buffers and runs the same per-token
-``torch._int_mm`` maths, so the offloaded load serves the exact weights a resident load serves.
-
-This is NOT the runtime offload build: that one rotates (ConvRot g256) and scales by ``amax / 127``, so its
-codes differ. An existing native cache of that build is still read first (``native_cache_covers``).
-
-Kill switch: ``UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD=0`` declines the hosted file under offload again.
+torchao tensors do not survive the offload hooks' ``Module.to()``, but the codes and scales are plain tensors
+that ``NativeWeightOnlyLinear`` runs with the same ``torch._int_mm`` maths. NOT the runtime offload build
+(ConvRot g256, ``amax / 127``): its codes differ. Kill switch: ``UNSLOTH_VIDEO_HOSTED_INT8_OFFLOAD=0``.
 """
 
 from __future__ import annotations
@@ -83,12 +76,8 @@ def _is_zero(t: Any) -> bool:
 
 
 def int8_weight_parts(name: str, value: Any) -> Optional[tuple]:
-    """``(codes [n, k] int8, scale [n], dtype)`` of a hosted W8A8 int8 weight, None for a plain tensor.
-
-    Reads the torchao v2 ``Int8Tensor`` (what the legacy-pickle decoder builds on torchao >= 0.18) and the v1
-    ``LinearActivationQuantizedTensor`` (torchao <= 0.17) by attribute. RAISES on anything else that is not a
-    plain tensor (asymmetric, static activation scale, block size other than per-row): a weight this cannot
-    describe exactly must fail the load into the dense fallback."""
+    """``(codes [n, k] int8, scale [n], dtype)`` of a torchao v1/v2 W8A8 weight, None for a plain tensor.
+    RAISES on any other layout so the load falls back to dense."""
     import torch
 
     kind = type(value).__name__

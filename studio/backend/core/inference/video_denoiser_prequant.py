@@ -114,9 +114,7 @@ def denoiser_prequant_pipe_kwargs(
     native_offload: bool = False,
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16).
-
-    ``native_offload``: an offloaded int8 load; every expert is built as torchao-free W8A8 layers on the CPU
-    (``video_hosted_int8_native``) instead of torchao weights on ``device``."""
+    ``native_offload``: build experts as torchao-free W8A8 layers on the CPU."""
     try:
         import gc
 

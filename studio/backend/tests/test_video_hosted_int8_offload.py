@@ -256,7 +256,6 @@ def test_hosted_codes_and_scales_are_held_bit_for_bit(hosted, component):
         assert layer.act_int8 and layer.rot_group == 0 and layer.scheme == "int8"
         assert torch.equal(layer.weight_q, codes)
         assert torch.equal(layer.weight_scale.view(torch.float32), scale.float())
-    # Every plain tensor of the file is the dense model's own.
     dense = hosted.dense[component].state_dict()
     for key, value in model.state_dict().items():
         if key in dense:
@@ -486,7 +485,6 @@ def test_pipe_kwargs_seed_native_experts_all_or_nothing(hosted, monkeypatch):
     )
     assert set(seeded) == set(COMPONENTS)
     assert all(any(is_native_linear(m) for m in mod.modules()) for mod in seeded.values())
-    # One unreadable expert drops both.
     Path(hosted.files["transformer_2"]).write_bytes(b"not a checkpoint")
     assert (
         vdp.denoiser_prequant_pipe_kwargs(
