@@ -5505,6 +5505,57 @@ def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
     return None
 
 
+def _reasoning_preserve_from_args_or_env(
+    extra_args: Optional[Iterable[str]], env: Mapping[str, str]
+) -> Optional[bool]:
+    """The user's --[no-]reasoning-preserve choice, else None: last flag wins, as in
+    llama.cpp's parser, and the extras beat the inherited LLAMA_ARG_REASONING_PRESERVE."""
+    choice: Optional[bool] = None
+    for raw in extra_args or ():
+        flag = _flag_name(str(raw))
+        if flag == "--reasoning-preserve":
+            choice = True
+        elif flag == "--no-reasoning-preserve":
+            choice = False
+    if choice is not None:
+        return choice
+    value = env.get("LLAMA_ARG_REASONING_PRESERVE")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _template_preserves_thinking_by_default(template: str, context: Mapping) -> bool:
+    """Whether ``template`` replays an earlier turn's reasoning with preserve_thinking
+    omitted (Qwen3.8's own does, ``|default(false)`` does not); False if unrenderable."""
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def _raise(message):
+        raise ValueError(message)
+
+    marker = "unsloth-preserve-thinking-probe"
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": marker},
+        {"role": "user", "content": "q2"},
+    ]
+    try:
+        jinja = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"],
+        )
+        jinja.globals.update(raise_exception = _raise, strftime_now = lambda fmt: time.strftime(fmt))
+        rendered = jinja.from_string(template).render(
+            **{**context, "messages": messages, "add_generation_prompt": True}
+        )
+    except Exception:
+        return False
+    return marker in rendered
+
+
 def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
     value = env.get("LLAMA_ARG_REASONING_EFFORT")
     return None if value == "default" else value
@@ -32465,7 +32516,19 @@ class LlamaCppBackend:
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
                     # frontend receives the same resolved value via load/status.
+                    # An override takes the default its own text renders, and an explicit
+                    # --[no-]reasoning-preserve beats both: llama.cpp applies this kwarg
+                    # after that flag, so it would otherwise undo it (#15115).
                     if self._supports_preserve_thinking:
+                        if chat_template_override:
+                            self._preserve_thinking_default = (
+                                _template_preserves_thinking_by_default(
+                                    chat_template_override, reasoning_kw
+                                )
+                            )
+                        _preserve = _reasoning_preserve_from_args_or_env(extra_args, env)
+                        if _preserve is not None:
+                            self._preserve_thinking_default = _preserve
                         reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     _reasoning_args = _build_launch_reasoning_args(server_caps, reasoning_kw)
                     cmd.extend(_reasoning_args)
