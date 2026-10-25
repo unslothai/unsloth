@@ -851,6 +851,14 @@ def _gpus_held_outside_llama() -> Optional[frozenset]:
         if upsampler is not None and (upsampler.is_loading() or upsampler.holds_vram()):
             return None
 
+        # GGUF TTS codecs (SNAC / BiCodec / DAC) sit in this process on its default device, not the child's GPUs.
+        codec_mgr = LlamaCppBackend._codec_mgr
+        if codec_mgr is not None and any(
+            str(device or "").strip().lower().split(":", 1)[0] != "cpu"
+            for device in (getattr(codec_mgr, "_codec_devices", None) or {}).values()
+        ):
+            return None
+
         embeddings = sys.modules.get("core.rag.embeddings")
         if embeddings is not None:
             if embeddings._lock.locked() or embeddings._backend_lock.locked():

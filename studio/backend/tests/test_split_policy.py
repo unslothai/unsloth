@@ -2243,6 +2243,14 @@ def _prompt_upsampler(loading, holds_vram):
     return setup
 
 
+def _tts_codec(device):
+    def setup(monkeypatch):
+        fake = types.SimpleNamespace(_codec_devices = {"snac": device})
+        monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", fake)
+
+    return setup
+
+
 def _worker(module, attr, **state):
     """A training / export singleton in ``module`` reporting ``state`` (method name -> result)."""
 
@@ -2279,6 +2287,8 @@ def _worker(module, attr, **state):
         pytest.param(_prompt_upsampler(False, True), False, id = "prompt-upsampler-gpu"),
         pytest.param(_prompt_upsampler(True, False), False, id = "prompt-upsampler-loading"),
         pytest.param(_prompt_upsampler(False, False), True, id = "prompt-upsampler-cpu"),
+        pytest.param(_tts_codec("cuda"), False, id = "tts-codec-gpu"),
+        pytest.param(_tts_codec("cpu"), True, id = "tts-codec-cpu"),
         pytest.param(
             _worker("core.training.training", "_training_backend", is_training_active = True),
             False,
