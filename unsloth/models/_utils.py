@@ -791,6 +791,24 @@ def _flex_tuned_bwd_kernel_options(head_dim, device_ok):
     return dict(_FLEX_TUNED_BWD_KERNEL_OPTIONS)
 
 
+def _flex_tuned_bwd_fits(args, kwargs):
+    """Whether the tuned backward tiles can join this call. Not when the caller set its own tiles
+    (a partial set merged with ours can break bwd_BLOCK_N1 % bwd_BLOCK_M1 == 0), nor when the block
+    mask's sparse blocks are not multiples of our tiles (Inductor's defaults shrink to fit those)."""
+    requested = kwargs.get("kernel_options") or {}
+    if any(k.startswith(("bwd_", "BLOCK_", "num_")) for k in requested):
+        return False
+    mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    block_size = getattr(mask, "BLOCK_SIZE", None)
+    if block_size is None:
+        return True
+    try:
+        tiles = [v for k, v in _FLEX_TUNED_BWD_KERNEL_OPTIONS.items() if "_BLOCK_" in k]
+        return all(int(size) % tile == 0 for size in block_size for tile in tiles)
+    except Exception:
+        return False
+
+
 def _flex_call_needs_backward(query, key, value):
     """True when this flex call is recorded for autograd on an accelerator."""
     try:
@@ -951,6 +969,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and hasattr(query, "dim")
             and query.dim() == 4
             and _flex_call_needs_backward(query, key, value)
+            and _flex_tuned_bwd_fits(args, kwargs)
         ):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
