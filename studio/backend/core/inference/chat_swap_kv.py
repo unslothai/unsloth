@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import threading
 import time
 from typing import Optional
@@ -52,20 +53,135 @@ def saving_progress(media: str) -> Optional[dict]:
     return None
 
 
+def _enter_saving(key: tuple[str, Optional[str]]) -> None:
+    with _lock:
+        _saving[key] = _saving.get(key, 0) + 1
+
+
+def _leave_saving(key: tuple[str, Optional[str]]) -> None:
+    with _lock:
+        left = _saving.get(key, 1) - 1
+        if left > 0:
+            _saving[key] = left
+        else:
+            _saving.pop(key, None)
+
+
+class PreparingLoad:
+    """One load POST still before its engine registers the load; ``/<media>/unload`` cancels it.
+
+    ``load_token`` is the request's own token, so an unload naming it cancels this POST and no other."""
+
+    def __init__(
+        self,
+        media: str,
+        load_token: Optional[str] = None,
+    ):
+        self.media = media
+        self.load_token = load_token or None
+        self._cancelled = threading.Event()
+        # Held from the check through begin_load's registration, so a cancel lands before or after it.
+        self.lock = threading.RLock()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        with self.lock:
+            self._cancelled.set()
+
+
+_preparing: dict[tuple[str, Optional[str]], list[PreparingLoad]] = {}
+_current_preparing: contextvars.ContextVar[Optional[PreparingLoad]] = contextvars.ContextVar(
+    "chat_swap_kv_preparing_load", default = None
+)
+
+
+def load_preparing(media: str) -> bool:
+    """Whether one of the caller's load POSTs is still in its preflight (evidence, checks, acquire)."""
+    with _lock:
+        return any(not t.cancelled for t in _preparing.get((media, _account_id()), ()))
+
+
+def cancel_preparing_loads(
+    media: str,
+    account: Optional[str],
+    *,
+    any_account: bool = False,
+    load_token: Optional[str] = None,
+) -> int:
+    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped.
+
+    With ``load_token``, only ``account``'s POSTs that carry that token (an unload naming its load).
+    Returns once each one either stopped or registered, as the token's lock is held until then."""
+    with _lock:
+        tokens = [
+            t
+            for (m, a), held in _preparing.items()
+            if m == media and (any_account or a == account)
+            for t in held
+            if not t.cancelled and (load_token is None or t.load_token == load_token)
+        ]
+    # Outside _lock: this waits for a registration in flight under the token's own lock.
+    for token in tokens:
+        token.cancel()
+    return len(tokens)
+
+
+def preparing_load_token() -> Optional[PreparingLoad]:
+    """The preflight token of the load POST this context runs in, if any."""
+    return _current_preparing.get()
+
+
+def raise_if_load_cancelled(message: str) -> None:
+    """Raise the route's cancelled-load error once an unload cancelled this POST's preflight."""
+    token = _current_preparing.get()
+    if token is not None and token.cancelled:
+        raise RuntimeError(message)
+
+
+def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
+    """``fn(*args, **kwargs)`` under this POST's preflight lock once no unload has cancelled it, so a
+    destructive step (an engine switch, another resident's unload) never runs for a cancelled load:
+    a cancel lands before the check, or waits for ``fn`` to finish."""
+    token = _current_preparing.get()
+    if token is None:
+        return fn(*args, **kwargs)
+    with token.lock:
+        if token.cancelled:
+            raise RuntimeError(message)
+        return fn(*args, **kwargs)
+
+
+@contextlib.contextmanager
+def preparing_load(media: str, load_token: Optional[str] = None):
+    """Held around a load POST until begin_load registers it, so load-progress reads it as starting; yields the token an unload cancels."""
+    key = (media, _account_id())
+    token = PreparingLoad(media, load_token)
+    with _lock:
+        _preparing.setdefault(key, []).append(token)
+    reset = _current_preparing.set(token)
+    try:
+        yield token
+    finally:
+        _current_preparing.reset(reset)
+        with _lock:
+            held = _preparing.get(key, [])
+            if token in held:
+                held.remove(token)
+            if not held:
+                _preparing.pop(key, None)
+
+
 @contextlib.contextmanager
 def _saving_marker(media: str, account: Optional[str]):
     key = (media, account)
-    with _lock:
-        _saving[key] = _saving.get(key, 0) + 1
+    _enter_saving(key)
     try:
         yield
     finally:
-        with _lock:
-            left = _saving.get(key, 1) - 1
-            if left > 0:
-                _saving[key] = left
-            else:
-                _saving.pop(key, None)
+        _leave_saving(key)
 
 
 def _delete(manifest) -> None:
@@ -103,13 +219,18 @@ class SwapSave:
         manifest: Optional[dict] = None,
         *,
         log_swap: bool = True,
+        saving: Optional[tuple[str, Optional[str]]] = None,
     ):
         self._manifest = manifest
         # Off logs the eviction here; When they fit's residency code already logs it as "evicted".
         self._log_swap = log_swap
+        self._saving = saving
 
     def close(self) -> None:
         global _pending, _committed
+        saving, self._saving = self._saving, None
+        if saving is not None:
+            _leave_saving(saving)
         manifest, self._manifest = self._manifest, None
         if manifest is None:
             return
@@ -249,14 +370,23 @@ async def save_chat_kv_before_swap(
     abort = threading.Event()
     deadline = time.monotonic() + budget
 
+    preflight = _current_preparing.get()
+
     def should_abort() -> bool:
-        return abort.is_set() or time.monotonic() >= deadline or _chat_busy(counted)
+        return (
+            abort.is_set()
+            or time.monotonic() >= deadline
+            or (preflight is not None and preflight.cancelled)
+            or _chat_busy(counted)
+        )
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     manifest = None
     cancelled = None
-    with _saving_marker(media, account):
+    saving = (media, account)
+    _enter_saving(saving)
+    try:
         threading.Thread(
             target = _save_in_thread,
             args = (llama, should_abort, abort, loop, future),
@@ -280,19 +410,26 @@ async def save_chat_kv_before_swap(
                 )
             else:
                 logger.debug("chat KV swap save failed: %s", exc)
-    if cancelled is not None:
-        raise cancelled
-    try:
-        if manifest and (abort.is_set() or _chat_busy(counted)):
+        if cancelled is not None:
+            raise cancelled
+        try:
+            if manifest and (
+                abort.is_set()
+                or (preflight is not None and preflight.cancelled)
+                or _chat_busy(counted)
+            ):
+                _delete(manifest)
+                manifest = None
+        except Exception:
             _delete(manifest)
             manifest = None
-    except Exception:
-        _delete(manifest)
-        manifest = None
+    except BaseException:
+        _leave_saving(saving)
+        raise
     if not manifest:
-        return SwapSave()
+        return SwapSave(saving = saving)
     entry = {"identity": identity, "origin": "swap", **manifest}
     with _lock:
         older, _pending = _pending, entry
     _delete(older)
-    return SwapSave(entry, log_swap = policy == "off")
+    return SwapSave(entry, log_swap = policy == "off", saving = saving)
