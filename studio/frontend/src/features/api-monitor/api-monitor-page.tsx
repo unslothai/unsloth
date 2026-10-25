@@ -1313,11 +1313,13 @@ export function ApiMonitorPage(): ReactElement {
   const rowFacts = (model: ServedModel): ReactElement => {
     const id = monitorSelection(model.name).id;
     // Only requests since this model's latest load: an earlier load may have had another window.
+    // A failed or still-running load leaves the resident model serving, so it is no cutoff.
     let loadedAt = 0;
     for (const entry of entries) {
       if (
         isLifecycleEntry(entry) &&
         entry.event === "load" &&
+        entry.status === "completed" &&
         modelIdsMatch(monitorSelection(entry.model).id, id)
       ) {
         loadedAt = Math.max(loadedAt, entry.started_at);

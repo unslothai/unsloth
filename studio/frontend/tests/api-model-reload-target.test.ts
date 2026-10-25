@@ -17,6 +17,8 @@ test("a served row reloads its checkpoint, not the public alias a kept slot is l
 
 test("the Context fact finds requests logged as <id>:<quant>, and shows chat's pinnable chip", () => {
   assert.match(page, /modelIdsMatch\(monitorSelection\(entry\.model\)\.id, id\),/);
+  // A rejected or in-progress load must not wipe the served row's stats.
+  assert.match(page, /entry\.event === "load" &&\s*entry\.status === "completed" &&/);
   assert.doesNotMatch(page, /modelIdsMatch\(entry\.model, id\)/);
   assert.match(page, /<ContextUsageChip\s+ringFirst=\{true\}\s+pinOnClick=\{true\}/);
 });
