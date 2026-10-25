@@ -1447,6 +1447,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         from .pp_native import check_pp_dp_composition
 
         pp_stage = check_pp_dp_composition(model, config.mesh)
+        if config.cpu_offload:
+            # The stage's device (token counts, pipeline send / recv buffers) would follow the offloaded params.
+            raise RuntimeError(
+                "Unsloth: native FSDP2 cpu_offload is not supported on a pipeline parallel model yet; shard it "
+                "without cpu_offload."
+            )
         if config.reshard_after_forward is None:
             # torchtitan's PP default (distributed/fsdp.py get_fsdp_reshard_after_forward_policy): keep units
             # gathered after forward, else every micro-batch all-gathers them again.

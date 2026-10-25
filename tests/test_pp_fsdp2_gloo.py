@@ -193,6 +193,11 @@ def _case_compose(
                 model.base_model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
             )
         )
+        refusals["shard_model_cpu_offload"] = _raised(
+            lambda: native.shard_model(
+                model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"], cpu_offload = True)
+            )
+        )
         refusals["fsdp_after_refusals"] = sum(
             type(m).__name__.startswith("FSDP") for m in model.modules()
         )
@@ -416,6 +421,9 @@ def _check(results, dims, n_mb = 2):
             assert "meeting only at this rank" in (refusals["shard_model_pp_mesh"] or ""), refusals
             assert "needs FSDP2Config(mesh = mesh['dp'])" in (refusals["shard_model_no_mesh"] or ""), refusals
             assert "not a level inside it" in (refusals["shard_model_inner_level"] or ""), refusals
+            assert "cpu_offload is not supported on a pipeline parallel model" in (
+                refusals["shard_model_cpu_offload"] or ""
+            ), refusals
             assert refusals["fsdp_after_refusals"] == 0, refusals
             if dims["dp"] == 1:
                 continue
