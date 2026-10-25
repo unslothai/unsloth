@@ -200,10 +200,29 @@ def test_backend_save_routes_native_builds_to_the_native_cache(base_dir):
         base = "black-forest-labs/FLUX.1-schnell",
         source_base = base_dir,
         defer = True,
+        native_cache = True,
     )
     assert isinstance(pending, NC.NativePendingWrite)
     pending.start()
     assert pending.wait(120) and pending.result
+
+
+def test_backend_save_skips_a_native_build_the_load_cannot_read_back(base_dir):
+    # MPS / ROCm builds never hit the read path, so writing them would only cost disk and an unload wait.
+    built = _fresh_build(base_dir, True)
+    pipe = types.SimpleNamespace(transformer = built)
+    pending = D.DiffusionBackend._save_pipeline_quant_to_cache(
+        pipe,
+        _fam(),
+        [("transformer", built)],
+        loras = None,
+        base = "black-forest-labs/FLUX.1-schnell",
+        source_base = base_dir,
+        defer = True,
+    )
+    assert pending is None
+    assert NC.lookup(_fam(), NC.build_spec(built, _fam().name), base_repo = "black-forest-labs/FLUX.1-schnell",
+                     source_base = base_dir) is None
 
 
 def test_backend_read_hits_after_a_write_and_misses_before(base_dir):

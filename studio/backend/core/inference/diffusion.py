@@ -8707,6 +8707,12 @@ class DiffusionBackend:
                 native_offload_forced = native_offload_scheme is not None and (
                     _memory_request_forces_offload(memory_mode, cpu_offload)
                 )
+                # The only build the native cache can serve back (MPS / ROCm set native_scheme up front).
+                native_cache_ok = (
+                    native_offload_forced
+                    and native_scheme is None
+                    and getattr(target, "device", None) == "cuda"
+                )
                 if transformer_quant_pinned is not None and not dense_quant_supported_kind(kind):
                     transformer_quant_decline = dense_quant_unsupported_kind_reason(kind)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
@@ -9685,8 +9691,7 @@ class DiffusionBackend:
                                         )
                                 if (
                                     pipeline_seed_scheme is None
-                                    and native_offload_forced
-                                    and native_scheme is None
+                                    and native_cache_ok
                                     and not _has_active_lora(loras)
                                     and not _pipeline_prequant_skipped
                                     and "transformer" not in pipe_kwargs
@@ -10344,6 +10349,7 @@ class DiffusionBackend:
                                             _load_token
                                         ),
                                         defer = True,
+                                        native_cache = native_cache_ok,
                                     )
                                     if not hasattr(pending_cache_write, "start"):
                                         pending_cache_write = None
@@ -11866,15 +11872,19 @@ class DiffusionBackend:
         source_base: Optional[str],
         cancel_check: Optional[Callable[[], None]] = None,
         defer: bool = False,
+        native_cache: bool = False,
     ) -> Any:
         """Cache a load-time quantized ``transformer`` (single denoiser only, the cache keys that component; no LoRA).
-        ``defer`` may return a ``PendingWrite`` for the caller to start once the load is published. Never raises."""
+        ``defer`` may return a ``PendingWrite`` for the caller to start once the load is published. A native build is
+        written only when ``native_cache`` says the load could read it back. Never raises."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             if fam is None or names != ["transformer"] or _has_active_lora(loras):
                 return None
             transformer = getattr(pipe, "transformer", None)
             if (getattr(transformer, "_unsloth_runtime_quant_info", None) or {}).get("native"):
+                if not native_cache:
+                    return None
                 from .diffusion_native_cache import save_deferred
                 if not defer:
                     from .diffusion_native_cache import build_spec, save
