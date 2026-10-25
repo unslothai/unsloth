@@ -11,6 +11,10 @@ measurement above the seed means this machine needs more) and supplies one where
 seed, because one render does not exercise every phase (a prompt-cache hit skips the encoder, a smaller request
 decodes less), and the seed was measured on the worst phase.
 
+Phases: ``pre_decode`` / ``decode`` on the whole-render scale (prefetch window pad included), ``decode_unpadded`` /
+``unpadded`` without it (only the VAE runs at decode; resident weights hold no window). Pre-phase stores place from the
+whole-render peak. ``UNSLOTH_DIFFUSION_PHASE_PEAKS=0`` ignores the phases.
+
 ``UNSLOTH_DIFFUSION_LEARNED_PEAKS=0`` turns lookups and recording off; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE``
 names the JSON file (default ``<studio cache>/diffusion_measured_peaks.json``).
 """
@@ -29,8 +33,17 @@ from typing import Any, Optional
 
 LEARNED_PEAKS_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS"
 LEARNED_PEAKS_FILE_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE"
+PHASE_PEAKS_ENV = "UNSLOTH_DIFFUSION_PHASE_PEAKS"
+PHASE_PRE_DECODE = "pre_decode"
+PHASE_DECODE = "decode"
+PHASE_DECODE_UNPADDED = "decode_unpadded"
+PHASE_UNPADDED = "unpadded"
+PHASES = (PHASE_PRE_DECODE, PHASE_DECODE, PHASE_DECODE_UNPADDED, PHASE_UNPADDED)
 _FILE_NAME = "diffusion_measured_peaks.json"
-_VERSION = 1
+# 2: non-txt2img workflows record under their own ``wf:`` key. Version 1 kept every workflow's max-wins peak on the
+# load key (an edit's larger peak inflated txt2img forever), so ``_migrate_v1`` keeps only what the phase format wrote.
+_VERSION = 2
+_WORKFLOW_KEY_PART = "|wf:"
 _MAX_ENTRIES = 512
 _MEGAPIXEL = 1024 * 1024
 # Smallest bucket: a quarter megapixel. Below it the activation is dominated by fixed costs.
@@ -42,6 +55,15 @@ _cache: dict[str, Any] = {"path": None, "mtime": None, "data": None}
 
 def enabled() -> bool:
     return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def phases_enabled() -> bool:
+    return enabled() and (os.environ.get(PHASE_PEAKS_ENV) or "").strip().lower() not in (
         "0",
         "off",
         "false",
@@ -137,6 +159,34 @@ def _empty() -> dict:
     return {"version": _VERSION, "runtime": runtime_stamp(), "entries": {}}
 
 
+def _migrate_v1(entries: dict) -> dict:
+    """A version 1 store's entries on the version 2 scale. ``wf:`` keys and the phase tables only ever came from the
+    per-workflow format and stay as they are. A load key's whole-render peaks may hold another workflow's sample, so
+    a bucket keeps only the larger of its pre-decode / decode phases (each a whole-render peak of a phase-recorded
+    render, which ran under the per-workflow key); a bucket or entry with no phase is dropped and relearned, the
+    load placing from its seed or the flat estimate meanwhile, as on a fresh store."""
+    kept: dict = {}
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if _WORKFLOW_KEY_PART in str(key):
+            kept[key] = entry
+            continue
+        table = entry.get("phases") if isinstance(entry.get("phases"), dict) else {}
+        peaks: dict = {}
+        for name in (PHASE_PRE_DECODE, PHASE_DECODE):
+            for bucket, value in (table.get(name) or {}).items():
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if value > int(peaks.get(bucket) or 0):
+                    peaks[str(bucket)] = value
+        if peaks:
+            kept[key] = dict(entry, peaks = peaks)
+    return kept
+
+
 def _read(path: Path, fresh: bool = False) -> dict:
     try:
         mtime = path.stat().st_mtime_ns
@@ -151,6 +201,13 @@ def _read(path: Path, fresh: bool = False) -> dict:
         return _cache["data"]
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
+        if (
+            isinstance(data, dict)
+            and data.get("version") == 1
+            and data.get("runtime") == runtime_stamp()
+            and isinstance(data.get("entries"), dict)
+        ):
+            data = dict(data, version = _VERSION, entries = _migrate_v1(data["entries"]))
         if (
             not isinstance(data, dict)
             or data.get("version") != _VERSION
@@ -212,11 +269,13 @@ def record(
     device_name: Optional[str] = None,
     quadratic: bool = False,
     held: Optional[list] = None,
+    phases: Optional[dict] = None,
 ) -> bool:
     """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
     still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
     key's entry keeps scaling that way). Returns True when the stored value rose. ``held`` (a list) gets True appended
-    when the store holds at least this peak afterwards (raised, or already covered): False when nothing was persisted."""
+    when the store holds at least this peak afterwards (raised, or already covered): False when nothing was persisted.
+    ``phases`` ({name: MiB}, capped at ``peak_mib``) are kept max-wins and never affect the return value."""
     if (
         not enabled()
         or peak_mib is None
@@ -235,12 +294,13 @@ def record(
     bucket_pixels = resolution_bucket(width, height, batch_size)
     bucket = str(bucket_pixels)
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
-    peak_mib = int(
-        math.ceil(
-            int(peak_mib)
-            * (bucket_pixels / float(max(pixels, bucket_pixels // 2))) ** (2 if quadratic else 1)
-        )
-    )
+    factor = (bucket_pixels / float(max(pixels, bucket_pixels // 2))) ** (2 if quadratic else 1)
+    peak_mib = int(math.ceil(int(peak_mib) * factor))
+    phase_mib = {
+        name: min(peak_mib, int(math.ceil(int(value) * factor)))
+        for name, value in (phases or {}).items()
+        if name in PHASES and value is not None and int(value) > 0
+    }
     try:
         with _lock, _file_lock(path):
             data = _read(path, fresh = True)
@@ -249,7 +309,17 @@ def record(
             entries[key] = entry  # most recently raised last: the cap evicts from the front
             peaks = entry.setdefault("peaks", {})
             old = int(peaks.get(bucket) or 0)
+            phase_raised = False
+            if phase_mib:
+                table = entry.setdefault("phases", {})
+                for name, value in phase_mib.items():
+                    by_bucket = table.setdefault(name, {})
+                    if int(value) > int(by_bucket.get(bucket) or 0):
+                        by_bucket[bucket] = int(value)
+                        phase_raised = True
             if int(peak_mib) <= old:
+                if phase_raised:
+                    _write(path, data)
                 if held is not None:
                     held.append(True)
                 return False
@@ -279,9 +349,11 @@ def lookup(
     batch_size: int = 1,
     frames: int = 1,
     device: Optional[str] = None,
+    phase: Optional[str] = None,
 ) -> Optional[int]:
     """Learned peak MiB (no margin) for a request of this size, or None when nothing was recorded.
-    ``device`` (GPU name) defaults to the current CUDA device, the one the planner snapshots.
+    ``device`` (GPU name) defaults to the current CUDA device, the one the planner snapshots. ``phase``
+    (one of ``PHASES``) reads that phase's peak instead of the whole render's: None when the entry has none.
 
     The smallest recorded bucket at or above the request's bucket answers as is (an overestimate); with only smaller
     buckets recorded, the largest one is scaled linearly by pixel count."""
@@ -294,6 +366,7 @@ def lookup(
         batch_size = batch_size,
         frames = frames,
         device = device,
+        phase = phase,
     )
     return None if found is None else found[0]
 
@@ -317,6 +390,7 @@ def lookup_bucket(
     batch_size: int = 1,
     frames: int = 1,
     device: Optional[str] = None,
+    phase: Optional[str] = None,
 ) -> Optional[tuple[int, int]]:
     """``lookup`` plus the pixels the peak covers and whether it scales squared: (peak MiB, bucket pixels,
     quadratic), or None. A ``graphs:on`` label (a load placed before it knows whether placement keeps the whole-step
@@ -335,6 +409,7 @@ def lookup_bucket(
                 batch_size = batch_size,
                 frames = frames,
                 device = device,
+                phase = phase,
             )
             for mode in ("step", "blocks")
         ]
@@ -350,6 +425,8 @@ def lookup_bucket(
         )
     if not enabled() or not family or not identified(quant):
         return None
+    if phase is not None and (phase not in PHASES or not phases_enabled()):
+        return None
     path = store_path()
     if path is None:
         return None
@@ -357,9 +434,12 @@ def lookup_bucket(
         with _lock:
             key = model_key(family, quant, speed_mode, frames, device or current_device_name())
             entry = (_read(path).get("entries") or {}).get(key)
-        peaks = {
-            int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0
-        }
+        table = (
+            (entry or {}).get("peaks")
+            if phase is None
+            else ((entry or {}).get("phases") or {}).get(phase)
+        )
+        peaks = {int(k): int(v) for k, v in (table or {}).items() if int(v) > 0}
     except Exception:  # noqa: BLE001
         return None
     if not peaks:
@@ -482,26 +562,87 @@ class PeakProbe:
             if dev.index is None:
                 dev = torch.device("cuda", torch.cuda.current_device())
             self.window = open_window(dev)
-            torch.cuda.synchronize(dev)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(dev)
             torch.cuda.reset_peak_memory_stats(dev)
-            self.base = int(torch.cuda.memory_allocated(dev))
+            _reset_range_peak(dev)
+            self.base = int(torch.cuda.memory_allocated(dev)) + _range_bytes(dev)
             self.device = dev
         except Exception:  # noqa: BLE001 - measurement only
             self.device = None
+        self.pre_decode = None
+        self.decodes = 0
+        self.phase_peaks: dict = {}
+
+    def mark_decode(self) -> None:
+        """Read the pre-decode peak without a reset (other measurements share the counters). A second decode (split
+        batch) interleaves phases, so no split is reported."""
+        if self.device is None or self.base is None:
+            return
+        self.decodes += 1
+        if self.decodes > 1:
+            self.pre_decode = None
+            return
+        try:
+            import torch
+            peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
+        except Exception:  # noqa: BLE001
+            return
+        self.pre_decode = -(-peak // (1024 * 1024)) if peak > 0 else 0
 
     def finish(self) -> Optional[int]:
         if self.device is None or self.base is None:
             return None
         try:
             import torch
-            torch.cuda.synchronize(self.device)
-            peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(self.device)
+            # Stable-range bytes sit outside the allocator: count their high-water mark (not what is still mapped:
+            # a model-offload range is unmapped before decode ends) so the peak stays on the stock scale.
+            peak = (
+                int(torch.cuda.max_memory_allocated(self.device))
+                + _range_peak_bytes(self.device)
+                - self.base
+            )
         except Exception:  # noqa: BLE001
             peak = None
         # closed only after the read: a render arming in between would otherwise reset the peak unseen
         if not close_window(self.device, getattr(self, "window", None)) or peak is None:
             return None
-        return -(-peak // (1024 * 1024)) if peak > 0 else None
+        mib = -(-peak // (1024 * 1024)) if peak > 0 else None
+        if mib is not None and self.decodes == 1 and self.pre_decode is not None:
+            # the decode's own peak is unknown when it stayed under the earlier phases: the whole render bounds it
+            self.phase_peaks = {
+                PHASE_PRE_DECODE: max(1, min(int(self.pre_decode), mib)),
+                PHASE_DECODE: mib,
+            }
+        return mib
+
+
+def _range_bytes(dev: Any) -> int:
+    try:
+        from .diffusion_stable_arena import mapped_bytes
+        return mapped_bytes(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        return 0
+
+
+def _range_peak_bytes(dev: Any) -> int:
+    try:
+        from .diffusion_stable_arena import peak_mapped_bytes
+        return peak_mapped_bytes(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        return 0
+
+
+def _reset_range_peak(dev: Any) -> None:
+    try:
+        from .diffusion_stable_arena import reset_peak_mapped
+        reset_peak_mapped(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        pass
 
 
 def current_device_name() -> Optional[str]:

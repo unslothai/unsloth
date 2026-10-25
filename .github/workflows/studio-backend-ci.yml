@@ -140,23 +140,25 @@ jobs:
         #
         # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
         # Shard 3 is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
+        # a-f / g-r, not a-k / l-r: a-k's parallel step reached 1024-1264 s against the 1500 s backstop,
+        # and hit it twice on 2026-10-23, while l-r took 590-867 s (705 files each side now).
         include:
           - python: '3.13'
             scope: full
-            shard: a-k
+            shard: a-f
             selection: >-
               tests/
               --ignore-glob=tests/*/*
               --ignore-glob=tests/*_test.py
-              --ignore-glob=tests/test_[!a-k]*.py
+              --ignore-glob=tests/test_[!a-f]*.py
           - python: '3.13'
             scope: full
-            shard: l-r
+            shard: g-r
             selection: >-
               tests/
               --ignore-glob=tests/*/*
               --ignore-glob=tests/*_test.py
-              --ignore-glob=tests/test_[!l-r]*.py
+              --ignore-glob=tests/test_[!g-r]*.py
           - python: '3.13'
             scope: full
             shard: rest
@@ -287,7 +289,7 @@ jobs:
 
       - name: Backend tests that cannot share a worker
         # The twelve serial files, one process.
-        if: matrix.scope == 'full' && matrix.shard == 'a-k'
+        if: matrix.scope == 'full' && matrix.shard == 'a-f'
         working-directory: studio/backend
         # Relative timing against a reference measured in the same process. Serial, so the
         # comparison is between two implementations rather than between two schedulings.
@@ -310,7 +312,7 @@ jobs:
       - name: Decision model training tests
         # Their worker imports unsloth, so unsloth_zoo is installed here, after the suite above ran
         # without it. trl stays at Studio's pin, which keeps datasets at the studio.txt version.
-        if: matrix.scope == 'full' && matrix.shard == 'a-k'
+        if: matrix.scope == 'full' && matrix.shard == 'a-f'
         working-directory: studio/backend
         run: |
           pip install unsloth_zoo "$(grep -m1 -E '^trl==' requirements/extras-no-deps.txt)"
@@ -534,15 +536,16 @@ jobs:
           done
           pip install -e . --no-deps
 
-      # Ruff version read from .pre-commit-config.yaml so test_formatter_fixed_point.py does not skip.
-      - name: Install the pinned ruff (formatter fixed-point guard)
+      # ruff-unsloth wheels read from .pre-commit-config.yaml so test_formatter_fixed_point.py
+      # does not skip. pip keeps the one whose marker matches this runner and checks its sha256.
+      - name: Install the pinned ruff-unsloth (formatter fixed-point guard)
         run: |
-          pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
-          if [ -z "$pin" ]; then
-            echo "::error::.pre-commit-config.yaml no longer pins a ruff for ruff-format-with-kwargs"
+          python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print("\n".join(r.pinned_requirements(r.CONFIG.read_text(encoding = "utf-8"))))' > "$RUNNER_TEMP/ruff-unsloth.txt"
+          if [ ! -s "$RUNNER_TEMP/ruff-unsloth.txt" ]; then
+            echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          pip install "ruff==$pin"
+          pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"
 
       - name: Repo tests (CPU, auto-discovered)
         env:
