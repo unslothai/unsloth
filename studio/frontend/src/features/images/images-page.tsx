@@ -2495,6 +2495,10 @@ export function ImagesPage({
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
   if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // The strip tile whose actions menu a right-click opened. A tile's <img> would otherwise get the
+  // webview's own image menu, whose Open in New Window and Copy Image cannot act on a blob: URL.
+  const [tileMenuId, setTileMenuId] = useState<string | null>(null);
+  if (tileMenuId && (!active || !images.some((image) => image.id === tileMenuId))) setTileMenuId(null);
   // Pruning below must not revoke the image on screen.
   const viewerIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -7638,6 +7642,10 @@ export function ImagesPage({
                   key={image.id}
                   data-image-id={image.id}
                   {...stripReorder.tileProps(image.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setTileMenuId(image.id);
+                  }}
                   className={cn(
                     "group relative size-16 shrink-0",
                     // Fade the tile being dragged.
@@ -7682,6 +7690,8 @@ export function ImagesPage({
                       variant="overlay"
                       noun="image"
                       active={active}
+                      open={tileMenuId === image.id}
+                      onOpenChange={(open) => setTileMenuId(open ? image.id : null)}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
                       favorite={isFavorite(`image:${image.id}`)}
