@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""native_fsdp2_unsharded (the wrapped `generate`) keeps every unit gathered and then restores each
-unit's exact reshard-after-forward setting:
-
-* on torch 2.6 / 2.7, whose FSDPModule has no `set_reshard_after_forward` (added in 2.8), it still
-  works instead of raising AttributeError;
-* an int `reshard_after_forward` (FSDP2Config allows one: reshard to a smaller world) is restored as
-  it was, where `set_reshard_after_forward` raises "should be a bool" on exit.
-
-One-rank gloo group on the CPU."""
+"""native_fsdp2_unsharded restores each unit's exact reshard-after-forward setting: int values
+(the setter takes only bool) and torch 2.6 / 2.7 (no setter). One-rank gloo group on the CPU."""
 
 import os
 import sys

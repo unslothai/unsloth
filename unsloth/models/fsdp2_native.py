@@ -1781,10 +1781,8 @@ def native_full_state_dict(
 
 
 def _reshard_after_forward_off(unit):
-    """Keep `unit` gathered after its forward by setting each param group's post-forward mesh to None
-    (what reshard_after_forward = False resolves to), as FSDPModule.set_reshard_after_forward does.
-    Done by hand: that setter is missing on torch 2.6 / 2.7 and refuses the int reshard_after_forward
-    FSDP2Config allows, so restoring through it raised on exit. Returns the exact previous state."""
+    """Keep `unit` gathered after forward: post-forward mesh None, as set_reshard_after_forward(False)
+    writes. By hand since that setter is missing on torch 2.6 / 2.7 and refuses int values on restore."""
     state = unit._get_fsdp_state()
     groups = getattr(state, "_fsdp_param_groups", None)
     if groups is None:  # torch < 2.13: at most one param group
