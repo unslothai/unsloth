@@ -430,8 +430,11 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
-  transferBytes: 2_096_327,
-  rawBytes: 6_958_713,
+  // Their model picker and Load {model}? prompt come back: 3.0 KB raw / 1.4 KB transfer (strings in the eager en
+  // locale, the run notifier's load-prompt queue; dialog and prompt lazy): 6,783.7 -> 6,786.7 KB raw, 2,046.8 ->
+  // 2,048.2 KB transfer against main caf650e1da, one machine and build, Node 24, 105 -> 106 chunks. Raised by that.
+  transferBytes: 2_097_863,
+  rawBytes: 6_961_888,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
