@@ -20,7 +20,7 @@ import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { InferenceParams } from "../types/runtime";
 import type { InferenceStatusResponse } from "../types/api";
 
-// Passed in, not imported: importing them here splits them out of the startup bundle into extra chunks.
+// Passed in: importing them here splits shared modules out of the startup bundle.
 type Deps = {
   store: typeof useChatRuntimeStore;
   notify: typeof toast;
@@ -69,7 +69,6 @@ async function writeSavedSampling(
   }
 }
 
-/** Saved sampling seeds new chats with the model and fills what an API request leaves out. */
 export default function SamplingFooter({
   store,
   notify,
@@ -107,7 +106,7 @@ export default function SamplingFooter({
       .finally(() => setBusy(false));
   };
 
-  // A request that finishes after a model switch must not write its model's state into the next one.
+  // A reply that lands after a model switch belongs to the previous model.
   const stillOn = () => store.getState().params.checkpoint === modelId;
 
   const save = () =>
@@ -179,7 +178,7 @@ export default function SamplingFooter({
 
   return (
     <div className="flex flex-col gap-3.5 border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] pt-4.75 dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]">
-      {/* Under the label: the sheet is too narrow for both on one line. */}
+      {/* Not inline: the sheet is too narrow. */}
       <div>
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox

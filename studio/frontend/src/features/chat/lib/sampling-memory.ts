@@ -3,7 +3,6 @@
 
 import type { InferenceParams } from "../types/runtime";
 
-/** Saved sampling fields and their `/api/settings/model-sampling-defaults` names. */
 const API_FIELDS = {
   temperature: "temperature",
   topP: "top_p",
@@ -15,7 +14,6 @@ const API_FIELDS = {
 
 type SamplingField = keyof typeof API_FIELDS;
 
-/** One model's saved sampling; a field left out follows the model's recommendation. */
 export type SavedSampling = Partial<Record<SamplingField, number>>;
 
 type SamplingParams = Pick<InferenceParams, SamplingField | "minPMode">;
@@ -33,7 +31,7 @@ export function samplingPayload(params: SamplingParams): SavedSampling {
   return sampling;
 }
 
-/** The request body's `sampling`; null for every field forgets the model. */
+/** Null for every field forgets the model. */
 export function toApiSampling(
   sampling: SavedSampling | null,
 ): Record<string, number | null> {
@@ -80,7 +78,6 @@ export function samplingSaveStatus(
   return saved ? "Saved settings will be forgotten" : null;
 }
 
-/** App defaults fill what the model's recommendation leaves out. */
 export function recommendedSampling(
   inference: Record<string, unknown> | null | undefined,
   d: Pick<InferenceParams, SamplingField>,

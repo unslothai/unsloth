@@ -345,7 +345,7 @@ function CollapsibleSection({
 
   const headerClasses = cn(
     "flex w-full items-center justify-between text-ui-12 font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
-    // pt-2: the first row's label centers on the sidebar's New chat row beside the sheet.
+    // pt-2 centers the first label on the sidebar's New chat row.
     first ? "pt-2 pb-5" : "py-5",
   );
 
@@ -1492,7 +1492,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={openSystemPromptEditor}
-                  // Full 28px target, laid out at the chevron's 14px so this header is as tall as the others.
+                  // 28px target laid out at the chevron's 14px.
                   className="nav-icon-btn -my-1.75 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
                   aria-label="Edit system prompt"
                 >
