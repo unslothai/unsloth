@@ -474,9 +474,8 @@ def _gfx_candidates_key() -> Optional[tuple]:
         return None
     topology = _linux_amd_pci_topology()
     if topology is None:
-        return (
-            None  # an unreadable walk cannot tell a swapped card apart: probe every pass, as before
-        )
+        # An unreadable walk cannot tell a swapped card apart: probe every pass, as before.
+        return None
     # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
     return (
         subprocess.run,
@@ -1684,15 +1683,11 @@ def _configure_rocm_miopen(torch) -> None:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global \
-        _MLX_BLOCKERS_MEASURED, \
-        CHAT_ONLY_MISMATCH_VENDORS, \
-        _gfx_candidates_cache, \
-        _gfx_detect_epoch
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
+    global _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
-    _gfx_detect_epoch += (
-        1  # a forced detection asks the ROCm CLIs again, and an older probe cannot publish
-    )
+    # A forced detection asks the ROCm CLIs again, and an older probe cannot publish.
+    _gfx_detect_epoch += 1
     _gfx_candidates_cache = None
     try:
         from . import amd as _amd
