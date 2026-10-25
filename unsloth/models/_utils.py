@@ -9093,8 +9093,7 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
         return torch.no_grad()
-    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies. ZeRO-1/2 leave
-    # every parameter whole, so a launch known to run a lower stage keeps inference mode.
+    # ZeRO-3 reuses gathered persistent params (same poisoning); a known stage below 3 does not.
     deepspeed = os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in (
         "1",
         "true",
@@ -9105,9 +9104,7 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         and "DEEPSPEED" in str(shared_state.get("distributed_type", ""))
     )
     if deepspeed:
-        # Inline, not a helper: rl_replacements copies this function's source alone into the
-        # generated GRPO trainer. 3 when any source says so, else the known lower stage; unknown
-        # counts as ZeRO-3.
+        # Inline, not a helper: rl_replacements copies only this function into the GRPO trainer.
         stages = []
         hf_deepspeed = sys.modules.get("transformers.integrations.deepspeed", None)
         try:
@@ -9119,10 +9116,9 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         if plugins is not None and not isinstance(plugins, dict):
             plugins = {"default": plugins}
         for plugin in (plugins or {}).values():
-            # Accelerate marks one plugin as selected; an inactive one's stage does not apply.
             if not getattr(plugin, "selected", True):
                 continue
-            # The plugin's DeepSpeed config holds the stage a config file set; zero_stage is its own field.
+            # A config file's stage lives in hf_ds_config; zero_stage defaults to 2 regardless.
             stage = getattr(getattr(plugin, "hf_ds_config", None), "_stage", None)
             if not isinstance(stage, int) or stage < 0:
                 stage = getattr(plugin, "zero_stage", None)

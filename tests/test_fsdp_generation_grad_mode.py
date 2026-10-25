@@ -133,7 +133,6 @@ def test_the_accelerator_plugin_stage_decides(no_launcher, config_stage, inferen
 
     state = pytest.importorskip("accelerate.state")
     no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
-    # A config file stage wins over the plugin field; a config without one (-1) falls back to it.
     plugin = types.SimpleNamespace(
         zero_stage = 2, hf_ds_config = types.SimpleNamespace(_stage = config_stage)
     )
