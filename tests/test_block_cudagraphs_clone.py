@@ -145,8 +145,7 @@ def test_compile_disable_still_bypasses_the_block(monkeypatch):
     assert step(16) == set()
 
 
-# Stand-in for a replayed backward: the weight gradient is written into one buffer per shape,
-# reused by the next call, as the cudagraph pool does across generations.
+# Replayed-backward stand-in: one reused weight grad buffer per shape, like the cudagraph pool.
 _POOL = {}
 
 
@@ -165,7 +164,7 @@ class _PoolMatmul(torch.autograd.Function):
         return (
             grad @ weight,
             buf.detach(),
-        )  # fresh tensor on the shared storage, like a replay output
+        )
 
 
 def _pool_layers(monkeypatch, graphs):
@@ -198,9 +197,7 @@ def _reference_grads(refs, xs):
 
 @pytest.mark.parametrize("micro_steps", [1, 2])
 def test_param_grads_are_copied_out_of_the_graph_pool(monkeypatch, micro_steps):
-    """Reentrant checkpointing replays each block inside backward: a parameter .grad that is the
-    replay's own output buffer is overwritten by the next block's replay (torch: "accessing
-    gradient tensor output of CUDAGraphs that has been overwritten")."""
+    """Reentrant checkpointing: a .grad left in the replay buffer is overwritten by the next replay."""
     from torch.utils.checkpoint import checkpoint
 
     layers, refs = _pool_layers(monkeypatch, graphs = True)
@@ -245,9 +242,7 @@ def test_param_grads_hooked_only_with_graphs(monkeypatch):
 
 
 def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
-    """Non-reentrant checkpointing frees recomputed inputs while the backward graph records:
-    cudagraph trees raise "observed an input tensor deallocate during graph recording". Its
-    forward and its recompute both take the graph-free compile; reentrant keeps graphs."""
+    """Non-reentrant checkpoint forward and recompute skip graphs; reentrant keeps them."""
     if not hasattr(torch._C._autograd, "_top_saved_tensors_default_hooks"):
         pytest.skip("torch < 2.8 cannot read the saved tensor hooks stack")
     from torch.utils.checkpoint import checkpoint
@@ -279,6 +274,6 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
         seen.clear()
         x = torch.randn(2, 16, 8, requires_grad = True)
         checkpoint(layer, x, use_reentrant = reentrant).sum().backward()
-        assert len(seen) == 2 and set(seen) == want  # forward and recompute
+        assert len(seen) == 2 and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()

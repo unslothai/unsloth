@@ -52,9 +52,7 @@ def _clone_outputs(out):
 
 
 def _param_grads_out_of_pool(layer):
-    """A lone incoming gradient becomes .grad as is: from a replayed backward that is graph pool
-    memory the next replay overwrites (checkpoint recompute, gradient accumulation). Copy only
-    that first one; later ones are added in place into the owned buffer."""
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
     if layer.__dict__.get("_unsloth_block_grad_hooks", False):
         return
     layer.__dict__["_unsloth_block_grad_hooks"] = True
@@ -76,8 +74,7 @@ def _param_grads_out_of_pool(layer):
 
 
 def _in_nonreentrant_checkpoint():
-    """torch.utils.checkpoint(use_reentrant=False) forward or recompute: its saved tensor hooks
-    free recomputed inputs while a backward graph records, which cudagraph trees refuse."""
+    """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
     try:
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
