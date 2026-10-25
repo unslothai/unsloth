@@ -42,6 +42,27 @@ export interface PropLayer {
   dispose(): void;
 }
 
+/**
+ * glTF's default material is fully metallic, which renders black in a scene with no environment map (the 3D view
+ * has none). Models without their own metal texture are drawn as plain surfaces instead; their colours are kept.
+ */
+export function unmetal(root: three.Object3D): void {
+  root.traverse((o) => {
+    const mats = (o as three.Mesh).material;
+    for (const m of Array.isArray(mats) ? mats : mats ? [mats] : []) {
+      const std = m as three.MeshStandardMaterial;
+      if (
+        std.isMeshStandardMaterial &&
+        !std.metalnessMap &&
+        std.metalness > 0.5
+      ) {
+        std.metalness = 0;
+        std.needsUpdate = true;
+      }
+    }
+  });
+}
+
 export function createPropLayer(
   groundAt: (x: number, y: number) => number,
   models: Record<string, ArrayBuffer> = {},
@@ -192,6 +213,7 @@ export function createPropLayer(
         return;
       }
       const model = gltf.scene;
+      unmetal(model);
       const bounds = new three.Box3().setFromObject(model);
       const size = bounds.getSize(new three.Vector3());
       const fit = 1 / Math.max(1e-6, size.x, size.z, size.y * 0.5);

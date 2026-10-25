@@ -144,6 +144,22 @@ test("an imported model is kept until it is placed, released when its last prop 
   assert.equal(layer.modelCount(), 0);
 });
 
+test("a model on glTF's default (fully metallic) material is drawn as a plain surface", () => {
+  const plain = new three.MeshStandardMaterial({
+    metalness: 1,
+    color: "#ff0000",
+  });
+  const metal = new three.MeshStandardMaterial({ metalness: 1 });
+  metal.metalnessMap = new three.Texture();
+  const root = new three.Group();
+  root.add(new three.Mesh(new three.BoxGeometry(), plain));
+  root.add(new three.Mesh(new three.BoxGeometry(), metal));
+  S.unmetal(root);
+  assert.equal(plain.metalness, 0);
+  assert.equal(plain.color.getHexString(), "ff0000", "colours are kept");
+  assert.equal(metal.metalness, 1, "a model's own metal texture is respected");
+});
+
 test("a prop keeps its object when its model finishes loading, so a selection stays attached", async () => {
   const layer = S.createPropLayer(() => 0, { "sha256:boat": boxGlb() });
   layer.sync([model("m-1")]);
