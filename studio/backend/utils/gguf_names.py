@@ -8,9 +8,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# NVFP names the quant only last in the name (bpw modifier, shard suffix and extension aside), as in
-# Model-NVFP4.gguf or NVFP4/. Earlier it is part of a community model name (Qwen3.8-27B-NVFP4-MTP-HIGH.gguf),
-# where matching it keyed every build in the repo NVFP4. MXFP predates NVFP and matches anywhere: stored keys stay put.
+# NVFP is the quant only last in the name (Model-NVFP4.gguf, NVFP4/); mid-name it is part of a
+# community model name (Qwen3.8-27B-NVFP4-MTP-HIGH). MXFP predates NVFP, so it matches anywhere.
 GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"

@@ -12,7 +12,7 @@ const { ggufQuantLabel, splitQuantSuffix } = await import(
 );
 
 test("NVFP4 inside a community model name is not the file's quant", () => {
-  // Mirrors hub.utils.gguf: NVFP names the quant only last in the name.
+  // Mirrors utils.gguf_names: NVFP names the quant only last in the name.
   assert.equal(
     ggufQuantLabel("Qwen3.8-27B-NVFP4-MTP-HIGH.gguf"),
     "Qwen3.8-27B-NVFP4-MTP-HIGH",

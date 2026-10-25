@@ -111,8 +111,7 @@ export function ggufVariantFromStorageKey(key: string): string | null {
 // Mirrors split_quant_suffix in openai_auto_switch_settings.py. The bpw modifier
 // ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
-// One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py,
-// including its NVFP lookahead: NVFP is a quant token only last in the name.
+// One source for the anchored test and the scan below. Mirrors GGUF_QUANT_RE in utils/gguf_names.py.
 const QUANT_TOKEN_SOURCE =
   "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|NVFP[0-9]+(?:_[A-Z0-9]+)*(?=(?:-[0-9]+(?:[.][0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:[.]gguf)?$)|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)|Q[0-9]+_K|BF16|F16|F32)";
 const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
