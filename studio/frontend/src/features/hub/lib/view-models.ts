@@ -14,6 +14,7 @@ import type {
   ModelFormatFilter,
 } from "../types";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
+import { ggufRepoParams } from "@/lib/model-size";
 import {
   type CapabilityKey,
   detectBaseModel,
@@ -187,7 +188,10 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     private: model.private,
     gated: model.gated,
     totalParams:
-      finiteNumber(model.safetensors?.total) ?? finiteNumber(model.gguf?.total),
+      finiteNumber(model.safetensors?.total) ??
+      (model.gguf
+        ? ggufRepoParams(model.name, finiteNumber(model.gguf.total))
+        : undefined),
     estimatedSizeBytes: estimateSizeFromDtypes(model.safetensors?.parameters),
     isGguf,
     baseModel: detectBaseModel(model.tags),

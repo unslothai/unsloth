@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A capture that fails must not break the captures after it.
-
-``capture_end`` raises in ``cudaStreamEndCapture`` before either caching allocator (device, and from torch 2.11 the
-pinned host one) leaves the capture's pool. Python can only take the device allocator off it, so the host allocator
-keeps "recording" to that pool for the rest of the process, with a filter that points at the failed CUDAGraph.
-Studio therefore retires the pool, records later captures into a fresh one, and keeps the failed graph alive.
-"""
+"""A failed capture_end leaves the host allocator recording to its pool, so Studio retires the pool."""
 
 from __future__ import annotations
 
@@ -43,8 +37,8 @@ class _Block(torch.nn.Module):
 
 def _record_twice(graph, x):
     with torch.inference_mode():
-        graph(x)  # first sighting: eager
-        return graph(x)  # records, then replays
+        graph(x)
+        return graph(x)
 
 
 def test_a_block_records_after_another_block_failed_to(monkeypatch):
@@ -57,7 +51,7 @@ def test_a_block_records_after_another_block_failed_to(monkeypatch):
     x = torch.randn(4, 16, device = "cuda")
     first = bg.BlockGraph(good_first, good_first.forward, shared)
     _record_twice(first, x)
-    assert first.stats["captures"] == 1  # the shared pool now holds a live graph
+    assert first.stats["captures"] == 1
 
     failing = bg.BlockGraph(bad, bad.forward, shared)
     _record_twice(failing, x)
@@ -86,7 +80,7 @@ def test_a_step_graph_records_after_another_one_failed_to(monkeypatch):
     handles = [cg.GraphedForward(m).install().enable() for m in mods]
     with torch.inference_mode():
         mods[0](x, return_dict = False)
-        assert handles[0].stats["captures"] == 1  # the shared step pool now holds a live graph
+        assert handles[0].stats["captures"] == 1
         mods[1](x, return_dict = False)
         assert handles[1].poisoned
         out = mods[2](x, return_dict = False)[0]
@@ -122,4 +116,4 @@ def test_a_collision_with_another_recording_does_not_spend_the_failure_budget(mo
             object(), None, RuntimeError("beginAllocateToPool: already recording to mempool_id")
         )
     assert not cg.captures_exhausted()
-    assert healed == []  # the generators belong to the other thread's live capture
+    assert healed == []

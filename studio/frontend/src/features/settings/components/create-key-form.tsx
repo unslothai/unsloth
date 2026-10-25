@@ -6,8 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
 import { createApiKey } from "../api/api-keys";
+import { apiKeyActionMessage } from "./api-key-action-message";
 
 const EXPIRY_PRESETS = [
   { label: "Never", value: null as number | null },
@@ -21,7 +24,8 @@ export function CreateKeyForm({
   onError,
 }: {
   onCreated: (rawKey: string) => void;
-  onError: (message: string) => void;
+  /** null clears an earlier failure */
+  onError: (message: string | null) => void;
 }) {
   const t = useT();
   const pillId = useId();
@@ -33,14 +37,13 @@ export function CreateKeyForm({
     e.preventDefault();
     if (!name.trim() || loading) return;
     setLoading(true);
+    onError(null);
     try {
       const result = await createApiKey(name.trim(), expiry);
       onCreated(result.key);
       setName("");
-    } catch {
-      // api-keys.ts throws English Error messages; use the translated one so
-      // zh-CN users don't see English bleed through from internal exceptions.
-      onError(t("settings.apiKeys.createError"));
+    } catch (cause) {
+      onError(apiKeyActionMessage(t("settings.apiKeys.createError"), cause));
     } finally {
       setLoading(false);
     }
@@ -78,7 +81,8 @@ export function CreateKeyForm({
             );
           })}
         </div>
-        <Button type="submit" size="sm" disabled={loading || !name.trim()}>
+        <Button variant="secondary" type="submit" size="sm" disabled={loading || !name.trim()}>
+          {!loading && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
           {loading
             ? t("settings.apiKeys.creating")
             : t("settings.apiKeys.createToken")}

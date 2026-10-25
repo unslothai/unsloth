@@ -36,7 +36,7 @@ const MARKDOWN_COMPONENTS = {
     <a
       href={href}
       rel="noopener noreferrer"
-      className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:decoration-primary"
+      className="cursor-pointer text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
       onClick={(event) => {
         if (href && openLink(href)) {
           event.preventDefault();
@@ -104,7 +104,7 @@ function MarkdownPreviewImpl({
       className={cn(
         plain
           ? "h-full w-full min-w-0 overflow-auto p-2 text-xs leading-relaxed pointer-events-none select-none"
-          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-md border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
+          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-lg border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
         className,
       )}
     >

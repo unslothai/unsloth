@@ -18,8 +18,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
   FileDatabaseIcon,
-  FolderAttachmentIcon,
   Folder02Icon,
+  FolderAttachmentIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -329,7 +330,7 @@ function LinkedFolderCard({
       <ProjectBadge />
       <div
         title={title}
-        className={cn("flex overflow-hidden rounded-[15px]", CARD_SIZE, CARD_EDGE)}
+        className={cn("flex overflow-hidden rounded-lg", CARD_SIZE, CARD_EDGE)}
       >
         <FileCardBody
           name={label}
@@ -618,7 +619,7 @@ function DocumentCard({
       <button
         {...buttonProps}
         className={cn(
-          "flex overflow-hidden rounded-[15px] text-left transition-colors disabled:cursor-default",
+          "flex overflow-hidden rounded-lg text-left transition-colors disabled:cursor-default",
           CARD_SIZE,
           CARD_EDGE,
           canOpen && CARD_SURFACE,
@@ -677,7 +678,7 @@ function AddFilesCard({
         disabled={disabled}
         onClick={onClick}
         className={cn(
-          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-[15px] border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
+          "unsloth-files-add-card flex flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(35%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground",
           CARD_SIZE,
         )}
       >
@@ -1489,6 +1490,7 @@ export function ThreadDocumentsBar({
                 onClick={pickFiles}
                 className="unsloth-files-panel-action"
               >
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 Add files
               </button>
             </HeaderTip>
