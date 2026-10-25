@@ -1123,6 +1123,8 @@ const downloadedRowShellClassName = (
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
+const ROW_ACTIONS_VISIBLE_CLASS = ROW_ACTIONS_CLASS.replace("opacity-0 ", "");
+
 // Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
 const PINNED_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
@@ -6455,6 +6457,14 @@ export function HubModelPicker({
     const optionKey = makeModelOptionKey("loaded", checkpoint);
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
+    const isLocal = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint);
+    const selectMeta: ModelSelectorChangeMeta = {
+      source: isLocal ? "local" : "hub",
+      isLora: false,
+      ggufVariant: quant ?? undefined,
+      isDownloaded: true,
+      isGguf: Boolean(quant),
+    };
     return (
       <div
         key={optionKey}
@@ -6471,44 +6481,54 @@ export function HubModelPicker({
             selected={isSelected}
             loaded={true}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-            onClick={() =>
-              onSelect(checkpoint, {
-                source: /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint) ? "local" : "hub",
-                isLora: false,
-                ggufVariant: quant ?? undefined,
-                isDownloaded: true,
-                isGguf: Boolean(quant),
-              })
-            }
+            onClick={() => onSelect(checkpoint, selectMeta)}
             vramStatus={null}
             className={downloadedRowButtonClassName}
           />
         </div>
-        <span className={ROW_ACTIONS_CLASS}>
-          {ejectsKept ? (
-            <Tooltip delayDuration={0}>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEject?.(checkpoint);
-                  }}
-                  aria-label={`Eject ${entry.id}`}
-                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                >
-                  <HugeiconsIcon
-                    icon={RemoveCircleIcon}
-                    strokeWidth={1.75}
-                    className="size-3.5"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="tooltip-compact">
-                Eject
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
+        {/* The On Device actions, shown without a hover: the loaded model is the one most often adjusted. */}
+        <span className={ROW_ACTIONS_VISIBLE_CLASS}>
+          {onConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${entry.id}`}
+              onConfigure={() => onConfigure(checkpoint, selectMeta)}
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${entry.id}`}
+            cachePath={
+              isLocal ? undefined : { repoId: checkpoint, variant: quant ?? undefined }
+            }
+            // Every loaded row ejects while several are loaded, the active one included.
+            items={
+              ejectsKept
+                ? [
+                    {
+                      key: "eject",
+                      label: "Eject",
+                      icon: (
+                        <HugeiconsIcon
+                          icon={RemoveCircleIcon}
+                          strokeWidth={1.75}
+                          className="size-icon"
+                        />
+                      ),
+                      onSelect: () => onEject?.(checkpoint),
+                    },
+                  ]
+                : undefined
+            }
+            pin={
+              isLocal
+                ? undefined
+                : {
+                    pinned: pinnedSet.has(pinKey(checkpoint, quant ?? undefined)),
+                    pinLabel: "Pin",
+                    unpinLabel: "Unpin",
+                    onToggle: () => togglePinned(checkpoint, quant ?? undefined),
+                  }
+            }
+          />
         </span>
       </div>
     );

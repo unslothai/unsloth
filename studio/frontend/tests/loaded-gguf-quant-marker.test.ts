@@ -30,6 +30,6 @@ test("a loaded row is selected, picked and ejected by its checkpoint, not its la
   assert.match(runtime, /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/);
   assert.match(picker, /const checkpoint = entry\.checkpoint \?\? entry\.id;\s*const optionKey = makeModelOptionKey\("loaded", checkpoint\);\s*const isSelected = modelIdsMatchForPicker\(value, checkpoint\);/);
   assert.match(runtime, /const known = new Map\(current\.map\(\(m\) => \[m\.checkpoint \?\? m\.id, m\]\)\);/);
-  assert.match(picker, /onSelect\(checkpoint, \{/);
-  assert.match(picker, /onEject\?\.\(checkpoint\);/);
+  assert.match(picker, /onSelect\(checkpoint, selectMeta\)/);
+  assert.match(picker, /onSelect: \(\) => onEject\?\.\(checkpoint\),/);
 });
