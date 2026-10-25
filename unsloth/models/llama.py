@@ -1756,9 +1756,7 @@ def _LlamaModel_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
-        # Scratch on the embedding's device (device 0 for a model loaded there, or split from there):
-        # on device 0 a model placed on another GPU copied it across devices every step, which a
-        # CUDA graph capture cannot record.
+        # Not device 0: a cross-device copy per step cannot be graph captured.
         scratch_device = X.device
         residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = scratch_device)
         _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = scratch_device)

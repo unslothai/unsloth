@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Graph decode: the KV cache starts at prompt + one increment and grows geometrically (a rollout that
-stops early never holds prompt + max_new_tokens rows), and a model on a GPU that is not the current
-device still captures and replays. Every case is bit for bit the eager step."""
+"""Graph decode KV growth and non-current-GPU capture, each bitwise equal to eager."""
 
 import pytest
 

@@ -66,8 +66,7 @@ BUFFER_EPOCH = 0
 GENERATION_EPOCH = 0
 # prompt + max_new_tokens of the running generate() call, 0 when unknown.
 MAX_LEN_HINT = 0
-# UNSLOTH_DECODE_GRAPH_PREALLOC=1: size the graph-mode KV cache for prompt + max_new_tokens up front
-# (no re-capture on growth, but a rollout that stops early still holds the whole cache).
+# 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
 PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
 # Tested families only (Qwen2 shares the Llama attention but is untested here).
@@ -201,8 +200,7 @@ def alloc_decode_buffers(
     else:
         rows = _round_up(max(increment + seq_len + 1, MAX_LEN_HINT + 1), BUCKET)
         if not PREALLOC:
-            # Start like the eager cache (prompt + one increment) and grow geometrically up to the
-            # hint (resize_decode_buffers): a rollout that stops early never holds max_new_tokens rows.
+            # Start at the eager size; resize_decode_buffers grows it.
             rows = min(rows, _round_up(increment + seq_len + 1, BUCKET))
         store = attn.__dict__.get("_unsloth_graph_buffers")
         if store is None:
@@ -257,8 +255,7 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
     if "_unsloth_graph_buffers" in attn.__dict__:
-        # Graph mode re-captures after every growth: double (at least one increment), capped at the
-        # generate() call's prompt + max_new_tokens, so a long rollout re-captures O(log n) times.
+        # Each growth re-captures: double, capped at the hint, so O(log n) re-captures.
         grown = max(rows + increment, 2 * rows)
         if MAX_LEN_HINT + 1 > rows:
             grown = min(grown, MAX_LEN_HINT + 1)
@@ -541,8 +538,7 @@ def decode_step(
         return None
     index = input_ids.device.index
     if index is not None and index != torch.cuda.current_device():
-        # Capture / replay on the model's GPU: a stream, pool or capture on the current device would
-        # not record this model's kernels (the capture fails and every step would stay eager).
+        # Capture on the model's GPU, else the capture fails and decode stays eager.
         with torch.cuda.device(index):
             return decode_step(
                 model, fast_forward_inference, logits_fn, mask_fn, input_ids, past_key_values,
@@ -686,7 +682,6 @@ def _capture(
     seq_len,
 ):
     if state.stream is not None and state.stream.device.index != torch.cuda.current_device():
-        # The model moved to another GPU: its side stream and graph pool belong to the old one.
         state.stream = None
         state.pool = None
     if state.pool is None:
