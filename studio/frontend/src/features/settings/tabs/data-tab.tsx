@@ -882,11 +882,12 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         >
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
+            aria-label={t("settings.data.archiveAllAction")}
+            title={t("settings.data.archiveAllAction")}
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
-            {t("settings.data.archiveAllAction")}
+            <HugeiconsIcon icon={Archive02Icon} className="size-4" />
           </Button>
         </SettingsRow>
       </SettingsSection>
