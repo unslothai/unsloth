@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""autograd.Function forwards must not ATen-mutate a freshly allocated tensor they return: under
-torch.compile (torch 2.11) the traced backward then gets a zero gradient for it (#14712). Kernel
-writes into the buffer are fine; finish out of place (`out = out + x`, `.masked_fill(...)`)."""
+"""autograd.Function forwards must not ATen-mutate a fresh tensor they return: torch 2.11 compiles a wrong
+gradient for it (#14712). Kernel writes are fine; finish out of place (`out = out + x`)."""
 
 import ast
 import pathlib
