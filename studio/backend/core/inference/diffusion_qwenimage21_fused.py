@@ -4,9 +4,11 @@
 """Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90,
-sm100), resident only. Where it swaps them, the patched helper routes Q / K / V through
-``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the opaque kernel); resident or streamed.
+for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm86,
+sm90, sm100), resident only; there the rotation and the act quant run as one ``rotq_h16`` kernel on a card that passed
+``diffusion_convrot_quant.unlisted_device_ok``, else as the rotation GEMM + act quant. Where it swaps them, the
+patched helper routes Q / K / V through ``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the
+opaque kernel); resident or streamed.
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -290,6 +292,23 @@ def install(
     return {"fused_qkv": shared or None, "out": None}
 
 
+def _rotq_note(cards: Any, armed: list) -> str:
+    """Log suffix: whether the fused rotq_h16 rotation + quant serves these cards, with its latency check."""
+    try:
+        from .diffusion_convrot_quant import _UNLISTED_TIMING
+        timing = {i: _UNLISTED_TIMING.get(i) for i in cards if _UNLISTED_TIMING.get(i)}
+    except Exception:  # noqa: BLE001
+        timing = {}
+    shown = "; ".join(
+        f"cuda:{i} {t['h16']:.0f} vs {t['stock']:.0f} us stock"
+        for i, t in timing.items()
+        if "h16" in t and "stock" in t
+    )
+    if armed:
+        return ", rotation fused into the act quant (rotq_h16" + (f": {shown})" if shown else ")")
+    return f", fused rotation kept off ({shown})" if shown else ""
+
+
 def install_modules(root: Any, logger: Any = None) -> dict:
     result = {"fused_qkv": 0, "out": 0}
     if q21_convrot_fused_disabled():
@@ -306,6 +325,10 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     todo = _rotated_attention(root)
     if not todo or not _patch_prepare(logger):
         return result
+    from .diffusion_int8_fused import arm_rotated
+
+    armed = [index for index in cards if arm_rotated(index)]
+    note = _rotq_note(cards, armed)
     with _LOCK:
         for module, parts in todo:
             if _QKV_ATTR not in module.__dict__ and all(_plain(p) for p in parts):
@@ -324,9 +347,10 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     if logger is not None:
         logger.info(
             "diffusion.q21_convrot_fused: one ConvRot rotation + act quant for QKV on %d attention module(s), "
-            "probed act quant on %d output projection(s)",
+            "probed act quant on %d output projection(s)%s",
             result["fused_qkv"],
             result["out"],
+            note,
         )
     return result
 

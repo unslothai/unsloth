@@ -512,6 +512,95 @@ def _apply_rocm_guard(available: tuple[str, ...], logger: Any = None) -> tuple[s
     return tuple(disabled)
 
 
+# gfx1151 (Strix Halo): AOTriton's SDPA tuning covers contiguous [B, H, S, D] only, and diffusers' native backend
+# hands SDPA permuted [B, S, H, D] views. Once one head of the strided k/v outgrows L2 the strided call is far slower
+# than copying k/v first (ComfyUI #16726, pytorch/pytorch#190154). Output is bit-identical. 0 disables.
+ROCM_CONTIGUOUS_KV_ENV = "UNSLOTH_DIFFUSION_ROCM_CONTIGUOUS_KV"
+ROCM_CONTIGUOUS_KV_ARCHES = ("gfx1151",)
+ROCM_CONTIGUOUS_KV_ATTR = "_unsloth_rocm_contiguous_kv"
+_ROCM_CONTIGUOUS_KV_L2: dict[int, int] = {}  # device index -> L2 bytes, gfx1151 cards only
+
+
+def _rocm_contiguous_kv_wanted(key: Any, value: Any) -> bool:
+    """True when one head of the strided ``[B, S, H, D]`` k/v exceeds L2."""
+    try:
+        if key.dim() != 4 or value.dim() != 4:
+            return False
+        l2 = _ROCM_CONTIGUOUS_KV_L2.get(key.device.index)
+        if not l2:
+            return False
+        strided = [t for t in (key, value) if not t.permute(0, 2, 1, 3).is_contiguous()]
+        return sum(t.shape[1] * t.shape[3] for t in strided) * key.element_size() > l2
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _heads_major(t: Any) -> Any:
+    """``[B, H, S, D]`` memory so the native backend's permute hands SDPA a dense tensor."""
+    if t.permute(0, 2, 1, 3).is_contiguous():
+        return t
+    return t.permute(0, 2, 1, 3).contiguous().permute(0, 2, 1, 3)
+
+
+def install_rocm_contiguous_kv(target: Any) -> bool:
+    """gfx1151 only: k/v over L2 reach SDPA contiguous (q is not copied). False elsewhere: other GPUs untouched."""
+    if os.environ.get(ROCM_CONTIGUOUS_KV_ENV, "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if not _is_cuda_rocm(target) or _rocm_gfx_arch(target) not in ROCM_CONTIGUOUS_KV_ARCHES:
+        return False
+    try:
+        import torch
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+
+        device = torch.device(
+            _indexed_cuda_device(
+                str(
+                    getattr(target, "torch_device", None)
+                    or getattr(target, "device", None)
+                    or "cuda"
+                )
+            )
+        )
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        l2 = int(getattr(torch.cuda.get_device_properties(index), "L2_cache_size", 0) or 0)
+        backends = _AttentionBackendRegistry._backends
+        native_fn = backends[AttentionBackendName.NATIVE]
+    except Exception:  # noqa: BLE001
+        return False
+    if l2 <= 0 or not callable(native_fn):
+        return False
+    _ROCM_CONTIGUOUS_KV_L2[index] = l2
+    if getattr(native_fn, ROCM_CONTIGUOUS_KV_ATTR, False):
+        return True
+
+    def _contiguous_kv(*args: Any, **kwargs: Any) -> Any:
+        args = list(args)
+        key = args[1] if len(args) > 1 else kwargs.get("key")
+        value = args[2] if len(args) > 2 else kwargs.get("value")
+        if kwargs.get("_parallel_config") is None and _rocm_contiguous_kv_wanted(key, value):
+            key, value = _heads_major(key), _heads_major(value)
+            if len(args) > 1:
+                args[1] = key
+            else:
+                kwargs["key"] = key
+            if len(args) > 2:
+                args[2] = value
+            else:
+                kwargs["value"] = value
+        return native_fn(*args, **kwargs)
+
+    setattr(_contiguous_kv, ROCM_CONTIGUOUS_KV_ATTR, True)
+    _contiguous_kv.__wrapped__ = native_fn  # type: ignore[attr-defined]
+    try:
+        backends[AttentionBackendName.NATIVE] = _contiguous_kv
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def select_attention_backend(
     target: Any,
     requested: Optional[str],
@@ -813,13 +902,19 @@ def _time_rocm_flash_block(
     for _ in range(1 if long else 2):
         for fn in arms.values():
             block(fn)
-    torch.cuda.synchronize(device)
+    from .diffusion_cuda_graph import synchronize_outside_capture
+
+    synchronize_outside_capture(device)
     for _ in range(3 if long else 5):
         for name, fn in arms.items():
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             t0 = time.perf_counter()
             block(fn)
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             times[name].append((time.perf_counter() - t0) * 1000.0)
     med = {name: sorted(v)[len(v) // 2] for name, v in times.items()}
     return {
@@ -1216,13 +1311,17 @@ def _rocm_flash_probe_bytes(
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
     """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare. Unknown memory state counts as no room."""
+    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
+    room."""
     try:
         import torch
 
-        free, _total = torch.cuda.mem_get_info(device)
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
         cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-        return free + max(int(cached), 0) >= need * 1.25 + (256 << 20)
+        reserve = user_budget_reserve_bytes(device, total)
+        return free + max(int(cached), 0) - reserve >= need * 1.25 + (256 << 20)
     except Exception:  # noqa: BLE001
         return False
 
@@ -3426,6 +3525,7 @@ def apply_attention_backend(
             guard_rocm_fused_sdpa(target, logger)
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
+        install_rocm_contiguous_kv(target)
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))

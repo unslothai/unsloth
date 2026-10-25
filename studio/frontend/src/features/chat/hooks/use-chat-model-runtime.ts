@@ -905,6 +905,17 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
+/** Off unloads idle kept models after the reply: wait for them to go, or the picker keeps listing them. */
+export async function resyncInferenceStatusAfterKeptModelsUnload(): Promise<void> {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const status = await getInferenceStatus().catch(() => null);
+    if (!status || (status.serving?.length ?? 0) <= 1) break;
+  }
+  await syncInferenceStatusToStore({ includeLoras: false, quiet: true });
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+}
+
 function pickOf(info: {
   id: string;
   ggufVariant?: string | null;
@@ -3707,7 +3718,8 @@ export function useChatModelRuntime() {
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
-            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
+            // Bytes the server has read or paged in, not bytes resident in RAM: weights headed for VRAM pass through.
+            const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB loaded`;
             const label = est.stable
               ? `${base} • ${formatRate(est.rate)}${
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
@@ -3728,7 +3740,7 @@ export function useChatModelRuntime() {
               ...modelLoadToastOptions(
                 renderLoadDescription(
                   "Starting model…",
-                  "Paging weights into memory.",
+                  "Loading model weights.",
                   pct,
                   label,
                 ),

@@ -71,14 +71,19 @@ def _make_backend(
     return inst
 
 
-def test_live_rss_matches_kernel_vmrss(tmp_path):
-    """Spawn a real child, let it allocate real bytes, confirm ``bytes_loaded``
-    tracks the kernel's VmRSS within a sane tolerance."""
+def test_live_mapped_pages_count_and_allocations_do_not(tmp_path):
+    """Spawn a real child that pages in a mapped file and fills an allocation: ``bytes_loaded``
+    follows the mapped pages, not the allocation (a pinned upload buffer is one)."""
+    data = tmp_path / "weights.bin"
+    data.write_bytes(b"\1" * (100 * 1024 * 1024))
     script = tmp_path / "burn.py"
     script.write_text(
-        "import time, sys\n"
-        "buf = bytearray(100 * 1024 * 1024)\n"
-        "# touch every page so RSS actually grows\n"
+        "import mmap, sys, time\n"
+        "f = open(sys.argv[1], 'rb')\n"
+        "m = mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ)\n"
+        "# touch every page of the mapping and of the allocation so both are resident\n"
+        "seen = sum(m[i] for i in range(0, len(m), 4096))\n"
+        "buf = bytearray(200 * 1024 * 1024)\n"
         "for i in range(0, len(buf), 4096):\n"
         "    buf[i] = 1\n"
         "sys.stdout.write('ready\\n')\n"
@@ -86,7 +91,7 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         "time.sleep(10)\n"
     )
     proc = subprocess.Popen(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), str(data)],
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
     )
@@ -96,20 +101,22 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
 
         gguf = tmp_path / "model.gguf"
         with open(gguf, "wb") as f:
-            f.truncate(200 * 1024 * 1024)
+            f.truncate(400 * 1024 * 1024)
 
         inst = _make_backend(proc.pid, str(gguf), healthy = False)
         out = inst.load_progress()
 
         assert out is not None, "load_progress returned None for live pid"
         assert out["phase"] == "mmap"
-        assert out["bytes_total"] == 200 * 1024 * 1024
-        # VmRSS includes the interpreter plus the 100MB buffer.
+        assert out["bytes_total"] == 400 * 1024 * 1024
+        # The 100 MB mapping plus the interpreter's own files; the 200 MB allocation is left out.
         assert (
-            out["bytes_loaded"] >= 50 * 1024 * 1024
+            out["bytes_loaded"] >= 90 * 1024 * 1024
         ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
-        assert out["bytes_loaded"] <= 200 * 1024 * 1024
-        assert 0.0 < out["fraction"] <= 1.0
+        assert (
+            out["bytes_loaded"] < 200 * 1024 * 1024
+        ), f"the allocation counted: {out['bytes_loaded']}"
+        assert 0.0 < out["fraction"] < 0.5
     finally:
         proc.terminate()
         try:

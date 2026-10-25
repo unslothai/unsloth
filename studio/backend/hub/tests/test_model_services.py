@@ -3006,7 +3006,58 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
 
     result = {"cached": cache_inventory._scan_cached_models()}
 
-    assert [row["repo_id"] for row in result["cached"]] == ["user/model-chat"]
+    can_chat = {row["repo_id"]: row["capabilities"]["can_chat"] for row in result["cached"]}
+    assert sorted(can_chat) == ["org/model", "user/model-chat"]
+    assert can_chat["org/model"] is False
+
+
+def test_cached_scans_keep_settings_picked_embedder_as_non_chat_rows(monkeypatch, tmp_path):
+    # #15110: picking a downloaded embedder in Settings dropped it and its GGUF from the Hub, so it could not be deleted.
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "unsloth/embeddinggemma-2")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "unsloth/embeddinggemma-2-GGUF")
+
+    weights_path = tmp_path / "hub" / "models--unsloth--embeddinggemma-2"
+    weights_path.mkdir(parents = True)
+    weights = _repo(
+        "unsloth/embeddinggemma-2",
+        [_file("config.json", 12), _file("modules.json", 12), _file("model.safetensors", 1_000)],
+        weights_path,
+    )
+    gguf = _repo(
+        "unsloth/embeddinggemma-2-GGUF",
+        [_file("embeddinggemma-2-F16.gguf", 1_000)],
+        tmp_path / "hub" / "models--unsloth--embeddinggemma-2-GGUF",
+    )
+    default_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    default_path.mkdir(parents = True)
+    default = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 1_000)],
+        default_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [weights, gguf, default])],
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_gguf_repo_partial", _not_partial_gguf)
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", _not_partial_snapshot)
+
+    models = cache_inventory._scan_cached_models()
+    ggufs = cache_inventory._scan_cached_gguf()
+
+    assert [(r["repo_id"], r["capabilities"]["can_chat"]) for r in models] == [
+        ("unsloth/embeddinggemma-2", False)
+    ]
+    assert [(r["repo_id"], r["capabilities"]["can_chat"]) for r in ggufs] == [
+        ("unsloth/embeddinggemma-2-GGUF", False)
+    ]
+    from utils.hidden_models import is_hidden_model
+
+    assert is_hidden_model("unsloth/embeddinggemma-2")
+    assert is_hidden_model("unsloth/embeddinggemma-2-GGUF")
 
 
 def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypatch, tmp_path):

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -53,6 +54,7 @@ import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
+import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
@@ -213,6 +215,7 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -260,7 +263,7 @@ import {
   resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { translate, useT } from "@/i18n";
+import { translate, useLocale, useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
@@ -432,6 +435,7 @@ import {
   UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshGlyph } from "@/lib/refresh-icon";
@@ -441,7 +445,6 @@ import {
   ArrowUpIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -2902,7 +2905,7 @@ const PendingAudioChip: FC = () => {
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
           type="button"
@@ -7820,22 +7823,24 @@ const ComposerRightControls: FC<{
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
+          {/* With a draft only the stop shortcut stops the reply. */}
           <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
-            <ComposerPrimitive.Cancel asChild={true}>
-              <Button
-                type="button"
-                variant="primary"
-                size="icon"
-                className="aui-composer-cancel size-9 rounded-full"
-                aria-label="Stop generating"
-                // Cancel only ends the reply; handlePromptQueueRunState then
-                // dispatches the next queued prompt. stop() ends the run.
-                onClick={stop}
-              >
-                <SquareIcon className="size-3 fill-current" />
-              </Button>
-            </ComposerPrimitive.Cancel>
-            {!queueDisabled ? (
+            {queueDisabled ? (
+              <ComposerPrimitive.Cancel asChild={true}>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="icon"
+                  className="aui-composer-cancel size-9 rounded-full"
+                  aria-label="Stop generating"
+                  // Cancel only ends the reply; handlePromptQueueRunState then
+                  // dispatches the next queued prompt. stop() ends the run.
+                  onClick={stop}
+                >
+                  <SquareIcon className="size-3 fill-current" />
+                </Button>
+              </ComposerPrimitive.Cancel>
+            ) : (
               <TooltipIconButton
                 tooltip={followUpTooltip}
                 side="bottom"
@@ -7848,7 +7853,7 @@ const ComposerRightControls: FC<{
               >
                 <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
               </TooltipIconButton>
-            ) : null}
+            )}
           </div>
         </AuiIf>
       )}
@@ -7888,9 +7893,44 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
+  return <GeneratingStatus />;
+};
+
+// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+const GeneratingStatus: FC = () => {
+  // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  const prefill = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.prefill ?? null,
+  );
+  const labelShown = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.prefillShown === true,
+  );
+  // A reply can decode with nothing to show yet (a tool call being written): past the prompt, back to Working.
+  const decoding = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
+  );
+  const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
+  const locale = useLocale();
+  const percent = prefill ? prefillPercent(prefill) : null;
+  // Held at 100% until the first token: going back to Working... for that moment would flash too.
+  if (prefill === null || !labelShown || percent === null || decoding) {
+    return (
+      <span className="generating-glint text-sm text-muted-foreground">
+        Working...
+      </span>
+    );
+  }
+  const timeLeft = formatPrefillTimeLeft(prefill);
   return (
-    <span className="generating-glint text-sm text-muted-foreground">
-      Working...
+    <span
+      data-slot="prefill-progress"
+      className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
+    >
+      Processing prompt {percent}%
+      {timeLeft ? ` · ${timeLeft}` : null}
+      {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
     </span>
   );
 };
@@ -8255,7 +8295,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
           type="button"
           size="sm"
           variant="secondary"
-          className="h-7 shrink-0 gap-1.5 text-xs"
+          className="shrink-0 gap-1.5 text-xs"
           onClick={() => {
             startContinuation();
           }}
@@ -8550,6 +8590,8 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
         <AssistantMessageTime />
+        {/* Only while streaming, where the action bar is hidden; the timing badge takes over after. */}
+        <LiveGenerationLine />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
@@ -8878,7 +8920,7 @@ const DeleteMessageButton: FC = () => {
 };
 
 const MORE_MENU_CONTENT_CLASS =
-  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -9243,10 +9285,50 @@ const UserMessageAudio: FC = () => {
   return (
     <div className="col-start-2 flex justify-end">
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
-        <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+        <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
     </div>
+  );
+};
+
+const SCHEDULED_REPLY_KEY = "scheduled-task-replies";
+
+function scheduledTaskIdOf(custom: unknown): string | null {
+  const source = (custom as { scheduledTask?: { taskId?: unknown } } | undefined)?.scheduledTask;
+  return typeof source?.taskId === "string" ? source.taskId : null;
+}
+
+/** "Sent by scheduled task" over a task run's prompt; the reply carries the mark too, surviving rewrites. */
+const ScheduledTaskSource: FC = () => {
+  const t = useT();
+  const navigate = useNavigate();
+  const taskId = useAuiState(({ thread, message }) => {
+    const own = scheduledTaskIdOf(message.metadata?.custom);
+    if (own) return own;
+    // One pass per messages snapshot, not a search per prompt per streamed token.
+    const byPrompt = memoOnArrayByKey(thread.messages, SCHEDULED_REPLY_KEY, () => {
+      const map = new Map<string, string>();
+      thread.messages.forEach((entry, index) => {
+        const reply = thread.messages[index + 1];
+        const replyTask =
+          reply?.role === "assistant" ? scheduledTaskIdOf(reply.metadata?.custom) : null;
+        if (replyTask) map.set(entry.id, replyTask);
+      });
+      return map;
+    });
+    return byPrompt.get(message.id) ?? null;
+  });
+  if (!taskId) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void navigate({ to: "/tasks", search: { edit: taskId } })}
+      className="inline-flex cursor-pointer items-center gap-1.5 rounded-md text-ui-13 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
+      {t("scheduledTasks.sentBy")}
+    </button>
   );
 };
 
@@ -9263,6 +9345,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
 

@@ -266,6 +266,7 @@ _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
 # (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+_OPENCLAW_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
 
 # Shared by every agent command; only the config/env/command differ. Help is grouped into rich panels so `--help` reads as Model / Server / Session instead of one long unaligned list.
 _PANEL_MODEL = "Model"
@@ -2147,6 +2148,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "tensor_parallel": "tensor_parallel",
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
+    "requested_reasoning_budget": "reasoning_budget",
+    "requested_reasoning_budget_message": "reasoning_budget_message",
     # The applied value is null when the runtime refused the request.
     # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
     "mlx_kv_quant_requested": "mlx_kv_quant",
@@ -2265,6 +2268,7 @@ def _resolve_model(
     status_snapshot = None
     # Whether the inferred settings can restart the resident. Computed once: the preload gate, the warning, the consent refusal and force_reload must all agree, and asking twice against a snapshot taken at different times is how they drift apart.
     inferred_differs = False
+    same_checkpoint = True
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
@@ -2282,6 +2286,25 @@ def _resolve_model(
     match = None if requested and load_has_overrides else loaded_match
     if requested and match is None:
         load_requested = True
+        if attach_public_id is None and loaded_match is not None:
+            # A full load resets omitted settings, so read the named resident's own slot to carry them.
+            status_snapshot = _inference_status(base, key, loaded_match["id"])
+            # The listing shows a local checkpoint by basename, so ./foo matches a resident old/foo: inherit only from the checkpoint this load resolves to.
+            wanted_path = os.path.abspath(os.path.expanduser(requested))
+            # A snapshot naming another model (replaced since the listing, or a server ignoring ?model=) describes nothing of this one.
+            same_checkpoint = _model_id_matches(
+                status_snapshot.get("active_model"),
+                loaded_match["id"],
+                allow_casefold = allow_casefold,
+            ) and (
+                _is_hub_model_id(requested)
+                or any(
+                    os.path.abspath(os.path.expanduser(str(status_snapshot.get(field))))
+                    == wanted_path
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status_snapshot.get(field)
+                )
+            )
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2431,12 +2454,8 @@ def _resolve_model(
                 payload["gguf_variant"] = resident_variant
         elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
             # Same for a named model already served, read from the slot serving it.
-            try:
-                status = _model_status(base, key, loaded_match["id"])
-            except Exception:
-                status = {}
-            if status.get("is_gguf") and status.get("gguf_variant"):
-                payload["gguf_variant"] = status["gguf_variant"]
+            if status_snapshot.get("is_gguf") and status_snapshot.get("gguf_variant"):
+                payload["gguf_variant"] = status_snapshot["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
         if "load_in_4bit" in overrides:
@@ -2447,7 +2466,9 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             # -1 means "pick the layers", which is right when the user is switching INTO manual, but on an inferred attach to a resident already in manual it would throw away the layer count it was pinned to. Leave it for the round-trip.
             already_manual = (
-                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
+                same_checkpoint
+                and bool(status_snapshot)
+                and status_snapshot.get("gpu_memory_mode") == "manual"
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
@@ -2461,11 +2482,22 @@ def _resolve_model(
                 f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
                 "cannot re-authorize. Re-run with --model naming it to apply these settings."
             )
-        if attach_public_id is not None:
-            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies every defaulted LoadRequest field into the new intent, so a knob we leave out is reset rather than kept. Carry the resident's own values for the ones the user did not name, or changing the context alone would drop their KV dtype, slot count, batch sizes and GPU placement.
-            payload.update(_resident_runtime_payload(status_snapshot, payload))
+        if attach_public_id is not None or loaded_match is not None:
+            # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
+            carried = _resident_runtime_payload(status_snapshot, payload)
+            if attach_public_id is None:
+                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
+                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
+                    carried = {}
+                carried.pop("llama_extra_args", None)
+                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+                    carried.pop("tensor_split", None)
+                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+                carried.pop("n_parallel", None)
+            payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
-            if status_snapshot and inferred_differs:
+            if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
@@ -2563,8 +2595,8 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     return [n for n in ggufs if not _is_auxiliary_gguf(n)]
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
+# Keep in sync with utils/gguf_names.py; the remote CLI cannot require backend imports.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -6237,10 +6269,21 @@ _JSONC_COMMENT = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', re.S)
 _JSONC_TRAILING_COMMA = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[\]}])')
 
 
-def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _load_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     if text is None or not text.strip():
         return {}
-    if path.suffix == ".toml":
+    if allow_json5:
+        import json5
+
+        # Raw text: the JSONC stripper below misreads // inside single-quoted JSON5 strings.
+        # The json round trip joins surrogate pairs json5 leaves split (UTF-8 can't write them).
+        data = json.loads(json.dumps(json5.loads(text)))
+    elif path.suffix == ".toml":
         try:
             import tomllib  # novermin
         except ImportError:
@@ -6253,7 +6296,6 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         import yaml
         data = yaml.safe_load(text)
     else:
-        # OpenCode reads JSONC and OpenClaw JSON5, so accept comments and trailing commas in either.
         text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
         data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
     if not isinstance(data, dict):
@@ -6261,9 +6303,14 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     return data
 
 
-def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _parse_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     try:
-        return _load_app_config(path, text)
+        return _load_app_config(path, text, allow_json5 = allow_json5)
     except Exception:
         _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
 
@@ -6318,8 +6365,14 @@ def _splice_jsonc(text: str, keys: tuple, value) -> str:
     return text[:last] + f"\n{indent}{member}\n" + "  " * depth + text[close:]
 
 
-def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
-    config = _parse_app_config(path, text)
+def _set_app_values(
+    text: Optional[str],
+    path: Path,
+    updates: list,
+    *,
+    allow_json5: bool = False,
+) -> Optional[str]:
+    config = _parse_app_config(path, text, allow_json5 = allow_json5)
     before = json.dumps(config, sort_keys = True)
     for keys, value in updates:
         if value is _APP_DELETE:
@@ -6343,13 +6396,13 @@ def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[
         parent[keys[-1]] = value
     if json.dumps(config, sort_keys = True) == before:
         return text
-    if path.suffix != ".yaml":
+    if allow_json5 or path.suffix != ".yaml":
         candidate = text
         with contextlib.suppress(Exception):
             if candidate and candidate.strip():
                 for keys, value in updates:
                     candidate = _splice_jsonc(candidate, keys, value)
-                if _load_app_config(path, candidate) == config:
+                if _load_app_config(path, candidate, allow_json5 = allow_json5) == config:
                     return candidate
         return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
     import yaml
@@ -6456,6 +6509,8 @@ def _open_app_config(
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
+    if target.agent == "openclaw":
+        parse = functools.partial(_parse_app_config, allow_json5 = True)
     parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
@@ -6502,7 +6557,10 @@ def _add_app_provider(
     try:
         state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
         new_text = _set_app_values(
-            text, target.path, target.updates(text, target.path, base, key, entry)
+            text,
+            target.path,
+            target.updates(text, target.path, base, key, entry),
+            allow_json5 = target.agent == "openclaw",
         )
         new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
         _save_app_config(target, state_path, state, new_state, text, new_text)
@@ -6778,7 +6836,7 @@ def _openclaw_app_updates(
     entry,
     max_tokens = None,
 ) -> list:
-    config = _parse_app_config(path, text) or {}
+    config = _parse_app_config(path, text, allow_json5 = True) or {}
     agents = config.get("agents")
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}
@@ -6802,8 +6860,51 @@ def _openclaw_app_updates(
     return changes
 
 
+def _openclaw_config_file() -> Optional[str]:
+    executable = _which_with_install_dirs("openclaw")
+    if executable is None:
+        return None
+    try:
+        output = subprocess.check_output(
+            [executable, "config", "file"],
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+            stderr = subprocess.DEVNULL,
+            env = _probe_env(),
+        )
+    except Exception:
+        return None
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines and os.path.isabs(lines[-1]) else None
+
+
 def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
-    path = Path.home() / ".openclaw" / "openclaw.json"
+    home = Path.home()
+
+    def user_path(value: str) -> Path:
+        # Only a leading ~ expands (against OPENCLAW_HOME); abspath keeps symlinks for _read_app_file to refuse.
+        if value == "~":
+            value = str(home)
+        elif value.startswith(("~/", "~\\")):
+            value = os.path.join(str(home), value[2:])
+        return Path(os.path.abspath(value))
+
+    override = os.environ.get("OPENCLAW_HOME", "").strip()
+    if override and override not in ("null", "undefined"):
+        home = user_path(override)
+    if override := os.environ.get("OPENCLAW_CONFIG_PATH", "").strip():
+        path = user_path(override)
+    elif override := os.environ.get("OPENCLAW_STATE_DIR", "").strip():
+        path = user_path(override) / "openclaw.json"
+    else:
+        path = home / ".openclaw" / "openclaw.json"
+        profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
+        # Whether a named profile alone moves the config depends on the build (openclaw#133252, after 2026.10.10-beta.3), so ask OpenClaw.
+        if _OPENCLAW_PROFILE_RE.fullmatch(profile) and profile.lower() != "default":
+            if (active := _openclaw_config_file()) is not None:
+                path = Path(active)
     updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
     return _AppTarget("openclaw", "OpenClaw app", path, updates)
 

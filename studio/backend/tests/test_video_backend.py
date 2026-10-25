@@ -2239,6 +2239,68 @@ def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch
     assert session.took == [seen[0][1]] and session.closed == 1
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_a_render_returns_its_pinned_clip_to_the_driver(fake_runtime, monkeypatch, fail):
+    # Each render empties the pinned host cache once, after the session closes and the clip is unreferenced.
+    import functools
+    import weakref
+
+    import core.inference.video as vid
+
+    class _Frames(list):
+        pass
+
+    class _Session:
+        closed = False
+
+        def hooks(self):
+            return contextlib.nullcontext()
+
+        def take(self, frames, fps):
+            return b"STREAMED"
+
+        def close(self):
+            self.closed = True
+
+    session = _Session()
+    monkeypatch.setattr(vid, "open_stream_encode", lambda *_a, **_k: session)
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe_cls = type(backend._state.pipe)
+    real_call = pipe_cls.__call__
+    clips = []
+
+    # wraps: the backend reads the pipeline's signature to decide which kwargs it threads.
+    @functools.wraps(real_call)
+    def call(self, *args, **kwargs):
+        out = real_call(self, *args, **kwargs)
+        out.frames = [_Frames(out.frames[0])]
+        clips.append(weakref.ref(out.frames[0]))
+        return out
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    if fail:
+
+        def boom(*_a, **_k):
+            raise RuntimeError("encode failed")
+
+        monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(boom))
+    released = []
+    monkeypatch.setattr(
+        vid,
+        "release_pinned_host_memory",
+        lambda: released.append((session.closed, [ref() is None for ref in clips])),
+    )
+    if fail:
+        with pytest.raises(RuntimeError, match = "encode failed"):
+            backend.generate(prompt = "a sloth")
+        # The in-flight traceback still holds the clip; the cache is emptied anyway, after the session is closed.
+        assert [closed for closed, _ in released] == [True]
+    else:
+        assert backend.generate(prompt = "a sloth")["mp4_bytes"]
+        assert released == [(True, [True])]
+
+
 def test_wan_a14b_dual_dit_pipeline_loads(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
@@ -9115,11 +9177,8 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
         from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
         extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
+        # LTX-2.5's unset request keeps its bf16 encoder (int8 is opt-in), so it is priced at the table too.
         components = list(fam.bf16_components_gb)
-        if fam.name == "ltx-2.5":
-            # LTX-2.5's unset request is its int8 ConvRot encoder (ComfyUI's), so the table's encoder is priced int8.
-            from core.inference.video_ltx25 import LTX25_TE_INT8_GB
-            components[1] = LTX25_TE_INT8_GB
         assert calls[0]["model_dense_mib"] == int(
             (sum(components) + extra_gb) * _MIB_PER_GB
         ), fam.name
@@ -13270,12 +13329,19 @@ def _cuda_wan_load(monkeypatch, *, policy, speed_mode):
 
 @pytest.mark.parametrize(
     "policy,speed_mode,installed",
-    [("none", "default", True), ("model", "default", False), ("none", "off", False)],
+    [
+        ("none", "default", True),
+        ("model", "default", True),
+        ("group", "default", True),
+        ("streaming", "default", True),
+        ("sequential", "default", False),
+        ("none", "off", False),
+        ("group", "off", False),
+    ],
 )
 def test_resident_wan_load_decodes_untiled_when_it_fits(
     fake_runtime, monkeypatch, policy, speed_mode, installed
 ):
-    # Tiling is forced on; resident CUDA loads also get untiled-when-it-fits decode.
     from core.inference import video_vae_untiled
 
     calls = []
