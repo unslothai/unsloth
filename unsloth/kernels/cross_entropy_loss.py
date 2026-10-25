@@ -46,9 +46,11 @@ def _softplus(x):
 
 @triton.jit
 def _expm1_neg(x):
-    # exp(-x) - 1 for x >= 0, keeping -x when exp(-x) rounds to 1.
+    # exp(-x) - 1 for x >= 0: Kahan's trick only below 1, where u - 1 cancels; past ~87 u is
+    # subnormal and log(u) drifts from -x, so the trick would push the gradient past -1.
     u = tl.exp(-x)
-    return tl.where(u == 1.0, -x, tl.where(u == 0.0, -1.0, (u - 1.0) * (-x / tl.log(u))))
+    near_zero = tl.where(u == 1.0, -x, (u - 1.0) * (-x / tl.log(u)))
+    return tl.where(x < 1.0, near_zero, u - 1.0)
 
 
 def _cross_entropy_forward(

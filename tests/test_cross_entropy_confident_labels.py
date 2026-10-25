@@ -95,3 +95,20 @@ def test_confident_bf16_label():
     torch.testing.assert_close(
         logits.grad[0, 0, 0].double(), expected_grad[0, 0], rtol = 1e-2, atol = 0
     )
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("vocab_size, label_logit, other", [(2, 0.0, 103.0), (262144, -91.0, 0.0)])
+def test_hopeless_label_gradient_stays_at_minus_one(vocab_size, label_logit, other):
+    from unsloth.kernels.cross_entropy_loss import Fast_CrossEntropyLoss
+
+    # Loss ~100: exp(-loss) is subnormal, the label gradient must be -1 and never past it.
+    inputs = torch.full((1, vocab_size), other, device = "cuda")
+    inputs[0, 0] = label_logit
+    labels = torch.tensor([0], device = "cuda")
+    logits = inputs.clone().requires_grad_()
+
+    Fast_CrossEntropyLoss.apply(logits, labels, 0, 0).sum().backward()
+    _, expected_grad = _reference(inputs, labels)
+    torch.testing.assert_close(logits.grad[0, 0].double(), expected_grad[0, 0], rtol = 1e-6, atol = 0)
+    assert logits.grad[0, 0].item() >= -1.0
