@@ -1054,7 +1054,11 @@ def test_sharded_loading_refuses_quantized_loads():
             True,
             {"bias": "all"},
         ),  # trainable column (Shard) and row (Replicate) biases
-        ("llama", True, {"modules_to_save": ["lm_head"]}),  # a dp-only (1-D) trainable outside the tp regions
+        (
+            "llama",
+            True,
+            {"modules_to_save": ["lm_head"]},
+        ),  # a dp-only (1-D) trainable outside the tp regions
     ],
 )
 def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
