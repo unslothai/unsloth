@@ -396,6 +396,9 @@ export interface WorldNpc {
   routine?: string;
   relationships?: Record<string, string>;
   seed_memories?: { text: string; importance: number }[];
+  /** Read only when the world's `autonomy` allows it: a rival races the player for quest items, a hostile one
+   * chases and robs (non-lethal). */
+  role?: "rival" | "hostile" | null;
 }
 
 export interface WorldItem {
@@ -476,6 +479,21 @@ export interface WorldSpec {
   summarise?: boolean;
   /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
   new_quests?: boolean;
+  /** What villagers may do on their own; absent (every flag off) keeps the world as it was. */
+  autonomy?: WorldAutonomy | null;
+}
+
+export interface WorldAutonomy {
+  /** Villagers make, buy and sell goods, with each other and the player. */
+  trade?: boolean;
+  /** Villagers claim free houses, or build one once they have the materials. */
+  homes?: boolean;
+  /** A rival villager races the player for quest items. */
+  quests?: boolean;
+  /** The quest director may add rival villagers. */
+  rivals?: boolean;
+  /** Hostile villagers chase and rob the player (non-lethal). */
+  enemies?: boolean;
 }
 
 export type RunStatus =

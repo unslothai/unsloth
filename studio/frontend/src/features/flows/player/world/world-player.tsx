@@ -20,10 +20,28 @@ import type { MediaValue, WorldSpec } from "../../types";
 import { type PlayerApi, mediaObjectUrl } from "../player-api";
 import { PlayerKeyframes } from "../story/backdrop";
 import { useMediaUrl } from "../use-media-url";
+import {
+  type Cmd,
+  GOODS,
+  GOOD_IDS,
+  type Good,
+  type Ground,
+  PLAYER,
+  type Stand,
+  autoStep,
+  buyBack,
+  buyBackPrice,
+  homeMarker,
+  playerBuy,
+  playerSell,
+  priceOf,
+  resolveEncounter,
+} from "./autonomy";
 import { type LiveReply, appendReplyDelta } from "./live-reply";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
+import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
   steerActions,
@@ -133,6 +151,17 @@ async function loadArt(
   return art;
 }
 
+/** Carry out what a beat of village life decided, through the game handle (2D and 3D alike). */
+function run(g: WorldGameHandle, cmds: Cmd[]): void {
+  for (const c of cmds) {
+    if (c.do === "place") g.setNpcPlace(c.id, c.area);
+    else if (c.do === "status") g.setNpcStatus(c.id, c.icon);
+    else if (c.do === "say") g.say(c.id, c.text, 3000);
+    else if (c.do === "remove") g.removeItem(c.id);
+    else g.addMarker(c.id, c.at, c.icon, c.label);
+  }
+}
+
 function Panel({
   title,
   onClose,
@@ -213,7 +242,8 @@ export function WorldPlayer({
   const [region, setRegion] = useState<string | null>(null);
   const [mount, setMount] = useState(0);
   const lockedRef = useRef(true);
-  lockedRef.current = !started || talking !== null || panel === "save";
+  lockedRef.current =
+    !started || talking !== null || panel === "save" || !!ws.auto?.encounter;
 
   const toast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -320,8 +350,10 @@ export function WorldPlayer({
           import("./phaser-game"),
         ]);
         if (!live || !host.current) return;
-        // Things added while playing (from a save) stand where they were placed.
+        // Things added while playing (from a save) stand where they were placed, and with autonomy on villagers
+        // stand where they were when saved.
         const added = wsRef.current.additions ?? noAdditions();
+        const saved = wsRef.current.npcAt ?? {};
         handle = mod.createWorldGame(
           host.current,
           specRef.current,
@@ -330,6 +362,7 @@ export function WorldPlayer({
             npcs: {
               ...map.npcs,
               ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
+              ...saved,
             },
             items: {
               ...map.items,
@@ -354,6 +387,15 @@ export function WorldPlayer({
           },
         );
         game.current = handle;
+        for (const [id, h] of Object.entries(wsRef.current.auto?.homes ?? {}))
+          if (h.at)
+            run(handle, [
+              homeMarker(
+                id,
+                specRef.current.npcs.find((n) => n.id === id)?.name ?? id,
+                h.at,
+              ),
+            ]);
         setReady(true);
         onReady?.(handle);
       } catch (e) {
@@ -711,7 +753,7 @@ export function WorldPlayer({
             run: (signal) => planDay(n.id, day, signal),
           });
         // Followers and NPCs on an errand are walked by the conversation's action instead; their needs still drop.
-        if (steered.current.has(n.id)) {
+        if (steered.current.has(n.id) || autoSteered.current.has(n.id)) {
           const needs = withNeeds
             ? steeredNeeds(mind, sim.minutes_per_second)
             : null;
@@ -810,6 +852,80 @@ export function WorldPlayer({
     return () => window.clearInterval(timer);
   }, [ready, started, areas]);
 
+  // Villagers acting on their own (opt-in per world): one beat a second, paused while the player talks or reads.
+  const flags = useMemo(() => autonomyOf(baseSpec), [baseSpec]);
+  const autoOn = useMemo(() => autonomyOn(baseSpec), [baseSpec]);
+  const autoSteered = useRef(new Set<string>());
+  useEffect(() => {
+    if (!autoOn || !ready || !started) return;
+    const timer = window.setInterval(() => {
+      const g = game.current;
+      if (!g || lockedRef.current) return;
+      const played = specRef.current;
+      const added = wsRef.current.additions ?? noAdditions();
+      const ground: Ground = {
+        spec: played,
+        map,
+        areas,
+        items: {
+          ...map.items,
+          ...Object.fromEntries(
+            added.items.map((i) => [i.id, { x: i.x, y: i.y }]),
+          ),
+        },
+        homes: {
+          ...map.npcs,
+          ...Object.fromEntries(
+            added.npcs.map((n) => [n.id, { x: n.x, y: n.y }]),
+          ),
+        },
+      };
+      const base = wsRef.current;
+      const out = autoStep(ground, base, {
+        player: g.playerTile(),
+        npcs: g.npcTiles(),
+      });
+      run(g, out.cmds);
+      const now = new Set(out.steered);
+      for (const id of autoSteered.current)
+        if (!now.has(id) && !steered.current.has(id)) {
+          g.setNpcPlace(id, null);
+          g.setNpcStatus(id, "");
+        }
+      autoSteered.current = now;
+      // Merged into the latest state, so a clock tick or a reply landing in between is kept.
+      setWs((st) => {
+        const npc = { ...st.npc };
+        for (const [id, m] of Object.entries(out.state.npc))
+          if (m !== base.npc[id] && npc[id])
+            npc[id] = { ...npc[id], needs: m.needs };
+        return {
+          ...st,
+          auto: out.state.auto,
+          picked: [...new Set([...st.picked, ...out.state.picked])],
+          npc,
+        };
+      });
+      for (const n of out.notes) toast(n);
+      events.current = [...events.current, ...out.notes].slice(-6);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [autoOn, ready, started, map, areas, toast]);
+
+  // Player decisions go through the same pure rules, applied to the latest state.
+  const deal = (
+    fn: (st: WorldState) => { state: WorldState; note: string } | null,
+    refused: string,
+  ) => {
+    const out = fn(wsRef.current);
+    const text = out?.note || refused;
+    if (text) toast(text);
+    if (out) setWs((st) => fn(st)?.state ?? st);
+  };
+  const stand = (choice: Stand) =>
+    deal((st) => resolveEncounter(spec, st, choice), "");
+  const [offer, setOffer] = useState<{ npc: string; good: Good } | null>(null);
+
   // The reply being written; a load stops it so the old game's answer does not keep the model busy.
   const replyRun = useRef<AbortController | null>(null);
   const send = async () => {
@@ -858,6 +974,20 @@ export function WorldPlayer({
             inventory: before.inventory,
             completed_quests: before.completedQuests,
             following: (before.following ?? []).includes(npcId),
+            ...(autoOn
+              ? {
+                  role: roleOf(spec, npcId),
+                  goods: flags.trade
+                    ? Object.entries(before.auto?.goods[npcId] ?? {}).map(
+                        ([good, n]) => ({
+                          id: good,
+                          name: GOODS[good as Good].name,
+                          price: priceOf(good as Good, n ?? 0),
+                        }),
+                      )
+                    : [],
+                }
+              : {}),
             ...(sim
               ? { memory: before.npc[npcId]?.memory ?? [], clock: before.clock }
               : {}),
@@ -913,6 +1043,17 @@ export function WorldPlayer({
       for (const id of state.picked)
         if (!prior.picked.includes(id)) game.current?.removeItem(id);
       for (const n of notes) toast(n);
+      const offered = reply.offer_trade as Good | undefined;
+      if (
+        flags.trade &&
+        offered &&
+        (state.auto?.goods[npcId]?.[offered] ?? 0) > 0
+      ) {
+        setOffer({ npc: npcId, good: offered });
+        toast(
+          `${npcById.get(npcId)?.name ?? npcId} offers ${GOODS[offered].name.toLowerCase()} · ${priceOf(offered, state.auto?.goods[npcId]?.[offered] ?? 0)} coins`,
+        );
+      }
       events.current = [...events.current, ...notes].slice(-6);
       const completed =
         state.completedQuests.length > prior.completedQuests.length;
@@ -944,6 +1085,7 @@ export function WorldPlayer({
     const state = serialize({
       ...wsRef.current,
       player: game.current?.playerTile() ?? null,
+      ...(autoOn && game.current ? { npcAt: game.current.npcTiles() } : {}),
     });
     try {
       await api.saveSession(
@@ -1000,6 +1142,33 @@ export function WorldPlayer({
     ws.completedQuests.includes(q.id),
   );
   const regionName = spec.regions.find((r) => r.id === region)?.name;
+  const stockOf = (id: string) =>
+    GOOD_IDS.flatMap((g) => {
+      const n = ws.auto?.goods[id]?.[g] ?? 0;
+      return n > 0 ? [[g, n] as [Good, number]] : [];
+    });
+  const playerGoods = stockOf(PLAYER);
+  const talkStock = talkNpc ? stockOf(talkNpc.id) : [];
+  const talkHeld = talkNpc
+    ? Object.entries(ws.auto?.held ?? {})
+        .filter(([, by]) => by === talkNpc.id)
+        .map(([id]) => id)
+    : [];
+  const talkRole = talkNpc && ws.auto ? roleOf(spec, talkNpc.id) : null;
+  const encounterNpc = ws.auto?.encounter
+    ? npcById.get(ws.auto.encounter)
+    : undefined;
+  const raceNote = (questId: string, item?: string | null) => {
+    if (!ws.auto || !item) return "";
+    const holder = ws.auto.held[item];
+    if (holder)
+      return `${npcById.get(holder)?.name} has the ${itemById.get(item)?.name}: buy it back from them`;
+    const q = spec.quests.find((x) => x.id === questId);
+    const rival = q && !ws.picked.includes(item) ? rivalFor(spec, q) : null;
+    return rival && questId in ws.auto.race
+      ? `Rival: ${npcById.get(rival)?.name} is after it too`
+      : "";
+  };
   const allDone =
     spec.quests.length > 0 && doneQuests.length === spec.quests.length;
 
@@ -1043,6 +1212,14 @@ export function WorldPlayer({
                 data-testid="world-clock"
               >
                 {clockLabel(ws.clock)}
+              </div>
+            ) : null}
+            {ws.auto ? (
+              <div
+                className="self-start rounded-full bg-black/35 px-3 py-1 text-amber-100 text-xs tabular-nums backdrop-blur-md"
+                data-testid="world-coins"
+              >
+                🪙 {ws.auto.coins[PLAYER] ?? 0} coins
               </div>
             ) : null}
             {regionName ? (
@@ -1134,8 +1311,23 @@ export function WorldPlayer({
 
       {panel === "inventory" ? (
         <Panel title="Inventory" onClose={() => setPanel(null)}>
-          {ws.inventory.length === 0 ? (
+          {ws.inventory.length === 0 && !playerGoods.length ? (
             <p className="text-sm text-white/50">Nothing yet. Explore!</p>
+          ) : null}
+          {playerGoods.length ? (
+            <div
+              className="mb-2 flex flex-wrap gap-1.5"
+              data-testid="world-goods"
+            >
+              {playerGoods.map(([good, n]) => (
+                <span
+                  key={good}
+                  className="rounded-full bg-white/10 px-2.5 py-1 text-xs"
+                >
+                  {GOODS[good].icon} {GOODS[good].name} × {n}
+                </span>
+              ))}
+            </div>
           ) : null}
           <div className="flex flex-col gap-2">
             {ws.inventory.map((id) => {
@@ -1175,6 +1367,14 @@ export function WorldPlayer({
                 <div className="mt-1 text-[11px] text-emerald-200/80">
                   From {npcById.get(q.giver)?.name}
                 </div>
+                {raceNote(q.id, q.requires_item) ? (
+                  <div
+                    className="mt-1 text-amber-200/90 text-ui-11"
+                    data-testid="world-quest-rival"
+                  >
+                    {raceNote(q.id, q.requires_item)}
+                  </div>
+                ) : null}
               </div>
             ))}
             {doneQuests.map((q) => (
@@ -1243,6 +1443,19 @@ export function WorldPlayer({
               <div className="text-center font-semibold text-sm">
                 {talkNpc.name}
               </div>
+              {talkRole ? (
+                <div
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-ui-11",
+                    talkRole === "hostile"
+                      ? "bg-rose-400/20 text-rose-100"
+                      : "bg-amber-300/20 text-amber-100",
+                  )}
+                  data-testid="world-npc-role"
+                >
+                  {talkRole === "hostile" ? "Hostile" : "Rival"}
+                </div>
+              ) : null}
               {ws.following?.includes(talkNpc.id) ? (
                 <div className="text-[11px] text-emerald-200/80">
                   Following you
@@ -1325,6 +1538,71 @@ export function WorldPlayer({
                   </div>
                 ) : null}
               </div>
+              {talkHeld.length || (flags.trade && ws.auto) ? (
+                <div
+                  className="flex flex-wrap items-center gap-1.5 text-xs"
+                  data-testid="world-trade"
+                >
+                  {talkHeld.map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() =>
+                        deal(
+                          (st) => buyBack(spec, st, talkNpc.id, id),
+                          "They no longer have it",
+                        )
+                      }
+                      className="rounded-full bg-amber-300 px-3 py-1 font-medium text-black hover:bg-amber-200"
+                      data-testid="world-buy-back"
+                    >
+                      Buy back {itemById.get(id)?.name ?? id} ·{" "}
+                      {buyBackPrice(ws)} coins
+                    </button>
+                  ))}
+                  {flags.trade
+                    ? talkStock.map(([good, n]) => (
+                        <button
+                          key={good}
+                          type="button"
+                          onClick={() =>
+                            deal(
+                              (st) => playerBuy(spec, st, talkNpc.id, good),
+                              "You cannot afford that",
+                            )
+                          }
+                          className={cn(
+                            "rounded-full bg-white/10 px-3 py-1 hover:bg-white/20",
+                            offer?.npc === talkNpc.id &&
+                              offer.good === good &&
+                              "ring-1 ring-amber-200",
+                          )}
+                          data-testid={`world-buy-${good}`}
+                        >
+                          Buy {GOODS[good].icon} {GOODS[good].name} ·{" "}
+                          {priceOf(good, n)}
+                        </button>
+                      ))
+                    : null}
+                  {flags.trade
+                    ? playerGoods.map(([good]) => (
+                        <button
+                          key={good}
+                          type="button"
+                          onClick={() =>
+                            deal(
+                              (st) => playerSell(spec, st, talkNpc.id, good),
+                              `${talkNpc.name} cannot pay for that`,
+                            )
+                          }
+                          className="rounded-full bg-white/5 px-3 py-1 text-white/70 hover:bg-white/15"
+                        >
+                          Sell {GOODS[good].icon} {GOODS[good].name}
+                        </button>
+                      ))
+                    : null}
+                </div>
+              ) : null}
               <form
                 className="flex gap-2"
                 onSubmit={(e) => {
@@ -1360,6 +1638,42 @@ export function WorldPlayer({
                   Bye
                 </button>
               </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {encounterNpc ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-6">
+          <div
+            className="w-80 rounded-2xl bg-zinc-950/90 p-5 text-center shadow-2xl ring-1 ring-rose-300/30"
+            style={{ animation: "flows-rise 200ms ease-out" }}
+            data-testid="world-encounter"
+          >
+            <p className="mb-1 font-semibold">
+              {encounterNpc.name} blocks your way!
+            </p>
+            <p className="mb-4 text-white/60 text-xs">
+              Slip away, stand your ground, or pay them off.
+            </p>
+            <div className="flex justify-center gap-2">
+              {(
+                [
+                  ["evade", "Evade"],
+                  ["defend", "Defend"],
+                  ["negotiate", "Negotiate"],
+                ] as [Stand, string][]
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => stand(id)}
+                  className="rounded-full bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20"
+                  data-testid={`world-encounter-${id}`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
