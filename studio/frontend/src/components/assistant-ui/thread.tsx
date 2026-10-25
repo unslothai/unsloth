@@ -2736,7 +2736,7 @@ const ThreadScrollToBottom: FC = () => {
       onClick={() => scrollToBottom("auto")}
       className={cn(
         // Muted in dark mode: the page background made it disappear. The hairline keeps it off text it floats over.
-        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:bg-muted dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:hover:bg-accent",
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
         (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
     >
