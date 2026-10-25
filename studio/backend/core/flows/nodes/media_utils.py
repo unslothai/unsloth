@@ -15,9 +15,7 @@ from core.flows.nodes.image import _ASCII_PUNCT, _font, _open, _png
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 MAX_SIDE = 8192
-# Longest clip a Video Edit step decodes: every frame passes through memory once.
 MAX_VIDEO_FRAMES = 20_000
-# Decoded PCM a trimmed clip's own sound may hold (44.1 kHz stereo int16 is ~10 MB a minute).
 MAX_AUDIO_S = 60 * 60
 
 
@@ -165,7 +163,6 @@ def text_overlay(
 
 
 def _upright(frame: Any) -> Any:
-    """A decoded frame as an RGB array the way players show it: phone clips store portrait as a display rotation."""
     import numpy as np
 
     array = frame.to_ndarray(format = "rgb24")
@@ -202,11 +199,9 @@ def edit_video(
     out_buf = io.BytesIO()
     out = vout = aout = None
     # Frames stream straight from the decoder to the encoder: holding a decoded 4K clip would need tens of GB.
-    # Speed keeps the frame rate and drops or repeats frames: output frame i shows trimmed frame int(i * speed).
     kept = emitted = decoded = 0
     try:
         if start_s > 0 and vstream.time_base:
-            # Jump to the keyframe before the trim point instead of decoding everything before it.
             source.seek(int(start_s / vstream.time_base), stream = vstream, backward = True)
         for frame in source.decode(vstream):
             decoded += 1
@@ -264,7 +259,6 @@ def video_frame(
     chosen = None
     try:
         vstream = source.streams.video[0]
-        # Start from the keyframe before the wanted spot, not the top of a long upload.
         target = (
             at_s
             if which == "time"
@@ -293,7 +287,6 @@ def video_frame(
 
 
 def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
-    """The clip's own sound between two times as WAV, or None when it has none."""
     import wave
 
     import av
@@ -329,7 +322,6 @@ def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
     source.close()
     if not chunks or first is None:
         return None
-    # Packed stereo: two int16 values per sample.
     pcm = np.concatenate(chunks).astype(np.int16)
     # Sound that starts after the trim point keeps its offset: pad the gap with silence instead of shifting it.
     gap = int((first - start_s) * 44100)

@@ -87,7 +87,6 @@ def test_recency_decays_per_hour_since_last_access_or_by_rank():
 def test_score_sums_weighted_normalised_terms():
     s = stream_of(("ran hills, knee hurts", 8, 0.0), ("ate oatmeal for breakfast", 2, 9.0))
     scores = mem.score(s["records"], now = 10.0, query = "knee pain after hills", weights = {})
-    # First record: oldest (recency 0), most important (1) and the only relevant one (1): 0 + 2 + 3.
     assert scores[0] == {"recency": 0.0, "importance": 1.0, "relevance": 1.0, "score": 5.0}
     assert scores[1]["score"] == 0.5
     assert mem.top(s["records"], scores, 1) == [0]
@@ -135,7 +134,7 @@ def test_as_stream_accepts_a_record_list_and_continues_ids():
 
 def test_remember_rates_importance_in_one_call_and_embeds_in_one_call():
     ctx = Ctx("memory.add", {"items": ["ran hills", "ate oatmeal"], "now": 5.0})
-    ctx.answers = [{"ratings": [7]}]  # one rating short: the missing one defaults to 5
+    ctx.answers = [{"ratings": [7]}]
     out = run(nodes.add(ctx))
     added = out["added"]
     assert [r["importance"] for r in added] == [7, 5]
@@ -175,7 +174,7 @@ def test_recall_uses_embeddings_and_marks_records_used():
     out = run(nodes.retrieve(ctx))
     assert [r["text"] for r in out["records"]] == ["ran hills, knee hurts"]
     assert out["context"] == "1. ran hills, knee hurts"
-    assert ctx.calls == ["/v1/embeddings"]  # the query and both missing record vectors in one call
+    assert ctx.calls == ["/v1/embeddings"]
     by_id = {r["id"]: r for r in out["memory"]["records"]}
     assert by_id["m0"]["t_access"] == 3.0 and by_id["m1"]["t_access"] == 0.0
     assert "embedding" not in out["records"][0]
@@ -227,7 +226,7 @@ def test_reflect_uses_four_model_calls_and_cites_its_evidence():
     assert len(ctx.prompts) == 4 and out["reflected"] is True
     insights = [r for r in out["memory"]["records"] if r["kind"] == "reflection"]
     assert [r["text"] for r in insights] == out["insights"]
-    assert len(insights[0]["cites"]) == 2  # citation 99 is out of range and dropped
+    assert len(insights[0]["cites"]) == 2
     assert set(insights[0]["cites"]) <= {"m0", "m1", "m2"}
     assert out["memory"]["since_reflection"] == 0.0
     assert all(isinstance(r.get("embedding"), list) for r in insights)

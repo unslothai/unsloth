@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Village life after Park et al. 2023, "Generative Agents": a game clock, per-NPC memory streams,
-// daily plans and NPC to NPC chats. Pure state here; world-player.tsx drives it and phaser-game.ts shows it.
 
 import type { WorldPlace, WorldSimulation, WorldSpec } from "../../types";
 import { type Doing, type Needs, initialNeeds } from "./needs";
@@ -10,7 +8,6 @@ import { type Doing, type Needs, initialNeeds } from "./needs";
 export const MAX_MEMORIES = 120;
 export const MEET_TILES = 2;
 
-/** `t_created` / `t_access` are game hours, the unit of the backend's per-hour recency decay. */
 export interface MemoryRecord {
   id: string;
   text: string;
@@ -32,7 +29,6 @@ export interface NpcMind {
   nextId: number;
   plan: PlanBlock[];
   planDay: number;
-  /** Other NPC id -> game minute of their last chat. */
   lastChat: Record<string, number>;
   needs?: Needs;
   doing?: Doing | null;
@@ -68,7 +64,6 @@ export function initialMinds(
   return minds;
 }
 
-/** Add notes; past MAX_MEMORIES the least important, least recently used go first. */
 export function remember(
   mind: NpcMind,
   notes: Note[],
@@ -142,7 +137,6 @@ const EMOJI: [RegExp, string][] = [
   [/chat|talk|visit|meet|gossip/i, "💬"],
 ];
 
-/** A status icon from the activity's words; no model call. */
 export function activityEmoji(activity: string): string {
   return EMOJI.find(([re]) => re.test(activity))?.[1] ?? "";
 }
@@ -283,7 +277,6 @@ export class BackgroundQueue {
     void job
       .run(ctrl.signal)
       .catch(() => {
-        // A failed or aborted background call only costs its slot in the budget.
       })
       .finally(() => {
         if (this.current?.job === job) this.current = null;

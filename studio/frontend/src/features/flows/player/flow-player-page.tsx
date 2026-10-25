@@ -48,7 +48,6 @@ const GENERATORS: Record<string, string> = {
 
 export interface FlowPlayerPageProps {
   flowId: string;
-  /** Tests and the smoke harness pass a mock; the app uses the real backend. */
   api?: PlayerApi;
   onExit?: () => void;
   onWorldReady?: (game: WorldGameHandle) => void;
@@ -60,7 +59,6 @@ export function FlowPlayerPage({
   onExit,
   onWorldReady,
 }: FlowPlayerPageProps) {
-  // No RouterProvider in the smoke harness; exit then needs `onExit`.
   const router = useRouter({ warn: false }) as
     | ReturnType<typeof useRouter>
     | undefined;

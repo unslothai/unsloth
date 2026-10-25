@@ -2070,7 +2070,6 @@ def tts_sft() -> B:
         dataset = "Etherll/kaira",
         tune = {
             "base_model": "unsloth/orpheus-3b-0.1-ft",
-            # The notebook trains a 16-bit LoRA.
             "load_in_4bit": False,
             "task": "audio",
             "max_steps": 60,
@@ -2094,8 +2093,7 @@ def embedding_sft() -> B:
         "EmbeddingGemma_(300M).ipynb",
         "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
         "retrieval, then export to GGUF.",
-        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
-        # so this uses a 40 MB set of the same question and passage shape.
+        # Studio's embedding trainer loads whole datasets, so this swaps the notebook's 13 GB set for a 40 MB one of the same shape.
         dataset = "sentence-transformers/natural-questions",
         tune = {
             "base_model": "unsloth/embeddinggemma-300m",
@@ -3120,7 +3118,6 @@ def lora_style() -> B:
         size = "1024x1024",
         seed = 5,
         loras = [{"id": "krea/Krea-2-LoRA-softwatercolor", "weight": 1.0}],
-        # The adapter's trigger phrase from its model card; without it the style barely shows.
         style = "Art Deco watercolor style",
     )
     b.e("what.text", "plain.prompt")
@@ -3210,8 +3207,7 @@ def face_fix() -> B:
         label = "Repaint face",
         model = IMAGE,
         prompt = "a detailed natural face, sharp eyes, soft light",
-        # Repaint over the whole picture with the face mask: the masked-crop path upscales the crop and pastes it back
-        # oversized on FLUX.2-klein.
+        # Repaint the whole picture with the face mask: the masked-crop path pastes the crop back oversized on FLUX.2-klein.
         strength = 0.6,
         seed = 4,
     )
@@ -3248,7 +3244,6 @@ def outpaint() -> B:
     b.n("what", "input.text", 0, 1, value = "a quiet harbour town at sunset, boats on calm water")
     b.n("draw", "image.generate", 1, 1, label = "Square", model = IMAGE, size = "768x768", seed = 2)
     b.e("what.text", "draw.prompt")
-    # 768 + 2 x 192 keeps the canvas under 1 MP, which FLUX.2 inpaints without rescaling.
     b.n("wide", "image.pad", 2, 1, left = 192, right = 192, top = 0, bottom = 0, feather = 24)
     b.e("draw.image", "wide.image")
     b.n("fill", "image.generate", 3, 1, label = "Paint the sides", model = IMAGE, strength = 1.0, seed = 2)
@@ -3442,7 +3437,6 @@ def review_insights() -> B:
         x = "topic",
         y = ["n"],
     )
-    # `group` on b.n names a frame, so set the chart's series column directly.
     b.doc["nodes"][-1]["params"]["group"] = "sentiment"
     b.e("mix.table", "plot.table")
     b.n(
@@ -3594,7 +3588,6 @@ def background_swap() -> B:
         label = "Place product",
         x = 0.5,
         y = 0.62,
-        # Width as a share of the scene: most products are taller than wide, so a third keeps them on the counter.
         scale = 0.32,
     )
     b.e("backdrop.image", "place.image")
@@ -4267,7 +4260,6 @@ def campaign_kit() -> B:
     b.n("ads", "logic.collect", 6, 1)
     for fid, *_ in formats:
         b.e(f"{fid}_ad.image", "ads.items")
-    # Shown as a list, not a grid: a grid crops every cell square, which would hide what each format looks like.
     b.n("show", "output.preview", 7, 0.5, label = "Ad set")
     b.e("ads.list", "show.value")
     b.n("save", "output.library", 7, 1.6, folder = "Campaigns")

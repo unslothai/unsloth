@@ -345,7 +345,6 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_flows_schema(conn: sqlite3.Connection) -> None:
-    """Flows: documents, run history with replayable events, node results, the output cache and player saves."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS flows (
@@ -431,8 +430,7 @@ def _ensure_flows_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # What the owner approved a flow to do (Python code by hash, HTTP hosts, MCP, providers, triggers). Kept out of the
-    # flow document, which any editor or import can write.
+    # What the owner approved a flow to do; kept out of the document, which any editor or import can write.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS flow_capabilities (

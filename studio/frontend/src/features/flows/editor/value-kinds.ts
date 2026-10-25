@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Structured result values (tables, charts, heatmaps, tensors): shapes, guards and text exports. No React. */
 
 export interface TableColumn {
   id: string;
@@ -16,7 +15,6 @@ export interface TableValue {
   columns: TableColumn[];
   rows: Record<string, unknown>[] | unknown[][];
   meta?: Record<string, unknown>;
-  /** Set when only a preview of the rows is inline; the whole table is the JSON asset at `ref`. */
   row_count?: number;
   ref?: string;
 }
@@ -83,7 +81,6 @@ const isSeries = (s: unknown) =>
   (s.error === undefined || Array.isArray(s.error));
 const isMatrix = (m: unknown) => Array.isArray(m) && m.every(Array.isArray);
 
-/** The structured kind of `value`, or null when it is anything else (those keep their existing rendering). */
 export function structuredKind(value: unknown): StructuredKind | null {
   if (!isObject(value)) return null;
   // Element shapes are checked too: a lookalike JSON value falls back to the JSON view instead of breaking a viewer.
@@ -117,7 +114,6 @@ export function structuredKind(value: unknown): StructuredKind | null {
   }
 }
 
-/** Rows as objects keyed by column id (tables may carry rows as arrays). */
 export function tableRows(table: TableValue): Record<string, unknown>[] {
   return table.rows.map((row) =>
     Array.isArray(row)
@@ -142,7 +138,6 @@ export function formatCell(value: unknown): string {
   return String(value);
 }
 
-/** Stable sort by one column: numbers numerically, empty cells last, everything else as text. */
 export function sortRows(
   rows: Record<string, unknown>[],
   column: string,
@@ -151,8 +146,7 @@ export function sortRows(
   const sign = descending ? -1 : 1;
   const asNumber = (v: unknown): number =>
     typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
-  // One ordering per column (a mix would not sort consistently): by value when every cell is a number,
-  // including numbers stored as text ("10", "2"), else as text.
+  // One ordering per column: numeric when every cell is a number (numbers stored as text included), else text.
   const numeric = rows.every((row) => {
     const v = row[column];
     return v === null || v === undefined || Number.isFinite(asNumber(v));
@@ -209,7 +203,6 @@ export function tableToMarkdown(table: TableValue): string {
   return [head, rule, ...body].join("\n");
 }
 
-/** One short line for node previews, e.g. "Table: 12 rows x 4 columns". */
 export function structuredSummary(value: StructuredValue): string {
   switch (value.kind) {
     case "table": {
@@ -225,7 +218,6 @@ export function structuredSummary(value: StructuredValue): string {
   }
 }
 
-/** Min, max, mean of the finite numbers in a nested array (tensor and heatmap stats). */
 export function numericStats(
   data: unknown,
 ): { min: number; max: number; mean: number; count: number } | null {
@@ -248,7 +240,6 @@ export function numericStats(
   return count ? { min, max, mean: sum / count, count } : null;
 }
 
-/** A 2-D tensor with inline data views as a heatmap; anything else shows shape and stats only. */
 export function tensorAsHeatmap(tensor: TensorValue): HeatmapValue | null {
   if (tensor.shape.length !== 2 || !Array.isArray(tensor.data)) return null;
   const [h, w] = tensor.shape;
@@ -274,7 +265,6 @@ export function tensorAsHeatmap(tensor: TensorValue): HeatmapValue | null {
   };
 }
 
-/** Map a value in [lo, hi] to a colour: sequential dark-to-bright, or blue-white-red when diverging. */
 export function heatColor(
   value: number | null,
   lo: number,
@@ -295,7 +285,6 @@ export function heatColor(
   return `rgb(${r},${g},${b})`;
 }
 
-/** A line over numbers (context sizes, steps) is spaced by value, not drawn as evenly spaced labels. */
 export function numericChartX(chart: Pick<ChartValue, "type" | "x">): boolean {
   return (
     chart.type === "line" &&

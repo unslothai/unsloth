@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_flows_editor.py: the real Flows gallery and editor against an
-// in-memory backend (catalog from tests/fixtures/flows-catalog.json, simulated runs streaming real SSE frames).
-// No auth, GPU or model. `?flow=perf&nodes=1000` opens a generated 1000-node / 1500-edge graph for
-// the frame-rate and render-isolation measurements; `?flow=story` opens the story template.
+// Harness for tests/studio/playwright_flows_editor.py on an in-memory backend; `?flow=perf&nodes=1000` opens the perf graph.
 
 import "@/index.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -241,7 +238,6 @@ function simulateRun(
     });
     for (const l of run.listeners) l();
   };
-  // Topological order over data edges; story/player nodes are compiled, not run.
   const indeg = new Map(doc.nodes.map((n) => [n.id, 0]));
   for (const e of doc.edges)
     if (e.kind === "data") indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1);
