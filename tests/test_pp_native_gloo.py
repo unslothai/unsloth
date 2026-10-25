@@ -63,7 +63,14 @@ ARCHS = {"llama": LLAMA, "qwen3": QWEN3, "gemma2": GEMMA2, "gemma3": GEMMA3, "mi
 N_LAYERS = 6
 
 
-def build(repo, layers = N_LAYERS, lora = True, seed = 0, tie = None, **lora_kwargs):
+def build(
+    repo,
+    layers = N_LAYERS,
+    lora = True,
+    seed = 0,
+    tie = None,
+    **lora_kwargs,
+):
     from transformers import AutoConfig, AutoModelForCausalLM
 
     probe = AutoConfig.from_pretrained(repo)
@@ -87,13 +94,20 @@ def build(repo, layers = N_LAYERS, lora = True, seed = 0, tie = None, **lora_kwa
         return model.train()
     from peft import LoraConfig, get_peft_model
 
-    kw = dict(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0)
+    kw = dict(
+        r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
+    )
     kw.update(lora_kwargs)
     torch.manual_seed(seed + 1)
     return get_peft_model(model, LoraConfig(**kw)).train()
 
 
-def batch(model, bsz = 4, seq = 8, seed = 1):
+def batch(
+    model,
+    bsz = 4,
+    seq = 8,
+    seed = 1,
+):
     vocab = ppn._text_config(model).vocab_size
     g = torch.Generator().manual_seed(seed)
     ids = torch.randint(0, vocab, (bsz, seq), generator = g)
@@ -112,7 +126,13 @@ def _clip_fp64(params, max_norm):
     return float(total)
 
 
-def _reference(model, ids, labels, steps, clip = 1.0):
+def _reference(
+    model,
+    ids,
+    labels,
+    steps,
+    clip = 1.0,
+):
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr = 1e-2, foreach = False)
     losses, norms, grads, hidden = [], [], None, None
@@ -120,7 +140,11 @@ def _reference(model, ids, labels, steps, clip = 1.0):
         out = model(input_ids = ids, labels = labels, use_cache = False, output_hidden_states = step == 0)
         out.loss.backward()
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
             hidden = [h.detach().clone() for h in out.hidden_states]
         norms.append(_clip_fp64(params, clip))
         opt.step()
@@ -129,16 +153,29 @@ def _reference(model, ids, labels, steps, clip = 1.0):
     return {"losses": losses, "norms": norms, "grads": grads, "hidden": hidden}
 
 
-def _pp_run(model, pp, ids, labels, steps, clip = 1.0):
+def _pp_run(
+    model,
+    pp,
+    ids,
+    labels,
+    steps,
+    clip = 1.0,
+):
     params = pp.parameters()
     opt = torch.optim.AdamW(params, lr = 1e-2, foreach = False)
     outs = []
-    handle = pp.module.register_forward_hook(lambda m, a, k, o: outs.append(o.detach().clone()), with_kwargs = True)
+    handle = pp.module.register_forward_hook(
+        lambda m, a, k, o: outs.append(o.detach().clone()), with_kwargs = True
+    )
     losses, norms, grads = [], [], None
     for step in range(steps):
         loss = pp.step(ids, labels)
         if step == 0:
-            grads = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+            grads = {
+                n: p.grad.detach().clone()
+                for n, p in model.named_parameters()
+                if p.grad is not None
+            }
             handle.remove()
         norms.append(float(pp.clip_grad_norm_(1.0 if clip is None else clip)))
         opt.step()
@@ -149,11 +186,20 @@ def _pp_run(model, pp, ids, labels, steps, clip = 1.0):
 
 def _read_adapter(path):
     from safetensors.torch import load_file
-
     return load_file(os.path.join(path, "adapter_model.safetensors"))
 
 
-def _case_parity(rank, world, tmp, arch, schedule = "gpipe", n_mb = 2, gc = False, steps = 3, tie = None):
+def _case_parity(
+    rank,
+    world,
+    tmp,
+    arch,
+    schedule = "gpipe",
+    n_mb = 2,
+    gc = False,
+    steps = 3,
+    tie = None,
+):
     from torch.distributed.device_mesh import init_device_mesh
 
     repo = ARCHS[arch]
@@ -185,7 +231,11 @@ def _case_parity(rank, world, tmp, arch, schedule = "gpipe", n_mb = 2, gc = Fals
     except RuntimeError as exc:
         direct_error = str(exc)
     owned = {n for n, p in model.named_parameters() if p.requires_grad}
-    trained = {n.replace(".default.", "."): p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
+    trained = {
+        n.replace(".default.", "."): p.detach().clone()
+        for n, p in model.named_parameters()
+        if p.requires_grad
+    }
     return {
         "ref": {k: v for k, v in ref_res.items() if k != "hidden"},
         "hidden": ref_res["hidden"],
@@ -212,7 +262,9 @@ def _case_ga(rank, world, tmp, arch, n_mb):
     n_items = int((labels[:, 1:] != -100).sum())
     total = 0.0
     for chunk_ids, chunk_labels in zip(ids.chunk(n_mb), labels.chunk(n_mb)):
-        out = ref(input_ids = chunk_ids, labels = chunk_labels, num_items_in_batch = n_items, use_cache = False)
+        out = ref(
+            input_ids = chunk_ids, labels = chunk_labels, num_items_in_batch = n_items, use_cache = False
+        )
         out.loss.backward()
         total += float(out.loss)
     ga_grads = {n: p.grad.detach().clone() for n, p in ref.named_parameters() if p.grad is not None}
@@ -271,9 +323,12 @@ def _case_refusals(rank, world, tmp):
 
     catch("tied_trainable", tied_trainable)
     catch("too_many_stages", lambda: ppn.apply_pipeline_parallel(build(LLAMA, layers = 1), mesh))
-    catch("mesh_2d", lambda: ppn.apply_pipeline_parallel(
-        build(LLAMA), init_device_mesh("cpu", (1, world), mesh_dim_names = ("dp", "pp"))
-    ))
+    catch(
+        "mesh_2d",
+        lambda: ppn.apply_pipeline_parallel(
+            build(LLAMA), init_device_mesh("cpu", (1, world), mesh_dim_names = ("dp", "pp"))
+        ),
+    )
 
     def old_zoo_1f1b():
         fake = types.ModuleType("unsloth_zoo.gradient_checkpointing")
@@ -281,7 +336,9 @@ def _case_refusals(rank, world, tmp):
         sys.modules["unsloth_zoo.gradient_checkpointing"] = fake
         try:
             model = build(LLAMA)
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs = {"use_reentrant": True}
+            )
             ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 2, schedule = "1f1b")
         finally:
             if saved is None:
@@ -298,7 +355,9 @@ def _case_refusals(rank, world, tmp):
         sys.modules["unsloth_zoo.gradient_checkpointing"] = fake
         try:
             model = build(LLAMA)
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs = {"use_reentrant": True}
+            )
             pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = 2, schedule = "1f1b")
             assert pp.schedule == "1f1b"
         finally:
@@ -337,7 +396,9 @@ def _import_checkout_unsloth():
         del sys.modules[name]
     sys.path.insert(0, REPO)
     try:
-        spec = importlib.util.spec_from_file_location("_pp_conftest", os.path.join(REPO, "tests", "conftest.py"))
+        spec = importlib.util.spec_from_file_location(
+            "_pp_conftest", os.path.join(REPO, "tests", "conftest.py")
+        )
         spec.loader.exec_module(importlib.util.module_from_spec(spec))  # conftest's device spoof
         import unsloth
     except Exception as e:  # a CPU host that refuses `import unsloth`
@@ -387,7 +448,9 @@ def _case_guards(rank, world, tmp):
         res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
         res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
         if name != "decoder":
-            res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = torch.zeros(1, 2, dtype = torch.long)))
+            res[f"generate:{name}"] = _raised(
+                lambda: level.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
+            )
             res[f"trainer:{name}"] = _raised(lambda: transformers.Trainer(model = level, args = args))
             res[f"model_init:{name}"] = _raised(
                 lambda: transformers.Trainer(model_init = lambda: level, args = args)
@@ -400,7 +463,13 @@ def _case_guards(rank, world, tmp):
     return res
 
 
-CASES = {"guards": _case_guards, "parity": _case_parity, "ga": _case_ga, "scaler": _case_scaler, "refusals": _case_refusals}
+CASES = {
+    "guards": _case_guards,
+    "parity": _case_parity,
+    "ga": _case_ga,
+    "scaler": _case_scaler,
+    "refusals": _case_refusals,
+}
 
 
 def _free_port():
@@ -423,7 +492,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group("gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 180))
+    dist.init_process_group(
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 180)
+    )
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -431,12 +502,18 @@ def _worker(rank, world, port, case, tmp, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, keep = None, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    keep = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
         procs = [
-            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs)) for r in range(world)
+            ctx.Process(target = _worker, args = (r, world, port, case, tmp, kwargs))
+            for r in range(world)
         ]
         for p in procs:
             p.start()
@@ -444,7 +521,10 @@ def _spawn(case, world = 2, keep = None, **kwargs):
             p.join(600)
         codes = [p.exitcode for p in procs]
         assert codes == [0] * world, f"rank exit codes {codes}"
-        results = [torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)]
+        results = [
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
+        ]
         if keep is not None:
             keep["ref"] = _read_adapter(os.path.join(tmp, "ref"))
             keep["pp"] = _read_adapter(os.path.join(tmp, "pp"))
@@ -458,10 +538,22 @@ def _check_parity(results, saved, world):
     union = set()
     for rank, res in enumerate(results):
         pp = res["pp"]
-        assert pp["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (rank, pp["losses"], ref["losses"])
+        assert pp["losses"] == pytest.approx(ref["losses"], rel = 1e-5, abs = 1e-6), (
+            rank,
+            pp["losses"],
+            ref["losses"],
+        )
         # Step 0 exact to fp32; later steps carry micro-batch summation order through AdamW (lr 1e-2).
-        assert pp["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (rank, pp["norms"], ref["norms"])
-        assert pp["norms"] == pytest.approx(ref["norms"], rel = 1e-4), (rank, pp["norms"], ref["norms"])
+        assert pp["norms"][0] == pytest.approx(ref["norms"][0], rel = 1e-5), (
+            rank,
+            pp["norms"],
+            ref["norms"],
+        )
+        assert pp["norms"] == pytest.approx(ref["norms"], rel = 1e-4), (
+            rank,
+            pp["norms"],
+            ref["norms"],
+        )
         assert set(pp["grads"]) == res["owned"], sorted(set(pp["grads"]) ^ res["owned"])[:6]
         assert not union & set(pp["grads"]), "a trainable parameter lives on two stages"
         union |= set(pp["grads"])
@@ -470,13 +562,17 @@ def _check_parity(results, saved, world):
         start, end = res["bounds"][rank]
         if rank < world - 1:
             # Stage output = the 1-process hidden state entering layer `end`, micro-batch by micro-batch.
-            torch.testing.assert_close(torch.cat(pp["outs"]), res["hidden"][end], rtol = 1e-5, atol = 1e-5)
+            torch.testing.assert_close(
+                torch.cat(pp["outs"]), res["hidden"][end], rtol = 1e-5, atol = 1e-5
+            )
         else:
             assert all(o.dim() == 0 for o in pp["outs"])
         # A stage keeps the embedding / lm_head module only if it owns it.
         assert res["alive"] == {"embed": rank == 0, "head": rank == world - 1}, (rank, res["alive"])
         assert res["flag"]
-        assert "generation is not supported on a pipeline parallel model" in (res["generate_error"] or "")
+        assert "generation is not supported on a pipeline parallel model" in (
+            res["generate_error"] or ""
+        )
         assert "split for pipeline parallelism" in (res["direct_error"] or "")
     assert union == set(ref["grads"]), sorted(union ^ set(ref["grads"]))[:6]
     assert set(saved["pp"]) == set(saved["ref"]), sorted(set(saved["pp"]) ^ set(saved["ref"]))[:6]
@@ -489,7 +585,9 @@ def _check_parity(results, saved, world):
     for key, value in saved["ref"].items():
         # 3 AdamW steps (lr 1e-2) amplify fp32 micro-batch summation order (1e-6 grads) up to ~4e-4.
         diff = float((saved["pp"][key] - value).abs().max())
-        torch.testing.assert_close(saved["pp"][key], value, rtol = 1e-3, atol = 2e-3, msg = f"{key}: {diff}")
+        torch.testing.assert_close(
+            saved["pp"][key], value, rtol = 1e-3, atol = 2e-3, msg = f"{key}: {diff}"
+        )
 
 
 @pytest.mark.parametrize("arch", sorted(ARCHS))
@@ -513,7 +611,9 @@ def test_pp2_gradient_checkpointing_matches_one_process(schedule):
 
 def test_pp4_1f1b_matches_one_process():
     saved = {}
-    _check_parity(_spawn("parity", 4, keep = saved, arch = "mistral", schedule = "1f1b", n_mb = 4), saved, 4)
+    _check_parity(
+        _spawn("parity", 4, keep = saved, arch = "mistral", schedule = "1f1b", n_mb = 4), saved, 4
+    )
 
 
 def test_pp2_tied_embeddings_kept_on_both_ends():
@@ -542,15 +642,18 @@ def test_pp2_grad_scaler_found_inf_is_max_over_stages():
 def test_pp2_refusals():
     out = _spawn("refusals", 2)[0]
     assert "mixture-of-experts" in (out["moe"] or ""), out["moe"]
-    assert "mixture-of-experts" in (out["mla"] or "") or "latent attention" in (out["mla"] or ""), out["mla"]
+    assert "mixture-of-experts" in (out["mla"] or "") or "latent attention" in (
+        out["mla"] or ""
+    ), out["mla"]
     assert "tied input / output embeddings" in (out["tied_trainable"] or ""), out["tied_trainable"]
     assert "at least one layer per stage" in (out["too_many_stages"] or ""), out["too_many_stages"]
     assert "1-D pp mesh" in (out["mesh_2d"] or ""), out["mesh_2d"]
     assert "PR #2071" in (out["old_zoo_1f1b"] or ""), out["old_zoo_1f1b"]
     assert out["new_zoo_1f1b"] is None, out["new_zoo_1f1b"]
-    assert "packed sequences" in out["step_errors"] and "multiple of n_microbatches" in out["step_errors"], out[
-        "step_errors"
-    ]
+    assert (
+        "packed sequences" in out["step_errors"]
+        and "multiple of n_microbatches" in out["step_errors"]
+    ), out["step_errors"]
 
 
 def test_split_layers_balances_lm_head():
@@ -607,20 +710,34 @@ def test_pp2_entry_points_are_refused():
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
     for res in results:
-        assert res.pop("unsloth_format") == "tuple"  # LlamaModel_fast_forward reads layer_outputs[0]
+        assert (
+            res.pop("unsloth_format") == "tuple"
+        )  # LlamaModel_fast_forward reads layer_outputs[0]
         for key, value in res.items():
             if key.startswith("is_pp:"):
                 assert value is True, key
             elif key.startswith("fsdp2:"):
-                assert value and "does not compose with Unsloth pipeline parallelism" in value, (key, value)
+                assert value and "does not compose with Unsloth pipeline parallelism" in value, (
+                    key,
+                    value,
+                )
             elif key.startswith("tp:"):
-                assert value and "does not compose with Unsloth pipeline parallelism" in value, (key, value)
+                assert value and "does not compose with Unsloth pipeline parallelism" in value, (
+                    key,
+                    value,
+                )
             elif "for_inference" in key:
                 assert value and "not supported on a pipeline parallel model" in value, (key, value)
             elif key.startswith("generate:"):
-                assert value and "generation is not supported on a pipeline parallel model" in value, (key, value)
+                assert (
+                    value and "generation is not supported on a pipeline parallel model" in value
+                ), (key, value)
             elif key.startswith(("trainer:", "model_init:")):
-                assert value and "pipeline parallel model (apply_pipeline_parallel) cannot be trained" in value, (
+                assert (
+                    value
+                    and "pipeline parallel model (apply_pipeline_parallel) cannot be trained"
+                    in value
+                ), (
                     key,
                     value,
                 )

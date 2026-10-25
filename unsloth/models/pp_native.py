@@ -305,9 +305,10 @@ def _refuse_unsupported(model, parts):
         from torch.distributed.tensor import DTensor
     except ImportError:
         DTensor = ()
-    if any(isinstance(p, DTensor) for p in model.parameters()) or (
-        getattr(model, "tp_size", None) or 1
-    ) > 1:
+    if (
+        any(isinstance(p, DTensor) for p in model.parameters())
+        or (getattr(model, "tp_size", None) or 1) > 1
+    ):
         raise ValueError(
             "Unsloth: this model is already distributed (DTensor parameters or a transformers tp_plan); "
             "load it without tp_plan before apply_pipeline_parallel."
@@ -372,9 +373,11 @@ def _layer_call_format(decoder, layers_name):
                 formats.add("tuple")
         # A layer handed to a checkpoint function would run the pass-through inside the checkpoint.
         for node in ast.walk(body):
-            if isinstance(node, ast.Call) and any(
-                var in ast.unparse(a) for a in node.args
-            ) and "checkpoint" in ast.unparse(node.func).lower():
+            if (
+                isinstance(node, ast.Call)
+                and any(var in ast.unparse(a) for a in node.args)
+                and "checkpoint" in ast.unparse(node.func).lower()
+            ):
                 if "GradientCheckpointingLayer" not in text:
                     formats.add("checkpointed")
     if "checkpointed" in formats:
@@ -403,13 +406,16 @@ def _weight_elements(p):
 
 
 def _layer_cost(layer):
-    total = sum(
-        _weight_elements(p) for name, p in layer.named_parameters() if "lora_" not in name
-    )
+    total = sum(_weight_elements(p) for name, p in layer.named_parameters() if "lora_" not in name)
     return max(total, 1)
 
 
-def split_layers(costs, num_stages, last_extra = 0.0, first_extra = 0.0):
+def split_layers(
+    costs,
+    num_stages,
+    last_extra = 0.0,
+    first_extra = 0.0,
+):
     """Contiguous [start, end) ranges (>= 1 layer each) minimizing the largest stage cost."""
     n = len(costs)
     if num_stages < 1 or num_stages > n:
@@ -450,7 +456,11 @@ def split_layers(costs, num_stages, last_extra = 0.0, first_extra = 0.0):
     return bounds[::-1]
 
 
-def derive_pp_split(model, num_stages, config: Optional[PPConfig] = None):
+def derive_pp_split(
+    model,
+    num_stages,
+    config: Optional[PPConfig] = None,
+):
     """[(start, end)] decoder layer ranges per stage (dry run: no change to the model)."""
     config = config or PPConfig()
     parts = _find_parts(model)
@@ -489,7 +499,9 @@ def _simple_attrs(module):
 
 try:
     from transformers.modeling_layers import GradientCheckpointingLayer as _CheckpointLayer
-except Exception:  # transformers without GradientCheckpointingLayer: forwards checkpoint by isinstance
+except (
+    Exception
+):  # transformers without GradientCheckpointingLayer: forwards checkpoint by isinstance
     _CheckpointLayer = nn.Module
 
 
@@ -619,7 +631,9 @@ class _PPStageModule(nn.Module):
             ctx.active = False
             ctx.stage_input = None
         if not ctx.is_last:
-            raise RuntimeError("Unsloth: a pipeline stage finished its forward without reaching its boundary.")
+            raise RuntimeError(
+                "Unsloth: a pipeline stage finished its forward without reaching its boundary."
+            )
         loss = getattr(out, "loss", None)
         if loss is None and isinstance(out, (tuple, list)):
             loss = out[0]
@@ -648,8 +662,14 @@ def _zoo_slot_lease_present():
 
 def _check_schedule(model, schedule):
     if schedule not in _SCHEDULES:
-        raise ValueError(f"Unsloth: pipeline schedule must be one of {_SCHEDULES}, got {schedule!r}.")
-    if schedule == "1f1b" and _gradient_checkpointing_on(model) and _zoo_slot_lease_present() is False:
+        raise ValueError(
+            f"Unsloth: pipeline schedule must be one of {_SCHEDULES}, got {schedule!r}."
+        )
+    if (
+        schedule == "1f1b"
+        and _gradient_checkpointing_on(model)
+        and _zoo_slot_lease_present() is False
+    ):
         raise ValueError(
             "Unsloth: the 1F1B pipeline schedule interleaves forwards and backwards, which this "
             "unsloth_zoo's smart gradient checkpointing does not support (offloaded activations of a pending "
@@ -671,7 +691,9 @@ def _refuse_generate(*args, **kwargs):
 class PipelineParallel:
     """This rank's pipeline stage of a model split by apply_pipeline_parallel."""
 
-    def __init__(self, model, mesh, parts, bounds, n_microbatches, schedule, config, tuple_format, dtype):
+    def __init__(
+        self, model, mesh, parts, bounds, n_microbatches, schedule, config, tuple_format, dtype
+    ):
         import torch.distributed as dist
 
         self.model = model
@@ -768,7 +790,14 @@ class PipelineParallel:
             self._shapes.popitem(last = False)
         return schedule
 
-    def step(self, input_ids, labels, num_items_in_batch = None, scaler = None, **kwargs):
+    def step(
+        self,
+        input_ids,
+        labels,
+        num_items_in_batch = None,
+        scaler = None,
+        **kwargs,
+    ):
         """Forward + backward of one optimizer step's batch (the same batch on every pp rank), split into
         n_microbatches micro-batches. Gradients accumulate into this stage's parameters (call
         optimizer.zero_grad between steps). Returns the batch loss (sum over tokens / num_items_in_batch,
@@ -782,7 +811,9 @@ class PipelineParallel:
                 f"{unknown} (packed sequences / extra inputs are v2)."
             )
         if labels is None:
-            raise ValueError("Unsloth: PipelineParallel.step needs labels (the last stage computes the loss).")
+            raise ValueError(
+                "Unsloth: PipelineParallel.step needs labels (the last stage computes the loss)."
+            )
         if input_ids.dim() != 2 or tuple(labels.shape) != tuple(input_ids.shape):
             raise ValueError(
                 f"Unsloth: PipelineParallel.step takes [batch, seq] input_ids and labels, got "
@@ -798,7 +829,9 @@ class PipelineParallel:
             # Tokens the loss averages over in one process: shifted labels that are not ignored.
             num_items_in_batch = int((labels[:, 1:] != -100).sum())
         if isinstance(num_items_in_batch, torch.Tensor):
-            num_items_in_batch = int(num_items_in_batch)  # a non-tensor kwarg is replicated per micro-batch
+            num_items_in_batch = int(
+                num_items_in_batch
+            )  # a non-tensor kwarg is replicated per micro-batch
         num_items_in_batch = max(num_items_in_batch, 1)
         device = self.device
         schedule = self._schedule_for(bsz // m, seq)
@@ -817,7 +850,9 @@ class PipelineParallel:
         step_kwargs["labels"] = labels.to(device)
         step_kwargs["num_items_in_batch"] = num_items_in_batch
         if scaler is not None and scaler.is_enabled():
-            scaler.scale(torch.zeros((), device = device))  # every stage's scaler holds the scale (unscale_)
+            scaler.scale(
+                torch.zeros((), device = device)
+            )  # every stage's scaler holds the scale (unscale_)
             self._scaler = scaler
         self._mb_losses = []
         args = (input_ids.to(device),) if self.is_first else ()
@@ -828,7 +863,9 @@ class PipelineParallel:
             self._scaler = None
         if self.is_last:
             if len(self._mb_losses) != m:
-                raise RuntimeError(f"Unsloth: expected {m} micro-batch losses, got {len(self._mb_losses)}.")
+                raise RuntimeError(
+                    f"Unsloth: expected {m} micro-batch losses, got {len(self._mb_losses)}."
+                )
             total = torch.stack([l.float() for l in self._mb_losses]).sum().reshape(1).to(device)
             self._mb_losses = []
         else:
@@ -837,7 +874,12 @@ class PipelineParallel:
             dist.broadcast(total, src = self._global_ranks[-1], group = self.group)
         return total[0]
 
-    def clip_grad_norm_(self, max_norm, parameters = None, eps = 1e-6):
+    def clip_grad_norm_(
+        self,
+        max_norm,
+        parameters = None,
+        eps = 1e-6,
+    ):
         """Clip by the global 2-norm over every stage (squares summed over pp). Returns the norm."""
         import torch.distributed as dist
 
@@ -877,7 +919,9 @@ class PipelineParallel:
             t.copy_(total.to(t.device).reshape(t.shape))
 
     def _adapters(self, kwargs):
-        adapters = kwargs.get("selected_adapters") or list(getattr(self.model, "peft_config", {}) or {})
+        adapters = kwargs.get("selected_adapters") or list(
+            getattr(self.model, "peft_config", {}) or {}
+        )
         if not adapters:
             raise ValueError("Unsloth: PipelineParallel.save_adapter needs a PEFT model.")
         return list(adapters)
@@ -920,7 +964,12 @@ class PipelineParallel:
 
             selection = peft_model.get_peft_model_state_dict
 
-            def gathered(model, state_dict = None, adapter_name = "default", **unused):
+            def gathered(
+                model,
+                state_dict = None,
+                adapter_name = "default",
+                **unused,
+            ):
                 return merged[adapter_name]
 
             kwargs.pop("state_dict", None)
@@ -937,7 +986,6 @@ class PipelineParallel:
 
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
-
     with torch.no_grad():
         for param in model.parameters():
             if param.requires_grad:
