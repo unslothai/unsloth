@@ -57,4 +57,6 @@ def test_norm_compiles_with_dynamic_width(kind, trainable, tabled, monkeypatch):
         torch.testing.assert_close(out, ref)
         out.float().square().sum().backward()
         ref.float().square().sum().backward()
-        torch.testing.assert_close(x.grad, x_ref.grad)
+        # torch < 2.12 can launch the compiled dX with another reduction order: both sit ~5e-3 from fp64
+        # here, and differ from each other by up to ~2e-3 in fp16.
+        torch.testing.assert_close(x.grad, x_ref.grad, atol = 5e-3, rtol = 2e-2)

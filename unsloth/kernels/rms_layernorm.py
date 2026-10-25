@@ -548,7 +548,8 @@ def _settings(
     dw = False,
 ):
     # Cached per (width, device) for eager calls (host bound at small shapes); tracing calls it directly.
-    if torch.compiler.is_compiling():
+    # A symbolic width (fake run under dynamic=True; torch < 2.12 reports is_compiling() False there) is unhashable.
+    if torch.compiler.is_compiling() or not isinstance(n_cols, int):
         return _arch_settings(n_cols, device, dw)
     return _cached_arch_settings(n_cols, device, dw)
 
