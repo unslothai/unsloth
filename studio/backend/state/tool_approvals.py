@@ -115,8 +115,7 @@ def begin_tool_decision(session_id, approval_id) -> dict:
 
 
 def note_host_access(approval_id, tool_name, arguments) -> None:
-    """Flag a registered call whose approval would let it reach host paths, so ``/tool-confirm`` can
-    refuse that approval to an API key. A no-op for an id with no slot."""
+    """Flag a registered call whose approval would reach host paths, so ``/tool-confirm`` can refuse it to an API key."""
     if not approval_id:
         return
     from core.inference.tools import approval_grants_host_access

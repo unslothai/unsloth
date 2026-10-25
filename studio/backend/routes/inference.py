@@ -23178,8 +23178,7 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
-    # Approving a call that names host paths runs it outside the OS sandbox: like Full access and
-    # Sandbox Low, that is the Unsloth UI's to choose, not an API key's. Deny stays open to everyone.
+    # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
     if (
         request.decision == "allow"
         and auth_policy.api_full_access_refused()

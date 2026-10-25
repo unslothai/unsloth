@@ -10307,7 +10307,6 @@ def approval_grants_host_access(name: str, arguments) -> bool:
 def _api_host_access_refused() -> bool:
     """An API-key request keeps the OS sandbox even after an approval, like Full access (#14345, #14422)."""
     from auth.policy import api_full_access_refused
-
     return api_full_access_refused()
 
 
@@ -24142,7 +24141,6 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
-        # An API-key request's approval is dropped in _prepare_tool_launch, which also moves the call to required.
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
         # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
         # advertised) but runs it with software safeguards (_prepare_tool_launch).
