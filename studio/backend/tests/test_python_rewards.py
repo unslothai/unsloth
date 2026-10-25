@@ -253,6 +253,45 @@ def test_rendered_turns_drop_padded_tool_call_arguments():
     assert args == {"a": 1}
 
 
+def test_superseded_previews_are_bounded_and_not_kept_warm(monkeypatch):
+    release, started = threading.Event(), []
+
+    class Slow:
+        isolation = {}
+
+        def __init__(self):
+            self.closed = False
+            started.append(self)
+
+        def score(self, names, *_):
+            release.wait(10)
+            return {names[0]: [1.0]}
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(python_rewards, "_start_preview_worker", lambda specs, mode: Slow())
+    monkeypatch.setattr(python_rewards, "_previews", {})
+
+    def spec(n):
+        return [{"name": "r", "entry": "reward", "code": f"# {n}"}]
+
+    def run(n):
+        python_rewards.preview_python_scores(spec(n), "x", {}, owner = "acct")
+
+    threads = [threading.Thread(target = run, args = (n,)) for n in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.3)
+    with pytest.raises(python_rewards.PythonRewardError, match = "still scoring"):
+        run(2)
+    release.set()
+    for t in threads:
+        t.join(10)
+    assert len(started) == 2 and started[0].closed and not started[1].closed
+    python_rewards._close_preview()
+
+
 def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [

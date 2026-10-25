@@ -11,6 +11,7 @@ user opted into ``auto`` (software safeguards), and records which one it got in 
 from __future__ import annotations
 
 import atexit
+import itertools
 import json
 import logging
 import math
@@ -388,6 +389,9 @@ _preview_lock = threading.Lock()
 # Warm Try it workers by key: at most one idle per account, and none is closed while it scores.
 _previews: dict[str, dict[str, Any]] = {}
 PREVIEW_IDLE_SECONDS = 120.0
+# Workers one account may have scoring older code while a new edit asks for another.
+PREVIEWS_IN_FLIGHT = 2
+_preview_seq = itertools.count()
 
 
 def _drop_preview(key: str, entry: dict[str, Any]) -> None:
@@ -443,12 +447,25 @@ def preview_python_scores(
     with _preview_lock:
         entry = _previews.get(key)
         if entry is None:
+            # A slow reward and quick edits would otherwise start a worker per edit.
+            if sum(o["owner"] == owner and o["busy"] > 0 for o in _previews.values()) >= (
+                PREVIEWS_IN_FLIGHT
+            ):
+                raise PythonRewardError(
+                    "An earlier Try it is still scoring; try again when it finishes."
+                )
             # The account's other idle workers hold older code.
             for other_key, other in list(_previews.items()):
                 if other["owner"] == owner and not other["busy"]:
                     del _previews[other_key]
                     stale.append(other)
-            entry = {"owner": owner, "worker": None, "timer": None, "busy": 0}
+            entry = {
+                "owner": owner,
+                "worker": None,
+                "timer": None,
+                "busy": 0,
+                "seq": next(_preview_seq),
+            }
             entry["start"] = threading.Lock()
             _previews[key] = entry
         if entry["timer"] is not None:
@@ -477,8 +494,11 @@ def preview_python_scores(
     finally:
         with _preview_lock:
             entry["busy"] -= 1
-            if failed and _previews.get(key) is entry:
-                # A failed worker is not reused; whoever finishes last closes it.
+            superseded = any(
+                o["owner"] == owner and o["seq"] > entry["seq"] for o in _previews.values()
+            )
+            if (failed or (superseded and not entry["busy"])) and _previews.get(key) is entry:
+                # A failed or superseded worker is not reused; whoever finishes last closes it.
                 del _previews[key]
             idle = not entry["busy"]
             mapped = _previews.get(key) is entry
