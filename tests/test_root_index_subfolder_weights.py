@@ -29,7 +29,6 @@ LISTING = ["config.json", "model.safetensors.index.json", SHARD, VISION, "transf
 
 @pytest.fixture
 def hub(tmp_path, monkeypatch):
-    """Serve a controlled root index (None = 404), a fixed listing, and a fake downloader; returns (request, Hub calls)."""
     import huggingface_hub
 
     for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
