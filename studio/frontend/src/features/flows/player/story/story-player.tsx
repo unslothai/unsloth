@@ -49,6 +49,16 @@ import {
   useReducedMotion,
 } from "./backdrop";
 import {
+  Lanes,
+  MAX_WRITE_AHEAD_DEPTH,
+  WriteAhead,
+  historyText,
+  nextSceneRequest,
+  planWriteAhead,
+  storyContext,
+  writeKey,
+} from "./lookahead";
+import {
   CHOICE_SPEAKER,
   type StoryAction,
   type StoryState,
@@ -68,6 +78,7 @@ import {
 
 const SPEED_KEY = "unsloth.flows.player.textSpeed";
 const VOICE_KEY = "unsloth.flows.player.voice";
+const WRITE_AHEAD_KEY = "unsloth.flows.player.writeAhead";
 const SLOTS = ["1", "2", "3", "4", "5", "6"];
 const AUTO_SLOT = "story-auto";
 
@@ -87,6 +98,17 @@ function readNumber(key: string, fallback: number): number {
     return Number.isFinite(v) && v > 0 ? v : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function readWriteAhead(): number {
+  try {
+    const v = localStorage.getItem(WRITE_AHEAD_KEY);
+    if (v === null) return 1;
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n <= MAX_WRITE_AHEAD_DEPTH ? n : 1;
+  } catch {
+    return 1;
   }
 }
 
@@ -332,6 +354,7 @@ export function StoryPlayer({
   >(null);
   const [cps, setCps] = useState(() => readNumber(SPEED_KEY, 45));
   const [voiceOn, setVoiceOn] = useState(() => readNumber(VOICE_KEY, 1) === 1);
+  const [aheadDepth, setAheadDepth] = useState(readWriteAhead);
   const [painting, setPainting] = useState<Set<string>>(() => new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [autosave, setAutosave] = useState<SessionRecord | null>(null);
@@ -366,20 +389,39 @@ export function StoryPlayer({
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 2200);
   }, []);
 
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const lanes = useRef(new Lanes());
   const requested = useRef<Set<string>>(new Set());
   const heldLines = useRef<Map<string, NonNullable<StoryScene["lines"]>>>(
     new Map(),
   );
   const artEntry = manifest.entry_points?.scene_art;
   const nextEntry = manifest.entry_points?.next_scene;
+  const [writtenTick, setWrittenTick] = useState(0);
+  const writeAhead = useMemo(
+    () =>
+      new WriteAhead(
+        async (req, signal) => {
+          if (!nextEntry) throw new Error("This story has no Next Scene");
+          const res = await api.invoke(flowId, nextEntry, req, { signal });
+          const written = res.outputs.scene as StoryScene | undefined;
+          if (!written) throw new Error("The story writer returned nothing");
+          return written;
+        },
+        () => setWrittenTick((t) => t + 1),
+      ),
+    [api, flowId, nextEntry],
+  );
+  useEffect(() => {
+    writeAhead.open();
+    return () => writeAhead.close();
+  }, [writeAhead]);
   useEffect(() => {
     if (nextEntry && api.warm)
       void api.warm(flowId, nextEntry).catch(() => false);
   }, [api, flowId, nextEntry]);
 
   const paint = useCallback(
-    (target: StoryScene, rev: number) => {
+    (target: StoryScene, rev: number, current = false) => {
       if (!artEntry) return;
       const key = `${rev}:art:${target.id}`;
       if (requested.current.has(key)) return;
@@ -392,8 +434,11 @@ export function StoryPlayer({
         .join(", ");
       if (!prompt) return;
       setPainting((p) => new Set(p).add(target.id));
-      queue.current = queue.current
-        .then(() => api.invoke(flowId, artEntry, { prompt }, { rev }))
+      const job = () =>
+        lanes.current.run("art", () =>
+          api.invoke(flowId, artEntry, { prompt }, { rev }),
+        );
+      (current ? writeAhead.hold(job) : job())
         .then((res) => {
           const media = res.outputs.image as MediaValue | undefined;
           if (media)
@@ -408,68 +453,29 @@ export function StoryPlayer({
           }),
         );
     },
-    [api, artEntry, flowId, manifest.style],
+    [api, artEntry, flowId, manifest.style, writeAhead],
   );
 
-  const storyContext = useCallback(
-    (s: StoryState) => ({
-      title: manifest.title,
-      style: manifest.style,
-      characters: manifest.characters.map(({ id, name, look }) => ({
-        id,
-        name,
-        look,
-      })),
-      scenes: [
-        ...manifest.scenes.map((x) => ({ id: x.id })),
-        ...Object.keys(s.extraScenes).map((id) => ({ id })),
-      ],
-    }),
-    [manifest],
-  );
-
-  const historyText = useCallback(
-    (s: StoryState) =>
-      s.backlog.slice(-14).map((b) => {
-        if (b.speaker === CHOICE_SPEAKER) return `(Player chose: ${b.text})`;
-        const who = b.speaker
-          ? (chars.get(b.speaker)?.name ?? b.speaker)
-          : "Narrator";
-        return `${who}: ${b.text}`;
-      }),
-    [chars],
-  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only on a new playthrough
+  useEffect(() => {
+    writeAhead.reset();
+  }, [writeAhead, state.rev]);
 
   useEffect(() => {
     if (state.status !== "generating" || !state.pending || !nextEntry) return;
     const { rev } = state;
-    const { sceneId, choice } = state.pending;
-    const key = `${rev}:next:${sceneId}`;
+    const key = `${rev}:next:${state.pending.sceneId}`;
     if (requested.current.has(key)) return;
     requested.current.add(key);
     const snapshot = stateRef.current;
-    queue.current = queue.current
-      .then(() =>
-        api.invoke(
-          flowId,
-          nextEntry,
-          {
-            state: {
-              story: storyContext(snapshot),
-              scene_id: snapshot.sceneId,
-              vars: snapshot.vars,
-              history: historyText(snapshot),
-              choice,
-            },
-          },
-          { rev },
-        ),
+    const req = nextSceneRequest(manifest, snapshot);
+    if (!req || !snapshot.pending) return;
+    const asId = snapshot.pending.sceneId;
+    writeAhead
+      .take(req, writeKey(snapshot, req))
+      .then((written) =>
+        dispatch({ type: "addScene", scene: written, asId, rev }),
       )
-      .then((res) => {
-        const written = res.outputs.scene as StoryScene | undefined;
-        if (!written) throw new Error("The story writer returned nothing");
-        dispatch({ type: "addScene", scene: written, asId: sceneId, rev });
-      })
       .catch((e: unknown) =>
         dispatch({
           type: "generationFailed",
@@ -477,22 +483,38 @@ export function StoryPlayer({
           rev,
         }),
       );
+  }, [state.status, state.pending, state.rev, manifest, nextEntry, writeAhead]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-planned when the scene, playthrough or a write changes
+  useEffect(() => {
+    if (!started || !nextEntry) return;
+    if (state.status === "ended" || state.status === "error") {
+      writeAhead.plan([]);
+      return;
+    }
+    if (state.status !== "reading" && state.status !== "choosing") return;
+    writeAhead.plan(
+      planWriteAhead(manifest, stateRef.current, aheadDepth, (k) =>
+        writeAhead.written(k),
+      ),
+    );
   }, [
-    state.status,
-    state.pending,
+    started,
+    state.sceneId,
     state.rev,
-    api,
-    flowId,
+    state.status,
+    aheadDepth,
+    writtenTick,
+    manifest,
     nextEntry,
-    storyContext,
-    historyText,
+    writeAhead,
   ]);
 
   useEffect(() => {
     if (!started || !scene) return;
     const rev = state.rev;
     if (!backgroundFor(manifest, state, scene.id) && scene.generate_background)
-      paint(scene, rev);
+      paint(scene, rev, true);
     for (const id of nextSceneIds(manifest, state, scene.id)) {
       const nxt = sceneOf(manifest, state, id);
       if (nxt?.generate_background && !backgroundFor(manifest, state, id))
@@ -514,21 +536,23 @@ export function StoryPlayer({
         ]
           .filter(Boolean)
           .join(" / ");
-        queue.current = queue.current
-          .then(() =>
-            api.invoke(
-              flowId,
-              nextEntry,
-              {
-                state: {
-                  story: storyContext(snapshot),
-                  scene_id: scene.id,
-                  vars: snapshot.vars,
-                  history: historyText(snapshot),
-                  choice: `(Write the dialogue for this scene: ${brief})`,
+        writeAhead
+          .hold(() =>
+            lanes.current.run("text", () =>
+              api.invoke(
+                flowId,
+                nextEntry,
+                {
+                  state: {
+                    story: storyContext(manifest, snapshot),
+                    scene_id: scene.id,
+                    vars: snapshot.vars,
+                    history: historyText(manifest, snapshot),
+                    choice: `(Write the dialogue for this scene: ${brief})`,
+                  },
                 },
-              },
-              { rev },
+                { rev },
+              ),
             ),
           )
           .then((res) => {
@@ -1194,6 +1218,24 @@ export function StoryPlayer({
               {cps >= 1000 ? "Instant" : `${cps}/s`}
             </span>
           </label>
+          {nextEntry ? (
+            <label className="mt-4 flex items-center gap-4 text-sm">
+              <span className="w-28 text-white/70">Write ahead</span>
+              <select
+                value={aheadDepth}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setAheadDepth(v);
+                  localStorage.setItem(WRITE_AHEAD_KEY, String(v));
+                }}
+                className="flex-1 rounded bg-white/10 px-2 py-1 text-white"
+              >
+                <option value={0}>Off</option>
+                <option value={1}>Next scene</option>
+                <option value={2}>Two scenes</option>
+              </select>
+            </label>
+          ) : null}
         </Overlay>
       ) : null}
 
