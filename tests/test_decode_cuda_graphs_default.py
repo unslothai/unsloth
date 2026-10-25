@@ -184,7 +184,11 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     trainer = GRPOTrainer(model = model, reward_funcs = [reward], args = cfg,
                           train_dataset = Dataset.from_list(rows), processing_class = tok)  # fmt: skip
     # TRL >= 0.24 generates in _generate_single_turn; older TRL only has _generate_and_score_completions.
-    hook = "_generate_single_turn" if hasattr(trainer, "_generate_single_turn") else "_generate_and_score_completions"
+    hook = (
+        "_generate_single_turn"
+        if hasattr(trainer, "_generate_single_turn")
+        else "_generate_and_score_completions"
+    )
     gen = getattr(trainer, hook)
 
     def recorded(*a, **k):
