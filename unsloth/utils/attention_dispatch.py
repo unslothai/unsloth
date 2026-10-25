@@ -117,8 +117,7 @@ def _training_sdpa(*args, **kwargs):
 
 
 def _inference_sdpa(*args, **kwargs):
-    """SDPA for a non-training forward. A prefill (q_len == k_len) picks cuDNN attention too and pays
-    the same per-length plan build (one per new prompt length), so it is bucketed the same way."""
+    """Non-training SDPA: a prefill also pays cuDNN's per-length plan, so it is bucketed too."""
     if len(args) >= 3 and _cudnn_length_bucket_applies(*args[:3], **kwargs):
         return _cudnn_length_bucketed_sdpa(*args, **kwargs)
     return scaled_dot_product_attention(*args, **kwargs)
@@ -128,10 +127,8 @@ def _inference_sdpa(*args, **kwargs):
 # priority), every new sequence length builds a new cuDNN plan, ~170 ms forward plus backward on
 # H100. Padded batches change length every step, so that cost landed on nearly every step. Padding
 # Q / K / V along the sequence to a multiple of this bucket bounds the plans to max_len / bucket.
-# Causal calls with no mask: padded keys come after every real query, so causal masking hides them.
-# Masked calls (GRPO / DPO left padding): the mask is padded too, its new key columns masked out and
-# its new query rows attending everything (finite, and their zero output gradient adds nothing to
-# dK / dV). Either way q_len == k_len and the real rows are what the unpadded call returns. 0 disables.
+# Causal calls: causal masking hides the padded keys. Masked calls (GRPO / DPO padding): the mask is
+# padded too (new keys masked out, new query rows attend everything and get zero gradient). 0 disables.
 try:
     _CUDNN_LENGTH_BUCKET = max(int(os.environ.get("UNSLOTH_SDPA_CUDNN_BUCKET", "128")), 0)
 except ValueError:
@@ -189,10 +186,8 @@ def _cudnn_length_bucket_applies(
 
 
 def _cudnn_bucket_mask_ok(attn_mask, Q, K):
-    """A 4D bool keep mask or Q-dtype additive mask, (bsz, heads | 1, q_len | 1, k_len), that takes
-    no gradient: the per-batch padding masks run_attention builds for left / right padded batches.
-    Batch-shared masks (cached windowed / packed masks, bsz 1) are left alone: one cached tensor
-    serves every layer, and a padded copy per layer would multiply its memory."""
+    """Per-batch 4D padding masks only (bool or Q-dtype additive, no grad). Batch-shared cached masks
+    are skipped: a padded copy per layer would multiply their memory."""
     if not isinstance(attn_mask, Tensor) or attn_mask.dim() != 4 or attn_mask.requires_grad:
         return False
     if attn_mask.dtype != torch.bool and attn_mask.dtype != Q.dtype:
@@ -241,9 +236,7 @@ def _cudnn_length_bucketed_sdpa(
     if attn_mask is None:
         out = scaled_dot_product_attention(Q, K, V, is_causal = True, **kwargs)
         return out[..., :q_len, :]
-    # One allocation. Padded query rows attend everything (True / 0), so no row is fully masked;
-    # they are sliced off below. Padded keys are masked out for every real query (False / the
-    # dtype minimum, whose exp is 0).
+    # Padded query rows attend everything (no fully masked row) and are sliced off; padded keys are masked.
     rows = attn_mask.shape[-2]
     shape = (*attn_mask.shape[:-2], rows if rows == 1 else rows + pad, q_len + pad)
     if attn_mask.dtype == torch.bool:
@@ -320,10 +313,8 @@ _NO_CUDNN_TRAINING = _no_cudnn_training_devices()
 
 
 def _decode_no_cudnn_devices():
-    """Device indices whose single-query (decode) SDPA calls avoid cuDNN attention: sm90 / sm100,
-    where torch >= 2.10 puts cuDNN first. cuDNN builds a plan for every new key length, and a decode
-    step grows the cache by one token, so each generated token paid a new plan (~300 ms with a
-    padding mask). UNSLOTH_SDPA_DECODE_CUDNN=1 keeps it."""
+    """sm90 / sm100 devices whose decode SDPA avoids cuDNN: it builds a plan per key length, i.e. per
+    generated token. UNSLOTH_SDPA_DECODE_CUDNN=1 keeps it."""
     if os.environ.get("UNSLOTH_SDPA_DECODE_CUDNN", "0") == "1" or torch.version.hip is not None:
         return frozenset()
     return frozenset(i for i, cap in enumerate(_visible_capabilities()) if cap[0] in (9, 10))
@@ -336,8 +327,7 @@ _DECODE_PICKS_CUDNN = {}
 
 
 def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
-    """Whether torch would run this decode call on cuDNN attention. Entering sdpa_kernel costs
-    ~25 us per call, so it is skipped where torch already picks flash / efficient (torch 2.10)."""
+    """Whether torch would pick cuDNN for this decode call (else sdpa_kernel is ~25 us of overhead)."""
     cache_key = (
         query.device.index,
         query.dtype,
@@ -367,8 +357,7 @@ def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
 
 
 def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
-    """SDPA for the fast decode paths (one query against the KV cache), kept off cuDNN attention
-    where torch would pick it (_decode_no_cudnn_devices); flash / efficient need no per-length plan."""
+    """Decode SDPA, kept off cuDNN where torch would pick it on _NO_CUDNN_DECODE devices."""
     if (
         _CUDNN_CHOICE is not None
         and query.is_cuda

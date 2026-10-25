@@ -267,7 +267,7 @@ KV_CACHE_INCREMENT = 512
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally.
 SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
-# Decode paths here and in the models importing this name: kept off cuDNN attention on sm90 / sm100.
+# Decode paths here and in models importing this name avoid cuDNN on sm90 / sm100.
 from ..utils.attention_dispatch import (
     decode_scaled_dot_product_attention as scaled_dot_product_attention,
 )
