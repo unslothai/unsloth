@@ -26,13 +26,25 @@ def _trainer_class():
     if not hasattr(trl_utils, "add_fused_lm_head"):
         pytest.skip("TRL < 1.15 computes dft through compute_loss_func")
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "sft_trainer_compute_loss"]
+    nodes = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "sft_trainer_compute_loss"
+    ]
     namespace = {"inspect": inspect, "RL_FUNCTIONS": None}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
-    source = namespace["sft_trainer_compute_loss"]("compute_loss", "def compute_loss(self):\n    pass\n")
+    source = namespace["sft_trainer_compute_loss"](
+        "compute_loss", "def compute_loss(self):\n    pass\n"
+    )
 
     class Base:
-        def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            return_outputs = False,
+            num_items_in_batch = None,
+        ):
             return ("super", num_items_in_batch)
 
     # Compiled into a class body, as in the generated trainer, so the zero-argument super() resolves.
@@ -40,7 +52,11 @@ def _trainer_class():
     exec("class Generated(Base):\n" + textwrap.indent(textwrap.dedent(source), "    "), generated)
 
     class Trainer(generated["Generated"]):
-        def __init__(self, loss_type, accepts_loss_kwargs = True):
+        def __init__(
+            self,
+            loss_type,
+            accepts_loss_kwargs = True,
+        ):
             self.args = SimpleNamespace(loss_type = loss_type, average_tokens_across_devices = False)
             self.compute_loss_func = None
             self.label_smoother = None

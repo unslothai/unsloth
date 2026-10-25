@@ -965,7 +965,6 @@ def sft_trainer_compute_loss(function_name, function):
             and getattr(self, "label_smoother", None) is None
         ):
             import trl.trainer.utils as _trl_utils
-
             if hasattr(_trl_utils, "add_fused_lm_head"):
                 inputs = {**inputs, "use_cache": False}
                 outputs = model(**inputs, fused_lm_head = True)
