@@ -1445,6 +1445,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         # Unsloth pipeline parallel x FSDP2 data parallel (torchtitan order: split, then shard each stage over
         # the dp dimension of the same mesh). Checked before any change.
         from .pp_native import check_pp_dp_composition
+
         pp_stage = check_pp_dp_composition(model, config.mesh)
         if config.cpu_offload:
             # The stage's device (token counts, pipeline send / recv buffers) would follow the offloaded params.
