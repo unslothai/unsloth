@@ -327,3 +327,17 @@ test("switching views keeps scenery edits and villager positions, and pickups st
   // Pickup spots avoid the fixed spawn, not wherever the player stood when the view opened.
   assert.match(read("three-world.ts"), /Math\.hypot\(x - map\.spawn\.x, y - map\.spawn\.y\) > 3/);
 });
+
+test("a prop dropped on the player stays passable for them, director hostiles fight, and carried props load their models", () => {
+  const read = (f: string) =>
+    readFileSync(new URL(`../src/features/flows/player/world/${f}`, import.meta.url), "utf8");
+  const three = read("three-world.ts");
+  assert.match(three, /circleHitsBox\(b, me\.x, me\.y, RADIUS\)/);
+  assert.match(three, /all\.filter\(\(p\) => !over\.has\(p\.id\)\)/);
+  assert.match(three, /addNpc\(npc: WorldNpc, at: Point\) \{\s*if \(npc\.role === "hostile"\) hostile\.add\(npc\.id\);/);
+  assert.match(read("world-player.tsx"), /\(\(kept \? kept\.props : map\.props\) \?\? \[\]\)/);
+  // The house the player stands in is the one a box test finds.
+  const house = A.propBox({ id: "h", kind: "house", x: 5, y: 5, rot: 0, scale: 1, solid: true } as Prop, flat);
+  assert.ok(house && A.circleHitsBox(house, 5.2, 5.1, A.RADIUS));
+  assert.ok(house && !A.circleHitsBox(house, 8, 8, A.RADIUS));
+});

@@ -411,6 +411,7 @@ export function WorldPlayer({
     bootedView.current = view;
     const startAt = switched ? lastTile.current : wsRef.current.player;
     setReady(false);
+    const kept = carried.current?.map === map ? carried.current : null;
     (async () => {
       try {
         const [art, create] = await Promise.all([
@@ -421,7 +422,7 @@ export function WorldPlayer({
             view === "3d"
               ? [
                   ...new Set(
-                    (map.props ?? [])
+                    ((kept ? kept.props : map.props) ?? [])
                       .map((p) => p.asset?.ref)
                       .filter((r): r is string => Boolean(r)),
                   ),
@@ -434,7 +435,6 @@ export function WorldPlayer({
         ]);
         if (!live || !host.current) return;
         const added = wsRef.current.additions ?? noAdditions();
-        const kept = carried.current?.map === map ? carried.current : null;
         const saved = (switched && kept?.npcs) || wsRef.current.npcAt || {};
         world = {
           ...map,

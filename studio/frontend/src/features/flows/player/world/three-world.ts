@@ -32,13 +32,16 @@ import {
   type Combat,
   type Pickup,
   type Target,
+  RADIUS,
   advance,
   buildActionWorld,
+  circleHitsBox,
   combatOf,
   enemiesAct,
   newBody,
   newCombat,
   placePickups,
+  propBox,
   respawn,
   shoot,
   takePickup,
@@ -696,14 +699,24 @@ export function createWorld3d(
     x >= map.width ||
     y >= map.height ||
     SOLID.has(kindAt(map, x, y));
-  const collide = (): ActionWorld =>
-    buildActionWorld(
+  // A prop placed over the player stays passable for them, like the tiles setMapProps keeps open.
+  const collide = (): ActionWorld => {
+    const ground = (x: number, y: number) => heightAt(terrain, x, y);
+    const all = map.props ?? [];
+    const over = new Set(
+      all
+        .map((p) => propBox(p, ground))
+        .filter((b) => b && circleHitsBox(b, me.x, me.y, RADIUS))
+        .map((b) => b?.id),
+    );
+    return buildActionWorld(
       map.width,
       map.height,
-      (x, y) => heightAt(terrain, x, y),
+      ground,
       wallTile,
-      map.props ?? [],
+      all.filter((p) => !over.has(p.id)),
     );
+  };
   let aw: ActionWorld | null = action ? collide() : null;
   const saved = (bridge.action ?? {}) as { combat?: unknown; pose?: unknown };
   let body: Body | null = aw ? newBody(aw, me.x, me.y) : null;
@@ -1427,6 +1440,7 @@ export function createWorld3d(
       return opening;
     },
     addNpc(npc: WorldNpc, at: Point) {
+      if (npc.role === "hostile") hostile.add(npc.id);
       if (!npcs.some((n) => n.id === npc.id)) spawnNpc(npc, at);
     },
     addItem(item: WorldItem, at: Point) {
