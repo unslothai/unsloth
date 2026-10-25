@@ -446,7 +446,7 @@ export interface WorldSimulation {
   places: WorldPlace[];
   chat_cooldown_min: number;
   calls_per_minute: number;
-  /** Sims-style needs drive what villagers do between plan blocks; on unless false. */
+  /** On unless false. */
   needs?: boolean;
 }
 
@@ -472,7 +472,7 @@ export interface WorldSpec {
   style?: string | null;
   entry_points?: Record<string, string>;
   simulation?: WorldSimulation;
-  /** False when the NPC Reply node's "Summarise long conversations" is off; absent means on. */
+  /** Absent means on. */
   summarise?: boolean;
   /** False when the NPC Reply node's "Keep generating quests" is off; absent means on. */
   new_quests?: boolean;

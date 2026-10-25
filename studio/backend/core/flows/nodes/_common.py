@@ -437,7 +437,6 @@ async def _ensure_model(
     ):
         return {"repo": repo, "variant": variant}
     if getattr(ctx, "gpu_shared", False):
-        # Other calls are generating on the loaded model: load only once the lane is ours alone.
         from core.flows.engine import NeedsExclusiveGpu
         raise NeedsExclusiveGpu()
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")

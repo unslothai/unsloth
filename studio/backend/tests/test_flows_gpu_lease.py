@@ -117,8 +117,6 @@ def test_a_dropped_background_call_stops_within_a_fraction_of_a_second(monkeypat
 
 
 class _Probe:
-    """Handlers that record when they run and wait to be released, keyed by a name in the state."""
-
     def __init__(self):
         self.running: set[str] = set()
         self.peak: dict[str, set[str]] = {}
@@ -207,7 +205,6 @@ def test_an_image_step_waits_for_chat_calls_and_holds_new_ones_back(monkeypatch)
         await probe.wait_started("a")
         img = asyncio.create_task(_invoke(eng, d, "story_scene_art", {"name": "img"}))
         await _settle()
-        # A chat call arriving after the image step waits behind it: the image model may evict the chat model.
         b = asyncio.create_task(_invoke(eng, d, "world_npc_reply", {"name": "b"}))
         await _settle()
         assert probe.running == {"a"}
@@ -241,7 +238,6 @@ def test_background_calls_leave_a_slot_for_the_player(monkeypatch):
         for name in ("p1", "player"):
             probe.release(name)
         await asyncio.gather(p1, reply)
-        # The two left share the one background slot: whichever got it first runs alone, then the other.
         for _ in range(2):
             for _ in range(500):
                 if probe.running:
@@ -384,7 +380,6 @@ def test_chat_slots_follow_the_loaded_llama_server(monkeypatch):
     backend = Backend()
     monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: backend)
     assert chat_slots() == 4
-    # A Transformers model (no llama-server running) serves one request at a time, whatever queues linger.
     backend.is_loaded = False
     assert chat_slots() == 1
 
@@ -399,7 +394,6 @@ def test_slots_are_read_again_after_a_model_switch():
         async def switch():
             async with lease:
                 await switched.wait()
-                # The four-slot model is replaced by one that serves a single request.
                 slots["n"] = 1
 
         async def background(name):

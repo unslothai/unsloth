@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turns NPC actions into renderer calls through the game handle, so the 2D and 3D views behave alike.
 
 import type { WorldSimulation, WorldSpec } from "../../types";
 import {
@@ -34,10 +33,6 @@ export function placeAreas(spec: WorldSpec): Map<string, Area> {
 const inside = (a: Area | undefined, t: { x: number; y: number } | null) =>
   !!a && !!t && t.x >= a.x && t.x < a.x + a.w && t.y >= a.y && t.y < a.y + a.h;
 
-/**
- * Followers walk to the player, NPCs on an errand to their place; whoever stopped goes back to their own day.
- * Returns who is steered now and which errands ran out.
- */
 export function steerActions(
   g: Steerable,
   areas: Map<string, Area>,
@@ -70,10 +65,6 @@ export function steerActions(
   return { steered, expired };
 }
 
-/**
- * One sim tick for a villager with needs: decay and restore, pick the next action when the current one ends,
- * and show it. Returns the mind's new needs and action.
- */
 export function villagerStep(opts: {
   g: Steerable;
   spec: WorldSpec;
@@ -114,7 +105,6 @@ export function villagerStep(opts: {
   return { needs, doing };
 }
 
-/** Needs keep running down while a villager follows the player or runs an errand (no routine action restores them). */
 export function steeredNeeds(mind: NpcMind, minutes: number): Needs | null {
   return mind.needs ? tickNeeds(mind.needs, minutes, null, false) : null;
 }

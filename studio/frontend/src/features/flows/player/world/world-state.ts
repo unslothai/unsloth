@@ -29,24 +29,19 @@ import {
 } from "./world-sim";
 
 export const WORLD_SAVE_VERSION = 2;
-/** Turns kept per NPC for the conversation panel. */
 const MAX_TURNS = 40;
-/** Turns a reply reads, as MAX_HISTORY in the backend's world.py; older ones live on in the NPC's summary. */
+/** Keep in sync with MAX_HISTORY in backend world.py. */
 export const MAX_HISTORY = 24;
-/** Unsummarised turns that start a summary, and how many of the oldest it folds in. */
 export const SUMMARY_AFTER = 16;
 const SUMMARY_FOLD = 10;
-/** Unsummarised turns are kept while summaries fail, up to this many. */
 const MAX_KEPT = 120;
 
 export interface ChatTurn {
   role: "player" | "npc";
   text: string;
-  /** Position in the whole conversation; saves from before summaries have none. */
   seq?: number;
 }
 
-/** What an NPC remembers of turns folded away: `upto` is the seq of the last turn it covers. */
 export interface NpcSummary {
   text: string;
   upto: number;
@@ -65,9 +60,9 @@ export interface WorldState {
   /** Game minutes since day 1 00:00. */
   clock: number;
   npc: Record<string, NpcMind>;
-  /** NPCs walking with the player, from a conversation; any world. Optional so older saves load. */
+  /** Optional so older saves load. */
   following?: string[];
-  /** NPC id -> place they agreed to head to; `until` is a game minute, null where the clock does not run. */
+  /** `until` is null where the clock does not run. */
   errands?: Record<string, Errand>;
   /** Quests, items and villagers added while playing; optional so older saves load. */
   additions?: WorldAdditions;
@@ -90,7 +85,6 @@ export interface NpcReply {
   place?: string;
 }
 
-/** Ids an NPC can be sent to from a conversation: simulation places and map regions. */
 export function placeIds(spec: WorldSpec): Set<string> {
   return new Set([
     ...(spec.simulation?.places ?? []).map((p) => p.id),
@@ -98,7 +92,6 @@ export function placeIds(spec: WorldSpec): Set<string> {
   ]);
 }
 
-/** A conversation's action: follow the player, stop, or head somewhere. Unknown actions change nothing. */
 export function applyAction(
   spec: WorldSpec,
   s: WorldState,
@@ -107,7 +100,6 @@ export function applyAction(
   place: unknown,
 ): WorldState {
   if (!REPLY_ACTIONS.includes(action as ReplyAction)) return s;
-  // A villager who stays put takes no movement action.
   if (spec.npcs.find((n) => n.id === npcId)?.wander === false) return s;
   const following = (s.following ?? []).filter((id) => id !== npcId);
   const { [npcId]: _, ...errands } = s.errands ?? {};
@@ -179,7 +171,6 @@ export function withMind(
   return { ...s, npc: { ...s.npc, [npcId]: fn(s.npc[npcId] ?? emptyMind()) } };
 }
 
-/** Turns with their seq; a save from before summaries numbers them in order. */
 function numbered(turns: ChatTurn[]): (ChatTurn & { seq: number })[] {
   return turns.every((t) => typeof t.seq === "number")
     ? (turns as (ChatTurn & { seq: number })[])
@@ -189,7 +180,6 @@ function numbered(turns: ChatTurn[]): (ChatTurn & { seq: number })[] {
 const uptoOf = (s: WorldState, npcId: string) =>
   s.summaries?.[npcId]?.upto ?? -1;
 
-/** Without summaries the oldest turns go; with them only turns already summarised do, unless far too many pile up. */
 function trimTalk(
   turns: (ChatTurn & { seq: number })[],
   upto: number,
@@ -221,7 +211,6 @@ export function addTurn(
   return { ...s, talks: { ...s.talks, [npcId]: next } };
 }
 
-/** The turns a reply reads: those not yet summarised, newest last. */
 export function talkHistory(s: WorldState, npcId: string): ChatTurn[] {
   const upto = uptoOf(s, npcId);
   return numbered(s.talks[npcId] ?? [])
@@ -229,7 +218,6 @@ export function talkHistory(s: WorldState, npcId: string): ChatTurn[] {
     .slice(-MAX_HISTORY);
 }
 
-/** The oldest turns to fold into the NPC's summary once enough have piled up, or null. */
 export function summaryDue(
   s: WorldState,
   npcId: string,
@@ -244,7 +232,6 @@ export function summaryDue(
   };
 }
 
-/** Store a new summary covering turns up to `upto`; a stale one (from before a newer summary) is ignored. */
 export function foldSummary(
   s: WorldState,
   npcId: string,
@@ -380,12 +367,10 @@ export function deserialize(spec: WorldSpec, raw: unknown): WorldState | null {
   if (!raw || typeof raw !== "object" || (v !== 1 && v !== WORLD_SAVE_VERSION))
     return null;
   const r = raw as Partial<WorldState>;
-  // Added quests and items come back before anything is checked against the world.
   const additions = additionsOf(r.additions, spec);
   const played = withAdditions(spec, additions);
   const itemIds = new Set(played.items.map((i) => i.id));
   const questIds = new Set(played.quests.map((q) => q.id));
-  // Villagers added while playing have minds too: start from the world as played.
   const fresh = initialWorldState(played);
   const npc: Record<string, NpcMind> = {};
   for (const id of Object.keys(fresh.npc))

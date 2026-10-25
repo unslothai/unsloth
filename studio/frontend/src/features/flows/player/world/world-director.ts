@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Worlds that keep growing while they are played: after a quest is finished the NPC Reply node writes the next
-// one, maybe with a new item or villager. What it adds lives in the save; the map itself never changes.
 
 import { Prng, seedFrom } from "../../expr";
 import type { WorldItem, WorldNpc, WorldQuest, WorldSpec } from "../../types";
@@ -36,7 +34,6 @@ export const noAdditions = (): WorldAdditions => ({
   quests: [],
 });
 
-/** The world as played: the generated one plus everything added since. */
 export function withAdditions(
   spec: WorldSpec,
   add: WorldAdditions | undefined,
@@ -54,7 +51,6 @@ export function withAdditions(
 const openQuests = (spec: WorldSpec, s: WorldState) =>
   spec.quests.filter((q) => !s.completedQuests.includes(q.id));
 
-/** Ask for a new quest when none is left, or right after one is finished while few are open. */
 export function directorDue(
   spec: WorldSpec,
   s: WorldState,
@@ -82,7 +78,6 @@ export function directorRequest(
   };
 }
 
-/** A walkable tile the player can reach, inside `area` when one has room, away from everything already placed. */
 export function placeFree(
   map: WorldMap,
   occupied: Point[],
@@ -123,10 +118,7 @@ const taken = (spec: WorldSpec) =>
     ),
   );
 
-/**
- * Check a patch against the world as played and place what it adds. Returns null when anything does not resolve:
- * a reused id, a giver or item that is not in the world, or a limit reached.
- */
+/** Null when anything does not resolve: a reused id, an unknown giver or item, or a limit reached. */
 export function applyPatch(
   spec: WorldSpec,
   map: WorldMap,
@@ -169,7 +161,6 @@ export function applyPatch(
       !newItems.some((i) => i.id === q.requires_item))
   )
     return null;
-  // An item already asked for, carried or picked up cannot be the point of a new quest.
   if (
     spec.quests.some((x) => x.requires_item === q.requires_item) ||
     s.inventory.includes(q.requires_item) ||
@@ -232,9 +223,7 @@ export function applyPatch(
         items: [...add.items, ...items],
         quests: [...add.quests, quest],
       },
-      // A new villager lives like the others from the next tick: memories, and needs in a simulation world.
       npc: { ...initialMinds({ ...spec, npcs }, s.clock), ...s.npc },
-      // The giver offers it straight away, so it shows in the quest log.
       activeQuests: [...s.activeQuests, quest.id],
     },
     npcs,
@@ -247,7 +236,6 @@ const placed = (v: unknown): v is { x: number; y: number } =>
   typeof (v as Point).x === "number" &&
   typeof (v as Point).y === "number";
 
-/** Additions from a save, keeping only those that still fit the world: unique ids, every reference resolved. */
 export function additionsOf(raw: unknown, spec: WorldSpec): WorldAdditions {
   const r = (raw ?? {}) as Partial<WorldAdditions>;
   const ids = taken(spec);
