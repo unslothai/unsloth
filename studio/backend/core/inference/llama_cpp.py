@@ -37678,7 +37678,6 @@ class LlamaCppBackend:
         return held
 
     def _other_servers_running(self) -> bool:
-        """Another serving backend's llama-server is up, or an image/video model is kept beside this one."""
         serving = _serving_backends_snapshot()
         if self not in serving:
             return False

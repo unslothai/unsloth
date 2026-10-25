@@ -12908,7 +12908,6 @@ def _media_on_target_gpus(placement) -> bool:
 
 
 def _idle_kept_chat_on_target_gpus(placement) -> bool:
-    """Whether an idle chat model kept alongside holds VRAM on the GPUs this load targets."""
     gpus = None if placement.gpu_ids_are_vulkan_ordinals else _placement_gpu_ids(placement)
     return bool(model_slots.eviction_victims(None, 0, set(gpus) if gpus else None, discrete = True))
 

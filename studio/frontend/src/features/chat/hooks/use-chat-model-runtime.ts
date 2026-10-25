@@ -905,8 +905,7 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
   notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
-/** Switching Keep multiple models loaded to Off unloads the idle kept models after the reply: wait for them to
- *  go, then re-read, or the picker keeps listing models that are gone. */
+/** Off unloads idle kept models after the reply: wait for them to go, or the picker keeps listing them. */
 export async function resyncInferenceStatusAfterKeptModelsUnload(): Promise<void> {
   for (let attempt = 0; attempt < 15; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
