@@ -37121,14 +37121,25 @@ async def produce_openai_chat_completions(
                             watched = _gguf_decode["slot"]
                             erased = _gguf_decode["erased"]
                         # The slot as the round left it: idle, on this chat's task. Read now,
-                        # before a reclaim can hand it on, so the erase can tell it apart.
+                        # before a reclaim can hand it on, so the erase can tell it apart. A failed
+                        # read is retried, not taken as final: the task is kept once it ends, so
+                        # giving up here would leave a queued chat waiting on room it never frees.
                         seen = None
-                        if watched is not None and not erased:
+                        while watched is not None and not erased:
                             seen = await asyncio.to_thread(
                                 _openai_llama_slot_reading, llama_backend, watched
                             )
-                            if seen is None or seen[0]:
-                                return
+                            if seen is not None:
+                                if seen[0]:
+                                    return
+                                break
+                            try:
+                                await asyncio.wait_for(
+                                    _reclaim_stop.wait(), _APPROVAL_CACHE_RECLAIM_POLL_S
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            return
                         while not lease.reclaim_would_admit():
                             try:
                                 await asyncio.wait_for(

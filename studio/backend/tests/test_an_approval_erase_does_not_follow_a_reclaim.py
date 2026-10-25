@@ -161,11 +161,22 @@ def test_no_erase_without_a_reading_of_the_slot_idle(monkeypatch, reading):
     failed `/slots` read sends it to a slot that may now be decoding another chat."""
     controller = _controller()
     backend = _Backend()
+    reads = {"n": 0}
+
+    def _slots():
+        # The worker's first read saw the slot idle on this chat's task; the recheck right
+        # before the erase does not. A failed first read is retried rather than final.
+        reads["n"] += 1
+        if reads["n"] == 1:
+            return [{"id": SLOT, "is_processing": False, "id_task": 3}]
+        return reading
+
     lease = _ApprovalLease()
-    worker, namespace = _worker(monkeypatch, controller, backend, reading)
+    worker, namespace = _worker(monkeypatch, controller, backend, _slots)
 
     asyncio.run(worker(lease))
 
+    assert reads["n"] == 2
     assert backend.erased == [], "the erase went out with no reading of the slot idle"
     assert lease.released == 0
     assert namespace["_gguf_decode"]["erased"] is False
