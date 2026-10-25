@@ -17,7 +17,26 @@ import torch
 
 pytest.importorskip("transformers")
 trl = pytest.importorskip("trl")
-from trl import DPOTrainer  # noqa: E402
+
+
+def _pristine_dpo_trainer():
+    """TRL's own DPOTrainer, loaded fresh from its file: tests/conftest.py imports unsloth, which
+    replaces trl.DPOTrainer with the compiled UnslothDPOTrainer, and that is not the oracle here."""
+    import importlib.util
+    import sys
+
+    import trl.trainer.dpo_trainer as installed
+
+    name = "trl.trainer._pristine_dpo_trainer"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, installed.__file__)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name].DPOTrainer
+
+
+DPOTrainer = _pristine_dpo_trainer()
 
 if not hasattr(DPOTrainer, "_compute_loss") or "completion_mask" not in inspect.getsource(
     DPOTrainer._compute_loss
