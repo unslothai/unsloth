@@ -8669,12 +8669,32 @@ def _arm_load_probe_memo() -> None:
 @contextlib.contextmanager
 def _load_probe_memo_scope():
     """Guarantee the memo cannot outlive a load however it exits. Arming is the
-    narrower `_arm_load_probe_memo`, taken around the placement decision."""
+    narrower `_arm_load_probe_memo`, taken around the placement decision. The whole
+    load also keeps a llama-fit-params failure that is not cached across loads (a
+    timeout, a crash) and the Metal fit lines already logged, so a second budget pass
+    neither waits on the probe again nor repeats its message."""
+    prev = (
+        getattr(_LOAD_PROBE_STATE, "metal_transient", None),
+        getattr(_LOAD_PROBE_STATE, "logged", None),
+    )
+    _LOAD_PROBE_STATE.metal_transient = {}
+    _LOAD_PROBE_STATE.logged = set()
     try:
         yield
     finally:
         _LOAD_PROBE_STATE.armed = False
         _LOAD_PROBE_STATE.rows = None
+        _LOAD_PROBE_STATE.metal_transient, _LOAD_PROBE_STATE.logged = prev
+
+
+def _info_once_per_load(msg: str, *args) -> None:
+    """``logger.info`` that a load says once (_load_probe_memo_scope); always outside one."""
+    seen = getattr(_LOAD_PROBE_STATE, "logged", None)
+    if seen is not None:
+        if (msg, args) in seen:
+            return
+        seen.add((msg, args))
+    logger.info(msg, *args)
 
 
 # "Probed, no usable answer", kept apart from None = "not probed yet".
@@ -14949,6 +14969,11 @@ class LlamaCppBackend:
         if cached is not None and cached[0] == key:
             self._metal_probe_failure = cached[2]
             return cached[1]
+        transient = getattr(_LOAD_PROBE_STATE, "metal_transient", None)
+        if transient is not None and key in transient:
+            # Failed earlier in this load: a second 120 s probe would fail alike.
+            self._metal_probe_failure = transient[key]
+            return None
         measured: Optional[tuple[int, int, int]] = None
         failure: Optional[str] = None
         cacheable = True
@@ -14994,6 +15019,8 @@ class LlamaCppBackend:
         self._metal_probe_failure = failure
         if cacheable:
             self._metal_model_mib_cache = (key, measured, failure)
+        elif transient is not None:
+            transient[key] = failure
         return measured
 
     def _metal_demand_paged_embedding_bytes(
@@ -15064,7 +15091,7 @@ class LlamaCppBackend:
             return 0
         measured = self._metal_measured_model_mib(binary, model_path)
         if measured is None:
-            logger.info(
+            _info_once_per_load(
                 "Metal fit: could not measure how llama.cpp maps this model (%s), so its "
                 "%.2f GB of input embeddings stay charged.",
                 getattr(self, "_metal_probe_failure", None) or "llama-fit-params unavailable",
@@ -15080,7 +15107,7 @@ class LlamaCppBackend:
         mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
         unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
-            logger.info(
+            _info_once_per_load(
                 "Metal fit: llama.cpp maps this model's %.2f GB of input embeddings into Metal, "
                 "so they stay charged. A llama.cpp update may remove that.",
                 embeddings / (1024**3),
@@ -30253,23 +30280,6 @@ class LlamaCppBackend:
                             _sc_target_mib = (
                                 _apple_model_size_fit + _kv_bytes(_sc_ctx) + _cc_bytes(_sc_ctx)
                             ) / (1024 * 1024)
-                            # The target alone sheds the drafter's compute charge and gets
-                            # the embedding discount it would have with no drafter engaged.
-                            _sc_host_embd_without_draft = self._metal_demand_paged_embedding_bytes(
-                                model_path,
-                                extra_args,
-                                binary = binary,
-                                requested_load_mode = load_mode,
-                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                                settings = _mem_settings,
-                                layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
-                                mtp_may_engage = False,
-                            )
-                            _sc_target_only_mib = _sc_target_mib - (
-                                self._MTP_DRAFT_COMPUTE_BYTES
-                                + _sc_host_embd_without_draft
-                                - _apple_host_embd
-                            ) / (1024 * 1024)
                             # The draft micro-batch the spawn reprice reads, capped by the
                             # batch and the context as llama_context caps it.
                             _sc_draft_ub = _draft_n_ubatch(extra_args, os.environ)
@@ -30284,24 +30294,44 @@ class LlamaCppBackend:
                                     & 0xFFFFFFFF
                                 )
                                 _sc_draft_ub = min(_sc_draft_ub, _sc_batch, int(_sc_ctx))
-                            if (
-                                _sc_target_only_mib
-                                <= _apple_budget_mib
-                                < _sc_target_mib
-                                # The same reserve the launch carries (flat when unsized).
-                                + self._sidecar_fit_reserve_mib(
-                                    # The slots the child runs: an extras --parallel wins.
-                                    _mtp_bytes(
-                                        _sc_ctx,
-                                        slots = _extra_args_n_parallel(extra_args, os.environ),
-                                        ubatch = _sc_draft_ub,
-                                    ),
-                                    mtp_draft_path,
-                                    flat_mib = math.ceil(
-                                        _flat_mtp_reserve * max(0, _apple_budget_mib)
-                                    ),
+                            # The same reserve the launch carries (flat when unsized).
+                            _sc_with_draft_mib = _sc_target_mib + self._sidecar_fit_reserve_mib(
+                                # The slots the child runs: an extras --parallel wins.
+                                _mtp_bytes(
+                                    _sc_ctx,
+                                    slots = _extra_args_n_parallel(extra_args, os.environ),
+                                    ubatch = _sc_draft_ub,
+                                ),
+                                mtp_draft_path,
+                                flat_mib = math.ceil(_flat_mtp_reserve * max(0, _apple_budget_mib)),
+                            )
+                            # Only when both do not fit: the draft-free embedding discount can
+                            # cost a cold llama-fit-params run.
+                            _sc_host_embd_without_draft = _apple_host_embd
+                            _sc_target_only_mib = _sc_target_mib
+                            if _apple_budget_mib < _sc_with_draft_mib:
+                                # The target alone sheds the drafter's compute charge and gets
+                                # the embedding discount it would have with no drafter engaged.
+                                _sc_host_embd_without_draft = (
+                                    self._metal_demand_paged_embedding_bytes(
+                                        model_path,
+                                        extra_args,
+                                        binary = binary,
+                                        requested_load_mode = load_mode,
+                                        supports_load_mode = bool(
+                                            server_caps.get("supports_load_mode")
+                                        ),
+                                        settings = _mem_settings,
+                                        layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
+                                        mtp_may_engage = False,
+                                    )
                                 )
-                            ):
+                                _sc_target_only_mib = _sc_target_mib - (
+                                    self._MTP_DRAFT_COMPUTE_BYTES
+                                    + _sc_host_embd_without_draft
+                                    - _apple_host_embd
+                                ) / (1024 * 1024)
+                            if _sc_target_only_mib <= _apple_budget_mib < _sc_with_draft_mib:
                                 logger.info(
                                     "Auto: the %s sidecar does not fit in unified memory "
                                     "alongside the model, so it is dropped.",
@@ -30321,8 +30351,18 @@ class LlamaCppBackend:
                                 _apple_fit_budget_mib = _apple_budget_mib
                                 _soft_overhead -= self._MTP_DRAFT_COMPUTE_BYTES
                                 model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
+                                _apple_embd_logged = bool(_apple_host_embd)
                                 _apple_host_embd = _sc_host_embd_without_draft
                                 _apple_model_size_fit = model_size_fit - _apple_host_embd
+                                if _apple_host_embd and not _apple_embd_logged:
+                                    # The drafter's excluded blocks held the discount back above.
+                                    logger.info(
+                                        "Metal fit: %.2f GB of input embeddings stay in the CPU "
+                                        "file mapping; charging %.2f GB of weights to unified "
+                                        "memory.",
+                                        _apple_host_embd / (1024**3),
+                                        _apple_model_size_fit / (1024**3),
+                                    )
 
                         if self._can_estimate_kv():
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
