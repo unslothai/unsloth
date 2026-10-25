@@ -35,5 +35,5 @@ test("an empty name submits the default, and the button is never disabled for it
   assert.match(form, /createApiKey\(name\.trim\(\) \|\| defaultName, expiry\)/);
   assert.match(form, /placeholder=\{defaultName\}/);
   assert.match(form, /disabled=\{loading\}/);
-  assert.match(form, /className="bg-foreground text-background hover:bg-foreground\/85"/);
+  assert.match(form, /className="bg-foreground text-background hover:opacity-85"/);
 });

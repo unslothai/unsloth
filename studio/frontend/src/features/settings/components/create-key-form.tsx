@@ -108,7 +108,7 @@ export function CreateKeyForm({
           type="submit"
           size="sm"
           disabled={loading}
-          className="bg-foreground text-background hover:bg-foreground/85"
+          className="bg-foreground text-background hover:opacity-85"
         >
           {!loading && <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />}
           {loading
