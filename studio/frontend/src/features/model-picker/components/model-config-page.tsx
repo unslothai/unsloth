@@ -3,6 +3,7 @@
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
+import { SavedRunSettingsRow } from "./saved-run-settings-row";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -4161,6 +4162,22 @@ export function ModelConfigPage({
       >
       {/* pt-3.25: Remember's cap top 18px under the rule, as under the buttons. */}
       <div className="flex flex-col gap-3.5 border-t border-border pt-3.25">
+        <SavedRunSettingsRow
+          modelId={configId}
+          disabled={sharedVariantUnresolved}
+          currentConfig={() => commitDraft().effectiveRuntimeConfig}
+          onApply={(saved) => {
+            // As Reset does: a panel edit, with the raw arguments text dropped for the saved one.
+            handleSharedConfigEdit();
+            markModelConfigDraftEdited(draftKey);
+            clearExtraArgsEditForDraft(draftKey);
+            setConfig({
+              ...DEFAULT_PER_MODEL_CONFIG,
+              ...saved,
+              llamaExtraArgs: saved.llamaExtraArgs ?? null,
+            });
+          }}
+        />
         {/* The sidebar is too narrow for both on one row: the status takes a line of its own. */}
         <div
           className={cn(
@@ -4247,7 +4264,7 @@ export function ModelConfigPage({
               }
               onClick={handleSave}
             >
-              {remember ? "Save without loading" : "Forget settings"}
+              {remember ? "Save without loading" : "Forget without loading"}
             </Button>
           )}
           <Button
