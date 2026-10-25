@@ -17,6 +17,8 @@ import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
+import weakref  # noqa: E402
+import gc as gc_module  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -166,7 +168,10 @@ def _case_parity(rank, world, tmp, arch, schedule = "gpipe", n_mb = 2, gc = Fals
     if gc:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
+    originals = {"embed": weakref.ref(model.get_input_embeddings()), "head": weakref.ref(model.get_output_embeddings())}
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = n_mb, schedule = schedule)
+    gc_module.collect()
+    alive = {k: r() is not None for k, r in originals.items()}
     pp_res = _pp_run(model, pp, ids, labels, steps)
     pp.save_adapter(os.path.join(tmp, "pp"))
     generate_error = None
@@ -192,6 +197,7 @@ def _case_parity(rank, world, tmp, arch, schedule = "gpipe", n_mb = 2, gc = Fals
         "generate_error": generate_error,
         "direct_error": direct_error,
         "tied": pp.parts.tied,
+        "alive": alive,
         "n_params": sum(p.numel() for p in model.parameters()),
     }
 
@@ -467,6 +473,8 @@ def _check_parity(results, saved, world):
             torch.testing.assert_close(torch.cat(pp["outs"]), res["hidden"][end], rtol = 1e-5, atol = 1e-5)
         else:
             assert all(o.dim() == 0 for o in pp["outs"])
+        # A stage keeps the embedding / lm_head module only if it owns it.
+        assert res["alive"] == {"embed": rank == 0, "head": rank == world - 1}, (rank, res["alive"])
         assert res["flag"]
         assert "generation is not supported on a pipeline parallel model" in (res["generate_error"] or "")
         assert "split for pipeline parallelism" in (res["direct_error"] or "")

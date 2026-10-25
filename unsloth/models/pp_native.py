@@ -1010,15 +1010,20 @@ def apply_pipeline_parallel(
     for i in range(len(layers)):
         if not (start <= i < end):
             layers[i] = _PPPassThrough(i, pp_stage.ctx, layers[i])
+    embed, lm_head = parts.embed, parts.lm_head
     if not is_first:
         parent, attr = _owner(parts.decoder, parts.embed)
-        setattr(parent, attr, _PPEmbeddingStub(parts.embed))
+        embed = _PPEmbeddingStub(parts.embed)
+        setattr(parent, attr, embed)
     if not is_last:
         parent, attr = _owner(parts.inner, parts.lm_head)
-        setattr(parent, attr, _PPHeadStub(parts.lm_head))
+        lm_head = _PPHeadStub(parts.lm_head)
+        setattr(parent, attr, lm_head)
         for _, norm in parts.norms:
             for p in norm.parameters():
                 p.requires_grad_(False)  # used by the last stage only
+    # The stage object must not pin a dropped embedding / lm_head (vocabulary-sized) alive.
+    parts = pp_stage.parts = dataclasses.replace(parts, embed = embed, lm_head = lm_head)
     info = {
         "size": pp,
         "rank": rank,
