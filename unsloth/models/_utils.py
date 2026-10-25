@@ -5789,15 +5789,23 @@ def patch_gradient_accumulation_fix(Trainer):
     _patch_trainer_train_gc_scope(Trainer)
 
 
-def _is_unsloth_tensor_parallel(model):
-    """Walk the wrapper levels for apply_tensor_parallel's marker (dict lookups, no tp_native import)."""
+def _unsloth_model_parallel_marker(model, flag):
+    """Walk the wrapper levels for an apply_*_parallel marker (dict lookups, no tp / pp import)."""
     m, depth = model, 0
     while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
-        if m.__dict__.get("_unsloth_tp"):
+        if m.__dict__.get(flag):
             return True
         modules = m.__dict__.get("_modules") or {}
         m, depth = modules.get("base_model") or modules.get("model"), depth + 1
     return False
+
+
+def _is_unsloth_tensor_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_tp")
+
+
+def _is_unsloth_pipeline_parallel(model):
+    return _unsloth_model_parallel_marker(model, "_unsloth_pp")
 
 
 def _refuse_tensor_parallel_for_trainer(model):
@@ -5806,6 +5814,12 @@ def _refuse_tensor_parallel_for_trainer(model):
         raise RuntimeError(
             "Unsloth: a tensor parallel model (apply_tensor_parallel) returned by model_init cannot be "
             "trained by the Trainer; build it first and pass Trainer(model = model)."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: a pipeline parallel model (apply_pipeline_parallel) cannot be trained by the "
+            "Trainer yet: each rank holds one stage, and a stage cannot run a forward alone. Use a custom "
+            "training loop with PipelineParallel.step (unsloth/models/pp_native.py)."
         )
 
 
@@ -5822,6 +5836,11 @@ def _refuse_tensor_parallel_for_inference(model):
             "Unsloth: for_inference is not supported on a tensor parallel model in v1 (the fast decode "
             "paths run outside the tensor parallel regions); use model.eval() for forward evaluation, or "
             "save the adapter (save_tp_adapter) and generate on one GPU."
+        )
+    if _is_unsloth_pipeline_parallel(model):
+        raise RuntimeError(
+            "Unsloth: for_inference is not supported on a pipeline parallel model in v1 (each rank holds "
+            "one stage); save the adapter (PipelineParallel.save_adapter) and generate on one GPU."
         )
 
 

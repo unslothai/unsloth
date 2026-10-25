@@ -474,7 +474,10 @@ export function ApiModelLoadControls({
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
         className="h-9 max-w-full rounded-full bg-background px-3.5 sm:max-w-[calc(28rem*var(--ui-space-scale,1))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [&>span:last-child]:ml-1"
-        triggerLabelClassName="font-sans text-sm leading-none"
+        triggerLabelClassName={cn(
+          "text-sm leading-none",
+          !activeModel && "font-sans",
+        )}
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>

@@ -12,6 +12,7 @@ import importlib.util
 import os
 import sys
 
+import pytest
 import torch
 
 _DIR = os.path.join(
@@ -31,6 +32,14 @@ def _load():
 
 
 bc = _load()
+
+
+@pytest.fixture(autouse = True)
+def _block_env(monkeypatch):
+    # The CPU rest shard runs with UNSLOTH_COMPILE_DISABLE=1, which makes every wrapped block take
+    # the eager path, so the graph-cap test would see no compiled call at all.
+    for key in ("UNSLOTH_BLOCK_COMPILE", "UNSLOTH_COMPILE_DISABLE", "UNSLOTH_FORCE_FLOAT32"):
+        monkeypatch.delenv(key, raising = False)
 
 
 def test_clone_grad_is_identity_with_copied_gradient():
@@ -70,9 +79,7 @@ def test_cudagraphs_opt_in_flag(monkeypatch):
         _load()
 
 
-def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
-    """Variable lengths recorded a graph set per new length: 3.5x slower steps and a pool that
-    grew every step on an L4. One shape past the cap runs every later call without graphs."""
+def _cap_layer_step(monkeypatch):
     calls = []
 
     def fake_compile(fn, **kwargs):
@@ -105,6 +112,13 @@ def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
         assert x.grad is not None and x.grad.shape == x.shape
         return set(calls)
 
+    return step
+
+
+def test_new_shapes_past_the_cap_skip_graphs(monkeypatch):
+    """Variable lengths recorded a graph set per new length: 3.5x slower steps and a pool that
+    grew every step on an L4. One shape past the cap runs every later call without graphs."""
+    step = _cap_layer_step(monkeypatch)
     assert step(16) == {"graphs"}
     assert step(24) == {"graphs"}
     assert step(16) == {"graphs"}
@@ -122,3 +136,10 @@ def test_cap_reads_the_environment(monkeypatch):
     finally:
         monkeypatch.delenv("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", raising = False)
         _load()
+
+
+def test_compile_disable_still_bypasses_the_block(monkeypatch):
+    # The kill switch is read per call, so it also turns off a block wrapped before it was set.
+    step = _cap_layer_step(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "1")
+    assert step(16) == set()
