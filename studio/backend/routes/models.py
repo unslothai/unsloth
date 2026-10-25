@@ -4235,6 +4235,7 @@ async def get_kv_cache_estimate(
         null = {
             "kv_bytes": None,
             "weights_bytes": None,
+            "lookup_table_bytes": None,
             "native_context": None,
             "spec_bytes": None,
             "n_ctx": None,

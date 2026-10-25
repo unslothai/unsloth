@@ -137,6 +137,18 @@ class TestTheKvCacheEstimateEnvelope:
             "This is a narrowing and it breaks callers."
         )
 
+    def test_the_null_answer_carries_the_same_keys(self, monkeypatch):
+        """An unresolved quant answers every shipped key, nulled."""
+        out = _call_route(
+            monkeypatch,
+            path = "",
+            weights_bytes = 0,
+            repo_id = "unsloth/contract-freeze-GGUF",
+            speculative_type = None,
+        )
+        assert out is not None and out["kv_bytes"] is None
+        assert set(out) == _KV_CACHE_ESTIMATE_KEYS
+
     def test_weights_bytes_is_the_quant_file_alone(self, monkeypatch, tmp_path):
         # Planner reached so the aggregate differs; otherwise this holds vacuously.
         quant_size = 4_123_456_789
