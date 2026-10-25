@@ -956,6 +956,43 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
+        # TRL >= 1.15 computes loss_type="dft" only in its own compute_loss, which this one replaces, so DFT would
+        # silently train as plain NLL. Run it on TRL's fused LM head (added in __init__), which returns per-token
+        # log-probabilities without building the logits. Older TRL routes DFT through compute_loss_func instead.
+        if (
+            getattr(self.args, "loss_type", None) == "dft"
+            and self.compute_loss_func is None
+            and getattr(self, "label_smoother", None) is None
+        ):
+            import trl.trainer.utils as _trl_utils
+
+            if hasattr(_trl_utils, "add_fused_lm_head"):
+                inputs = {**inputs, "use_cache": False}
+                outputs = model(**inputs, fused_lm_head = True)
+                if getattr(outputs, "log_probs", None) is None:
+                    raise RuntimeError(
+                        "Unsloth: loss_type = 'dft' needs TRL's fused LM head, but the model returned no "
+                        "per-token log-probabilities. Use loss_type = 'nll'."
+                    )
+                per_token_loss = -outputs.log_probs * outputs.log_probs.exp().detach()
+                # Trainer divides by gradient accumulation itself when the model does not take num_items_in_batch.
+                if not getattr(self, "model_accepts_loss_kwargs", True):
+                    num_items_in_batch = None
+                num_tokens = (
+                    outputs.label_mask.sum() if num_items_in_batch is None else num_items_in_batch
+                )
+                loss = per_token_loss.sum() / torch.as_tensor(num_tokens).clamp(min = 1)
+                if self.args.average_tokens_across_devices and num_items_in_batch is not None:
+                    loss = loss * self.accelerator.num_processes
+                aux_loss = getattr(outputs, "aux_loss", None)
+                if getattr(self, "aux_loss_enabled", False) and aux_loss is not None:
+                    steps = (
+                        self.current_gradient_accumulation_steps
+                        if num_items_in_batch is not None
+                        else 1
+                    )
+                    loss = loss + self.router_aux_loss_coef * aux_loss / steps
+                return (loss, outputs) if return_outputs else loss
         outputs = super().compute_loss(
             model,
             inputs,
