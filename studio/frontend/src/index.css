@@ -3541,13 +3541,13 @@ html[data-chat-font] .aui-root {
 		min-height: 100%;
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
-		padding-right: calc(2.875rem * var(--ui-space-scale, 1));
+		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* 10px wider than the editor, so the scrollbar sits near the composer's edge; the padding above
+	/* 6px wider than the editor, so the scrollbar sits near the composer's edge; the padding above
 	   grows by as much, so the text stays put. Out-ranks the expanded row's width: 100%. */
 	.unsloth-composer-line .unsloth-composer-editor .unsloth-composer-input {
-		width: calc(100% + 0.625rem * var(--ui-space-scale, 1));
+		width: calc(100% + 0.375rem * var(--ui-space-scale, 1));
 	}
 
 	/* Edge fades. Any text: a faint fade over the last line's lower edge. Lines below or above
@@ -3592,6 +3592,15 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
+	}
+
+	/* Mid-page welcome (its pt-[27.5dvh]): the editor grows by exactly the padding given up above, on
+	   the same curve, so the composer's bottom edge stays put and it expands upward. */
+	.aui-thread-welcome-center:not(:has(.unsloth-files-panel)) [data-writing-expanded="true"] .unsloth-composer-editor {
+		height: calc(
+			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))) + 27.5dvh - 1rem *
+				var(--ui-space-scale, 1)
+		);
 	}
 
 	.unsloth-composer-plus {
