@@ -718,6 +718,9 @@ def validate_director(raw: Any, state: dict) -> dict:
     new_item_name = text("new_item_name", 60) or (
         asked[:60] if asked and find(items, asked) is None else ""
     )
+    if re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)+", new_item_name):
+        # An id-like name ("wind_chime") reads as a name ("Wind chime").
+        new_item_name = new_item_name.replace("_", " ").capitalize()
     if need is None and new_item_name and state.get("allow_item"):
         need = _unique(slug(new_item_name, "item"), taken)
         patch["items"].append(

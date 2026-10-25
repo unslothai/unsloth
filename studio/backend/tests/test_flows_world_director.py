@@ -106,6 +106,13 @@ def test_items_already_used_or_held_are_not_asked_for_again():
         {"title": "Tea", "giver": "mira", "item": "Teapot"}, _state(allow_item = True)
     )
     assert patch["quest"]["requires_item"] == "teapot" and patch["items"][0]["name"] == "Teapot"
+    patch = validate_director(
+        {"title": "Chime", "giver": "mira", "item": "wind_chime"}, _state(allow_item = True)
+    )
+    assert (
+        patch["items"][0]["name"] == "Wind chime"
+        and patch["quest"]["requires_item"] == "wind_chime"
+    )
     # A used item named in `item` is never turned into a new one.
     with pytest.raises(WorldError):
         validate_director(
