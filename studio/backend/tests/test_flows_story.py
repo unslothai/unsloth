@@ -291,6 +291,8 @@ def test_next_scene_live():
     ctx = FakeCtx("story.next_scene", inputs = {"state": state}, llm = lambda **kw: raw)
     scene = run(story_nodes.story_next_scene(ctx))["scene"]
     assert scene["id"].startswith("gen_") and scene["generate_background"] is True
+    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
+    assert ctx.llm_calls[0].get("seed") is None
     assert scene["choices"][0]["goto"].startswith("gen_") and scene["choices"][1]["goto"] == "porch"
     assert scene["lines"][0]["speaker"] == "mo"
     assert repair_live_scene(raw, state)["id"] == scene["id"]

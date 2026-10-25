@@ -400,6 +400,8 @@ def test_npc_reply_handler():
     )
     reply = run(world_nodes.world_npc_reply(ctx))["reply"]
     assert reply == {"text": "My rod!", "complete_quest": "q", "take_item": "rod"}
+    # Live calls send no fixed seed: Studio turns the prompt cache off for a seeded request.
+    assert ctx.llm_calls[0].get("seed") is None
     with pytest.raises(FlowNodeError):
         run(world_nodes.world_npc_reply(FakeCtx("world.npc_reply")))
 
