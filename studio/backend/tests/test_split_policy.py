@@ -383,6 +383,42 @@ def test_wired_auto_tensor_publishes_the_vram_fit_context(tmp_path, monkeypatch)
     assert on_backend.vram_fit_context_length == on_backend.max_context_length > 0
 
 
+def _per_token_kv(
+    backend,
+    kv_per_tok,
+    cc_per_tok = 0,
+):
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * kv_per_tok
+    backend._compute_buffer_ctx_bytes = lambda ctx, *a, **k: int(ctx) * cc_per_tok
+
+
+def test_wired_auto_tensor_publishes_no_unpriced_ceiling(tmp_path, monkeypatch):
+    # 1024 tokens fit the pair, the planner's 2048 floor does not: no ceiling is vouched for.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 28, names = TWO_T4_NAMES
+    )
+    _native_ctx(backend, 32768)
+    _per_token_kv(backend, 256 * 1024)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 1024)["cmd"]
+    assert _split_flag(cmd) == "tensor"
+    assert backend.vram_fit_context_length is None
+
+
+def test_wired_auto_tensor_never_launches_a_plan_over_a_gpu_budget(tmp_path, monkeypatch):
+    # GPU 1 cannot hold its replicated scratch at the planned context, so the planner weights it 0.
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(0, 24_576, 24_576), (1, 19_700, 24_576)],
+        model_gib = 2,
+        names = TWO_T4_NAMES,
+    )
+    _native_ctx(backend, 32768)
+    _per_token_kv(backend, 64 * 1024, 768 * 1024)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 0)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+
+
 @pytest.mark.parametrize(
     "extra_args, env",
     [

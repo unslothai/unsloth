@@ -29181,14 +29181,42 @@ class LlamaCppBackend:
                             )
                         ):
                             raise _AutoSplitAbandoned("the tensor plan shortened the context")
+
+                        def _tp_plan_fits(ctx: int) -> bool:
+                            # The per-GPU check a user ratio gets, on the split this plan emits.
+                            return self._tensor_split_fits_budget(
+                                list(tp_tensor_split or [1] * len(gpu_indices or ())),
+                                tp_gpus,
+                                list(gpu_indices or ()),
+                                model_size,
+                                ctx,
+                                cache_type_kv = cache_type_kv,
+                                n_parallel = n_parallel,
+                                n_ubatch = _effective_ubatch,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                swa_full = swa_full,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                mtp_flat_reserve_bytes = _tp_unsized_mtp_reserve,
+                                total_by_idx = total_by_idx,
+                                vram_fraction = _vram_frac,
+                                soft_overhead_bytes = _soft_overhead,
+                                scratch_cache_type_kv = _scratch_cache_type_kv,
+                            )
+
+                        if _auto.engaged and not _tp_plan_fits(effective_ctx):
+                            raise _AutoSplitAbandoned("the tensor plan overflows a GPU's budget")
                         use_fit = False
                         _tp_planned = True
-                        # Publish the priced ceiling like the layer cap sweep (explicit toggle unchanged).
+                        # Publish the priced ceiling like the layer cap sweep (explicit toggle unchanged),
+                        # only once it fits every GPU: the planner floors it at 2048 even when that does not.
                         if (
                             _auto.engaged
                             and self._can_estimate_kv()
                             and max_available_ctx > 0
                             and _subset_ckpts(tp_gpus) == 0
+                            and _tp_plan_fits(max_available_ctx)
                         ):
                             _vram_fit_ctx = max_available_ctx
                         if explicit_ctx and not self._can_estimate_kv():
