@@ -1,4 +1,6 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """sm80 flex backward: tuned bwd_* kernel_options at 128 < head_dim <= 256."""
 
 import pytest
@@ -38,6 +40,34 @@ def test_tuned_backward_tiles_divide_the_default_sparse_block():
 @pytest.mark.parametrize("value,expected", [("0", False)])
 def test_env_kill_switch(monkeypatch, value, expected):
     monkeypatch.setenv(u._FLEX_TUNED_BWD_ENV_VAR, value)
+    assert u._flex_tuned_bwd_device_ok() is expected
+
+
+@pytest.mark.parametrize(
+    "hip,torch_version,caps,env,expected",
+    [
+        (None, "2.14.0+cu130", [(8, 0)], "", True),
+        (None, "2.10.0+cu128", [(8, 0), (8, 0)], "", True),
+        (None, "2.14.0", [(8, 0), (8, 6)], "", False),  # every visible device must be measured
+        (None, "2.14.0", [(8, 6)], "", False),
+        (None, "2.14.0", [(9, 0)], "", False),
+        (None, "2.14.0", [(10, 0)], "", False),
+        (None, "2.14.0", [(9, 0)], "1", True),  # forced on any CUDA device
+        (None, "2.9.1", [(8, 0)], "", False),  # no bwd_ keys before 2.10
+        (None, "2.9.1", [(8, 0)], "1", False),
+        ("7.2.0", "2.14.0", [(8, 0)], "", False),  # ROCm never
+        ("7.2.0", "2.14.0", [(8, 0)], "1", False),
+    ],
+)
+def test_device_gate(monkeypatch, hip, torch_version, caps, env, expected):
+    import torch
+
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch, "__version__", torch_version)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(caps))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = 0: caps[index])
+    monkeypatch.setenv(u._FLEX_TUNED_BWD_ENV_VAR, env)
     assert u._flex_tuned_bwd_device_ok() is expected
 
 

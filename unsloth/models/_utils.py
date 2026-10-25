@@ -755,18 +755,23 @@ _FLEX_TUNED_BWD_KERNEL_OPTIONS = {
     "bwd_num_warps": 4,
 }
 _FLEX_TUNED_BWD_ENV_VAR = "UNSLOTH_FLEX_TUNED_BACKWARD"
+# The flex templates read "bwd_"-prefixed kernel_options from torch 2.10 on; older releases have no
+# per-direction keys, so the override is never passed there.
+_FLEX_TUNED_BWD_MIN_TORCH = "2.10"
 
 
 def _flex_tuned_bwd_device_ok():
     """True when every visible CUDA device has a capability the tuned backward was measured on.
 
     Read once when the flex forward is wrapped (model load), never inside a compiled region.
-    UNSLOTH_FLEX_TUNED_BACKWARD=0 turns it off, =1 forces it on any CUDA device."""
+    UNSLOTH_FLEX_TUNED_BACKWARD=0 turns it off, =1 forces it on any CUDA device with torch >= 2.10."""
     override = os.environ.get(_FLEX_TUNED_BWD_ENV_VAR, "").strip()
     if override == "0":
         return False
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return False
+        if Version(torch.__version__.split("+")[0]) < Version(_FLEX_TUNED_BWD_MIN_TORCH):
             return False
         if override == "1":
             return True
