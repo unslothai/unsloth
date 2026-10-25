@@ -9,7 +9,7 @@ import torch
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 if not has_real_cuda():
-    pytest.skip("needs a CUDA device", allow_module_level = True)
+    pytest.skip(reason = "needs a CUDA device", allow_module_level = True)
 
 pytest.importorskip("triton")
 
@@ -35,7 +35,7 @@ def _qk(batch, seq):
 @pytest.mark.parametrize("with_indices", [False, True])
 def test_compiled_rope_keeps_one_graph_across_batch_and_seq(with_indices):
     if not RE._TRACEABLE:
-        pytest.skip("RoPE ops are not traceable on this torch / Triton")
+        pytest.skip(reason = "RoPE ops are not traceable on this torch / Triton")
     from torch._dynamo.utils import counters
 
     freqs = torch.outer(
