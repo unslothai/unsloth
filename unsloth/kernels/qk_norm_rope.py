@@ -27,7 +27,6 @@ __all__ = [
 ]
 
 
-
 def _qk_norm_rope_default():
     # UNSLOTH_FUSED_QKNORM_ROPE=0 keeps the unfused path, =1 forces the fused one. Unset: on for
     # NVIDIA CUDA; ROCm keeps the unfused training path until its backward is measured there.
