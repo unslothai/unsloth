@@ -109,6 +109,11 @@ def test_rule_types(body, text, reference, expected):
         (_md("t", "type: numeric\nbands: []"), "bands"),
         (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
         (_md("t", "type: exact_match\ncompare_to: completions"), "TRL reserves"),
+        (_md("t", "type: exact_match\ncompare_to: tools"), "Studio uses"),
+        (
+            _md("t", "type: numeric\ncompare_to: _studio_prefill\nbands: [{within: 0, score: 1}]"),
+            "Studio uses",
+        ),
         (
             _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: [object]}"),
             "schema.type",
