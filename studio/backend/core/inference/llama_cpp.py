@@ -28067,7 +28067,16 @@ class LlamaCppBackend:
                     ):
                         _split_single = "layer"
                         _split_excluded = None
-                        _split_user_placement = _auto_split_user_placement(extra_args)
+                        # Judged on what the child gets: a GPU pick strips the device flags it owns.
+                        _split_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_split_env)
+                        _split_user_placement = _auto_split_user_placement(
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args,
+                            env = _split_env,
+                        )
                         if not _auto.allowed:
                             _split_excluded = (
                                 "an auto tensor attempt was abandoned; loading without it"

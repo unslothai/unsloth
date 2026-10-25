@@ -383,6 +383,27 @@ def test_wired_auto_tensor_publishes_the_vram_fit_context(tmp_path, monkeypatch)
     assert on_backend.vram_fit_context_length == on_backend.max_context_length > 0
 
 
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        pytest.param(["--device", "CUDA0"], {}, id = "extras-device"),
+        pytest.param(None, {"LLAMA_ARG_DEVICE": "CUDA0"}, id = "inherited-device"),
+    ],
+)
+def test_wired_gpu_pick_owns_the_device_flags_it_strips(tmp_path, monkeypatch, extra_args, env):
+    # The GPU pick strips --device / LLAMA_ARG_DEVICE from the child, so they do not own placement.
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    launched = _launch(
+        backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096, gpu_ids = [0, 1], extra_args = extra_args
+    )
+    assert _split_flag(launched["cmd"]) == "tensor"
+    assert "--device" not in launched["cmd"] and "LLAMA_ARG_DEVICE" not in launched["env"]
+
+
 def test_wired_kill_switch(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
