@@ -125,7 +125,6 @@ def test_npc_reply_validation_only_allows_known_effects():
     assert "complete_quest" not in validate_npc_reply(
         {"text": "x"}, _state(npc_id = "baker_bea", inventory = ["rod"])
     )
-    # Otherwise the quest would complete on the next line.
     assert "give_item" not in validate_npc_reply({"text": "Here.", "give_item": "rod"}, _state())
     assert "give_item" not in validate_npc_reply(
         {"text": "x", "give_item": "pie"}, _state(inventory = ["pie"])
@@ -153,7 +152,6 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
         "action": "go_to",
         "place": "pond",
     }
-    # An NPC only heads to a place the player named, and the player's words decide following.
     assert "action" not in validate_npc_reply(
         {"text": "Off I go", "action": "go_to", "place": "pond"}, s
     )
@@ -166,7 +164,6 @@ def test_npc_reply_actions_are_a_fixed_validated_set():
             {"text": "Sure", "action": "go_to", "place": "pond"}, _state(player_message = msg)
         )
         assert out.get("action") == want and "place" not in out, msg
-    # Unknown actions and places are dropped like unknown items; the reply text survives.
     for bad in (
         {"action": "burn_down_the_mill"},
         {"action": "go_to", "place": "the_moon"},

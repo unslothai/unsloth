@@ -214,9 +214,7 @@ class RunState:
     # approved this flow to do; together they gate Python, HTTP, MCP, provider and trigger blocks.
     origin: dict = field(default_factory = dict)
     approvals: dict = field(default_factory = dict)
-    # Monotonic marks of a player call (/invoke): start, GPU wait and hold, first text; read by timing_of().
     marks: dict[str, float] = field(default_factory = dict)
-    # A call the player is not waiting on (summaries, quests, village life): it leaves a chat slot for the player.
     background: bool = False
 
     def node(self, node_id: str) -> NodeState:
@@ -367,7 +365,6 @@ class NodeContextImpl:
         self.seed = seed
         self.flow_params = rs.options.get("params") or {}
         self.iteration = iteration
-        # Set while the step shares the GPU lane with other chat calls (no model loads then).
         self.gpu_shared = False
         self.doc = rs.doc
         self.origin = dict(rs.origin)
@@ -592,24 +589,18 @@ class NodeContextImpl:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
-# Player entry points that only talk to the chat model already loaded: several of them run at once, one per
-# llama-server slot. Every other GPU step (loads, image, video, audio, training) still runs alone.
 SHARED_CHAT_NODES = frozenset(
     {"story.next_scene", "world.npc_reply", "world.npc_plan", "world.npc_chat"}
 )
-# Village life and the NPC Reply's summaries and quests run behind the player's back; a slot always stays free for
-# the player's own reply.
 BACKGROUND_NODES = frozenset({"world.npc_plan", "world.npc_chat"})
 BACKGROUND_TASKS = frozenset({"summarise", "director"})
 
 
 class NeedsExclusiveGpu(Exception):
-    """A shared chat step found its model is not the one loaded: it gives the lane back and runs alone."""
+    """The loaded model is not this shared step's: rerun it exclusively."""
 
 
 def chat_slots() -> int:
-    """How many requests the loaded chat model serves at once: the running llama-server's slots, else 1 (a
-    Transformers model generates one request at a time)."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -622,8 +613,7 @@ def chat_slots() -> int:
 
 
 class GpuLease:
-    """The Flows GPU lane. ``async with lease`` (or ``exclusive()``) runs alone, as the old lock did; ``shared()``
-    holders run side by side on the chat model already loaded, up to its slots, and never while an exclusive
+    """Exclusive holders run alone; ``shared()`` holders run up to the slot count, never while an exclusive
     holder runs or waits, so a model is never swapped under a generation."""
 
     def __init__(self) -> None:
@@ -666,7 +656,7 @@ class GpuLease:
         def admit() -> bool:
             # Read on every check: an exclusive holder may have swapped the model (and its slot count) meanwhile.
             n = max(1, int(slots() if callable(slots) else slots))
-            # One slot is the player's: background calls take at most the others (all of one when there is only one).
+            # One slot stays free for the player unless there is only one.
             cap = max(1, n - 1) if background else n
             return (
                 not self._exclusive
@@ -689,8 +679,6 @@ class GpuLease:
 
 
 def timing_of(marks: dict[str, float]) -> dict:
-    """Milliseconds from the start of a call: waiting for the GPU, first text, the end; after a cancel, how long
-    stopping took (until the GPU lane was free again)."""
     start = marks.get("start")
     if start is None:
         return {}
@@ -866,7 +854,6 @@ class FlowEngine:
             try:
                 await asyncio.wait({scope})
             except asyncio.CancelledError:
-                # The caller left: stop the model call through its hooks while they are registered.
                 rs.marks["cancel"] = time.monotonic()
                 rs.cancel_event.set()
                 await asyncio.shield(self._fire_cancel_hooks(rs))

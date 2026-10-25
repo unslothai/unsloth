@@ -96,7 +96,6 @@ test("places advertise actions from their names, with defaults for the missing o
   assert.deepEqual(at("socialise"), ["cafe", "square"]);
   assert.deepEqual(at("wander"), ["park"]);
   assert.deepEqual(at("work"), ["forge"]);
-  // A village with no named kitchen still lets everyone eat anywhere, at half strength.
   const plain = N.advertisements([
     { id: "a", name: "North", x: 0, y: 0, w: 2, h: 2 },
   ]);
@@ -148,7 +147,6 @@ test("a hungry villager goes to eat, a rested fed one follows the day plan, and 
   const content = pick({ energy: 95, hunger: 95, social: 95, fun: 95 }, 1);
   assert.equal(content.place, "forge");
   assert.equal(content.until, 600);
-  // The same seed always draws the same action; across seeds the top choices vary.
   const mid = { energy: 60, hunger: 45, social: 40, fun: 45 };
   const draws = () => Array.from({ length: 30 }, (_, i) => pick(mid, i));
   assert.deepEqual(draws(), draws());
@@ -159,7 +157,6 @@ test("a hungry villager goes to eat, a rested fed one follows the day plan, and 
     ),
   );
   assert.ok(kinds.size > 1, [...kinds].join());
-  // Bed time doubles the pull of sleep.
   const late = N.chooseAction({
     needs: { energy: 40, hunger: 80, social: 80, fun: 80 },
     offers,
@@ -211,7 +208,6 @@ test("villagerStep restores the need at the place, then picks the next action th
     areas,
   });
   assert.ok(next && next.doing.kind !== "eat");
-  // No needs (a world that turned them off) means the classic plan path handles the NPC.
   assert.equal(
     A.villagerStep({
       g,
@@ -372,7 +368,6 @@ test("saves keep needs, actions, followers and errands; old saves load with fres
   assert.deepEqual(junk.errands, {});
   assert.equal(junk.npc.isabella.needs?.energy, 100);
   assert.equal(junk.npc.isabella.doing, undefined);
-  // Worlds that turn needs off, and classic worlds, carry none.
   assert.equal(
     W.initialWorldState(spec({ needs: false })).npc.isabella.needs,
     undefined,

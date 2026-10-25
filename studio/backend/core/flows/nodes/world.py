@@ -334,7 +334,6 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
 
 
 async def _summarise(ctx: NodeContext, state: dict) -> dict:
-    """Fold the oldest turns of a long conversation into what the NPC remembers, so nothing said is lost."""
     try:
         system, prompt = compact_prompt(state)
     except WorldError as exc:
@@ -354,14 +353,12 @@ async def _summarise(ctx: NodeContext, state: dict) -> dict:
 
 
 async def _direct(ctx: NodeContext, state: dict) -> dict:
-    """The next quest of a world in play, as a patch that only adds to it."""
     try:
         system, prompt = director_prompt(state)
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
     world = state.get("world") or {}
     refused = ""
-    # Small models sometimes ask for an item already used; one more try is told why, which usually fixes it.
     for attempt in range(2):
         raw = await ctx.llm_json(
             model = ctx.params.get("model"),
