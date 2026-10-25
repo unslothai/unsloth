@@ -681,7 +681,9 @@ def test_model_preset_links_merge_per_model_and_null_removes_one(tmp_path, monke
         "llama": "Research",
     }
 
-    _, applied = studio_db.upsert_chat_settings_merge_if_current({}, {"modelPresets": {"gemma": None}})
+    _, applied = studio_db.upsert_chat_settings_merge_if_current(
+        {}, {"modelPresets": {"gemma": None}}
+    )
     assert applied is True
     assert studio_db.list_chat_settings()["modelPresets"] == {"llama": "Research"}
 
