@@ -1462,7 +1462,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     from .fsdp2_load import begin_shard, finish_shard, gather_replicated
 
     # fsdp2_sharded_loading chunks -> full-shape meta placeholders until fully_shard (empty otherwise).
-    pending = begin_shard(model, mesh, config)
+    pending, config = begin_shard(model, mesh, config)
     _sync_trainable_from_first_rank(model, dist, device, config.mesh)
     param_dtype = _resolve_param_dtype(model, config)
     mp_policy = MixedPrecisionPolicy(param_dtype = param_dtype, reduce_dtype = config.reduce_dtype)
@@ -1571,7 +1571,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if layout.replicate_frozen:
             replicated.update(p for p in model.parameters() if not p.requires_grad)
         _refuse_units_sharing_params(model, units + list(extra_units), replicated)
-        gather_replicated(model, pending, replicated, mesh, also = (ignored,))
+        # The caller's ignored_params set follows a gathered chunk to its whole parameter, as the full
+        # load's set names the live one.
+        user_ignored = config.ignored_params if isinstance(config.ignored_params, set) else set()
+        gather_replicated(model, pending, replicated, mesh, also = (ignored, user_ignored))
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(

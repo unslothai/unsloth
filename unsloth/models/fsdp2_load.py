@@ -30,6 +30,7 @@ or `UNSLOTH_FSDP2_SHARDED_LOAD=1` next to `UNSLOTH_FSDP2=1` (Unsloth's loaders t
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import math
 import os
@@ -69,6 +70,42 @@ def _output_head_weight(model):
         head = None
     weight = getattr(head, "weight", None)
     return weight if isinstance(weight, torch.Tensor) else None
+
+
+_DORA_REFUSAL = (
+    "Unsloth: LoraConfig(use_dora = True) initializes DoRA's magnitude from the whole base weight, which "
+    "native FSDP2 sharded loading holds only as this rank's rows; load the full model (drop "
+    "fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD) to train DoRA under native FSDP2."
+)
+
+
+def _sharded_chunk(weight):
+    info = _preload(weight)
+    return info is not None and info["world"] > 1
+
+
+def _guard_dora_init():
+    """DoRA's magnitude init (peft DoraLinearLayer.update_layer, every PEFT version with DoRA) adds a full
+    lora_B @ lora_A to the base weight: refuse it on a sharded-loaded chunk with a clear message instead of
+    PEFT's shape mismatch. Installed once, inert for any other base layer."""
+    try:
+        from peft.tuners.lora import dora
+    except Exception:
+        return
+    cls = getattr(dora, "DoraLinearLayer", None)
+    update = getattr(cls, "update_layer", None)
+    if update is None or getattr(update, "_unsloth_fsdp2_load_guard", False):
+        return
+
+    @functools.wraps(update)
+    def update_layer(self, *args, **kwargs):
+        base = kwargs.get("base_layer", args[0] if args else None)
+        if _sharded_chunk(getattr(base, "weight", None)):
+            raise ValueError(_DORA_REFUSAL)
+        return update(self, *args, **kwargs)
+
+    update_layer._unsloth_fsdp2_load_guard = True
+    cls.update_layer = update_layer
 
 
 def _refuse_unsharded_forward(module, args, kwargs = None):
@@ -138,6 +175,8 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         "read_bytes_sliced": reader.slice_bytes,
     }
     model.__dict__[_STATS] = stats
+    if owners and world > 1:
+        _guard_dora_init()
     return stats
 
 
@@ -259,6 +298,10 @@ def _refuse_weight_dependent_lora_init(model):
         for name, cfg in configs.items()
         if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
     }
+    if any(getattr(cfg, "use_dora", False) for cfg in configs.values()) and any(
+        _sharded_chunk(p) for p in model.parameters()
+    ):
+        raise ValueError(_DORA_REFUSAL)
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} reads the base weight, which native FSDP2 sharded loading "
@@ -269,8 +312,9 @@ def _refuse_weight_dependent_lora_init(model):
 
 def begin_shard(model, mesh, config):
     """Before shard_model's layout: check the preloaded chunks match `mesh`, drop the forward guards and
-    replace every chunk by a meta Parameter of the full shape. Returns {(id(module), name): (local, info)}
-    (empty without preloaded chunks)."""
+    replace every chunk by a meta Parameter of the full shape. Returns ({(id(module), name): (local, info)}
+    (empty without preloaded chunks), config): FSDP2Config.ignored_params entries naming a chunk now name its
+    placeholder (the caller's set is updated in place, a non-set copied), so gather_replicated keeps them whole."""
     slots = {}
     for module in model.modules():
         for name, p in module._parameters.items():
@@ -278,7 +322,7 @@ def begin_shard(model, mesh, config):
             if info is not None:
                 slots.setdefault(id(p), (p, info, []))[2].append((module, name))
     if not slots:
-        return {}
+        return {}, config
     if mesh.ndim != 1:
         raise RuntimeError(
             "Unsloth: native FSDP2 sharded loading needs a 1-D shard mesh (the one it loaded over); this "
@@ -304,7 +348,7 @@ def begin_shard(model, mesh, config):
     for level in list(model.modules()):
         for handle in level.__dict__.pop(_GUARD, None) or ():
             handle.remove()
-    pending = {}
+    pending, swap = {}, {}
     for p, info, where in slots.values():
         meta = nn.Parameter(
             torch.empty(info["shape"], dtype = p.dtype, device = "meta"),
@@ -315,10 +359,21 @@ def begin_shard(model, mesh, config):
                 meta.__dict__[attr] = value
         meta.__dict__["_unsloth_fsdp2_pending"] = True
         local = p.detach()
+        swap[id(p)] = meta
         for module, name in where:
             module._parameters[name] = meta
             pending[(id(module), name)] = (local, info)
-    return pending
+    ignored = config.ignored_params
+    if ignored and any(id(q) in swap for q in ignored):
+        if isinstance(ignored, set):
+            for q in [q for q in ignored if id(q) in swap]:
+                ignored.discard(q)
+                ignored.add(swap[id(q)])
+        else:
+            config = dataclasses.replace(
+                config, ignored_params = {swap.get(id(q), q) for q in ignored}
+            )
+    return pending, config
 
 
 def _full_from_chunks(local, info, mesh, dtype):

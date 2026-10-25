@@ -12,6 +12,7 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
+import dataclasses  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -111,15 +112,38 @@ def _train(native, model, ids, steps = 3):
     return losses, norms
 
 
-def _case(rank, world, tmp, ckpt, mode, fit, arch):
+IGNORED = ("layers.0.mlp.down_proj.weight", "layers.0.mlp.down_proj.base_layer.weight")
+
+
+def _ignoring(config, model, ignore):
+    """`config` with FSDP2Config.ignored_params = {the weight of `model` named `ignore`} (None: as is)."""
+    if not ignore:
+        return config
+    picked = {p for n, p in model.named_parameters() if n.endswith(ignore)}
+    assert len(picked) == 1, ignore
+    return dataclasses.replace(config, ignored_params = picked)
+
+
+def _ignored_state(model, config):
+    """Each FSDP2Config.ignored_params entry: (is a live parameter of `model`, kept a plain whole tensor)."""
+    live = {id(p): n for n, p in model.named_parameters()}
+    return [
+        (id(p) in live, type(p).__name__ != "DTensor" and p.device.type != "meta")
+        for p in config.ignored_params or ()
+    ]
+
+
+def _case(rank, world, tmp, ckpt, mode, fit, arch, ignore = None):
     native, loading = _load_module()
     AutoModelForCausalLM = _auto(arch)
 
     kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
-    config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = "cpu")
+    base_config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = "cpu")
 
     full = _prep(AutoModelForCausalLM.from_pretrained(ckpt, **kw), mode)
+    config = _ignoring(base_config, full, ignore)
     native.shard_model(full, config)
+    ignored_full = _ignored_state(full, config)
 
     with loading.fsdp2_sharded_loading() as state:
         model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
@@ -136,7 +160,9 @@ def _case(rank, world, tmp, ckpt, mode, fit, arch):
     ids = torch.randint(0, 100, (2, 7), generator = torch.Generator().manual_seed(1))
     unsharded = _raised(lambda: model(input_ids = ids))
     model = _prep(model, mode)
+    config = _ignoring(base_config, model, ignore)
     native.shard_model(model, config)
+    ignored_sharded = _ignored_state(model, config)
 
     a, b = _shards(full), _shards(model)
     diffs = sorted(set(a) ^ set(b))
@@ -163,6 +189,7 @@ def _case(rank, world, tmp, ckpt, mode, fit, arch):
         "unsharded": unsharded,
         "models": len(state["models"]),
         "dtensors": sum(1 for v in b.values() if v[0] == "DTensor"),
+        "ignored": (ignored_full, ignored_sharded),
     }
 
 
@@ -189,7 +216,25 @@ def _case_refusals(rank, world, tmp, ckpt):
     return out
 
 
-CASES = {"parity": _case, "refusals": _case_refusals}
+def _case_dora(rank, world, tmp, ckpt):
+    """DoRA's magnitude init reads the whole base weight: refused with sharded loading, before PEFT fails on
+    this rank's rows."""
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    native, loading = _load_module()
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+    with loading.fsdp2_sharded_loading():
+        model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
+    dora = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", use_dora = True)
+    out = {"dora": _raised(lambda: get_peft_model(model, dora))}
+    # The full load still takes DoRA (the refusal is scoped to sharded-loaded weights).
+    full = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
+    out["full"] = _raised(lambda: get_peft_model(full, dora))
+    return out
+
+
+CASES = {"parity": _case, "refusals": _case_refusals, "dora": _case_dora}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -237,15 +282,23 @@ def _spawn(case, world = WORLD, **kwargs):
         ("qwen3", None, "lora", False),
         ("qwen3", None, "full", False),
         ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
+        # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
+        ("llama", {"intermediate_size": 37}, "full", "ignore"),
+        ("llama", {"intermediate_size": 37}, "lora", "ignore"),
     ],
 )
 def test_sharded_loading_matches_full_load_shard_model(arch, overrides, mode, fit):
+    ignore = None
+    if fit == "ignore":
+        fit, ignore = False, IGNORED[mode == "lora"]
     with tempfile.TemporaryDirectory() as ckpt:
         _save(arch, ckpt, overrides)
-        results = _spawn("parity", ckpt = ckpt, mode = mode, fit = fit, arch = arch)
+        results = _spawn("parity", ckpt = ckpt, mode = mode, fit = fit, arch = arch, ignore = ignore)
     sliced = [r["stats"]["read_bytes_sliced"] for r in results]
     for rank, res in enumerate(results):
         assert res["models"] == 1
+        ignored_full, ignored_sharded = res["ignored"]
+        assert ignored_sharded == ignored_full == ([(True, True)] if ignore else []), res["ignored"]
         assert res["diffs"] == [], (rank, res["diffs"][:6])
         assert res["dtensors"] > 0
         # 3 steps bitwise equal to the full load (losses, clipped grad norms, final local shards).
@@ -270,6 +323,15 @@ def test_sharded_loading_refusals():
         assert "QLoRA" in res["4bit"]
         assert "1-D shard mesh" in (res["2d"] or ""), res["2d"]
         assert "cpu_offload" in (res["offload"] or ""), res["offload"]
+
+
+def test_sharded_loading_refuses_dora():
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save("llama", ckpt, {"intermediate_size": 37})
+        results = _spawn("dora", ckpt = ckpt)
+    for res in results:
+        assert res["full"] is None, res["full"]
+        assert "use_dora" in (res["dora"] or "") and "full" in res["dora"], res["dora"]
 
 
 def test_chunk_rows_match_fully_shard():
