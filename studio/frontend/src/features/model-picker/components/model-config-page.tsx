@@ -12,6 +12,7 @@ import {
   hasLegacyRunSettings,
   newRunSettingsName,
   normalizeSavedRunSettingsName,
+  quantsSelectingRunSettings,
   renameLegacyRunSettings,
   renameSavedRunSettings,
   saveRunSettings,
@@ -3890,6 +3891,34 @@ export function ModelConfigPage({
     setPickedSet(undefined);
   };
 
+  // A set is shared by the model's quants, but each quant loads from its own record and server
+  // override: the other quants selecting it follow every save and delete, or they load stale values
+  // and a Load there writes them back over the set.
+  const syncOtherQuants = (quants: readonly string[], stored: PerModelConfig | null) => {
+    const own = (target.ggufVariant ?? "").trim().toLowerCase();
+    const mirrors = (target.apiLoadable ?? target.isGguf) && !nativePathToken;
+    for (const quant of quants) {
+      if (quant.toLowerCase() === own) {
+        continue;
+      }
+      const variant = quant || null;
+      const saved = stored
+        ? savePerModelConfig(configId, variant, stored)
+        : deletePerModelConfig(configId, variant);
+      if (saved && mirrors) {
+        syncModelOverride(configId, variant, stored);
+      }
+    }
+  };
+  const saveSharedSet = (name: string, committed: PerModelConfig): boolean => {
+    const stored = forSetStore(committed);
+    if (!saveRunSettings(configId, name, stored)) {
+      return false;
+    }
+    syncOtherQuants(quantsSelectingRunSettings(configId, name), stored);
+    return true;
+  };
+
   // From the committed config, not customName: an edit this click committed (a number blurred by
   // the click) is not in the render that built customName yet.
   const committedCustomName = (committed: PerModelConfig) =>
@@ -3911,7 +3940,7 @@ export function ModelConfigPage({
       toast.error("Fix the extra arguments before saving.");
       return false;
     }
-    if (keep && !saveRunSettings(configId, target, forSetStore(effectiveRuntimeConfig))) {
+    if (keep && !saveSharedSet(target, effectiveRuntimeConfig)) {
       toast.error("Couldn't save these settings.");
       return false;
     }
@@ -3973,10 +4002,12 @@ export function ModelConfigPage({
 
   const deleteSet = (name: string) => {
     const wasSelected = name === selectedSet;
+    const otherQuants = quantsSelectingRunSettings(configId, name);
     if (!deleteSavedRunSettings(configId, name)) {
       toast.error("Couldn't delete these settings.");
       return;
     }
+    syncOtherQuants(otherQuants, null);
     if (wasSelected) {
       pickSet(null);
     }
@@ -4048,7 +4079,7 @@ export function ModelConfigPage({
     // Load saves into the selected set too (an edited Default becomes one), so the set and what
     // loads never drift apart.
     let loadSet = selectedSet ?? committedCustomName(effectiveRuntimeConfig);
-    if (loadSet !== null && !saveRunSettings(configId, loadSet, forSetStore(effectiveRuntimeConfig))) {
+    if (loadSet !== null && !saveSharedSet(loadSet, effectiveRuntimeConfig)) {
       toast.error("Couldn't save these settings, loading with them anyway.");
       // Never select a set that was not created.
       if (loadSet !== selectedSet) {

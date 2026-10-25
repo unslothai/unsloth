@@ -104,6 +104,12 @@ const readSelections = () =>
   readJson<SelectionMap>(SELECTED_RUN_SETTINGS_STORAGE_KEY);
 const writeSelections = (map: SelectionMap) =>
   writeJson(SELECTED_RUN_SETTINGS_STORAGE_KEY, map);
+// The quant as the picker spells it, by selection key: a server override key keeps that case, and
+// an exact key wins over a folded one, so a lower-cased write would lose to a stale entry.
+const SELECTED_VARIANTS_STORAGE_KEY =
+  "unsloth_model_selected_run_settings_variants";
+const readSelectedVariants = () =>
+  readJson<Record<string, string>>(SELECTED_VARIANTS_STORAGE_KEY);
 
 function decode(entries: unknown): SavedRunSettings[] {
   if (!Array.isArray(entries)) {
@@ -241,10 +247,28 @@ export function deleteSavedRunSettings(modelId: string, name: string): boolean {
   }
   const selections = readSelections();
   const dropped = selectionsNaming(selections, modelId, name);
+  // Default, not unchosen: an unchosen quant would adopt its remembered record back into a set.
   for (const selected of dropped) {
-    delete selections[selected];
+    selections[selected] = null;
   }
   return dropped.length === 0 || writeSelections(selections);
+}
+
+/** The quants of this model that load with the set ("" is a model without quants). */
+export function quantsSelectingRunSettings(
+  modelId: string,
+  name: string,
+): string[] {
+  const variants = readSelectedVariants();
+  return selectionsNaming(readSelections(), modelId, name).map((key) => {
+    if (typeof variants[key] === "string") {
+      return variants[key];
+    }
+    const parsed: unknown = JSON.parse(key);
+    return Array.isArray(parsed) && typeof parsed[1] === "string"
+      ? parsed[1]
+      : "";
+  });
 }
 
 export function findSavedRunSettings(
@@ -271,8 +295,14 @@ export function setSelectedRunSettings(
   ggufVariant: string | null | undefined,
   name: string | null,
 ): boolean {
-  const selections = readSelections();
   const key = selectionKey(modelId, ggufVariant);
+  const variants = readSelectedVariants();
+  const spelled = (ggufVariant ?? "").trim();
+  if (variants[key] !== spelled) {
+    variants[key] = spelled;
+    writeJson(SELECTED_VARIANTS_STORAGE_KEY, variants);
+  }
+  const selections = readSelections();
   if (selections[key] === name) {
     return true;
   }

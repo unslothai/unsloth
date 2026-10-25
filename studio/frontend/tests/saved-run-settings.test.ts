@@ -131,14 +131,27 @@ test("rename carries the selection; a taken name is refused", () => {
   );
 });
 
-test("deleting a set unchooses every quant that loaded with it", () => {
+test("the quants that load with a set keep the picker's spelling", () => {
+  saved.saveRunSettings(MODEL, "Long", config(32768));
+  saved.setSelectedRunSettings(MODEL, "Q4_K_M", "Long");
+  saved.setSelectedRunSettings(MODEL, "UD-Q8_K_XL", "Long");
+  saved.setSelectedRunSettings(MODEL, "BF16", null);
+  saved.setSelectedRunSettings("unsloth/Other-GGUF", "Q4_K_M", "Long");
+  assert.deepEqual(saved.quantsSelectingRunSettings(MODEL, "long").sort(), [
+    "Q4_K_M",
+    "UD-Q8_K_XL",
+  ]);
+});
+
+test("deleting a set moves every quant that loaded with it to Default", () => {
   saved.saveRunSettings(MODEL, "Long", config(32768));
   saved.setSelectedRunSettings(MODEL, "Q4_K_M", "Long");
   saved.setSelectedRunSettings(MODEL, "Q8_0", "Long");
   saved.setSelectedRunSettings("unsloth/Other-GGUF", "Q4_K_M", "Long");
   assert.ok(saved.deleteSavedRunSettings(MODEL, "Long"));
-  assert.equal(saved.getSelectedRunSettings(MODEL, "Q4_K_M"), undefined);
-  assert.equal(saved.getSelectedRunSettings(MODEL, "Q8_0"), undefined);
+  // Default, not unchosen: an unchosen quant would adopt its remembered record back into a set.
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q4_K_M"), null);
+  assert.equal(saved.getSelectedRunSettings(MODEL, "Q8_0"), null);
   assert.equal(
     saved.getSelectedRunSettings("unsloth/Other-GGUF", "Q4_K_M"),
     "Long",
@@ -255,7 +268,7 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   // never drift apart.
   assert.match(
     page,
-    /let loadSet =\s*selectedSet \?\?[\s\S]*?!saveRunSettings\(configId, loadSet, forSetStore\(effectiveRuntimeConfig\)\)[\s\S]*?if \(loadSet !== selectedSet\) \{\s*loadSet = null;[\s\S]*?persistConfig\(effectiveRuntimeConfig, loadSet !== null\)/,
+    /let loadSet =\s*selectedSet \?\?[\s\S]*?!saveSharedSet\(loadSet, effectiveRuntimeConfig\)[\s\S]*?if \(loadSet !== selectedSet\) \{\s*loadSet = null;[\s\S]*?persistConfig\(effectiveRuntimeConfig, loadSet !== null\)/,
   );
   // Saving an edited Default creates a set, so it takes the same extra-argument gate as a set.
   assert.match(
@@ -298,6 +311,20 @@ test("run settings use one dropdown and one Save, with no Remember checkbox", ()
   assert.match(
     page,
     /const pickSet = [\s\S]{0,200}if \(budgetSettling\) \{\s*return;/,
+  );
+  // A shared set: every save into it reaches the other quants that load with it, and a delete
+  // forgets their records too.
+  assert.match(
+    page,
+    /if \(keep && !saveSharedSet\(target, effectiveRuntimeConfig\)\)/,
+  );
+  assert.match(
+    page,
+    /if \(loadSet !== null && !saveSharedSet\(loadSet, effectiveRuntimeConfig\)\)/,
+  );
+  assert.match(
+    page,
+    /const otherQuants = quantsSelectingRunSettings\(configId, name\);[\s\S]*?syncOtherQuants\(otherQuants, null\);/,
   );
   // The pencil beside the dropdown renames a set, or names an edited Default before it exists.
   assert.match(
