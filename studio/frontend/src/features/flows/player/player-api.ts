@@ -9,8 +9,10 @@ import type {
   FlowDocument,
   FlowKind,
   MediaValue,
+  ModelAsset,
   RunStatus,
   StoryManifest,
+  WorldProp3d,
   WorldSpec,
 } from "../types";
 
@@ -34,6 +36,20 @@ export function rerollTargets(doc: FlowDocument): string[] {
         !n.disabled,
     )
     .map((n) => n.id);
+}
+
+/** `doc` with the 3D editor's props on every enabled World Player block; null when it has none to hold them. */
+export function withWorldProps(
+  doc: FlowDocument,
+  props: WorldProp3d[],
+): FlowDocument | null {
+  let found = false;
+  const nodes = doc.nodes.map((n) => {
+    if (n.type !== "world.play" || n.disabled) return n;
+    found = true;
+    return { ...n, params: { ...(n.params ?? {}), props3d: props } };
+  });
+  return found ? { ...doc, nodes } : null;
 }
 
 export interface SessionRecord {
@@ -118,6 +134,10 @@ export interface PlayerApi {
     signal?: AbortSignal,
   ): Promise<void>;
   mediaBlob(media: MediaValue): Promise<Blob>;
+  /** Keep the 3D editor's scenery: written to the flow's World Player block, so it needs no rerun. */
+  saveWorldProps?(flowId: string, props: WorldProp3d[]): Promise<void>;
+  /** Store a .glb model as a flow asset (the server checks it again). */
+  uploadModel?(file: Blob, name: string): Promise<ModelAsset>;
 }
 
 export class PlayerApiError extends Error {
@@ -281,6 +301,35 @@ export const playerApi: PlayerApi = {
         res.status,
       );
     return res.blob();
+  },
+  async saveWorldProps(flowId, props) {
+    const rec = await json<{ doc: FlowDocument; updatedAt: number }>(
+      await authFetch(`/api/flows/${enc(flowId)}`),
+    );
+    const doc = withWorldProps(rec.doc, props);
+    if (!doc)
+      throw new PlayerApiError(
+        "Add a World Player block to the flow to keep scenery",
+        400,
+      );
+    await json<unknown>(
+      await authFetch(`/api/flows/${enc(flowId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc, baseUpdatedAt: rec.updatedAt }),
+      }),
+    );
+  },
+  async uploadModel(file, name) {
+    const q = new URLSearchParams({ name, mime: "model/gltf-binary" });
+    const body = await json<{ media: ModelAsset }>(
+      await authFetch(`/api/flows/assets?${q.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      }),
+    );
+    return body.media;
   },
 };
 

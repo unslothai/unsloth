@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import unquote_plus
 
 from core.flows import assets as asset_store
-from core.flows import schema
+from core.flows import glb, schema
 from core.flows.compiler import parse_document
 from core.flows.specs import SPECS_BY_TYPE
 
@@ -106,7 +106,7 @@ def _blank_query(match: "re.Match") -> str:
 def _is_media(value: Any) -> bool:
     return (
         isinstance(value, dict)
-        and value.get("kind") in ("image", "audio", "video", "document")
+        and value.get("kind") in ("image", "audio", "video", "document", "model")
         and isinstance(value.get("ref"), str)
     )
 
@@ -358,6 +358,8 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                     mime = asset_store.sniff_text(blob, asset_store.EXT_MIME.get(ext))
                 if mime is None or asset_store.MIME_EXT.get(mime) != ext:
                     raise PackageError(f"{info.filename} is not the media type its name says")
+                if mime == glb.GLB_MIME and (reason := glb.check(blob)):
+                    raise PackageError(f"{info.filename}: {reason}")
                 files[digest] = (blob, mime)
     else:
         raw = data

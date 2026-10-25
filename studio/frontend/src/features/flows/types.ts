@@ -473,6 +473,44 @@ export interface WorldSpec {
   /** Which player draws the world; the top-down map when unset. */
   render?: "2d" | "3d";
   view3d?: World3dView;
+  /** Scenery placed with the 3D editor; saved on the World Player block. */
+  props3d?: WorldProp3d[];
+}
+
+export type WorldPropKind =
+  | "house"
+  | "tree"
+  | "lamp"
+  | "fence"
+  | "well"
+  | "crate"
+  | "rock"
+  | "bench"
+  | "stall"
+  | "model";
+
+/** A GLB model stored as a flow asset. */
+export interface ModelAsset {
+  kind: "model";
+  ref: string;
+  url?: string | null;
+  mime?: string | null;
+}
+
+export interface WorldProp3d {
+  id: string;
+  kind: WorldPropKind;
+  /** The model of a "model" prop. */
+  asset?: ModelAsset;
+  name?: string;
+  /** Tile units; a prop on a tile stands at its centre (x + 0.5). */
+  x: number;
+  y: number;
+  /** Degrees about the vertical axis. */
+  rot?: number;
+  scale?: number;
+  /** Blocks walking on its tile (2D and 3D). */
+  solid?: boolean;
 }
 
 /** How the first-person 3D player draws a world. Every field is optional; the player fills in defaults. */
