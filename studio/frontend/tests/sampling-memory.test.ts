@@ -159,3 +159,26 @@ test("Reset layers Qwen3's thinking-mode table over the base recommendation", as
     /\.\.\.recommendedSampling\([\s\S]*?\),\s*\.\.\.qwen,\s*\}\);/,
   );
 });
+
+test("Remember and Save wait for the first read, so its older result cannot overwrite them", () => {
+  const footer = readFileSync(
+    new URL(
+      "../src/features/chat/components/sampling-footer.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    footer,
+    /setLoaded\(false\);\s*readSavedSampling\(modelId, controller\.signal\)/,
+  );
+  assert.match(
+    footer,
+    /\.finally\(\(\) => \{\s*if \(!controller\.signal\.aborted\) \{\s*setLoaded\(true\);/,
+  );
+  assert.match(footer, /checked=\{remember\}\s*disabled=\{!loaded\}/);
+  assert.match(
+    footer,
+    /disabled=\{!loaded \|\| busy \|\| \(remember && unchanged\)\}/,
+  );
+});
