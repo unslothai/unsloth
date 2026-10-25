@@ -115,7 +115,7 @@ test("a project's modal overlay closes before Request edits or Attach hand off t
 
 test("a browser-use question re-opens the panel even when it is already open, so a project overlay shows it", () => {
   const executor = read("../src/features/browser/agent/executor.ts");
-  assert.match(executor, /if \(tabId\) store\.revealIn\(context\.session\.chat, tabId\);\s*(\/\/[^\n]*\n\s*)?else if \(chatOnScreen\(context\)\) store\.openPanel\(\);/);
+  assert.match(executor, /if \(tabId\) store\.revealIn\(context\.session\.chat, tabId\);\s*(\/\/[^\n]*\n\s*)?if \(chatOnScreen\(context\)\) store\.openPanel\(\);/);
 });
 
 test("opening the browser closes Research, which would otherwise hide it in the side pane", () => {
