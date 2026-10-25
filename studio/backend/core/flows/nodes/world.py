@@ -362,19 +362,28 @@ async def _direct(ctx: NodeContext, state: dict) -> dict:
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
     world = state.get("world") or {}
-    raw = await ctx.llm_json(
-        model = ctx.params.get("model"),
-        system = system,
-        prompt = prompt,
-        schema = DIRECTOR_SCHEMA,
-        temperature = 0.9,
-        max_tokens = 500,
-        seed = seed_from(ctx.seed, "director", len(world.get("quests") or [])),
-    )
-    try:
-        return {"reply": {"patch": validate_director(raw, state)}}
-    except WorldError as exc:
-        raise FlowNodeError(str(exc), retryable = True) from exc
+    refused = ""
+    # Small models sometimes ask for an item already used; one more try is told why, which usually fixes it.
+    for attempt in range(2):
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt
+            + (
+                f"Your last answer was refused: {refused}. Answer again and fix that.\n"
+                if refused
+                else ""
+            ),
+            schema = DIRECTOR_SCHEMA,
+            temperature = 0.9,
+            max_tokens = 500,
+            seed = seed_from(ctx.seed, "director", len(world.get("quests") or []), attempt),
+        )
+        try:
+            return {"reply": {"patch": validate_director(raw, state)}}
+        except WorldError as exc:
+            refused = str(exc)
+    raise FlowNodeError(refused, retryable = True)
 
 
 def _sim_world(state: Any, who: str) -> dict:

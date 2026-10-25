@@ -151,6 +151,22 @@ def test_director_task_returns_a_patch():
     )
     with pytest.raises(FlowNodeError):
         run(world_nodes.world_npc_reply(ctx))
+    assert len(ctx.llm_calls) == 2, "one more try, then give up"
+
+
+def test_a_refused_quest_is_asked_again_with_the_reason():
+    answers = iter(
+        [
+            {"title": "Again", "giver": "mira", "item": "rod"},  # the rod is already asked for
+            {"title": "Ring the Bell", "giver": "mira", "item": "bell"},
+        ]
+    )
+    ctx = FakeCtx("world.npc_reply", inputs = {"state": _state()}, llm = lambda **kw: next(answers))
+    out = run(world_nodes.world_npc_reply(ctx))
+    assert out["reply"]["patch"]["quest"]["requires_item"] == "bell"
+    assert "refused" not in ctx.llm_calls[0]["prompt"]
+    assert "Your last answer was refused: the new quest needs an item" in ctx.llm_calls[1]["prompt"]
+    assert ctx.llm_calls[0]["seed"] != ctx.llm_calls[1]["seed"]
 
 
 def test_prompt_offers_new_things_only_when_allowed():
