@@ -136,7 +136,6 @@ test("a written scene is used at once; an unchosen branch is dropped", async () 
   assert.equal(scene.id, "w_a");
   assert.equal(calls.length, 2, "a hit makes no call");
   assert.equal(wa.stats.hits, 1);
-  // The player is in the new scene now: the other branches are no longer wanted.
   const next = R.reduce(m, live, {
     type: "addScene",
     scene,
@@ -184,7 +183,6 @@ test("background writing waits for the player and yields the GPU to a live call"
   await held;
   assert.equal(calls.length, 1);
   const running = calls[0];
-  // A live call for something else stops the background one and runs at once.
   const elsewhere = R.reduce(m, readToChoice(R.initialState(m)), {
     type: "set",
     vars: { hp: 2 },

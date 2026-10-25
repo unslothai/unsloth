@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Write-ahead for live stories: while the player reads, the Next Scene entry point writes the scene behind each
-// offered choice. Every request is built from the state the reducer would reach if that choice were picked, so a
-// cached answer is the answer the live call would have been sent for; nothing touches the real state until the
-// player picks, and a different path makes a different key, never a reused scene.
+// Requests are built from the state each choice would reach, so a cached scene is exactly what the live call would send.
 
 import type { StoryCharacter, StoryManifest, StoryScene } from "../../types";
 import {
@@ -35,9 +32,7 @@ export interface PlannedWrite {
   req: NextSceneRequest;
 }
 
-/** Depth 1 writes one scene per offered choice; depth 2 also the scenes behind the choices those offer. */
 export const MAX_WRITE_AHEAD_DEPTH = 2;
-/** Upper bound on scenes written ahead of one choice point, whatever the depth. */
 export const MAX_WRITE_AHEAD = 6;
 
 export function storyContext(m: StoryManifest, s: StoryState) {
@@ -61,7 +56,6 @@ export function historyText(m: StoryManifest, s: StoryState): string[] {
   });
 }
 
-/** The Next Scene request for a state waiting on one (status "generating"), else null. */
 export function nextSceneRequest(
   m: StoryManifest,
   s: StoryState,
@@ -96,7 +90,6 @@ export function writeKey(s: StoryState, req: NextSceneRequest): string {
   return `${s.rev}|${s.pending?.sceneId ?? ""}|${stable(req)}`;
 }
 
-/** Read on to the next stop: a choice, an ending, a scene to write, or a scene still waiting on its lines. */
 export function readToStop(m: StoryManifest, from: StoryState): StoryState {
   let s = from;
   for (let i = 0; i < 1000 && s.status === "reading"; i++) {
@@ -107,7 +100,6 @@ export function readToStop(m: StoryManifest, from: StoryState): StoryState {
   return s;
 }
 
-/** Where each offered choice would lead from `s`: the states waiting on a written scene. */
 function branches(m: StoryManifest, s: StoryState): StoryState[] {
   const at = readToStop(m, s);
   if (at.status === "generating") return [at];
@@ -119,7 +111,6 @@ function branches(m: StoryManifest, s: StoryState): StoryState[] {
     .filter((x) => x.status === "generating");
 }
 
-/** The scenes to write ahead from `s`, nearest first; deeper levels only below scenes already written. */
 export function planWriteAhead(
   m: StoryManifest,
   s: StoryState,
@@ -174,11 +165,7 @@ interface Job extends PlannedWrite {
   adopted?: boolean;
 }
 
-/**
- * Background writer, one call at a time and only while no player-facing call is waiting. A player call that
- * misses aborts the running background call (the backend stops it), so the GPU goes to the scene the player
- * asked for; the aborted write is retried later if it is still wanted.
- */
+/** Background writer; a player call that misses aborts the running write (retried later if still wanted). */
 export class WriteAhead {
   private jobs = new Map<string, Job>();
   private queue: string[] = [];
@@ -198,7 +185,6 @@ export class WriteAhead {
     return this.jobs.get(key)?.scene;
   }
 
-  /** Keep exactly these writes: new ones are queued in order, the rest (branches not taken) are dropped. */
   plan(writes: PlannedWrite[]): void {
     if (this.closed) return;
     const wanted = new Set(writes.map((w) => w.key));
@@ -219,7 +205,6 @@ export class WriteAhead {
     this.pump();
   }
 
-  /** The player's own call: a written scene at once, the running write if it is this one, else a live call. */
   async take(
     req: NextSceneRequest,
     key: string,
@@ -247,12 +232,10 @@ export class WriteAhead {
       this.preempt();
       return await this.write(req, signal ?? new AbortController().signal);
     } finally {
-      // Not restarted here: the scene this call wrote re-plans what is still wanted.
       this.busy--;
     }
   }
 
-  /** Run a player-facing call (scene lines, the current scene's art) with background writing paused. */
   async hold<T>(run: () => Promise<T>, preempt = true): Promise<T> {
     this.busy++;
     if (preempt) this.preempt();
@@ -264,7 +247,6 @@ export class WriteAhead {
     }
   }
 
-  /** Stop everything (load, restart, a new story); later results are discarded. */
   reset(): void {
     for (const job of this.jobs.values()) job.ctl?.abort();
     this.jobs.clear();
@@ -272,7 +254,6 @@ export class WriteAhead {
     this.current = null;
   }
 
-  /** Open again after a close: React replays effect cleanup and setup on mount in development. */
   open(): void {
     this.closed = false;
   }
@@ -323,7 +304,6 @@ export class WriteAhead {
   }
 }
 
-/** Two serial lanes: scene text never waits behind painting. */
 export class Lanes {
   private tails: Record<"text" | "art", Promise<unknown>> = {
     text: Promise.resolve(),

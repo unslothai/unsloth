@@ -101,7 +101,6 @@ function readNumber(key: string, fallback: number): number {
   }
 }
 
-/** Scenes written ahead in live stories: 0 off, 1 the next scene of each choice (default), 2 one more level. */
 function readWriteAhead(): number {
   try {
     const v = localStorage.getItem(WRITE_AHEAD_KEY);
@@ -390,7 +389,6 @@ export function StoryPlayer({
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 2200);
   }, []);
 
-  // Scene text and art run in separate lanes, so a written scene never waits behind painting.
   const lanes = useRef(new Lanes());
   const requested = useRef<Set<string>>(new Set());
   // Lines that arrived while the reader was mid-scene; the next visit to that scene plays them.
@@ -442,8 +440,6 @@ export function StoryPlayer({
         lanes.current.run("art", () =>
           api.invoke(flowId, artEntry, { prompt }, { rev }),
         );
-      // The scene on screen is painted before anything is written ahead (a write already running is stopped and
-      // retried later); art for later scenes is not waited on.
       (current ? writeAhead.hold(job) : job())
         .then((res) => {
           const media = res.outputs.image as MediaValue | undefined;
@@ -462,13 +458,11 @@ export function StoryPlayer({
     [api, artEntry, flowId, manifest.style, writeAhead],
   );
 
-  // A new playthrough (restart, load) drops everything written ahead for the old one.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on a new playthrough
   useEffect(() => {
     writeAhead.reset();
   }, [writeAhead, state.rev]);
 
-  // Write the next scene (infinite mode): a scene written ahead is used at once, else it is written now.
   useEffect(() => {
     if (state.status !== "generating" || !state.pending || !nextEntry) return;
     const { rev } = state;
@@ -493,11 +487,9 @@ export function StoryPlayer({
       );
   }, [state.status, state.pending, state.rev, manifest, nextEntry, writeAhead]);
 
-  // While the player reads, write the scene behind each offered choice (and, at depth 2, the level below).
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-planned when the scene, playthrough or a write changes
   useEffect(() => {
     if (!started || !nextEntry) return;
-    // An ending or an error drops every branch still queued or being written.
     if (state.status === "ended" || state.status === "error") {
       writeAhead.plan([]);
       return;
