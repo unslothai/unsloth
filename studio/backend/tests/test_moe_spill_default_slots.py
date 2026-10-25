@@ -661,3 +661,97 @@ def test_a_first_launch_that_turns_unpinned_logs_its_own_stage(
     assert gave_back == [
         "MoE cache: not on the unpinned launch, so the serving slots go back 2 -> 4."
     ], lines
+
+
+def _vision_spill_launch(tmp_path, monkeypatch, *, outcome, **load_kw):
+    """A multimodal deep spill the cache serves. ``outcome(cmd)`` gives each spawn's
+    (exit code or None for healthy, output lines)."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    spawned = []
+    make = placement._moe_backend
+
+    def with_projector(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+        mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", with_projector)
+
+    def launch(
+        backend,
+        gguf,
+        model_identifier = "test",
+        **load_kwargs,
+    ):
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return placement._REAL_POPEN(cmd, **kwargs)
+            spawned.append(list(cmd))
+            rc, _lines = outcome(cmd)
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 2**31 - 1,  # never a real process
+                    "stdout": iter(()),
+                    "returncode": rc,
+                    "poll": lambda self: rc,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: rc or 0,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        def health(timeout = None, **_kw):
+            rc, lines = outcome(spawned[-1])
+            backend._stdout_lines = list(lines)
+            return rc is None
+
+        backend._wait_for_health = health
+        with placement.patch.object(placement.subprocess, "Popen", side_effect = fake_popen):
+            assert backend.load_model(
+                placement.GgufLoadIntent(
+                    gguf_path = str(gguf),
+                    model_identifier = model_identifier,
+                    is_vision = True,
+                    **load_kwargs,
+                )
+            )
+        return {"cmd": spawned[-1]}
+
+    monkeypatch.setattr(placement, "_launch", launch)
+    backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD, **load_kw)
+    return backend, spawned
+
+
+def test_the_text_only_retry_after_a_failed_cpu_projector_runs_the_restored_slots(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """The CPU-projector retry drops the cache and gives the cut slots back; when it fails
+    too, the text-only replay of the saved vision argv must launch that count, not the
+    cut one the effective count no longer reports."""
+
+    def outcome(cmd):
+        if "--mmproj" not in cmd:
+            return None, []
+        if "--no-mmproj-offload" in cmd:
+            return 1, ["srv    load_model: failed to load model"]
+        return -11, []
+
+    draft = _write_gguf(tmp_path / "user-draft.gguf")
+    backend, spawned = _vision_spill_launch(
+        tmp_path,
+        monkeypatch,
+        outcome = outcome,
+        drafter = False,
+        speculative_type = "off",
+        extra_args = ["--flash-attn", "off", "--spec-type", "draft-simple", "-md", str(draft)],
+    )
+
+    first, text_only = spawned[0], spawned[-1]
+    assert "--moe-cache-mib" in first and _flag(first, "--parallel") == "2", first
+    assert any("--no-mmproj-offload" in c for c in spawned), spawned
+    assert "--mmproj" not in text_only, text_only
+    assert _flag(text_only, "--parallel") == str(backend.effective_parallel_slots), text_only
+    assert backend.effective_parallel_slots == 4

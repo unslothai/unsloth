@@ -26867,6 +26867,8 @@ class LlamaCppBackend:
                 # The cut stood only on the MoE cache serving a deep spill: any launch
                 # without the cache gives the slots back (_undo_cache_only_spill_cut).
                 _spill_cut_needs_cache = False
+                # The vision argv the text-only and CPU replays rebuild from, once saved.
+                _vision_gpu_cmd: Optional[List[str]] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -32131,7 +32133,7 @@ class LlamaCppBackend:
                     re-fits at the restored count. A cache refused at emission keeps the
                     cut, since that placement (a --fit off plan included) was priced at it."""
                     nonlocal cmd, n_parallel, _spill_slots_asked, _spill_cut_needs_cache
-                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted, _vision_gpu_cmd
                     if not (
                         _spill_cut_needs_cache
                         and self._moe_cache_flags
@@ -32175,6 +32177,11 @@ class LlamaCppBackend:
                         run_cmd = _restore(run_cmd)
                         if _old_ckpt or _auto_ckpt_emitted:
                             run_cmd = [*run_cmd, *_auto_ckpt_emitted]
+                    # The text-only and CPU replays relaunch it after a failed retry.
+                    if _vision_gpu_cmd is not None:
+                        _vision_gpu_cmd = _restore(_vision_gpu_cmd)
+                        if _old_ckpt or _auto_ckpt_emitted:
+                            _vision_gpu_cmd = [*_vision_gpu_cmd, *_auto_ckpt_emitted]
                     # The plan other loads place against was priced at the cut count.
                     if self._pending_plan_mib and self._can_estimate_kv():
                         _restored_kv = self._estimate_kv_cache_bytes(
