@@ -16,7 +16,6 @@ from unsloth.kernels.utils import MAX_FUSED_SIZE
 @pytest.mark.parametrize("config", [(8192, 4), (16384, 8), (MAX_FUSED_SIZE, 32)])
 @pytest.mark.parametrize("masked", [(16384, 32768), (65536, 131072)])
 def test_an_all_masked_chunk_matches_the_fp64_reference(config, masked, monkeypatch):
-    # A fully -inf chunk must give logsumexp -inf, not NaN.
     monkeypatch.setattr(ce_mod, "_chunked_forward_config", lambda device, vocab_size: config)
     vocab = 131073
     generator = torch.Generator(device = "cuda").manual_seed(0)
