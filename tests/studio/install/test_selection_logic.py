@@ -5186,7 +5186,6 @@ class TestLinuxUncoveredRocmGpuTakesVulkan:
             self._resolve("gfx1153")
 
     def test_rocm_torch_beside_an_nvidia_card_keeps_the_source_build(self, monkeypatch):
-        # Following ROCm torch clears has_physical_nvidia; the card is still there for Vulkan.
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: True)
         with pytest.raises(PrebuiltFallback):
             self._resolve(
