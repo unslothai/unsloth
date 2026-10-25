@@ -238,9 +238,13 @@ for name in os.listdir({str(dst)!r}):
 print("DTYPES", ",".join(sorted(dtypes)))
 """
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", UNSLOTH_ALLOW_CPU = "1")
-    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 600, env = env)
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 600, env = env
+    )
     lines = dict(
-        l.split(" ", 1) for l in out.stdout.splitlines() if l.startswith(("DROPPED", "MARKED", "DTYPES"))
+        l.split(" ", 1)
+        for l in out.stdout.splitlines()
+        if l.startswith(("DROPPED", "MARKED", "DTYPES"))
     )
     assert "DTYPES" in lines, (out.stdout[-2000:], out.stderr[-2000:])
     assert int(lines["DROPPED"]) > 0 and lines["MARKED"] == "1", lines
@@ -252,14 +256,17 @@ def test_a_dequantized_fp8_load_gets_no_bitsandbytes_stamp():
     # unquantized load; the default load_in_4bit stamp then put a bnb config over 16bit weights.
     import ast
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth/models/loader.py")
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth/models/loader.py"
+    )
     tree = ast.parse(open(path).read())
 
     def assigned(name):
         return [
             ast.unparse(node.value)
             for node in ast.walk(tree)
-            if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == name for t in node.targets)
         ]
 
     stamps = [v for v in assigned("_stamp_bnb") if "_quant" in v]
@@ -288,7 +295,9 @@ def test_only_a_load_without_fp8_config_is_marked_dequantized():
     from unsloth.models.loader_utils import _drop_fp8_dequantize_conversions
 
     def model(config):
-        conversion = SimpleNamespace(operations = [Fp8Dequantize(None)], _original_target_patterns = ["weight"])
+        conversion = SimpleNamespace(
+            operations = [Fp8Dequantize(None)], _original_target_patterns = ["weight"]
+        )
         return SimpleNamespace(config = config, _weight_conversions = [conversion])
 
     kept = model(SimpleNamespace(quantization_config = dict(_BLOCK_FP8)))

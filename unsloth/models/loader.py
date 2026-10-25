@@ -1982,6 +1982,7 @@ class FastLanguageModel(FastLlamaModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
+
                     # get_quant_type misses a config object (an fp8 load keeping FP8Linear), and a dequantized
                     # fp8 load reads None but holds 16bit weights: neither gets a bitsandbytes stamp.
                     _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
@@ -3385,6 +3386,7 @@ class FastModel(FastBaseModel):
                 # load_in_4bit is the requested flag, not the effective one: a non-bnb checkpoint had bnb disabled by check_and_disable, so a synthetic bnb config would corrupt its real one.
                 try:
                     from unsloth_zoo.utils import get_quant_type
+
                     # get_quant_type misses a config object (an fp8 load keeping FP8Linear), and a dequantized
                     # fp8 load reads None but holds 16bit weights: neither gets a bitsandbytes stamp.
                     _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
