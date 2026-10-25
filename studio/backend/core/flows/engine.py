@@ -1293,7 +1293,6 @@ class FlowEngine:
 
         slot, repo = load
         try:
-            # Under the GPU lock, like the load itself.
             async with self.gpu_lock():
                 if slot == "llm":
                     await asyncio.wait_for(

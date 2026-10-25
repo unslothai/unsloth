@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model residency across a run: start from what Studio has loaded, load the next step's model while CPU steps
-run, never load ahead for a step that will be a cache hit, and free what the run loaded when asked to."""
+"""Model residency across a run: reuse, load-ahead during CPU steps, cache-hit skips, unload at run end."""
 
 import asyncio
 import time
