@@ -332,6 +332,40 @@ def _decode_no_cudnn_devices():
 _NO_CUDNN_DECODE = _decode_no_cudnn_devices()
 
 
+_DECODE_PICKS_CUDNN = {}
+
+
+def _decode_picks_cudnn(query, key, attn_mask, enable_gqa):
+    """Whether torch would run this decode call on cuDNN attention. Entering sdpa_kernel costs
+    ~25 us per call, so it is skipped where torch already picks flash / efficient (torch 2.10)."""
+    cache_key = (
+        query.device.index,
+        query.dtype,
+        query.shape[-1],
+        query.shape[1],
+        key.shape[1],
+        attn_mask is not None,
+        enable_gqa,
+        torch.backends.cuda.cudnn_sdp_enabled(),
+    )
+    picks = _DECODE_PICKS_CUDNN.get(cache_key)
+    if picks is None:
+        cuda = torch.backends.cuda
+        backends = (
+            cuda.flash_sdp_enabled(),
+            cuda.cudnn_sdp_enabled(),
+            cuda.mem_efficient_sdp_enabled(),
+            cuda.math_sdp_enabled(),
+            tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        )
+        gqa, mha = _sdpa_gqa_choices(
+            str(query.device), query.dtype, query.shape[-1], query.shape[1], key.shape[1],
+            False, attn_mask is not None, False, 0.0, backends, single_query = True,
+        )  # fmt: skip
+        picks = _DECODE_PICKS_CUDNN[cache_key] = (gqa if enable_gqa else mha) == _CUDNN_CHOICE
+    return picks
+
+
 def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
     """SDPA for the fast decode paths (one query against the KV cache), kept off cuDNN attention
     where torch would pick it (_decode_no_cudnn_devices); flash / efficient need no per-length plan."""
@@ -340,6 +374,13 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
         and query.is_cuda
         and query.shape[-2] == 1
         and query.device.index in _NO_CUDNN_DECODE
+        and (
+            torch.compiler.is_compiling()
+            or _decode_picks_cudnn(
+                query, key, kwargs.get("attn_mask", args[0] if args else None),
+                bool(kwargs.get("enable_gqa", False)),
+            )
+        )  # fmt: skip
     ):
         with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
             return F.scaled_dot_product_attention(query, key, value, *args, **kwargs)

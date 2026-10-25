@@ -261,6 +261,7 @@ def test_decode_sdpa_avoids_cudnn_where_flagged(monkeypatch, masked):
         return real(*a, **k)
 
     monkeypatch.setattr(F, "scaled_dot_product_attention", record)
+    monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a: True)
     q = torch.randn(4, 8, 1, 64, device = "cuda", dtype = torch.bfloat16)
     kv = torch.randn(4, 8, 300, 64, device = "cuda", dtype = torch.bfloat16)
     kw = dict(attn_mask = torch.ones(4, 1, 1, 300, dtype = torch.bool, device = "cuda")) if masked else {}
@@ -274,6 +275,28 @@ def test_decode_sdpa_avoids_cudnn_where_flagged(monkeypatch, masked):
     monkeypatch.setattr(ad, "_NO_CUDNN_DECODE", frozenset({q.device.index}))
     ad.decode_scaled_dot_product_attention(kv, kv, kv, is_causal = True)
     assert seen[-1] == torch.backends.cuda.cudnn_sdp_enabled()
+
+
+@pytest.mark.parametrize("masked", [True, False])
+def test_decode_sdpa_pins_only_where_torch_picks_cudnn(monkeypatch, masked):
+    """The pin is entered only when torch's own pick for the call is cuDNN: elsewhere (torch 2.10 on
+    H100) sdpa_kernel is pure overhead per decode call."""
+    if not torch.cuda.is_available() or ad._CUDNN_CHOICE is None:
+        pytest.skip("needs CUDA and torch's cuDNN SDPA backend")
+    q = torch.randn(4, 8, 1, 64, device = "cuda", dtype = torch.bfloat16)
+    kv = torch.randn(4, 8, 300, 64, device = "cuda", dtype = torch.bfloat16)
+    mask = torch.ones(4, 1, 1, 300, dtype = torch.bool, device = "cuda") if masked else None
+    torch_pick = int(torch._fused_sdp_choice(q, kv, kv, attn_mask = mask))
+    ad._DECODE_PICKS_CUDNN.clear()
+    assert ad._decode_picks_cudnn(q, kv, mask, False) == (torch_pick == ad._CUDNN_CHOICE)
+    entered = []
+    real = ad._sdpa_kernel
+    monkeypatch.setattr(ad, "_sdpa_kernel", lambda b: entered.append(1) or real(b))
+    monkeypatch.setattr(ad, "_NO_CUDNN_DECODE", frozenset({q.device.index}))
+    for picks in (False, True):
+        monkeypatch.setattr(ad, "_decode_picks_cudnn", lambda *a, p = picks: p)
+        ad.decode_scaled_dot_product_attention(q, kv, kv, attn_mask = mask)
+    assert entered == [1]
 
 
 def test_decode_no_cudnn_devices(monkeypatch):
