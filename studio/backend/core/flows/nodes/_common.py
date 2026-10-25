@@ -230,6 +230,70 @@ def _caller(ctx: Any) -> Any:
 FLOW_CHAT_CONTEXT = 16384
 
 
+def chat_model_name(ctx: Any) -> str:
+    """The model a chat request names: the model this step bound to when it is kept alongside the primary one
+    (Keep multiple models loaded), else "default", the primary."""
+    return getattr(ctx, "chat_model", None) or "default"
+
+
+MULTI_MODEL_MODES = ("fit", "always")
+
+
+async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[dict]:
+    """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
+    model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
+    the setting is off (or unreadable) and the step loads into the primary slot as before."""
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    if status.get("multi_model_mode") not in MULTI_MODEL_MODES:
+        return None
+    serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
+    if not serving or loading._same_id(serving[0], repo):
+        # Nothing loaded yet, or the primary already is this repo: the primary slot path handles it.
+        return None
+    name = f"{repo}:{variant}" if variant else repo
+    if any(loading._same_id(s, repo) for s in serving[1:]):
+        kept = await loading._read_json(
+            _caller(ctx), f"/api/inference/status?model={quote(repo, safe='')}"
+        )
+        held = kept.get("gguf_variant") if isinstance(kept, dict) else None
+        if variant and isinstance(held, str) and held.lower() != variant.lower():
+            raise FlowNodeError(
+                f"{repo} is already loaded alongside as {held}. Two quantizations of one model cannot be kept "
+                f"loaded at once: pick {held} on this node, or unload it first."
+            )
+        ctx.chat_model = name
+        return {"repo": repo, "variant": variant}
+    if getattr(ctx, "gpu_shared", False):
+        from core.flows.engine import NeedsExclusiveGpu
+        raise NeedsExclusiveGpu()
+    ctx.set_status("loading_model", f"Loading {name} alongside {serving[0]}")
+    try:
+        await loading.load_llm(
+            _caller(ctx),
+            None,
+            model = repo,
+            variant = variant,
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            deadline = time.monotonic() + LOAD_DEADLINE_S,
+            alongside = True,
+        )
+    except FlowNodeError:
+        raise
+    except Exception as exc:
+        raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
+    ctx.resident.clear()
+    ctx.chat_model = name
+    ctx.set_status("running")
+    return {"repo": repo, "variant": variant}
+
+
 async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     from core.flows.engine import MODEL_SLOT
     from studio_mcp import loading
@@ -334,7 +398,18 @@ async def _ensure_model(
         return {"repo": repo, "variant": variant}
     if options and slot != "llm":
         raise FlowNodeError("Load settings apply to chat models only")
+    if slot == "llm":
+        ctx.chat_model = None
     resident = await resident_name(ctx, model_kind)
+    if (
+        slot == "llm"
+        and model_kind in ("chat", "vision")
+        and not options
+        and not (resident and resident.lower() == repo.lower())
+    ):
+        kept = await _alongside(ctx, repo, variant)
+        if kept is not None:
+            return kept
     wanted = (repo.lower(), (variant or "").lower())
     settings = options_hash(options)
     from core.inference import gpu_arbiter
@@ -469,7 +544,7 @@ async def _chat_body(
 ) -> dict:
     cancel_id = f"flow-{uuid.uuid4().hex[:24]}"
     body: dict[str, Any] = {
-        "model": "default",
+        "model": chat_model_name(ctx),
         "messages": _messages(system, await _images_content(ctx, prompt, images)),
         "stream": stream,
         "enable_tools": False,
