@@ -2101,9 +2101,20 @@ NODE_SPECS: list[dict] = [
         "world.play",
         "World Player",
         "world",
-        "Open the world in the player.",
-        inputs = [inp("world", "world")],
+        "Open the world in the player. View picks the top-down map or the first-person 3D walk (Auto uses "
+        "what the world asks for, else the map).",
+        inputs = [inp("world", "world"), inp("ambient", "audio", "Ambient sound", optional = True)],
         outputs = [out("world", "world")],
+        params = [
+            P("view", "select", "auto", "View", options = ["auto", "2d", "3d"]),
+            P(
+                "time_of_day",
+                "select",
+                "auto",
+                "Time of day (3D)",
+                options = ["auto", "dawn", "day", "dusk", "night"],
+            ),
+        ],
         icon = "gamepad",
     ),
     spec(
