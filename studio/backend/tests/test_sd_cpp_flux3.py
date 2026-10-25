@@ -216,7 +216,6 @@ def test_flux3_references_run_natively_without_a_projector(monkeypatch, name):
         reference_images = [_ref_png((2, 2, 2))],
     )
     assert seen["refs"] == 2 and out["workflow"] == "edit"
-    # Localized editing stays Qwen-Image-2.1's.
     from core.inference.diffusion_conditioning import LocalizedEdit
 
     with pytest.raises(ValueError, match = "localized_edit"):
