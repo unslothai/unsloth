@@ -12,8 +12,7 @@ This matches ComfyUI's PDD head selection (``FinalLayer.forward`` / ``_pdd_head`
 Graph safety: the ``(sigma, sigma_next)`` pair is a device tensor on each bank (``pdd_state``), rewritten in place by
 a forward pre-hook on the denoiser before every call, and the head selection is pure tensor math on it. Nothing about
 the step is a Python constant, so a CUDA graph replays it with new sigmas and torch.compile never specializes on it.
-On a device without float64 kernels (Intel Arc A-series XPUs) the pair and the head weights stay float64 on the host
-instead, and only the blended weights in the activation dtype go to the device.
+Without device float64 (Intel Arc A-series) the float64 math stays on the host; only the cast weights go to the device.
 
 A ``without_heads`` bake keeps the plain single heads and needs an external head bank applied by a custom node, which
 Studio does not have, so it is refused rather than run as a plain trunk (that renders wrong output with no error).
@@ -127,10 +126,8 @@ _FP64_BY_DEVICE: dict = {}
 
 
 def device_has_fp64(device: Any) -> bool:
-    """Whether float64 kernels run on ``device``. CPU and CUDA (ROCm included) always; an XPU only when it reports
-    ``has_fp64`` (Intel Arc A-series has no float64, and a float64 kernel there raises "Required aspect fp64 is not
-    supported on the device"); anything else (MPS) not. An XPU whose properties cannot be read counts as without:
-    the host path is exact everywhere, only one small copy slower."""
+    """CPU / CUDA / ROCm always; XPU per ``has_fp64`` (Arc A-series raises "Required aspect fp64"); else (MPS) never.
+    Unknown counts as without: the host path is exact everywhere."""
     kind = getattr(device, "type", None)
     if kind is None:
         import torch
@@ -240,7 +237,6 @@ def _bank_class():
                     state = state.to(device)
                 w = pdd_head_weights(state, self.heads).to(hidden_states.dtype)
             else:
-                # no float64 kernels on the device: the float64 math runs on the host, as ComfyUI builds its grid
                 if state.device.type != "cpu":
                     state = state.cpu()
                 w = pdd_head_weights(state, self.heads).to(hidden_states.dtype).to(device)
@@ -277,10 +273,9 @@ _SIGMA_POSITIONS = (3, 4, 7)
 def h3_pdd_sigma_pair(
     timestep: Any, timestep_indices: Any, video_indices: Any, sample_sigmas: Any
 ) -> Any:
-    """``[sigma, sigma_next]`` float64 on the device, without a host sync. ``sigma`` is the generated video rows'
-    sigma (conditioning rows sit at a larger t, so it is the largest video-row sigma), clamped like ComfyUI's; the
-    next one is the schedule entry after the nearest, the last entry for the last step (sigma 0). On a device without
-    float64 kernels the pair comes back float64 on the host (one small copy per step)."""
+    """``[sigma, sigma_next]`` float64 on the device (host if it lacks float64), without a host sync. ``sigma`` is
+    the generated video rows' sigma (conditioning rows sit at a larger t, so it is the largest video-row sigma),
+    clamped like ComfyUI's; the next one is the schedule entry after the nearest, the last entry for the last step."""
     import torch
 
     rows = timestep_indices.index_select(0, video_indices.reshape(-1).to(timestep_indices.device))

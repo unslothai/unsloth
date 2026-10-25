@@ -823,9 +823,6 @@ def test_pdd_defaults_apply_only_to_minimax_h3():
     )
 
 
-# ── a device without float64 kernels (Intel Arc A-series XPU) ──
-
-
 @pytest.mark.parametrize("has_fp64", [False, True])
 def test_device_has_fp64_reads_the_xpu_capability(monkeypatch, has_fp64):
     import types
@@ -852,9 +849,7 @@ def test_an_unreadable_xpu_counts_as_without_fp64(monkeypatch):
 
 
 def test_the_denoiser_never_puts_float64_on_a_device_without_it(monkeypatch):
-    """Spoof the CUDA card as an fp64-less XPU: a float64 tensor on it raises like an Arc A-series ("Required aspect
-    fp64 is not supported on the device"). The sigma pair and the head weights then stay float64 on the host and the
-    blend still matches ComfyUI and the float64 oracle at every step."""
+    """CUDA spoofed as an fp64-less XPU (float64 on it raises like Arc A-series): the blend still matches every step."""
     _cuda()
     from torch.utils._python_dispatch import TorchDispatchMode
     from torch.utils._pytree import tree_flatten
