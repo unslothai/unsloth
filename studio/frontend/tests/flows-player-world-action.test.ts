@@ -314,3 +314,16 @@ test("switching views keeps the fight, while a loaded save brings its own", asyn
   assert.match(src, /const bootedFor = loads\.current;/);
   assert.match(src, /const action = handle\.actionState\?\.\(\)[^;]*;\s*if \(action && loads\.current === bootedFor\)/);
 });
+
+test("switching views keeps scenery edits and villager positions, and pickups stay where the world put them", () => {
+  const read = (f: string) =>
+    readFileSync(new URL(`../src/features/flows/player/world/${f}`, import.meta.url), "utf8");
+  const player = read("world-player.tsx");
+  // The renderer's map copy is read back on teardown; the next renderer starts from it.
+  assert.match(player, /carried\.current = \{\s*map,\s*props: world\.props,\s*blocked: world\.blocked,/);
+  assert.match(player, /npcs: loads\.current === bootedFor \? handle\.npcTiles\(\) : undefined/);
+  assert.match(player, /const kept = carried\.current\?\.map === map \? carried\.current : null;/);
+  assert.match(player, /\(switched && kept\?\.npcs\) \|\| wsRef\.current\.npcAt/);
+  // Pickup spots avoid the fixed spawn, not wherever the player stood when the view opened.
+  assert.match(read("three-world.ts"), /Math\.hypot\(x - map\.spawn\.x, y - map\.spawn\.y\) > 3/);
+});

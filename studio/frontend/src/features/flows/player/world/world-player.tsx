@@ -52,7 +52,12 @@ import {
 import { type LiveReply, appendReplyDelta } from "./live-reply";
 import { ACTIONS, NEEDS, type Needs, advertisements } from "./needs";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
-import { type Point, type TileKind, generateMap } from "./procgen";
+import {
+  type Point,
+  type TileKind,
+  type WorldMap,
+  generateMap,
+} from "./procgen";
 import { autonomyOf, autonomyOn, roleOf, rivalFor } from "./roles";
 import {
   placeAreas,
@@ -285,6 +290,13 @@ export function WorldPlayer({
     spec.render === "3d" && webglAvailable() ? "3d" : "2d",
   );
   const lastTile = useRef<{ x: number; y: number } | null>(null);
+  // Scenery edits and villager positions outlive a view switch; the renderer only holds a copy of the map.
+  const carried = useRef<{
+    map: WorldMap;
+    props: WorldMap["props"];
+    blocked: WorldMap["blocked"];
+    npcs?: Record<string, Point>;
+  } | null>(null);
   const bootedView = useRef<"2d" | "3d" | null>(null);
   const ambientUrl = useMediaUrl(
     api,
@@ -394,6 +406,7 @@ export function WorldPlayer({
     let live = true;
     const bootedFor = loads.current;
     let handle: WorldGameHandle | null = null;
+    let world: WorldMap | null = null;
     const switched = bootedView.current !== null && bootedView.current !== view;
     bootedView.current = view;
     const startAt = switched ? lastTile.current : wsRef.current.player;
@@ -421,22 +434,25 @@ export function WorldPlayer({
         ]);
         if (!live || !host.current) return;
         const added = wsRef.current.additions ?? noAdditions();
-        const saved = wsRef.current.npcAt ?? {};
+        const kept = carried.current?.map === map ? carried.current : null;
+        const saved = (switched && kept?.npcs) || wsRef.current.npcAt || {};
+        world = {
+          ...map,
+          ...(kept ? { props: kept.props, blocked: kept.blocked } : {}),
+          npcs: {
+            ...map.npcs,
+            ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
+            ...saved,
+          },
+          items: {
+            ...map.items,
+            ...Object.fromEntries(added.items.map((i) => [i.id, i])),
+          },
+        };
         handle = create(
           host.current,
           specRef.current,
-          {
-            ...map,
-            npcs: {
-              ...map.npcs,
-              ...Object.fromEntries(added.npcs.map((n) => [n.id, n])),
-              ...saved,
-            },
-            items: {
-              ...map.items,
-              ...Object.fromEntries(added.items.map((i) => [i.id, i])),
-            },
-          },
+          world,
           art,
           wsRef.current.picked,
           startAt,
@@ -477,6 +493,14 @@ export function WorldPlayer({
       live = false;
       if (handle) {
         lastTile.current = handle.playerTile();
+        if (world)
+          carried.current = {
+            map,
+            props: world.props,
+            blocked: world.blocked,
+            // A loaded save brings its own villager positions.
+            npcs: loads.current === bootedFor ? handle.npcTiles() : undefined,
+          };
         // A view switch keeps the fight going; a loaded save brings its own.
         const action = handle.actionState?.() as WorldState["action"];
         if (action && loads.current === bootedFor) {

@@ -725,7 +725,10 @@ export function createWorld3d(
     const open: Point[] = [];
     for (let y = 1; y < map.height - 1; y++)
       for (let x = 1; x < map.width - 1; x++)
-        if (!isSolid(map, x, y) && Math.hypot(x - spawn.x, y - spawn.y) > 3)
+        if (
+          !isSolid(map, x, y) &&
+          Math.hypot(x - map.spawn.x, y - map.spawn.y) > 3
+        )
           open.push({ x, y });
     for (const p of placePickups(open, spec.seed)) {
       pickups.push(p);
