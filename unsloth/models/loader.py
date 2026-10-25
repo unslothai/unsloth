@@ -1983,8 +1983,7 @@ class FastLanguageModel(FastLlamaModel):
                 try:
                     from unsloth_zoo.utils import get_quant_type
 
-                    # get_quant_type misses a config object (an fp8 load keeping FP8Linear), and a dequantized
-                    # fp8 load reads None but holds 16bit weights: neither gets a bitsandbytes stamp.
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
                     _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
                     _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
                         model, "_unsloth_fp8_dequantized", False
@@ -3387,8 +3386,7 @@ class FastModel(FastBaseModel):
                 try:
                     from unsloth_zoo.utils import get_quant_type
 
-                    # get_quant_type misses a config object (an fp8 load keeping FP8Linear), and a dequantized
-                    # fp8 load reads None but holds 16bit weights: neither gets a bitsandbytes stamp.
+                    # get_quant_type skips config objects (kept FineGrainedFP8Config); a dequantized fp8 load is 16bit.
                     _quant = get_quant_type(model.config) or _loaded_quant_method(model.config)
                     _stamp_bnb = _quant in (None, "bitsandbytes") and not getattr(
                         model, "_unsloth_fp8_dequantized", False
