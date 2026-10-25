@@ -545,7 +545,19 @@ export function autoStep(
       cmds.push({ do: "status", id, icon: "💢" });
     }
   }
-  return { state: { ...st, auto: a }, cmds, notes, steered };
+  // A villager following the player or on an errand they asked for keeps walking where the player sent them.
+  const directed = new Set([
+    ...(s.following ?? []),
+    ...Object.keys(s.errands ?? {}),
+  ]);
+  return {
+    state: { ...st, auto: a },
+    cmds: cmds.filter(
+      (c) => !(c.do === "place" || c.do === "status") || !directed.has(c.id),
+    ),
+    notes,
+    steered: steered.filter((id) => !directed.has(id)),
+  };
 }
 
 export const homeMarker = (id: string, name: string, at: Point): Cmd => ({

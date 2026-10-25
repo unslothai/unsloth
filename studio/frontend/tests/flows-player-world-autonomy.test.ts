@@ -192,6 +192,15 @@ test("a hostile villager chases only nearby and never into a safe place; the enc
   // Close by: the hostile gives chase.
   let out = A.autoStep(g, st, seen({ x: home.x + 5, y: home.y }, home));
   assert.ok(out.cmds.some((c) => c.do === "status" && c.id === enemy && c.icon === "💢"));
+  // Following the player or on an errand they asked for: the player's request wins.
+  for (const directed of [
+    { ...st, following: [enemy] },
+    { ...st, errands: { [enemy]: { place: "square", until: null } } },
+  ]) {
+    const mine = A.autoStep(g, directed, seen({ x: home.x + 5, y: home.y }, home));
+    assert.ok(!mine.cmds.some((c) => (c.do === "place" || c.do === "status") && c.id === enemy));
+    assert.ok(!mine.steered.includes(enemy));
+  }
   // Far beyond the leash: they stay home.
   out = A.autoStep(g, st, seen({ x: home.x + 30, y: home.y }, { x: home.x + 25, y: home.y }));
   assert.ok(out.cmds.some((c) => c.do === "status" && c.id === enemy && c.icon === "😠"));
