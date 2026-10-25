@@ -588,20 +588,24 @@ def test_gemma3n_gets_no_metal_table_discount():
     assert backend._apple_lazy_flags == []
 
 
-def test_a_metal_override_onto_the_gpu_keeps_the_probe_answer():
+@pytest.mark.parametrize(
+    "lazy_args, expected", [([], FLASH_NEXT_PLE), (["-lzm", "off"], 0)], ids = ["auto", "off"]
+)
+def test_a_metal_override_moves_the_table_only_when_it_is_not_streamed(lazy_args, expected):
+    """llama.cpp picks the lazy buffer before -ot, so a streamed table stays off Metal."""
     backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 58)
     got = backend._apple_lookup_table_discount(
         0,
         "/m.gguf",
         caps = dict(_CAPS),
-        extra_args = ["-ot", "per_layer_token_embd=MTL0"],
+        extra_args = ["-ot", "per_layer_token_embd=MTL0", *lazy_args],
         model_size_fit = FLASH_NEXT_TOTAL,
         need_at_ctx = GIB,
         budget_mib = 48 * 1024,
         cache_ram = None,
         env = {},
     )
-    assert got == 0
+    assert got == expected
 
 
 def test_module_table_names_deepseek41():
@@ -673,3 +677,65 @@ def test_an_rpc_model_device_turns_lazy_auto_off(extra_args, env, off):
         env = env,
     )
     assert got is off
+
+
+def test_a_streamed_table_stays_on_the_host_under_a_device_override():
+    """llama.cpp picks the lazy buffer before -ot (llama-model-loader.cpp create_tensor)."""
+    ot = ["-ot", "per_layer_token_embd=CUDA0"]
+    scan = ("qwen4exp", {PLE: FLASH_NEXT_PLE}, 0)
+    pinned = llama_cpp_module._host_pinned_input_bytes
+    assert pinned(scan, ot, {}, lazy_mode = "auto") == FLASH_NEXT_PLE
+    assert pinned(scan, ot, {}, lazy_mode = "off") == 0
+    small = ("gemma4", {PLE: GEMMA3N_PLE}, 0)
+    assert pinned(small, ot, {}, lazy_mode = "auto") == 0
+    assert pinned(small, ot, {}, lazy_mode = "on") == GEMMA3N_PLE
+
+
+def _flash_next_on_two_cards(tmp_path, extra_args):
+    """Flash-Next (73.45 GiB, 26.82 GiB table) on 2x32 GiB."""
+    return _cache_launch(
+        tmp_path,
+        moe = False,
+        size_gib = FLASH_NEXT_TOTAL / GIB,
+        memory = [(0, 32_000, 32_768), (1, 32_000, 32_768)],
+        ram_gib = 128,
+        lazy = {
+            PLE: FLASH_NEXT_PLE,
+            "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
+            "output.weight": FLASH_NEXT_OUTPUT,
+        },
+        arch = "qwen4exp",
+        extra_args = extra_args,
+    )
+
+
+@pytest.mark.parametrize(
+    "lazy_args, fit",
+    [([], "off"), (["-lzm", "on"], "off"), (["-lzm", "off"], "on")],
+    ids = ["auto", "on", "off"],
+)
+def test_a_device_override_leaves_a_streamed_table_off_the_vram_charge(
+    tmp_path, _moe_cache_host, lazy_args, fit
+):
+    _backend, cmd = _flash_next_on_two_cards(tmp_path, ["-ot", "embd=CUDA0", *lazy_args])
+    assert _fit_flags(cmd) == fit, cmd
+    if fit == "off":
+        assert cmd[cmd.index("-ngl") + 1] == "-1", cmd
+
+
+def test_a_streamed_table_under_an_override_keeps_the_resident_embedding_host_only(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """token_embd stays pinned on the host beside a streamed table the override names."""
+    seen = []
+    real = LlamaCppBackend._fit_derived_load_mode
+
+    def spy(self, **kwargs):
+        if kwargs.get("announce", True):
+            seen.append(kwargs)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(LlamaCppBackend, "_fit_derived_load_mode", spy)
+    _flash_next_on_two_cards(tmp_path, ["-ot", "per_layer_token_embd=CUDA0"])
+    assert seen and seen[-1]["lazy_read_bytes"] == FLASH_NEXT_PLE
+    assert seen[-1]["host_only_bytes"] >= FLASH_NEXT_TOKEN_EMBD, seen[-1]

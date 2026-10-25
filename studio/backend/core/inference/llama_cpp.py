@@ -7955,20 +7955,38 @@ def _override_places_tensor_on_device(
     return False
 
 
+def _lazy_read_names(
+    architecture: Optional[str], tensor_bytes: Mapping[str, int], mode: str
+) -> frozenset[str]:
+    """Names of ``tensor_bytes`` llama.cpp reads lazily under ``mode``. It picks the lazy
+    (CPU) buffer before applying ``-ot``, so these stay on the host whatever an override says."""
+    return frozenset(
+        name
+        for name, size in (tensor_bytes or {}).items()
+        if _lazy_read_bytes(architecture, {name: size}, mode)
+    )
+
+
 def _host_pinned_input_bytes(
     scan: "Optional[tuple[Optional[str], Mapping[str, int], int]]",
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
+    *,
+    lazy_mode: str = "off",
 ) -> int:
-    """Bytes of the file llama.cpp keeps on the host however many layers it offloads."""
+    """Bytes of the file llama.cpp keeps on the host however many layers it offloads;
+    ``lazy_mode`` is the mode the child resolves to."""
     if not scan:
         return 0
     architecture, named, _experts = scan
+    streamed = _lazy_read_names(architecture, named, lazy_mode)
     total = 0
     for name, size in (named or {}).items():
         if _is_per_layer_embedding(name):
-            if architecture in _HOST_FORCED_TABLE_ARCHS or not _override_places_tensor_on_device(
-                name, extra_args, env
+            if (
+                name in streamed
+                or architecture in _HOST_FORCED_TABLE_ARCHS
+                or not _override_places_tensor_on_device(name, extra_args, env)
             ):
                 total += int(size)
     token_embd = int((named or {}).get("token_embd.weight") or 0)
@@ -12208,13 +12226,26 @@ class LlamaCppBackend:
         if _sidecar_adapter_paths(extra_args):
             return probe_discount
         scan = self._gguf_tensor_scan(model_path)
+        streamed = (
+            _lazy_read_names(
+                scan[0],
+                scan[1],
+                _effective_lazy_mode(
+                    extra_args,
+                    source_env,
+                    flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode"),
+                ),
+            )
+            if scan is not None
+            else frozenset()
+        )
         if (
             scan is not None
             and scan[0] not in _HOST_FORCED_TABLE_ARCHS
             and any(
                 _override_places_tensor_on_device(name, extra_args, source_env)
                 for name in scan[1]
-                if _is_per_layer_embedding(name)
+                if _is_per_layer_embedding(name) and name not in streamed
             )
         ):
             return probe_discount
@@ -29139,9 +29170,46 @@ class LlamaCppBackend:
                             ).intersection(i for i, _f in gpus)
                         ):
                             return 0
+                        # The child's own extras and env, and the lazy mode it resolves to:
+                        # a streamed table stays on the host whatever -ot says.
+                        _inp_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _inp_env = dict(os.environ)
+                        if gpu_memory_mode == "manual":
+                            self._clear_manual_placement_env(_inp_env)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_inp_env)
                         try:
+                            _inp_lazy = "off"
+                            if server_caps.get("supports_lazy_mode"):
+                                _inp_lazy = _effective_lazy_mode(
+                                    _inp_extras,
+                                    _inp_env,
+                                    flag = str(server_caps.get("lazy_mode_flag") or "--lazy-mode"),
+                                )
+                            if _inp_lazy == "auto" and self._lazy_auto_resolves_off(
+                                gpu_indices = (
+                                    gpu_indices
+                                    if gpu_indices is not None or not gpu_ids
+                                    else [int(i) for i in gpu_ids]
+                                ),
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = is_vulkan_backend,
+                                extra_args = _inp_extras,
+                                env = _inp_env,
+                                tensor_parallel = tensor_parallel,
+                                integrated_gpu_ids = _vulkan_igpu_ids,
+                            ):
+                                _inp_lazy = "off"
                             found = _host_pinned_input_bytes(
-                                self._gguf_tensor_scan(model_path), extra_args, os.environ
+                                self._gguf_tensor_scan(model_path),
+                                _inp_extras,
+                                _inp_env,
+                                lazy_mode = _inp_lazy,
                             )
                         except Exception as e:  # unread header: charge the whole file
                             logger.debug("Host-pinned input embeddings unpriced: %s", e)

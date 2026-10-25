@@ -5655,7 +5655,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     src = inspect.getsource(LlamaCppBackend.load_model)
     capture = src.index("_vulkan_igpu_ids = (")
     assert capture < src.index("_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)")
-    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 4, src.count(
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 5, src.count(
         "integrated_gpu_ids = _vulkan_igpu_ids"
     )
 
