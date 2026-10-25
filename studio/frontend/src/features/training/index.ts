@@ -34,6 +34,7 @@ export {
   removeTrainingUnloadGuard,
   useTrainingUnloadGuard,
 } from "./hooks/use-training-unload-guard";
+export { useTrainingTaskbarProgress } from "./hooks/use-training-taskbar-progress";
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
 export { useDrafterCapability } from "./hooks/use-drafter-capability";
 export { drafterEligible } from "./lib/drafter-config";

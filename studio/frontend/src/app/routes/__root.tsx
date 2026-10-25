@@ -53,7 +53,10 @@ import {
   useShortcutAvailable,
 } from "@/features/settings";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
-import { useTrainingUnloadGuard } from "@/features/training";
+import {
+  useTrainingTaskbarProgress,
+  useTrainingUnloadGuard,
+} from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
@@ -448,6 +451,7 @@ function RootLayout() {
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
+  useTrainingTaskbarProgress();
   useTypeToActivate();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
