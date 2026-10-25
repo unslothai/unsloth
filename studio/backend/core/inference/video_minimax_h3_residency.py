@@ -529,8 +529,7 @@ def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int
 
 
 H3_BLOCK_BACKGROUND_PIN_ENV = "UNSLOTH_H3_BACKGROUND_BLOCK_PIN"
-# Groups whose copies are queued ahead of the one being swapped in: enough to keep 8 copy threads busy, while at most
-# this many pageable sources wait next to their pinned copies.
+# Groups queued ahead of the swap: keeps 8 copy threads busy while bounding pageable sources held beside pins.
 _H3_PIN_LOOKAHEAD = 2
 
 
@@ -540,8 +539,7 @@ def _host_leaves(tensor: Any) -> list:
 
 
 def _pin_host_tensor(src: Any) -> Any:
-    """A pinned copy of host tensor ``src`` in registered host memory; a wrapper subclass (torchao Int8Tensor) is
-    rebuilt from pinned inner tensors, as ``PinnedArena.pin`` does. Anything else takes ``pin_memory()``."""
+    """Pinned copy of ``src``; torchao wrapper subclasses are rebuilt from pinned inner tensors like ``PinnedArena.pin``."""
     import torch
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
@@ -561,7 +559,6 @@ def _pin_host_tensor(src: Any) -> Any:
 
 
 def _reads(tensor: Any, src: Any) -> bool:
-    """Whether ``tensor`` still reads host copy ``src`` (it is not on the device)."""
     try:
         if getattr(tensor, "device", None) is None or tensor.device.type != "cpu":
             return False
@@ -578,9 +575,7 @@ def _h3_block_pinner_cls() -> Any:
     from .diffusion_pinned_arena import _repoint
 
     class _H3BlockPinner(_GroupPinner):
-        """``_GroupPinner`` for a lazily streamed H3 denoiser: registered pins of torchao weights too, and the pin
-        budget re-read before each group (``admit``), as the up-front in-place pin does. Groups past a refusal stay
-        on their pageable copy; the stream prefetch pins those per onload."""
+        """Pins torchao weights too and re-reads the budget per group; refused groups are pinned per onload."""
 
         def __init__(
             self,
@@ -648,7 +643,7 @@ def _h3_block_pinner_cls() -> Any:
                         ]
                         nxt += 1
                     if id(group) not in queued:
-                        break  # the budget stopped the pin here
+                        break
                     placed = [
                         (tensor, src, self._fast_result(future, src))
                         for tensor, src, future in queued.pop(id(group))
@@ -658,7 +653,6 @@ def _h3_block_pinner_cls() -> Any:
                         if cpu.get(tensor) is src:
                             cpu[tensor] = pinned
                             if _reads(tensor, src):
-                                # frees the pageable copy now, not at the group's first offload
                                 _repoint(tensor, pinned)
                             self.pinned += sum(leaf.nbytes for leaf in _host_leaves(src))
                     del placed
@@ -707,10 +701,8 @@ def defer_streamed_block_pins(
 ) -> Any:
     """``pin_streamed_block_groups`` on Studio's background pinner: the same in-place pin, off the load path.
 
-    Every block group switches to its existing pageable host copy at once, so the stream prefetch engages; a group's
-    onload (prefetch, residency, diffusers) waits for that group's pin, so nothing reads a copy being replaced. The
-    render waits for the rest (``finish_background_pins``) and unload stops it. Returns the started pinner, or None
-    for the up-front pin. ``UNSLOTH_H3_BACKGROUND_BLOCK_PIN=0`` off."""
+    Each group's onload waits for its pin, so nothing reads a copy being replaced. Returns the pinner, or None for
+    the up-front pin. ``UNSLOTH_H3_BACKGROUND_BLOCK_PIN=0`` off."""
     off = ("0", "off", "false", "no")
     if str(os.environ.get(H3_BLOCK_PIN_ENV, "")).strip().lower() in off:
         return None

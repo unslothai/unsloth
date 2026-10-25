@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A lazily streamed H3 denoiser's in-place block pin runs on the background pinner: the stream prefetch engages at
-once, each onload waits for its group's pin, the budget is re-read per group, and every output stays bit-identical."""
+"""Background in-place block pin for a lazily streamed H3 denoiser: per-group waits, budget, bit-identical output."""
 
 from __future__ import annotations
 
@@ -151,7 +150,7 @@ def test_background_pin_streams_bit_identical_and_frees_the_pageable_copy(monkey
     assert (module_prefetcher(net) is not None) is prefetch
     gate.set()
     if not covered:
-        pinner.join()  # the load path's rule when the prefetch stays off
+        pinner.join()
     dm.finish_background_pins(pipe)
     assert pinner.groups_pinned == len(blocks) and pinner.stopped_at is None
     for block, old in zip(net.transformer_blocks, pageable):
@@ -200,7 +199,6 @@ def test_budget_reread_per_group_stops_and_leaves_the_rest_pageable(monkeypatch)
     answers = iter([True, True, True, False])
     monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *_a, **_k: next(answers, False))
     pipe = _Pipe()
-    # the first answer is the up-front check, then one per group
     pinner = res.defer_streamed_block_pins(pipe, net, torch.device("cuda"))
     assert res.install_h3_stream_prefetch(net, "cuda") > 0
     dm.finish_background_pins(pipe)

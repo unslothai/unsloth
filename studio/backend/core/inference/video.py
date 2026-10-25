@@ -11140,7 +11140,7 @@ class VideoBackend:
                                     pin_streamed_block_groups,
                                 )
                                 try:
-                                    # the 9-12 s slab copy, off the load path: the render waits for what is left
+                                    # the 9-12 s slab copy, off the load path
                                     block_pinner = defer_streamed_block_pins(
                                         pipe, denoiser, device, logger = logger
                                     )
@@ -11600,7 +11600,6 @@ class VideoBackend:
         )
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
-                # a block pinner still copying would hold the denoiser's host copies
                 stop_background_pins(pipe)
                 del pipe
                 clear_gpu_cache()
