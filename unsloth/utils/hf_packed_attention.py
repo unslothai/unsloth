@@ -17,9 +17,7 @@ __all__ = ["enable_hf_packed_attention", "HF_PACKED_ATTENTION_STATS"]
 _FLAG = "_unsloth_hf_packed_varlen"
 _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
-# True while _block_compile runs one of its compiled decoder blocks (not a user's outer compile).
-# Packed rows there leave the graph for the varlen kernel: the traced fallback is SDPA over the
-# dense block-causal mask, which SM100 sends to cuDNN, rebuilding its plan at every new length.
+# True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
 # efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens.
 HF_PACKED_ATTENTION_STATS = {"fast": 0, "fallback": 0, "mask_checks": 0, "efficient": 0}
@@ -347,7 +345,6 @@ def _sdpa_packed_varlen(
             _window_key(module, kwargs),
         )
     ):
-        # One graph break per layer; norms, MLP and LoRA around it stay compiled.
         return _sdpa_packed_varlen_eager(
             module,
             query,
@@ -564,8 +561,7 @@ def _sdpa_packed_varlen(
 
 _sdpa_packed_varlen_eager = torch.compiler.disable(_sdpa_packed_varlen)
 
-# Compiled cuDNN SDPA over a dense mask rebuilds a plan per new length: ~0.3-12 s on torch 2.11 (cuDNN
-# 9.19 or 9.20 alike), ~0.15 s on 2.13, where the graph break costs more than it saves (B200).
+# Compiled cuDNN SDPA over a dense mask builds a plan per new length, slowly before torch 2.13.
 _SLOW_CUDNN_PLANS = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (2, 13)
 _LEAVES_BLOCK = {}
 
@@ -576,8 +572,8 @@ def _window_key(module, kwargs):
 
 
 def _leaves_block_eager(device_type, device_index, dtype, head_dim, window):
-    """Packed rows leave a compiled block only to dodge per-length cuDNN plans, and only when the
-    eager wrapper has a varlen kernel for them; elsewhere the graph break is pure cost (T4: +50%)."""
+    """Packed rows leave a compiled block only to dodge those plans, and only when the eager wrapper
+    has a varlen kernel for them; elsewhere the graph break is pure cost."""
     key = (device_type, device_index, dtype, head_dim, window)
     if key not in _LEAVES_BLOCK:
         _LEAVES_BLOCK[key] = _leaves_block_probe(*key)
@@ -610,8 +606,7 @@ def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
         return False
 
 
-# Called while tracing with constant arguments: the verdict is baked into the block's graph. Not an
-# lru_cache: Dynamo traces those through __wrapped__, running the probe on fake tensors (always False).
+# Baked into the graph at trace time. Not an lru_cache: Dynamo traces those via __wrapped__ (fake tensors).
 _leaves_block = torch._dynamo.assume_constant_result(_leaves_block_eager)
 
 
