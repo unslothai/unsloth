@@ -1522,9 +1522,12 @@ class PreemptionController:
 
     def progress_signature(self) -> tuple:
         """What a waiter watches to tell "busy" from "stuck": `committed`, the holders,
-        `_progress_tokens`, and how many holders are inside a tool call. The token term is the one
-        that was missing: `committed` is a maximum a decoding chat can leave untouched, and one turn
-        was abandoned for "no progress" while three others decoded to completion."""
+        `_progress_tokens`, how many holders are inside a tool call, and the cache reading. The
+        token term is the one that was missing: `committed` is a maximum a decoding chat can leave
+        untouched, and one turn was abandoned for "no progress" while three others decoded to
+        completion. The reading is the only progress a raw relay shows: it reports no tokens, and
+        its charge can exceed what it holds, so `committed` stays put while it fills. A stalled
+        cache reads the same each time, so it still times out."""
         with self._lock:
             return (
                 self._committed_locked(),
@@ -1535,6 +1538,7 @@ class PreemptionController:
                     for p in self._participants.values()
                     if p.state == ParticipantState.TOOLS_RUNNING
                 ),
+                self._resident,
             )
 
     def _pending_prefill_locked(self, *, exclude: Optional[str] = None) -> int:
