@@ -1187,3 +1187,27 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+@pytest.fixture(autouse = True)
+def _planner_tests_see_every_cpu(request, monkeypatch):
+    """The spill planner declines when the process's CPU affinity is narrower than the logical
+    count, so a cpuset-pinned runner or ``taskset`` made unrelated planner cells abstain. Planner
+    modules see every logical CPU; a test of the affinity rule patches its own mask over this."""
+    if not hasattr(os, "sched_getaffinity"):
+        return
+    module = getattr(request, "module", None)
+    if not getattr(module, "__name__", "").rpartition(".")[2].startswith("test_offload_planner"):
+        return
+
+    def _every_cpu(_pid = 0):
+        logical = None
+        psutil_mod = sys.modules.get("psutil")
+        if psutil_mod is not None and hasattr(psutil_mod, "cpu_count"):
+            try:
+                logical = psutil_mod.cpu_count(logical = True)
+            except Exception:
+                logical = None
+        return set(range(int(logical or os.cpu_count() or 1)))
+
+    monkeypatch.setattr(os, "sched_getaffinity", _every_cpu)
