@@ -549,7 +549,8 @@ def _single_beside_stale_index(tmp_path, single, stale, index, keep_shard):
 def _transformers_resolved_checkpoint_files(path):
     # The private resolver's signature differs across the supported range (4.57.x takes subfolder,
     # from_tf, from_flax and the download arguments positionally; 5.x takes download_kwargs), so bind
-    # every parameter by name and skip on a required one this test does not know.
+    # every parameter by name and skip on a required one this test does not know (the probe is
+    # asserted first, so only this cross-check is skipped).
     import inspect
 
     from transformers.modeling_utils import _get_resolved_checkpoint_files
@@ -580,7 +581,9 @@ def _transformers_resolved_checkpoint_files(path):
         if name in known:
             kwargs[name] = known[name]
         elif param.default is inspect.Parameter.empty:
-            pytest.skip(f"unknown required _get_resolved_checkpoint_files parameter {name!r}")
+            pytest.skip(
+                reason = f"transformers resolver cross-check only: new required parameter {name!r}"
+            )
     files, _ = _get_resolved_checkpoint_files(**kwargs)
     return files
 
@@ -596,10 +599,10 @@ def test_single_safetensors_wins_over_a_stale_index(
     tmp_path, index, keep_shard, single, stale, expected
 ):
     path = _single_beside_stale_index(tmp_path, single, stale, index, keep_shard)
-    files = _transformers_resolved_checkpoint_files(path)
-    assert [os.path.basename(f) for f in files] == ["model.safetensors"]
     cfg = SimpleNamespace(quantization_config = BNB_QC)
     assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path) is expected
+    files = _transformers_resolved_checkpoint_files(path)
+    assert [os.path.basename(f) for f in files] == ["model.safetensors"]
 
 
 def test_lone_bin_wins_over_a_bin_index(tmp_path):
